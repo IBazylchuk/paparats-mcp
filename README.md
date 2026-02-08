@@ -1,5 +1,9 @@
 # paparats-mcp
 
+<img src="docs/paparats-kvetka.png" alt="Paparats-kvetka (fern flower)" width="200" align="right">
+
+**Paparats-kvetka** — a magical flower from Slavic folklore that blooms on Kupala Night and grants power to whoever finds it. Likewise, paparats-mcp helps you find the right code across a sea of repositories.
+
 Semantic code search across multiple repositories. MCP server powered by Qdrant vector search and Ollama embeddings, designed for AI coding assistants (Claude Code, Cursor).
 
 Drop a `.paparats.yml` into each project, group them together, and get cross-project semantic search via MCP.

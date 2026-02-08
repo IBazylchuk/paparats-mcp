@@ -93,7 +93,6 @@ export class McpHandler {
     }
 
     if (cleaned > 0) {
-      // eslint-disable-next-line no-console -- intentional operational log
       console.log(`[mcp] Cleaned up ${cleaned} expired sessions`);
     }
   }

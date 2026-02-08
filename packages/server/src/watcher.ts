@@ -77,7 +77,6 @@ export class ProjectWatcher {
 
     this.retryInterval = setInterval(() => this.retryFailedFiles(), RETRY_INTERVAL_MS);
 
-    // eslint-disable-next-line no-console -- intentional operational log
     console.log(
       `[watcher] Watching ${this.project.group}/${this.project.name} at ${this.project.path}`
     );
@@ -200,7 +199,7 @@ export class ProjectWatcher {
             await this.callbacks.onFileChanged(this.project.group, this.project, failed.path);
           }
         });
-        // eslint-disable-next-line no-console -- intentional operational log
+
         console.log(`[watcher] Retry successful for ${key}`);
         this.failedFiles.delete(key);
         this.stats.eventsProcessed++;
@@ -230,7 +229,6 @@ export class WatcherManager {
     if (this.watchers.has(key)) return;
 
     if (!project.watcher.enabled) {
-      // eslint-disable-next-line no-console -- intentional operational log
       console.log(`[watcher] Watcher disabled for ${key}`);
       return;
     }

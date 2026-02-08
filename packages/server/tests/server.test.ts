@@ -309,6 +309,54 @@ describe('Server API', () => {
     });
   });
 
+  describe('POST /api/file-deleted', () => {
+    it('returns 400 when group, project, or file is missing', async () => {
+      const res = await fetchApi('/api/file-deleted', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ group: 'g' }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('group, project, and file are required');
+    });
+
+    it('returns 400 when project is unknown', async () => {
+      const res = await fetchApi('/api/file-deleted', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group: 'g',
+          project: 'unknown',
+          file: 'src/foo.ts',
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('Unknown project');
+    });
+
+    it('returns 200 when project is registered', async () => {
+      projectsByGroup.set('test-group', [
+        createProjectConfig({ path: tmpDir, name: 'test-project' }),
+      ]);
+
+      const res = await fetchApi('/api/file-deleted', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group: 'test-group',
+          project: 'test-project',
+          file: 'src/foo.ts',
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('ok');
+      expect(body.message).toBe('File removed from index');
+    });
+  });
+
   describe('GET /health', () => {
     it('returns 200 with status, groups, uptime, memory', async () => {
       const res = await fetchApi('/health');
