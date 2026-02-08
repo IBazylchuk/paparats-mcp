@@ -100,6 +100,8 @@ export interface SearchResponse {
 
 export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
+  /** Optional: batch embedding for better performance. Falls back to sequential embed() if not supported. */
+  embedBatch?(texts: string[]): Promise<number[][]>;
   readonly dimensions: number;
   readonly model: string;
 }

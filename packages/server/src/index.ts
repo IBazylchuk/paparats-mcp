@@ -1,6 +1,9 @@
 // Phase 1a: exports for core modules
 // HTTP server + MCP handler will be added in Phase 1b
 
+/** UUIDv7 - time-ordered, use for all entity IDs */
+export { v7 as uuidv7 } from 'uuid';
+
 export { Chunker } from './chunker.js';
 export type { ChunkerConfig } from './chunker.js';
 
@@ -19,6 +22,7 @@ export {
   CachedEmbeddingProvider,
   createEmbeddingProvider,
 } from './embeddings.js';
+export type { CacheStats } from './embeddings.js';
 
 export { Indexer } from './indexer.js';
 export type { IndexerConfig } from './indexer.js';

@@ -24,18 +24,18 @@ Your projects                     paparats-mcp                    AI assistant
 
 ```yaml
 # backend/.paparats.yml
-group: "my-fullstack"
+group: 'my-fullstack'
 language: ruby
 indexing:
-  paths: ["app/", "lib/"]
+  paths: ['app/', 'lib/']
 ```
 
 ```yaml
 # frontend/.paparats.yml
-group: "my-fullstack"
+group: 'my-fullstack'
 language: typescript
 indexing:
-  paths: ["src/"]
+  paths: ['src/']
 ```
 
 Now searching "authentication flow" finds relevant code in both backend and frontend.
@@ -101,13 +101,13 @@ ollama list | grep jina
 
 After this, Ollama serves the model under the alias `jina-code-embeddings`, which is the default in `.paparats.yml`.
 
-| Spec | Value |
-|---|---|
-| Parameters | 1.5B |
-| Dimensions | 1536 |
-| Context | 32,768 tokens (recommended <= 8,192) |
-| Quantization | Q8_0 (~1.6 GB) |
-| Languages | 15+ programming languages |
+| Spec         | Value                                |
+| ------------ | ------------------------------------ |
+| Parameters   | 1.5B                                 |
+| Dimensions   | 1536                                 |
+| Context      | 32,768 tokens (recommended <= 8,192) |
+| Quantization | Q8_0 (~1.6 GB)                       |
+| Languages    | 15+ programming languages            |
 
 > `paparats install` (Phase 1c) will automate this setup.
 
@@ -116,25 +116,25 @@ After this, Ollama serves the model under the alias `jina-code-embeddings`, whic
 `.paparats.yml` in your project root:
 
 ```yaml
-group: "my-project-group"       # required — Qdrant collection name
-language: ruby                   # required — or array: [ruby, typescript]
+group: 'my-project-group' # required — Qdrant collection name
+language: ruby # required — or array: [ruby, typescript]
 
 indexing:
-  paths: ["app/", "lib/"]       # directories to index (default: ["./"])
-  exclude: ["vendor/**"]         # additional excludes (merged with language defaults)
-  extensions: [".rb"]            # override auto-detected extensions
-  chunkSize: 1024                # max chars per chunk (default: 1024)
-  concurrency: 2                 # parallel file processing (default: 2)
-  batchSize: 50                  # Qdrant upsert batch size (default: 50)
+  paths: ['app/', 'lib/'] # directories to index (default: ["./"])
+  exclude: ['vendor/**'] # additional excludes (merged with language defaults)
+  extensions: ['.rb'] # override auto-detected extensions
+  chunkSize: 1024 # max chars per chunk (default: 1024)
+  concurrency: 2 # parallel file processing (default: 2)
+  batchSize: 50 # Qdrant upsert batch size (default: 50)
 
 watcher:
-  enabled: true                  # auto-reindex on file changes (default: true)
-  debounce: 1000                 # ms debounce (default: 1000)
+  enabled: true # auto-reindex on file changes (default: true)
+  debounce: 1000 # ms debounce (default: 1000)
 
 embeddings:
-  provider: "ollama"             # embedding provider (default: "ollama")
-  model: "jina-code-embeddings"  # Ollama alias (see "Embedding model setup" above)
-  dimensions: 1536               # vector dimensions (default: 1536)
+  provider: 'ollama' # embedding provider (default: "ollama")
+  model: 'jina-code-embeddings' # Ollama alias (see "Embedding model setup" above)
+  dimensions: 1536 # vector dimensions (default: 1536)
 ```
 
 ## Development status

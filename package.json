@@ -7,9 +7,27 @@
   ],
   "scripts": {
     "build": "yarn workspace @paparats/server build && yarn workspace @paparats/cli build",
-    "clean": "rm -rf packages/*/dist"
+    "clean": "rm -rf packages/*/dist",
+    "test": "yarn workspace @paparats/server test",
+    "typecheck": "yarn workspace @paparats/server typecheck && yarn workspace @paparats/cli typecheck",
+    "prepare": "husky",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "prettier": "prettier --write .",
+    "prettier:check": "prettier --check .",
+    "check": "yarn typecheck && yarn lint && yarn prettier:check"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.0.0",
+    "eslint-config-prettier": "^10.1.8",
+    "globals": "^17.3.0",
+    "husky": "^9.1.7",
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.54.0"
   }
 }

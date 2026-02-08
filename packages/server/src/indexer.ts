@@ -2,7 +2,7 @@ import { QdrantClient } from '@qdrant/js-client-rest';
 import { glob } from 'glob';
 import fs from 'fs';
 import path from 'path';
-import crypto from 'crypto';
+import { v7 as uuidv7 } from 'uuid';
 import PQueue from 'p-queue';
 import { Chunker } from './chunker.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
@@ -12,52 +12,108 @@ export interface IndexerConfig {
   qdrantUrl: string;
   embeddingProvider: CachedEmbeddingProvider;
   dimensions: number;
+  /** Qdrant request timeout in milliseconds (default: 30000) */
+  timeout?: number;
+  /** Optional Qdrant client for testing (skips creating from qdrantUrl) */
+  qdrantClient?: QdrantClient;
 }
+
+/** Qdrant timeout in milliseconds (default: 30s) */
+const QDRANT_TIMEOUT_MS = 30_000;
+const QDRANT_MAX_RETRIES = 3;
 
 export class Indexer {
   private qdrant: QdrantClient;
-  private chunker: Chunker;
+  private chunkers = new Map<string, Chunker>();
   private provider: CachedEmbeddingProvider;
   private dimensions: number;
   stats: IndexerStats;
 
   constructor(config: IndexerConfig) {
-    this.qdrant = new QdrantClient({ url: config.qdrantUrl });
+    this.qdrant =
+      config.qdrantClient ??
+      new QdrantClient({
+        url: config.qdrantUrl,
+        timeout: config.timeout ?? QDRANT_TIMEOUT_MS,
+      });
     this.provider = config.embeddingProvider;
     this.dimensions = config.dimensions;
-    this.chunker = new Chunker({ chunkSize: 1024, overlap: 128 });
     this.stats = { files: 0, chunks: 0, cached: 0, errors: 0 };
   }
 
-  /** Deterministic numeric ID from group + project + file + chunk index */
-  private pointId(group: string, project: string, relPath: string, chunkIdx: number): number {
-    const raw = `${group}:${project}:${relPath}:${chunkIdx}`;
-    const hex = crypto.createHash('md5').update(raw).digest('hex').slice(0, 12);
-    return parseInt(hex, 16);
+  private getChunker(project: ProjectConfig): Chunker {
+    const key = `${project.indexing.chunkSize}:${project.indexing.overlap}`;
+    if (!this.chunkers.has(key)) {
+      this.chunkers.set(
+        key,
+        new Chunker({
+          chunkSize: project.indexing.chunkSize,
+          overlap: project.indexing.overlap,
+        })
+      );
+    }
+    return this.chunkers.get(key)!;
+  }
+
+  private async retryQdrant<T>(fn: () => Promise<T>, retries = QDRANT_MAX_RETRIES): Promise<T> {
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastError = err as Error;
+        if (attempt < retries - 1) {
+          const delay = 1000 * 2 ** attempt;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          console.warn(
+            `[indexer] Qdrant operation failed, retrying (${attempt + 1}/${retries})...`
+          );
+        }
+      }
+    }
+    throw new Error(`Qdrant failed after ${retries} retries: ${lastError?.message}`);
   }
 
   /** Ensure group collection exists in Qdrant */
   async ensureCollection(groupName: string): Promise<void> {
     try {
       await this.qdrant.getCollection(groupName);
+      return;
     } catch {
-      await this.qdrant.createCollection(groupName, {
-        vectors: {
-          size: this.dimensions,
-          distance: 'Cosine',
-        },
-      });
-      // Payload indexes for filtering
-      await this.qdrant.createPayloadIndex(groupName, {
-        field_name: 'project',
-        field_schema: 'keyword',
-        wait: true,
-      });
-      await this.qdrant.createPayloadIndex(groupName, {
-        field_name: 'file',
-        field_schema: 'keyword',
-        wait: true,
-      });
+      // Collection doesn't exist, try to create
+    }
+
+    try {
+      await this.retryQdrant(() =>
+        this.qdrant.createCollection(groupName, {
+          vectors: {
+            size: this.dimensions,
+            distance: 'Cosine',
+          },
+        })
+      );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(groupName, {
+          field_name: 'project',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(groupName, {
+          field_name: 'file',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
+    } catch (err) {
+      // If creation failed, check if another process created it
+      try {
+        await this.qdrant.getCollection(groupName);
+        // Collection exists now, that's OK
+      } catch {
+        throw err;
+      }
     }
   }
 
@@ -67,42 +123,49 @@ export class Indexer {
 
     let content: string;
     try {
-      content = fs.readFileSync(filePath, 'utf8');
-    } catch {
+      const buffer = await fs.promises.readFile(filePath);
+      if (buffer.includes(0)) return 0; // Binary file
+      content = buffer.toString('utf8');
+      if (content.includes('\uFFFD')) return 0; // Invalid UTF-8
+    } catch (err) {
+      console.error(`  Failed to read ${relPath}: ${(err as Error).message}`);
       return 0;
     }
 
-    if (!content.trim() || content.includes('\0')) return 0;
+    if (!content.trim()) return 0;
 
-    // Use the first language for chunking strategy
+    const chunker = this.getChunker(project);
     const language = project.languages[0] ?? 'generic';
-    const chunks = this.chunker.chunk(content, language);
+    const chunks = chunker.chunk(content, language);
     if (chunks.length === 0) return 0;
 
-    const points = [];
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
-      const embedding = await this.provider.embed(chunk.content);
+    const contents = chunks.map((c) => c.content);
+    const embeddings = await this.provider.embedBatch(contents);
 
-      points.push({
-        id: this.pointId(groupName, project.name, relPath, i),
-        vector: embedding,
-        payload: {
-          project: project.name,
-          file: relPath,
-          language,
-          startLine: chunk.startLine,
-          endLine: chunk.endLine,
-          content: chunk.content,
-          hash: chunk.hash,
-        },
-      });
+    if (embeddings.length !== chunks.length) {
+      throw new Error(
+        `Embedding mismatch: got ${embeddings.length} embeddings for ${chunks.length} chunks in ${relPath}`
+      );
     }
+
+    const points = chunks.map((chunk, i) => ({
+      id: uuidv7(),
+      vector: embeddings[i]!,
+      payload: {
+        project: project.name,
+        file: relPath,
+        language,
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        content: chunk.content,
+        hash: chunk.hash,
+      },
+    }));
 
     const batchSize = project.indexing.batchSize;
     for (let i = 0; i < points.length; i += batchSize) {
       const batch = points.slice(i, i + batchSize);
-      await this.qdrant.upsert(groupName, { points: batch, wait: true });
+      await this.retryQdrant(() => this.qdrant.upsert(groupName, { points: batch, wait: true }));
     }
 
     return points.length;
@@ -119,8 +182,7 @@ export class Indexer {
 
     await this.ensureCollection(groupName);
 
-    // Gather files using project patterns
-    const allFiles: string[] = [];
+    const fileSet = new Set<string>();
     for (const pattern of project.patterns) {
       const found = await glob(pattern, {
         cwd: project.path,
@@ -128,10 +190,9 @@ export class Indexer {
         ignore: project.exclude,
         nodir: true,
       });
-      allFiles.push(...found);
+      found.forEach((f) => fileSet.add(f));
     }
-
-    const files = [...new Set(allFiles)];
+    const files = Array.from(fileSet);
     console.error(`  ${files.length} files found`);
 
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
@@ -153,12 +214,17 @@ export class Indexer {
         } catch (err) {
           this.stats.errors++;
           const rel = path.relative(project.path, file);
-          console.error(`  Error: ${rel}: ${(err as Error).message}`);
+          console.error(`  Error indexing ${rel}:`);
+          console.error(`    ${(err as Error).message}`);
+          if (process.env.DEBUG) {
+            console.error((err as Error).stack);
+          }
         }
-      }),
+      })
     );
 
     await Promise.all(tasks);
+    this.stats.cached = this.provider.cacheHits; // Update once after all tasks complete
     return totalChunks;
   }
 
@@ -175,9 +241,13 @@ export class Indexer {
 
     this.stats.cached = this.provider.cacheHits;
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    const cacheStats = this.provider.getCacheStats();
     console.error(`Indexing complete in ${elapsed}s`);
     console.error(
-      `  Files: ${this.stats.files}, Chunks: ${this.stats.chunks}, Cached: ${this.stats.cached}, Errors: ${this.stats.errors}`,
+      `  Files: ${this.stats.files}, Chunks: ${this.stats.chunks}, Cached: ${this.stats.cached}, Errors: ${this.stats.errors}`
+    );
+    console.error(
+      `  Cache: ${cacheStats.size}/${cacheStats.maxSize} entries, hit rate ${(cacheStats.hitRate * 100).toFixed(1)}%`
     );
   }
 
@@ -185,19 +255,22 @@ export class Indexer {
   async updateFile(groupName: string, project: ProjectConfig, filePath: string): Promise<void> {
     const relPath = path.relative(project.path, filePath);
 
-    // Delete existing chunks for this file in the group collection
     try {
-      await this.qdrant.delete(groupName, {
-        filter: {
-          must: [
-            { key: 'project', match: { value: project.name } },
-            { key: 'file', match: { value: relPath } },
-          ],
-        },
-        wait: true,
-      });
-    } catch {
-      // collection may not exist yet
+      await this.retryQdrant(() =>
+        this.qdrant.delete(groupName, {
+          filter: {
+            must: [
+              { key: 'project', match: { value: project.name } },
+              { key: 'file', match: { value: relPath } },
+            ],
+          },
+          wait: true,
+        })
+      );
+    } catch (err) {
+      console.warn(
+        `[indexer] Could not delete old chunks for ${relPath}: ${(err as Error).message}`
+      );
     }
 
     if (fs.existsSync(filePath)) {
@@ -213,15 +286,17 @@ export class Indexer {
     const relPath = path.relative(project.path, filePath);
 
     try {
-      await this.qdrant.delete(groupName, {
-        filter: {
-          must: [
-            { key: 'project', match: { value: project.name } },
-            { key: 'file', match: { value: relPath } },
-          ],
-        },
-        wait: true,
-      });
+      await this.retryQdrant(() =>
+        this.qdrant.delete(groupName, {
+          filter: {
+            must: [
+              { key: 'project', match: { value: project.name } },
+              { key: 'file', match: { value: relPath } },
+            ],
+          },
+          wait: true,
+        })
+      );
       console.error(`[indexer] Removed ${groupName}/${project.name}/${relPath}`);
     } catch {
       // ignore
@@ -256,11 +331,13 @@ export class Indexer {
   /** List all collections (groups) */
   async listGroups(): Promise<Record<string, number>> {
     const collections = await this.qdrant.getCollections();
+    const infos = await Promise.all(
+      collections.collections.map((col) => this.qdrant.getCollection(col.name))
+    );
     const result: Record<string, number> = {};
-    for (const col of collections.collections) {
-      const info = await this.qdrant.getCollection(col.name);
-      result[col.name] = info.points_count ?? 0;
-    }
+    collections.collections.forEach((col, i) => {
+      result[col.name] = infos[i]!.points_count ?? 0;
+    });
     return result;
   }
 }

@@ -32,6 +32,7 @@ search(groupName: string, query: string, options?: { project?: string; limit?: n
 Replace the current barrel export with a full Express HTTP server.
 
 Endpoints:
+
 - `POST /api/search` — `{ group, query, project?, limit? }`
 - `POST /api/index` — `{ group, projectDir }` — reads `.paparats.yml` from dir, indexes
 - `POST /api/file-changed` — `{ group, project, file }`
@@ -45,10 +46,12 @@ Key difference from old server: no hardcoded project list. Server is stateless �
 MCP protocol layer on top of the HTTP server.
 
 Transports:
+
 - SSE (`GET /sse` + `POST /messages`) — for Cursor
 - Streamable HTTP (`ALL /mcp`) — for Claude Code
 
 MCP tools:
+
 - `search_code` — `{ query, group?, project?, limit? }`
   - If `group` not specified, read from cwd's `.paparats.yml`
   - `project` defaults to `"all"` (search entire group)
@@ -56,6 +59,7 @@ MCP tools:
 - `reindex` — `{ group?, project? }` — trigger re-index
 
 MCP resources:
+
 - `context://project-overview` — indexed groups/projects summary
 
 ### File Watcher (`packages/server/src/watcher.ts`)
@@ -71,6 +75,7 @@ Consolidate `host-watcher.mjs` + `file-watcher.mjs` into one module.
 ### Docker Setup
 
 **`packages/server/Dockerfile`**:
+
 ```dockerfile
 FROM node:20-alpine
 WORKDIR /app
@@ -81,20 +86,21 @@ CMD ["node", "dist/index.js"]
 ```
 
 **`packages/server/docker-compose.template.yml`**:
+
 ```yaml
 services:
   qdrant:
     image: qdrant/qdrant:latest
-    ports: ["6333:6333"]
-    volumes: ["qdrant_data:/qdrant/storage"]
+    ports: ['6333:6333']
+    volumes: ['qdrant_data:/qdrant/storage']
 
   paparats:
-    image: paparats-mcp:latest  # or build from Dockerfile
-    ports: ["9876:9876"]
+    image: paparats-mcp:latest # or build from Dockerfile
+    ports: ['9876:9876']
     environment:
       QDRANT_URL: http://qdrant:6333
       OLLAMA_URL: http://host.docker.internal:11434
-    extra_hosts: ["host.docker.internal:host-gateway"]
+    extra_hosts: ['host.docker.internal:host-gateway']
 
 volumes:
   qdrant_data:
@@ -105,6 +111,7 @@ This template gets copied to `~/.paparats/docker-compose.yml` by `paparats insta
 ### Verification
 
 After Phase 1b:
+
 1. `cd paparats-mcp && yarn build` — compiles
 2. `docker compose up` — starts Qdrant + MCP server
 3. `curl http://localhost:9876/health` — returns OK
@@ -136,6 +143,7 @@ paparats groups        # list all groups
 ### `paparats init` (`commands/init.ts`)
 
 Interactive setup:
+
 1. Prompt for group name (default: parent dir name)
 2. Detect language from files in cwd (package.json → typescript, Gemfile → ruby, etc.)
 3. Prompt for paths to index
@@ -145,6 +153,7 @@ Interactive setup:
 ### `paparats install` (`commands/install.ts`)
 
 First-time setup:
+
 1. Create `~/.paparats/` directory
 2. Copy `docker-compose.template.yml` → `~/.paparats/docker-compose.yml`
 3. `docker compose up -d` (Qdrant + MCP server)
@@ -174,6 +183,7 @@ First-time setup:
 ### `paparats status` (`commands/status.ts`)
 
 Display:
+
 - Docker containers (running/stopped)
 - Qdrant connection status
 - Ollama model status
@@ -190,6 +200,7 @@ Display:
 ### `paparats doctor` (`commands/doctor.ts`)
 
 Diagnostic checks:
+
 - [ ] Docker installed and running
 - [ ] Qdrant reachable
 - [ ] Ollama installed and model available
@@ -205,6 +216,7 @@ Diagnostic checks:
 ### Verification
 
 After Phase 1c:
+
 1. `npm install -g paparats-mcp` (or `npx`)
 2. `paparats init` → creates `.paparats.yml`
 3. `paparats install` → Docker + Ollama running
@@ -218,12 +230,14 @@ After Phase 1c:
 ## Future Phases
 
 ### Phase 2 — Distribution
+
 - Publish CLI to npm as `paparats-mcp`
 - Publish Docker image to Docker Hub
 - GitHub Actions for CI/CD
 - Auto-configure Claude Code / Cursor MCP settings
 
 ### Phase 3 — Enhancements
+
 - OpenAI embedding provider
 - Incremental indexing (skip unchanged files via hash comparison)
 - Git-aware indexing (respect `.gitignore`, index only tracked files)
