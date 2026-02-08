@@ -1,0 +1,88 @@
+# paparats-mcp — Docker Compose template
+# Copied to ~/.paparats/docker-compose.yml by `paparats install`
+#
+# For Linux users with Ollama on host:
+#   OLLAMA_URL uses host.docker.internal (Mac/Windows only).
+#   Override: OLLAMA_URL=http://172.17.0.1:11434 (or your docker0 IP)
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: paparats-qdrant
+    ports:
+      - '${QDRANT_PORT:-6333}:6333'
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/6333 || exit 1']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    restart: unless-stopped
+    networks:
+      - paparats-net
+
+  paparats:
+    image: paparats-mcp:latest
+    container_name: paparats-mcp
+    ports:
+      - '${PAPARATS_PORT:-9876}:9876'
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      - paparats_cache:/home/nodejs/.paparats/cache
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "require('http').get('http://localhost:9876/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: 'json-file'
+      options:
+        max-size: '10m'
+        max-file: '3'
+    restart: unless-stopped
+    networks:
+      - paparats-net
+
+volumes:
+  qdrant_data:
+  paparats_cache:
+
+networks:
+  paparats-net:
+    driver: bridge
+    name: paparats-network
