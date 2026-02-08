@@ -24,6 +24,16 @@ export const SEARCH_TIMEOUT_MS = 30_000;
 export const INDEX_TIMEOUT_MS = 120_000;
 export const FILE_CHANGED_TIMEOUT_MS = 60_000;
 
+/** Sanitize user-supplied string for safe logging (prevents log injection) */
+function sanitizeForLog(s: string, maxLen = 200): string {
+  const cleaned = String(s)
+    // eslint-disable-next-line no-control-regex -- intentional: strip control chars for log safety
+    .replace(/[\x00-\x1f\x7f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned.length > maxLen ? cleaned.slice(0, maxLen) + '…' : cleaned;
+}
+
 /** Options for createApp - all services required for the HTTP server */
 export interface CreateAppOptions {
   searcher: Searcher;
@@ -128,7 +138,9 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         await indexer.deleteProjectChunks(group, projectName);
       }
 
-      console.log(`[api] Indexing ${project.group}/${project.name} (${files.length} files)...`);
+      console.log(
+        `[api] Indexing ${sanitizeForLog(project.group)}/${sanitizeForLog(project.name)} (${files.length} files)...`
+      );
       const chunks = await withTimeout(
         indexer.indexFilesContent(project, files),
         INDEX_TIMEOUT_MS,
@@ -196,13 +208,6 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
       if (!group || !projectName || !filePath) {
         res.status(400).json({ error: 'group, project, and path are required' });
-        return;
-      }
-
-      const projects = projectsByGroup.get(group);
-      const exists = projects?.some((p) => p.name === projectName);
-      if (!exists) {
-        res.status(400).json({ error: `Unknown project: ${group}/${projectName}` });
         return;
       }
 

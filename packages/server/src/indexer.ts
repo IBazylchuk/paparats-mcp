@@ -193,7 +193,7 @@ export class Indexer {
       found.forEach((f) => fileSet.add(f));
     }
     const files = Array.from(fileSet);
-    console.error(`  ${files.length} files found`);
+    console.log(`  ${files.length} files found`);
 
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
     let totalChunks = 0;
@@ -209,7 +209,7 @@ export class Indexer {
           this.stats.chunks += n;
 
           if (processed % 20 === 0 || processed === files.length) {
-            console.error(`  [${processed}/${files.length}] ${totalChunks} chunks`);
+            console.log(`  [${processed}/${files.length}] ${totalChunks} chunks`);
           }
         } catch (err) {
           this.stats.errors++;
@@ -230,23 +230,23 @@ export class Indexer {
 
   /** Index multiple projects (all in the same or different groups) */
   async indexAll(projects: ProjectConfig[]): Promise<void> {
-    console.error('Starting full index...\n');
+    console.log('Starting full index...\n');
     const start = Date.now();
 
     for (const project of projects) {
-      console.error(`[${project.group}/${project.name}]`);
+      console.log(`[${project.group}/${project.name}]`);
       const n = await this.indexProject(project);
-      console.error(`  Done: ${n} chunks\n`);
+      console.log(`  Done: ${n} chunks\n`);
     }
 
     this.stats.cached = this.provider.cacheHits;
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
     const cacheStats = this.provider.getCacheStats();
-    console.error(`Indexing complete in ${elapsed}s`);
-    console.error(
+    console.log(`Indexing complete in ${elapsed}s`);
+    console.log(
       `  Files: ${this.stats.files}, Chunks: ${this.stats.chunks}, Cached: ${this.stats.cached}, Errors: ${this.stats.errors}`
     );
-    console.error(
+    console.log(
       `  Cache: ${cacheStats.size}/${cacheStats.maxSize} entries, hit rate ${(cacheStats.hitRate * 100).toFixed(1)}%`
     );
   }
@@ -275,9 +275,9 @@ export class Indexer {
 
     if (fs.existsSync(filePath)) {
       const n = await this.indexFile(groupName, project, filePath);
-      console.error(`[indexer] Updated ${groupName}/${project.name}/${relPath} (${n} chunks)`);
+      console.log(`[indexer] Updated ${groupName}/${project.name}/${relPath} (${n} chunks)`);
     } else {
-      console.error(`[indexer] Deleted ${groupName}/${project.name}/${relPath}`);
+      console.log(`[indexer] Deleted ${groupName}/${project.name}/${relPath}`);
     }
   }
 
@@ -297,7 +297,7 @@ export class Indexer {
           wait: true,
         })
       );
-      console.error(`[indexer] Removed ${groupName}/${project.name}/${relPath}`);
+      console.log(`[indexer] Removed ${groupName}/${project.name}/${relPath}`);
     } catch {
       // ignore
     }
@@ -396,14 +396,14 @@ export class Indexer {
     }
 
     if (!content.trim()) {
-      console.error(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks, empty)`);
+      console.log(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks, empty)`);
       return 0;
     }
 
     const chunker = this.getChunker(project);
     const chunks = chunker.chunk(content, language);
     if (chunks.length === 0) {
-      console.error(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks)`);
+      console.log(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks)`);
       return 0;
     }
 
@@ -436,7 +436,7 @@ export class Indexer {
       await this.retryQdrant(() => this.qdrant.upsert(groupName, { points: batch, wait: true }));
     }
 
-    console.error(
+    console.log(
       `[indexer] Updated ${groupName}/${projectName}/${relPath} (${points.length} chunks)`
     );
     return points.length;
@@ -453,7 +453,7 @@ export class Indexer {
           wait: true,
         })
       );
-      console.error(`[indexer] Removed all chunks for ${groupName}/${projectName}`);
+      console.log(`[indexer] Removed all chunks for ${groupName}/${projectName}`);
     } catch {
       // ignore (collection may not exist)
     }
@@ -473,7 +473,7 @@ export class Indexer {
           wait: true,
         })
       );
-      console.error(`[indexer] Removed ${groupName}/${projectName}/${relPath}`);
+      console.log(`[indexer] Removed ${groupName}/${projectName}/${relPath}`);
     } catch {
       // ignore
     }

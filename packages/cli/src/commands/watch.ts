@@ -149,6 +149,7 @@ export async function runWatch(opts: WatchOptions, deps?: WatchDeps): Promise<()
       if (buffer.includes(0)) return; // Skip binary
       content = buffer.toString('utf8');
       if (content.includes('\uFFFD')) return; // Invalid UTF-8
+      if (!content.trim()) return; // Skip empty/whitespace-only files
     } catch (err) {
       if (opts.json) {
         emitEvent('error', filePath, { error: (err as Error).message });
@@ -158,7 +159,8 @@ export async function runWatch(opts: WatchOptions, deps?: WatchDeps): Promise<()
       stats.errors++;
       return;
     }
-    const language = getLanguageFromPath(filePath);
+    const projectLangs = Array.isArray(cfg.language) ? cfg.language : [cfg.language];
+    const language = getLanguageFromPath(filePath, projectLangs);
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
         await client.fileChanged(group, projectName, rel, content, { language });

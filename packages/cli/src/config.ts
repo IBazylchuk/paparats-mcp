@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import yaml from 'js-yaml';
+import { validateIndexingPaths } from '@paparats/shared';
 
 export const CONFIG_FILE = '.paparats.yml';
 
@@ -216,7 +217,11 @@ export function readConfig(projectDir?: string): { config: PaparatsConfig; proje
   const config = parsed as PaparatsConfig;
   validateConfig(config, configPath);
 
-  return { config, projectDir: path.resolve(dir) };
+  const resolvedDir = path.resolve(dir);
+  const paths = config.indexing?.paths ?? ['./'];
+  validateIndexingPaths(paths, resolvedDir);
+
+  return { config, projectDir: resolvedDir };
 }
 
 export function writeConfig(projectDir: string, config: PaparatsConfig): void {
@@ -336,15 +341,29 @@ const EXT_TO_LANG: Record<string, string> = {
   '.tf': 'terraform',
   '.tfvars': 'terraform',
   '.c': 'c',
-  '.h': 'c',
+  '.h': 'c', // ambiguous: also used for C++. Use projectLanguages to disambiguate.
   '.cpp': 'cpp',
   '.hpp': 'cpp',
   '.cc': 'cpp',
+  '.hh': 'cpp',
   '.cxx': 'cpp',
   '.cs': 'csharp',
 };
 
-export function getLanguageFromPath(filePath: string): string {
+/**
+ * Get language from file path for chunking/API.
+ * For `.h` (ambiguous extension for C/C++ headers), pass projectLanguages to prefer the project's
+ * configured language when it includes c or cpp.
+ */
+export function getLanguageFromPath(filePath: string, projectLanguages?: string[]): string {
   const ext = path.extname(filePath).toLowerCase();
-  return EXT_TO_LANG[ext] ?? 'generic';
+  const direct = EXT_TO_LANG[ext];
+
+  if (ext === '.h' && projectLanguages?.length) {
+    const langs = projectLanguages.map((l) => l.toLowerCase());
+    if (langs.includes('cpp')) return 'cpp';
+    if (langs.includes('c')) return 'c';
+  }
+
+  return direct ?? 'generic';
 }

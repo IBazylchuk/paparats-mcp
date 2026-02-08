@@ -6,6 +6,8 @@ import ora from 'ora';
 import { readConfig, collectProjectFiles, getLanguageFromPath } from '../config.js';
 import { ApiClient } from '../api-client.js';
 
+const API_INDEX_BATCH_SIZE = 50;
+
 export interface IndexResponse {
   group: string;
   project: string;
@@ -132,20 +134,22 @@ export async function runIndex(
       if (content.includes('\uFFFD')) continue; // Invalid UTF-8
       if (!content.trim()) continue;
       const relPath = path.relative(projectDir, filePath);
-      const language = getLanguageFromPath(filePath);
+      const projectLangs = Array.isArray(config.config.language)
+        ? config.config.language
+        : [config.config.language];
+      const language = getLanguageFromPath(filePath, projectLangs);
       filesWithContent.push({ path: relPath, content, language });
     } catch (err) {
       spinner?.warn(`  Skipped ${path.relative(projectDir, filePath)}: ${(err as Error).message}`);
     }
   }
 
-  const BATCH_SIZE = 50;
   let totalChunks = 0;
   let lastBatchData: Record<string, unknown> = {};
 
   try {
-    for (let i = 0; i < filesWithContent.length; i += BATCH_SIZE) {
-      const batch = filesWithContent.slice(i, i + BATCH_SIZE);
+    for (let i = 0; i < filesWithContent.length; i += API_INDEX_BATCH_SIZE) {
+      const batch = filesWithContent.slice(i, i + API_INDEX_BATCH_SIZE);
       const res = await client.indexContent(group, projectName, batch, {
         config: indexConfig,
         force: opts.force && i === 0,
@@ -160,8 +164,8 @@ export async function runIndex(
       const data = res.data as { chunks?: number; skipped?: number; errors?: string[] };
       lastBatchData = data;
       totalChunks += data.chunks ?? 0;
-      if (i + BATCH_SIZE < filesWithContent.length && spinner) {
-        spinner.text = `Indexed ${Math.min(i + BATCH_SIZE, filesWithContent.length)}/${filesWithContent.length} files...`;
+      if (i + API_INDEX_BATCH_SIZE < filesWithContent.length && spinner) {
+        spinner.text = `Indexed ${Math.min(i + API_INDEX_BATCH_SIZE, filesWithContent.length)}/${filesWithContent.length} files...`;
       }
     }
 

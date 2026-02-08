@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
+import { validateIndexingPaths } from '@paparats/shared';
 import type {
   PaparatsConfig,
   ProjectConfig,
@@ -156,23 +157,6 @@ function validateIndexingConfig(config: Partial<ResolvedIndexingConfig>): void {
   }
 }
 
-/**
- * Validate indexing paths: no absolute paths, no path traversal.
- */
-function validatePaths(paths: string[], projectDir: string): void {
-  const resolvedProject = path.resolve(projectDir);
-  for (const p of paths) {
-    if (path.isAbsolute(p)) {
-      throw new Error(`Absolute paths not allowed in indexing.paths: ${p}`);
-    }
-    const fullPath = path.resolve(projectDir, p);
-    const relative = path.relative(resolvedProject, fullPath);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
-      throw new Error(`Path must be inside project directory: ${p}`);
-    }
-  }
-}
-
 // ── Read & resolve ─────────────────────────────────────────────────────────
 
 /**
@@ -231,7 +215,7 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
   // User overrides win
   const userIndexing = raw.indexing ?? {};
   const paths = userIndexing.paths ?? ['./'];
-  validatePaths(paths, projectDir);
+  validateIndexingPaths(paths, projectDir);
 
   const exclude = userIndexing.exclude ?? Array.from(new Set(mergedExclude));
   // Empty extensions = index all files matching patterns

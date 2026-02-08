@@ -1,6 +1,6 @@
 # paparats-mcp
 
-Semantic code search MCP server. Monorepo: `packages/server` (MCP server + HTTP API) and `packages/cli` (CLI tool).
+Semantic code search MCP server. Monorepo: `packages/shared` (shared utilities), `packages/server` (MCP server + HTTP API), and `packages/cli` (CLI tool).
 
 ## IDs
 
@@ -21,7 +21,13 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - Build: `yarn build` (runs `tsc` in each package)
 - Lint: `yarn lint`, format: `yarn prettier`
 
-## Module structure (packages/server/src/)
+## Module structure
+
+**packages/shared**
+
+- `path-validation.ts` — `validateIndexingPaths()` — rejects absolute paths and path traversal in `indexing.paths` (used by server and CLI)
+
+**packages/server/src/**
 
 | Module           | Responsibility                                                                 |
 | ---------------- | ------------------------------------------------------------------------------ |
