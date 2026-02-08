@@ -60,7 +60,6 @@ const { app, mcpHandler, setShuttingDown, getShuttingDown } = createApp({
 });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
-  /* eslint-disable no-console -- startup banner */
   console.log(`paparats-mcp listening on http://0.0.0.0:${PORT}`);
   console.log(`  MCP SSE (Cursor):         http://localhost:${PORT}/sse`);
   console.log(`  MCP Streamable HTTP:      http://localhost:${PORT}/mcp`);
@@ -68,7 +67,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`  Stats:                    http://localhost:${PORT}/api/stats`);
   console.log(`  Qdrant:                   ${QDRANT_URL}`);
   console.log(`  Ollama:                   ${OLLAMA_URL}`);
-  /* eslint-enable no-console */
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {
@@ -88,7 +86,6 @@ async function shutdown(): Promise<void> {
   if (getShuttingDown()) return;
   setShuttingDown(true);
 
-  // eslint-disable-next-line no-console -- shutdown notification
   console.log('\nShutting down gracefully...');
 
   server.close((err) => {
