@@ -1,7 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { readConfig } from '../config.js';
+import { readConfig, collectProjectFiles, getLanguageFromPath } from '../config.js';
 import { ApiClient } from '../api-client.js';
 
 export interface IndexResponse {
@@ -33,14 +35,29 @@ interface IndexOptions {
 
 interface IndexClient {
   health(options?: { timeout?: number }): Promise<{ status: number }>;
-  index(
-    projectDir: string,
+  indexContent(
+    group: string,
+    project: string,
+    files: Array<{ path: string; content: string; language?: string }>,
     options?: {
+      config?: {
+        chunkSize?: number;
+        overlap?: number;
+        batchSize?: number;
+        concurrency?: number;
+        languages?: string[];
+      };
+      force?: boolean;
       timeout?: number;
       signal?: AbortSignal;
-      force?: boolean;
     }
   ): Promise<{ status: number; data: unknown }>;
+}
+
+interface RunIndexDeps {
+  spinner?: ReturnType<typeof ora> | null;
+  signal?: AbortSignal;
+  collectProjectFiles?: typeof import('../config.js').collectProjectFiles;
 }
 
 function outputError(message: string, json: boolean): never {
@@ -77,35 +94,88 @@ export async function runIndex(
   client: IndexClient,
   projectDir: string,
   group: string,
+  config: {
+    config: {
+      group: string;
+      language: string | string[];
+      indexing?: { chunkSize?: number; overlap?: number; batchSize?: number; concurrency?: number };
+    };
+  },
   opts: IndexOptions,
-  deps?: {
-    spinner?: ReturnType<typeof ora> | null;
-    signal?: AbortSignal;
-  }
+  deps?: RunIndexDeps
 ): Promise<void> {
+  const projectName = path.basename(projectDir);
   const spinner =
-    deps?.spinner !== undefined ? deps.spinner : ora(`Indexing ${group}/${projectDir}...`).start();
+    deps?.spinner !== undefined ? deps.spinner : ora(`Indexing ${group}/${projectName}...`).start();
   const start = Date.now();
 
-  try {
-    const res = await client.index(projectDir, {
-      timeout: opts.timeout ?? 300_000,
-      signal: deps?.signal,
-      force: opts.force,
-    });
+  const languages = Array.isArray(config.config.language)
+    ? config.config.language
+    : [config.config.language];
+  const indexConfig = {
+    chunkSize: config.config.indexing?.chunkSize,
+    overlap: config.config.indexing?.overlap,
+    batchSize: config.config.indexing?.batchSize,
+    concurrency: config.config.indexing?.concurrency,
+    languages,
+  };
 
-    if (res.status !== 200) {
-      const data = res.data as Record<string, unknown>;
-      spinner?.fail(`Indexing failed: ${data.error ?? 'Unknown error'}`);
-      outputError(String(data.error ?? 'Unknown error'), opts.json ?? false);
+  const collectFiles = deps?.collectProjectFiles ?? collectProjectFiles;
+  const files = await collectFiles(projectDir, config.config);
+  const filesWithContent: Array<{ path: string; content: string; language?: string }> = [];
+
+  for (const filePath of files) {
+    try {
+      const buffer = await fs.promises.readFile(filePath);
+      if (buffer.includes(0)) continue; // Skip binary
+      const content = buffer.toString('utf8');
+      if (content.includes('\uFFFD')) continue; // Invalid UTF-8
+      if (!content.trim()) continue;
+      const relPath = path.relative(projectDir, filePath);
+      const language = getLanguageFromPath(filePath);
+      filesWithContent.push({ path: relPath, content, language });
+    } catch (err) {
+      spinner?.warn(`  Skipped ${path.relative(projectDir, filePath)}: ${(err as Error).message}`);
+    }
+  }
+
+  const BATCH_SIZE = 50;
+  let totalChunks = 0;
+  let lastBatchData: Record<string, unknown> = {};
+
+  try {
+    for (let i = 0; i < filesWithContent.length; i += BATCH_SIZE) {
+      const batch = filesWithContent.slice(i, i + BATCH_SIZE);
+      const res = await client.indexContent(group, projectName, batch, {
+        config: indexConfig,
+        force: opts.force && i === 0,
+        timeout: opts.timeout ?? 300_000,
+        signal: deps?.signal,
+      });
+      if (res.status !== 200) {
+        const data = res.data as Record<string, unknown>;
+        spinner?.fail(`Indexing failed: ${data.error ?? 'Unknown error'}`);
+        outputError(String(data.error ?? 'Unknown error'), opts.json ?? false);
+      }
+      const data = res.data as { chunks?: number; skipped?: number; errors?: string[] };
+      lastBatchData = data;
+      totalChunks += data.chunks ?? 0;
+      if (i + BATCH_SIZE < filesWithContent.length && spinner) {
+        spinner.text = `Indexed ${Math.min(i + BATCH_SIZE, filesWithContent.length)}/${filesWithContent.length} files...`;
+      }
     }
 
-    if (!validateIndexResponse(res.data)) {
+    const data = {
+      group,
+      project: projectName,
+      chunks: totalChunks,
+      skipped: lastBatchData.skipped,
+      errors: lastBatchData.errors,
+    };
+    if (!validateIndexResponse(data)) {
       spinner?.fail('Invalid response from server');
       outputError('Expected: { group, project, chunks }', opts.json ?? false);
     }
-
-    const data = res.data;
     const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 
     if (opts.json) {
@@ -247,6 +317,7 @@ export const indexCommand = new Command('index')
           client,
           projectDir,
           projectConfig.group,
+          config,
           {
             server: opts.server,
             timeout,

@@ -1,8 +1,33 @@
 import fs from 'fs';
 import path from 'path';
+import { glob } from 'glob';
 import yaml from 'js-yaml';
 
 export const CONFIG_FILE = '.paparats.yml';
+
+const LANGUAGE_PATTERNS: Record<string, string[]> = {
+  ruby: ['**/*.rb', '**/*.rake'],
+  typescript: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx'],
+  javascript: ['**/*.js', '**/*.jsx', '**/*.mjs', '**/*.cjs'],
+  python: ['**/*.py'],
+  go: ['**/*.go'],
+  rust: ['**/*.rs'],
+  java: ['**/*.java'],
+  terraform: ['**/*.tf', '**/*.tfvars'],
+  c: ['**/*.c', '**/*.h'],
+  cpp: ['**/*.cpp', '**/*.hpp', '**/*.cc', '**/*.hh', '**/*.cxx', '**/*.h'],
+  csharp: ['**/*.cs'],
+  generic: ['**/*'],
+};
+
+const DEFAULT_EXCLUDE = [
+  '**/node_modules/**',
+  '**/dist/**',
+  '**/.git/**',
+  '**/build/**',
+  '**/vendor/**',
+  '**/target/**',
+];
 
 export interface PaparatsConfig {
   group: string;
@@ -254,4 +279,72 @@ export function detectLanguages(projectDir: string): SupportedLanguage[] {
 export function detectLanguage(projectDir: string): SupportedLanguage | null {
   const languages = detectLanguages(projectDir);
   return languages[0] ?? null;
+}
+
+/** Get glob patterns for indexing based on config */
+function getIndexPatterns(config: PaparatsConfig): string[] {
+  const languages = Array.isArray(config.language) ? config.language : [config.language];
+  const paths = config.indexing?.paths ?? ['./'];
+  const patterns: string[] = [];
+  for (const p of paths) {
+    const base = p.replace(/\/$/, '') || '.';
+    for (const lang of languages) {
+      const langPatterns = LANGUAGE_PATTERNS[lang as SupportedLanguage] ??
+        LANGUAGE_PATTERNS.generic ?? ['**/*'];
+      for (const pat of langPatterns) {
+        patterns.push(path.posix.join(base, pat).replace(/\\/g, '/'));
+      }
+    }
+  }
+  return [...new Set(patterns)];
+}
+
+/** Collect project files for indexing (mirrors server glob logic) */
+export async function collectProjectFiles(
+  projectDir: string,
+  config: PaparatsConfig
+): Promise<string[]> {
+  const patterns = getIndexPatterns(config);
+  const exclude = config.indexing?.exclude ?? DEFAULT_EXCLUDE;
+  const fileSet = new Set<string>();
+  for (const pattern of patterns) {
+    const found = await glob(pattern, {
+      cwd: projectDir,
+      absolute: true,
+      ignore: exclude,
+      nodir: true,
+    });
+    found.forEach((f) => fileSet.add(f));
+  }
+  return Array.from(fileSet);
+}
+
+/** Infer language from file extension (for content-based API) */
+const EXT_TO_LANG: Record<string, string> = {
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.mjs': 'javascript',
+  '.cjs': 'javascript',
+  '.rb': 'ruby',
+  '.rake': 'ruby',
+  '.py': 'python',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.java': 'java',
+  '.tf': 'terraform',
+  '.tfvars': 'terraform',
+  '.c': 'c',
+  '.h': 'c',
+  '.cpp': 'cpp',
+  '.hpp': 'cpp',
+  '.cc': 'cpp',
+  '.cxx': 'cpp',
+  '.cs': 'csharp',
+};
+
+export function getLanguageFromPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  return EXT_TO_LANG[ext] ?? 'generic';
 }

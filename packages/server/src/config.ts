@@ -331,3 +331,44 @@ export function loadProject(projectDir: string): ProjectConfig {
   const raw = readConfig(projectDir);
   return resolveProject(projectDir, raw);
 }
+
+/** Build minimal ProjectConfig from content-based API request (no filesystem) */
+export interface ContentIndexConfig {
+  chunkSize?: number;
+  overlap?: number;
+  batchSize?: number;
+  concurrency?: number;
+  languages?: string[];
+}
+
+export function buildProjectConfigFromContent(
+  projectName: string,
+  group: string,
+  apiConfig?: ContentIndexConfig
+): ProjectConfig {
+  const cfg = apiConfig ?? {};
+  const languages = cfg.languages ?? ['generic'];
+  const indexing: ResolvedIndexingConfig = {
+    paths: [],
+    exclude: [],
+    extensions: [],
+    chunkSize: cfg.chunkSize ?? DEFAULT_INDEXING.chunkSize,
+    overlap: cfg.overlap ?? DEFAULT_INDEXING.overlap,
+    concurrency: cfg.concurrency ?? DEFAULT_INDEXING.concurrency,
+    batchSize: cfg.batchSize ?? DEFAULT_INDEXING.batchSize,
+  };
+  if (apiConfig?.chunkSize !== undefined || apiConfig?.overlap !== undefined) {
+    validateIndexingConfig(apiConfig);
+  }
+  return {
+    name: projectName,
+    path: '',
+    group,
+    languages,
+    patterns: [],
+    exclude: [],
+    indexing,
+    watcher: DEFAULT_WATCHER,
+    embeddings: DEFAULT_EMBEDDINGS,
+  };
+}

@@ -303,6 +303,182 @@ export class Indexer {
     }
   }
 
+  /** Content-based: index files from in-memory content (no filesystem access) */
+  async indexFilesContent(
+    project: ProjectConfig,
+    files: Array<{ path: string; content: string; language?: string }>
+  ): Promise<number> {
+    const groupName = project.group;
+    await this.ensureCollection(groupName);
+
+    const chunker = this.getChunker(project);
+    const defaultLang = project.languages[0] ?? 'generic';
+    let totalChunks = 0;
+
+    const queue = new PQueue({ concurrency: project.indexing.concurrency });
+    const tasks = files.map((file) =>
+      queue.add(async () => {
+        const { path: relPath, content, language } = file;
+        const lang = language ?? defaultLang;
+
+        if (!content.trim()) return;
+
+        const chunks = chunker.chunk(content, lang);
+        if (chunks.length === 0) return;
+
+        const contents = chunks.map((c) => c.content);
+        const embeddings = await this.provider.embedBatch(contents);
+
+        if (embeddings.length !== chunks.length) {
+          throw new Error(
+            `Embedding mismatch: got ${embeddings.length} embeddings for ${chunks.length} chunks in ${relPath}`
+          );
+        }
+
+        const points = chunks.map((chunk, i) => ({
+          id: uuidv7(),
+          vector: embeddings[i]!,
+          payload: {
+            project: project.name,
+            file: relPath,
+            language: lang,
+            startLine: chunk.startLine,
+            endLine: chunk.endLine,
+            content: chunk.content,
+            hash: chunk.hash,
+          },
+        }));
+
+        const batchSize = project.indexing.batchSize;
+        for (let i = 0; i < points.length; i += batchSize) {
+          const batch = points.slice(i, i + batchSize);
+          await this.retryQdrant(() =>
+            this.qdrant.upsert(groupName, { points: batch, wait: true })
+          );
+        }
+
+        totalChunks += points.length;
+        this.stats.files++;
+        this.stats.chunks += points.length;
+      })
+    );
+
+    await Promise.all(tasks);
+    this.stats.cached = this.provider.cacheHits;
+    return totalChunks;
+  }
+
+  /** Content-based: update file by deleting old chunks and indexing new content */
+  async updateFileContent(
+    groupName: string,
+    projectName: string,
+    relPath: string,
+    content: string,
+    language: string,
+    project: ProjectConfig
+  ): Promise<number> {
+    try {
+      await this.retryQdrant(() =>
+        this.qdrant.delete(groupName, {
+          filter: {
+            must: [
+              { key: 'project', match: { value: projectName } },
+              { key: 'file', match: { value: relPath } },
+            ],
+          },
+          wait: true,
+        })
+      );
+    } catch (err) {
+      console.warn(
+        `[indexer] Could not delete old chunks for ${relPath}: ${(err as Error).message}`
+      );
+    }
+
+    if (!content.trim()) {
+      console.error(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks, empty)`);
+      return 0;
+    }
+
+    const chunker = this.getChunker(project);
+    const chunks = chunker.chunk(content, language);
+    if (chunks.length === 0) {
+      console.error(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks)`);
+      return 0;
+    }
+
+    const contents = chunks.map((c) => c.content);
+    const embeddings = await this.provider.embedBatch(contents);
+
+    if (embeddings.length !== chunks.length) {
+      throw new Error(
+        `Embedding mismatch: got ${embeddings.length} embeddings for ${chunks.length} chunks in ${relPath}`
+      );
+    }
+
+    const points = chunks.map((chunk, i) => ({
+      id: uuidv7(),
+      vector: embeddings[i]!,
+      payload: {
+        project: projectName,
+        file: relPath,
+        language,
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        content: chunk.content,
+        hash: chunk.hash,
+      },
+    }));
+
+    const batchSize = project.indexing.batchSize;
+    for (let i = 0; i < points.length; i += batchSize) {
+      const batch = points.slice(i, i + batchSize);
+      await this.retryQdrant(() => this.qdrant.upsert(groupName, { points: batch, wait: true }));
+    }
+
+    console.error(
+      `[indexer] Updated ${groupName}/${projectName}/${relPath} (${points.length} chunks)`
+    );
+    return points.length;
+  }
+
+  /** Content-based: delete all chunks for a project (used when force re-index) */
+  async deleteProjectChunks(groupName: string, projectName: string): Promise<void> {
+    try {
+      await this.retryQdrant(() =>
+        this.qdrant.delete(groupName, {
+          filter: {
+            must: [{ key: 'project', match: { value: projectName } }],
+          },
+          wait: true,
+        })
+      );
+      console.error(`[indexer] Removed all chunks for ${groupName}/${projectName}`);
+    } catch {
+      // ignore (collection may not exist)
+    }
+  }
+
+  /** Content-based: delete chunks by group, project, and relative path (no filesystem) */
+  async deleteFileByPath(groupName: string, projectName: string, relPath: string): Promise<void> {
+    try {
+      await this.retryQdrant(() =>
+        this.qdrant.delete(groupName, {
+          filter: {
+            must: [
+              { key: 'project', match: { value: projectName } },
+              { key: 'file', match: { value: relPath } },
+            ],
+          },
+          wait: true,
+        })
+      );
+      console.error(`[indexer] Removed ${groupName}/${projectName}/${relPath}`);
+    } catch {
+      // ignore
+    }
+  }
+
   /** Delete entire group collection and re-index all its projects */
   async reindexGroup(groupName: string, projects: ProjectConfig[]): Promise<number> {
     try {

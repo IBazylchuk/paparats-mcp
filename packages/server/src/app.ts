@@ -1,9 +1,6 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import express, { type Express } from 'express';
 import cors from 'cors';
-import { readConfig, resolveProject } from './config.js';
-import type { PaparatsConfig } from './types.js';
+import { buildProjectConfigFromContent } from './config.js';
 import { Indexer } from './indexer.js';
 import { Searcher } from './searcher.js';
 import { McpHandler } from './mcp-handler.js';
@@ -27,34 +24,6 @@ export const SEARCH_TIMEOUT_MS = 30_000;
 export const INDEX_TIMEOUT_MS = 120_000;
 export const FILE_CHANGED_TIMEOUT_MS = 60_000;
 
-/** Resolve file path and ensure it is strictly within project.path. Rejects path traversal and symlink escape. */
-function resolveFileWithinProject(project: ProjectConfig, file: string): string {
-  const projectRoot = path.resolve(project.path);
-  const resolved = path.isAbsolute(file) ? path.resolve(file) : path.resolve(project.path, file);
-
-  try {
-    const realProjectRoot = fs.realpathSync(projectRoot);
-    const realResolved = fs.realpathSync(resolved);
-    const prefix = realProjectRoot + path.sep;
-    if (realResolved !== realProjectRoot && !realResolved.startsWith(prefix)) {
-      throw new Error('Path outside project');
-    }
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') {
-      // Path doesn't exist (e.g. file-deleted). Fallback to string check.
-      const prefix = projectRoot + path.sep;
-      if (resolved !== projectRoot && !resolved.startsWith(prefix)) {
-        throw new Error('Path outside project', { cause: err });
-      }
-    } else {
-      throw err;
-    }
-  }
-
-  return resolved;
-}
-
 /** Options for createApp - all services required for the HTTP server */
 export interface CreateAppOptions {
   searcher: Searcher;
@@ -63,10 +32,6 @@ export interface CreateAppOptions {
   embeddingProvider: CachedEmbeddingProvider;
   /** Projects map - mutated by registerProject */
   projectsByGroup: Map<string, ProjectConfig[]>;
-  /** Config reader for /api/index (default: readConfig from config.js) */
-  readConfigFn?: (projectDir: string) => PaparatsConfig;
-  /** Project resolver for /api/index (default: resolveProject from config.js) */
-  resolveProjectFn?: (projectDir: string, raw: PaparatsConfig) => ProjectConfig;
 }
 
 export interface CreateAppResult {
@@ -79,15 +44,7 @@ export interface CreateAppResult {
 }
 
 export function createApp(options: CreateAppOptions): CreateAppResult {
-  const {
-    searcher,
-    indexer,
-    watcherManager,
-    embeddingProvider,
-    projectsByGroup,
-    readConfigFn = readConfig,
-    resolveProjectFn = resolveProject,
-  } = options;
+  const { searcher, indexer, watcherManager, embeddingProvider, projectsByGroup } = options;
 
   function getGroupNames(): string[] {
     return Array.from(projectsByGroup.keys());
@@ -112,7 +69,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
   const app = express();
   app.use(cors());
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '50mb' }));
 
   app.use((req, res, next) => {
     if (shuttingDown) {
@@ -153,30 +110,30 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     }
   });
 
-  // ── POST /api/index ────────────────────────────────────────────────────────
+  // ── POST /api/index (content-based) ─────────────────────────────────────────
 
   app.post('/api/index', async (req, res) => {
     try {
-      const { projectDir } = req.body;
+      const { group, project: projectName, config: apiConfig, files, force } = req.body;
 
-      if (!projectDir) {
-        res.status(400).json({ error: 'projectDir is required' });
+      if (!group || !projectName || !Array.isArray(files)) {
+        res.status(400).json({ error: 'group, project, and files (array) are required' });
         return;
       }
 
-      const raw = readConfigFn(projectDir);
-      const project = resolveProjectFn(projectDir, raw);
-
+      const project = buildProjectConfigFromContent(projectName, group, apiConfig);
       registerProject(project);
 
-      console.log(`[api] Indexing ${project.group}/${project.name}...`);
+      if (force) {
+        await indexer.deleteProjectChunks(group, projectName);
+      }
+
+      console.log(`[api] Indexing ${project.group}/${project.name} (${files.length} files)...`);
       const chunks = await withTimeout(
-        indexer.indexProject(project),
+        indexer.indexFilesContent(project, files),
         INDEX_TIMEOUT_MS,
         'Index timeout'
       );
-
-      watcherManager.watch(project);
 
       res.json({
         status: 'ok',
@@ -194,14 +151,14 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     }
   });
 
-  // ── POST /api/file-changed ─────────────────────────────────────────────────
+  // ── POST /api/file-changed (content-based) ─────────────────────────────────
 
   app.post('/api/file-changed', async (req, res) => {
     try {
-      const { group, project: projectName, file } = req.body;
+      const { group, project: projectName, path: filePath, content, language } = req.body;
 
-      if (!group || !projectName || !file) {
-        res.status(400).json({ error: 'group, project, and file are required' });
+      if (!group || !projectName || !filePath || content === undefined) {
+        res.status(400).json({ error: 'group, project, path, and content are required' });
         return;
       }
 
@@ -213,18 +170,16 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         return;
       }
 
-      const filePath = resolveFileWithinProject(project, file);
+      const lang = language ?? project.languages[0] ?? 'generic';
       await withTimeout(
-        indexer.updateFile(group, project, filePath),
+        indexer.updateFileContent(group, projectName, filePath, content, lang, project),
         FILE_CHANGED_TIMEOUT_MS,
         'File-changed timeout'
       );
 
       res.json({ status: 'ok', message: 'File reindexed' });
     } catch (err) {
-      if ((err as Error).message === 'Path outside project') {
-        res.status(400).json({ error: 'Path outside project' });
-      } else if ((err as Error).message === 'File-changed timeout') {
+      if ((err as Error).message === 'File-changed timeout') {
         res.status(504).json({ error: 'File-changed request timed out after 60s' });
       } else {
         console.error('[api] File-changed error:', err);
@@ -233,37 +188,33 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     }
   });
 
-  // ── POST /api/file-deleted ─────────────────────────────────────────────────
+  // ── POST /api/file-deleted (content-based) ──────────────────────────────────
 
   app.post('/api/file-deleted', async (req, res) => {
     try {
-      const { group, project: projectName, file } = req.body;
+      const { group, project: projectName, path: filePath } = req.body;
 
-      if (!group || !projectName || !file) {
-        res.status(400).json({ error: 'group, project, and file are required' });
+      if (!group || !projectName || !filePath) {
+        res.status(400).json({ error: 'group, project, and path are required' });
         return;
       }
 
       const projects = projectsByGroup.get(group);
-      const project = projects?.find((p) => p.name === projectName);
-
-      if (!project) {
+      const exists = projects?.some((p) => p.name === projectName);
+      if (!exists) {
         res.status(400).json({ error: `Unknown project: ${group}/${projectName}` });
         return;
       }
 
-      const filePath = resolveFileWithinProject(project, file);
       await withTimeout(
-        indexer.deleteFile(group, project, filePath),
+        indexer.deleteFileByPath(group, projectName, filePath),
         FILE_CHANGED_TIMEOUT_MS,
         'File-deleted timeout'
       );
 
       res.json({ status: 'ok', message: 'File removed from index' });
     } catch (err) {
-      if ((err as Error).message === 'Path outside project') {
-        res.status(400).json({ error: 'Path outside project' });
-      } else if ((err as Error).message === 'File-deleted timeout') {
+      if ((err as Error).message === 'File-deleted timeout') {
         res.status(504).json({ error: 'File-deleted request timed out after 60s' });
       } else {
         console.error('[api] File-deleted error:', err);

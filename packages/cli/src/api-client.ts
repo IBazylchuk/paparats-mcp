@@ -1,5 +1,5 @@
-import http from 'http';
-import https from 'https';
+import http from 'node:http';
+import https from 'node:https';
 
 const DEFAULT_BASE_URL = 'http://localhost:9876';
 const MAX_RESPONSE_SIZE = 100 * 1024 * 1024; // 100MB
@@ -10,6 +10,20 @@ interface RequestOptions {
   body?: unknown;
   timeout?: number;
   signal?: AbortSignal;
+}
+
+export interface IndexConfig {
+  chunkSize?: number;
+  overlap?: number;
+  batchSize?: number;
+  concurrency?: number;
+  languages?: string[];
+}
+
+export interface IndexFile {
+  path: string;
+  content: string;
+  language?: string;
 }
 
 export interface ApiClientOptions {
@@ -195,14 +209,28 @@ export class ApiClient {
     });
   }
 
-  async index(
-    projectDir: string,
-    options?: { timeout?: number; signal?: AbortSignal; force?: boolean }
+  /** Content-based index: send group, project, config, and files with content */
+  async indexContent(
+    group: string,
+    project: string,
+    files: IndexFile[],
+    options?: {
+      config?: IndexConfig;
+      force?: boolean;
+      timeout?: number;
+      signal?: AbortSignal;
+    }
   ): Promise<ApiResponse> {
     return this.requestWithRetry({
       method: 'POST',
       path: '/api/index',
-      body: { projectDir, ...(options?.force && { force: true }) },
+      body: {
+        group,
+        project,
+        config: options?.config,
+        files,
+        ...(options?.force && { force: true }),
+      },
       timeout: options?.timeout ?? 300_000,
       signal: options?.signal,
     });
@@ -211,13 +239,14 @@ export class ApiClient {
   async fileChanged(
     group: string,
     project: string,
-    file: string,
-    options?: { timeout?: number; signal?: AbortSignal }
+    path: string,
+    content: string,
+    options?: { language?: string; timeout?: number; signal?: AbortSignal }
   ): Promise<ApiResponse> {
     return this.requestWithRetry({
       method: 'POST',
       path: '/api/file-changed',
-      body: { group, project, file },
+      body: { group, project, path, content, language: options?.language },
       timeout: options?.timeout ?? 60_000,
       signal: options?.signal,
     });
@@ -226,13 +255,13 @@ export class ApiClient {
   async fileDeleted(
     group: string,
     project: string,
-    file: string,
+    path: string,
     options?: { timeout?: number; signal?: AbortSignal }
   ): Promise<ApiResponse> {
     return this.requestWithRetry({
       method: 'POST',
       path: '/api/file-deleted',
-      body: { group, project, file },
+      body: { group, project, path },
       timeout: options?.timeout ?? 60_000,
       signal: options?.signal,
     });
