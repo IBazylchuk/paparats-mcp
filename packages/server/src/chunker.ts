@@ -6,13 +6,39 @@ export interface ChunkerConfig {
   overlap: number;
 }
 
+// Pre-compiled patterns — avoid regex recompilation per call
+const PATTERNS = {
+  ruby: {
+    start: /^\s*(def|class|module)\s/,
+    end: /^\s*end\s*$/,
+  },
+  terraform: {
+    start: /^\s*(resource|data|module|variable|output|locals)\s/,
+    end: /^\s*}\s*$/,
+  },
+  brace: {
+    topLevel:
+      /^\s*(export\s+)?(default\s+)?(async\s+)?(function|class|const|let|var|interface|type|enum)\s/,
+    arrowOrAssign: /=\s*(async\s*)?\(/,
+    stripComments: /\/\*[\s\S]*?\*\/|\/\/.*$/g,
+    stripStrings: /'[^']*'|"[^"]*"|`[^`]*`/g,
+    openBrace: /{/g,
+    closeBrace: /}/g,
+  },
+  python: {
+    topLevel: /^(def |class |async def )/,
+  },
+} as const;
+
 export class Chunker {
   private chunkSize: number;
   private overlap: number;
+  private maxChunkSize: number;
 
   constructor(config: ChunkerConfig) {
     this.chunkSize = config.chunkSize || 1024;
     this.overlap = config.overlap || 128;
+    this.maxChunkSize = this.chunkSize * 3;
   }
 
   chunk(content: string, language: string): ChunkResult[] {
@@ -20,16 +46,12 @@ export class Chunker {
 
     switch (language) {
       case 'ruby':
-        return this.chunkByBlocks(content, /^\s*(def|class|module)\s/, /^\s*end\s*$/);
+        return this.chunkByBlocks(content, PATTERNS.ruby.start, PATTERNS.ruby.end);
       case 'typescript':
       case 'javascript':
         return this.chunkByBraces(content);
       case 'terraform':
-        return this.chunkByBlocks(
-          content,
-          /^\s*(resource|data|module|variable|output|locals)\s/,
-          /^\s*}\s*$/,
-        );
+        return this.chunkByBlocks(content, PATTERNS.terraform.start, PATTERNS.terraform.end);
       case 'python':
         return this.chunkByIndent(content);
       case 'go':
@@ -49,49 +71,44 @@ export class Chunker {
     const lines = content.split('\n');
     const chunks: ChunkResult[] = [];
     let buffer: string[] = [];
+    let bufferSize = 0;
     let blockStartIndent = -1;
     let inBlock = false;
 
     const flush = (endLine: number): void => {
       if (buffer.length === 0) return;
-      const text = buffer.join('\n');
-      if (text.trim()) {
-        chunks.push({
-          content: text,
-          startLine: endLine - buffer.length + 1,
-          endLine,
-          hash: this.hash(text),
-        });
-      }
+      this.flushBuffer(buffer, bufferSize, endLine, chunks);
       buffer = [];
+      bufferSize = 0;
     };
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const indent = line.search(/\S/);
+      const line = lines[i]!;
+      const indent = this.getIndent(line);
 
       if (startPattern.test(line) && !inBlock) {
         if (buffer.length > 0 && buffer.some((l) => l.trim())) {
           flush(i - 1);
         } else {
           buffer = [];
+          bufferSize = 0;
         }
         inBlock = true;
-        blockStartIndent = indent === -1 ? 0 : indent;
+        blockStartIndent = indent;
       }
 
       buffer.push(line);
+      bufferSize += line.length + 1;
 
       if (inBlock && endPattern.test(line)) {
-        const endIndent = indent === -1 ? 0 : indent;
-        if (endIndent <= blockStartIndent) {
+        if (indent <= blockStartIndent) {
           flush(i);
           inBlock = false;
           blockStartIndent = -1;
         }
       }
 
-      if (buffer.join('\n').length > this.chunkSize * 2) {
+      if (bufferSize > this.chunkSize * 2) {
         flush(i);
         inBlock = false;
         blockStartIndent = -1;
@@ -107,47 +124,43 @@ export class Chunker {
     const lines = content.split('\n');
     const chunks: ChunkResult[] = [];
     let buffer: string[] = [];
+    let bufferSize = 0;
     let braceDepth = 0;
     let inBlock = false;
 
-    const topLevelPattern =
-      /^\s*(export\s+)?(default\s+)?(async\s+)?(function|class|const|let|var|interface|type|enum)\s/;
-    const arrowOrAssign = /=\s*(async\s*)?\(/;
-
     const flush = (endLine: number): void => {
       if (buffer.length === 0) return;
-      const text = buffer.join('\n');
-      if (text.trim()) {
-        chunks.push({
-          content: text,
-          startLine: endLine - buffer.length + 1,
-          endLine,
-          hash: this.hash(text),
-        });
-      }
+      this.flushBuffer(buffer, bufferSize, endLine, chunks);
       buffer = [];
+      bufferSize = 0;
     };
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+      const line = lines[i]!;
 
-      if (braceDepth === 0 && (topLevelPattern.test(line) || arrowOrAssign.test(line))) {
+      if (
+        braceDepth === 0 &&
+        (PATTERNS.brace.topLevel.test(line) || PATTERNS.brace.arrowOrAssign.test(line))
+      ) {
         if (buffer.length > 0 && buffer.some((l) => l.trim())) {
           flush(i - 1);
         } else {
           buffer = [];
+          bufferSize = 0;
         }
         inBlock = true;
       }
 
       buffer.push(line);
+      bufferSize += line.length + 1;
 
       // Track braces (skip strings/comments — simplified)
       const stripped = line
-        .replace(/\/\*[\s\S]*?\*\/|\/\/.*$/g, '')
-        .replace(/'[^']*'|"[^"]*"|`[^`]*`/g, '');
-      braceDepth += (stripped.match(/{/g) || []).length;
-      braceDepth -= (stripped.match(/}/g) || []).length;
+        .replace(PATTERNS.brace.stripComments, '')
+        .replace(PATTERNS.brace.stripStrings, '');
+
+      braceDepth += (stripped.match(PATTERNS.brace.openBrace) || []).length;
+      braceDepth -= (stripped.match(PATTERNS.brace.closeBrace) || []).length;
       if (braceDepth < 0) braceDepth = 0;
 
       if (inBlock && braceDepth === 0 && stripped.includes('}')) {
@@ -155,7 +168,7 @@ export class Chunker {
         inBlock = false;
       }
 
-      if (buffer.join('\n').length > this.chunkSize * 2) {
+      if (bufferSize > this.chunkSize * 2) {
         flush(i);
         inBlock = false;
         braceDepth = 0;
@@ -171,37 +184,31 @@ export class Chunker {
     const lines = content.split('\n');
     const chunks: ChunkResult[] = [];
     let buffer: string[] = [];
-
-    const topLevelDef = /^(def |class |async def )/;
+    let bufferSize = 0;
 
     const flush = (endLine: number): void => {
       if (buffer.length === 0) return;
-      const text = buffer.join('\n');
-      if (text.trim()) {
-        chunks.push({
-          content: text,
-          startLine: endLine - buffer.length + 1,
-          endLine,
-          hash: this.hash(text),
-        });
-      }
+      this.flushBuffer(buffer, bufferSize, endLine, chunks);
       buffer = [];
+      bufferSize = 0;
     };
 
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+      const line = lines[i]!;
 
-      if (topLevelDef.test(line)) {
+      if (PATTERNS.python.topLevel.test(line)) {
         if (buffer.length > 0 && buffer.some((l) => l.trim())) {
           flush(i - 1);
         } else {
           buffer = [];
+          bufferSize = 0;
         }
       }
 
       buffer.push(line);
+      bufferSize += line.length + 1;
 
-      if (buffer.join('\n').length > this.chunkSize * 2) {
+      if (bufferSize > this.chunkSize * 2) {
         flush(i);
       }
     }
@@ -220,7 +227,7 @@ export class Chunker {
       let end = start;
       let size = 0;
       while (end < lines.length && size < this.chunkSize) {
-        size += lines[end].length + 1;
+        size += (lines[end] ?? '').length + 1;
         end++;
       }
 
@@ -235,11 +242,66 @@ export class Chunker {
         });
       }
 
-      const overlapLines = Math.max(1, Math.floor(this.overlap / 80));
+      // Character-based overlap instead of magic number conversion
+      let overlapSize = 0;
+      let overlapLines = 0;
+      while (overlapSize < this.overlap && end - overlapLines - 1 >= start) {
+        overlapLines++;
+        overlapSize += (lines[end - overlapLines] ?? '').length + 1;
+      }
+
       start = Math.max(start + 1, end - overlapLines);
     }
 
     return chunks;
+  }
+
+  /** Flush buffer to chunks, force-splitting if oversized */
+  private flushBuffer(
+    buffer: string[],
+    _bufferSize: number,
+    endLine: number,
+    chunks: ChunkResult[]
+  ): void {
+    const text = buffer.join('\n');
+    if (!text.trim()) return;
+
+    if (text.length > this.maxChunkSize) {
+      const mid = Math.floor(buffer.length / 2);
+      const firstHalf = buffer.slice(0, mid);
+      const secondHalf = buffer.slice(mid);
+      const startLine = endLine - buffer.length + 1;
+
+      const firstText = firstHalf.join('\n');
+      if (firstText.trim()) {
+        chunks.push({
+          content: firstText,
+          startLine,
+          endLine: startLine + firstHalf.length - 1,
+          hash: this.hash(firstText),
+        });
+      }
+
+      // Recurse for second half (handles > 2x oversized)
+      if (secondHalf.length > 0) {
+        const secondSize = secondHalf.reduce((s, l) => s + (l ?? '').length + 1, 0);
+        this.flushBuffer(secondHalf, secondSize, endLine, chunks);
+      }
+      return;
+    }
+
+    chunks.push({
+      content: text,
+      startLine: endLine - buffer.length + 1,
+      endLine,
+      hash: this.hash(text),
+    });
+  }
+
+  /** Returns leading whitespace count; 0 for empty/whitespace-only lines */
+  private getIndent(line: string): number {
+    const idx = line.search(/\S/);
+    return idx === -1 ? 0 : idx;
   }
 
   hash(text: string): string {

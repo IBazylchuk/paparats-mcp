@@ -76,7 +76,7 @@ const LANGUAGE_PROFILES: Record<string, LanguageProfile> = {
 };
 
 export function getLanguageProfile(language: string): LanguageProfile {
-  return LANGUAGE_PROFILES[language] ?? LANGUAGE_PROFILES.generic;
+  return (LANGUAGE_PROFILES[language] ?? LANGUAGE_PROFILES.generic)!;
 }
 
 export function getSupportedLanguages(): string[] {
@@ -105,7 +105,7 @@ const DEFAULT_WATCHER: Required<WatcherConfig> = {
 // See README.md "Embedding model setup" for one-time setup instructions.
 const DEFAULT_EMBEDDINGS: Required<EmbeddingsConfig> = {
   provider: 'ollama',
-  model: 'jina-code-embeddings',  // Ollama alias for jina-code-embeddings-1.5b
+  model: 'jina-code-embeddings', // Ollama alias for jina-code-embeddings-1.5b
   dimensions: 1536,
 };
 
@@ -113,15 +113,86 @@ const DEFAULT_EMBEDDINGS: Required<EmbeddingsConfig> = {
 
 export const CONFIG_FILE = '.paparats.yml';
 
+const VALID_EMBEDDING_PROVIDERS = ['ollama', 'openai'] as const;
+
+// Known embedding model dimensions (for validation warning)
+const MODEL_DIMENSIONS: Record<string, number> = {
+  'jina-code-embeddings': 1536,
+  'all-minilm-l6-v2': 384,
+  'bge-base-en-v1.5': 768,
+};
+
+/**
+ * Validate indexing config numeric ranges.
+ */
+function validateIndexingConfig(config: Partial<ResolvedIndexingConfig>): void {
+  if (config.chunkSize !== undefined) {
+    if (!Number.isInteger(config.chunkSize) || config.chunkSize < 128 || config.chunkSize > 8192) {
+      throw new Error(`chunkSize must be between 128 and 8192, got ${config.chunkSize}`);
+    }
+  }
+  if (config.overlap !== undefined) {
+    const chunkSize = config.chunkSize ?? DEFAULT_INDEXING.chunkSize;
+    if (!Number.isInteger(config.overlap) || config.overlap < 0 || config.overlap >= chunkSize) {
+      throw new Error(
+        `overlap must be between 0 and chunkSize (${chunkSize}), got ${config.overlap}`
+      );
+    }
+  }
+  if (config.concurrency !== undefined) {
+    if (
+      !Number.isInteger(config.concurrency) ||
+      config.concurrency < 1 ||
+      config.concurrency > 20
+    ) {
+      throw new Error(`concurrency must be between 1 and 20, got ${config.concurrency}`);
+    }
+  }
+  if (config.batchSize !== undefined) {
+    if (!Number.isInteger(config.batchSize) || config.batchSize < 1 || config.batchSize > 1000) {
+      throw new Error(`batchSize must be between 1 and 1000, got ${config.batchSize}`);
+    }
+  }
+}
+
+/**
+ * Validate indexing paths: no absolute paths, no path traversal.
+ */
+function validatePaths(paths: string[], projectDir: string): void {
+  const resolvedProject = path.resolve(projectDir);
+  for (const p of paths) {
+    if (path.isAbsolute(p)) {
+      throw new Error(`Absolute paths not allowed in indexing.paths: ${p}`);
+    }
+    const fullPath = path.resolve(projectDir, p);
+    const relative = path.relative(resolvedProject, fullPath);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error(`Path must be inside project directory: ${p}`);
+    }
+  }
+}
+
 // ── Read & resolve ─────────────────────────────────────────────────────────
 
+/**
+ * Read config from disk (synchronous, intended for startup only).
+ * Do not call in request handlers.
+ */
 export function readConfig(projectDir: string): PaparatsConfig {
+  if (!fs.existsSync(projectDir)) {
+    throw new Error(`Project directory does not exist: ${projectDir}`);
+  }
+  const stat = fs.statSync(projectDir);
+  if (!stat.isDirectory()) {
+    throw new Error(`Not a directory: ${projectDir}`);
+  }
+
   const configPath = path.join(projectDir, CONFIG_FILE);
   if (!fs.existsSync(configPath)) {
     throw new Error(`Config not found: ${configPath}`);
   }
   const raw = fs.readFileSync(configPath, 'utf8');
-  const parsed = yaml.load(raw) as PaparatsConfig;
+  const parsed = yaml.load(raw, { schema: yaml.JSON_SCHEMA }) as PaparatsConfig;
 
   if (!parsed || typeof parsed !== 'object') {
     throw new Error(`Invalid config at ${configPath}: expected YAML object`);
@@ -141,7 +212,7 @@ export function readConfig(projectDir: string): PaparatsConfig {
  * by merging language profiles, defaults, and user overrides.
  */
 export function resolveProject(projectDir: string, raw: PaparatsConfig): ProjectConfig {
-  const languages = Array.isArray(raw.language) ? raw.language : [raw.language];
+  const languages = Array.isArray(raw.language) ? [...new Set(raw.language)] : [raw.language];
   const projectName = path.basename(projectDir);
 
   // Merge language profiles
@@ -159,11 +230,16 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
   // User overrides win
   const userIndexing = raw.indexing ?? {};
   const paths = userIndexing.paths ?? ['./'];
-  const exclude = userIndexing.exclude ?? [...new Set(mergedExclude)];
-  const extensions = userIndexing.extensions ?? [...new Set(mergedExtensions)];
+  validatePaths(paths, projectDir);
+
+  const exclude = userIndexing.exclude ?? Array.from(new Set(mergedExclude));
+  // Empty extensions = index all files matching patterns
+  const extensions = userIndexing.extensions ?? Array.from(new Set(mergedExtensions));
+
+  validateIndexingConfig(userIndexing);
 
   // Build final glob patterns from paths + language patterns
-  // If user specifies paths, scope language patterns to those paths
+  // Use posix for glob patterns (even on Windows)
   let patterns: string[];
   if (userIndexing.paths) {
     patterns = [];
@@ -171,8 +247,8 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
       for (const lang of languages) {
         const profile = getLanguageProfile(lang);
         for (const pat of profile.patterns) {
-          const base = p.endsWith('/') ? p : `${p}/`;
-          patterns.push(`${base}${pat}`);
+          const normalized = path.posix.join(p, pat).replace(/\\/g, '/');
+          patterns.push(normalized);
         }
       }
     }
@@ -190,6 +266,23 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
     batchSize: userIndexing.batchSize ?? DEFAULT_INDEXING.batchSize,
   };
 
+  if (raw.watcher?.debounce !== undefined) {
+    const d = raw.watcher.debounce;
+    if (!Number.isInteger(d) || d < 100 || d > 10000) {
+      throw new Error(`watcher.debounce must be between 100 and 10000ms, got ${d}`);
+    }
+  }
+
+  if (raw.embeddings?.provider !== undefined) {
+    const provider = raw.embeddings.provider;
+    if (!VALID_EMBEDDING_PROVIDERS.includes(provider)) {
+      throw new Error(
+        `Invalid embeddings.provider: ${provider}. ` +
+          `Valid options: ${VALID_EMBEDDING_PROVIDERS.join(', ')}`
+      );
+    }
+  }
+
   const watcher: Required<WatcherConfig> = {
     enabled: raw.watcher?.enabled ?? DEFAULT_WATCHER.enabled,
     debounce: raw.watcher?.debounce ?? DEFAULT_WATCHER.debounce,
@@ -200,6 +293,14 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
     model: raw.embeddings?.model ?? DEFAULT_EMBEDDINGS.model,
     dimensions: raw.embeddings?.dimensions ?? DEFAULT_EMBEDDINGS.dimensions,
   };
+
+  const expectedDims = MODEL_DIMENSIONS[embeddings.model];
+  if (expectedDims !== undefined && embeddings.dimensions !== expectedDims) {
+    console.warn(
+      `[paparats] Warning: Model ${embeddings.model} expects ${expectedDims} dimensions, ` +
+        `but config specifies ${embeddings.dimensions}. This may cause errors.`
+    );
+  }
 
   return {
     name: projectName,
