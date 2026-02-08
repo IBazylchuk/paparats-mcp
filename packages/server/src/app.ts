@@ -139,7 +139,6 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
       registerProject(project);
 
-      // eslint-disable-next-line no-console -- intentional operational log
       console.log(`[api] Indexing ${project.group}/${project.name}...`);
       const chunks = await withTimeout(
         indexer.indexProject(project),
@@ -197,6 +196,43 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         res.status(504).json({ error: 'File-changed request timed out after 60s' });
       } else {
         console.error('[api] File-changed error:', err);
+        res.status(500).json({ error: (err as Error).message });
+      }
+    }
+  });
+
+  // ── POST /api/file-deleted ─────────────────────────────────────────────────
+
+  app.post('/api/file-deleted', async (req, res) => {
+    try {
+      const { group, project: projectName, file } = req.body;
+
+      if (!group || !projectName || !file) {
+        res.status(400).json({ error: 'group, project, and file are required' });
+        return;
+      }
+
+      const projects = projectsByGroup.get(group);
+      const project = projects?.find((p) => p.name === projectName);
+
+      if (!project) {
+        res.status(400).json({ error: `Unknown project: ${group}/${projectName}` });
+        return;
+      }
+
+      const filePath = file.startsWith('/') ? file : `${project.path}/${file}`;
+      await withTimeout(
+        indexer.deleteFile(group, project, filePath),
+        FILE_CHANGED_TIMEOUT_MS,
+        'File-deleted timeout'
+      );
+
+      res.json({ status: 'ok', message: 'File removed from index' });
+    } catch (err) {
+      if ((err as Error).message === 'File-deleted timeout') {
+        res.status(504).json({ error: 'File-deleted request timed out after 60s' });
+      } else {
+        console.error('[api] File-deleted error:', err);
         res.status(500).json({ error: (err as Error).message });
       }
     }

@@ -8,7 +8,7 @@
   "scripts": {
     "build": "yarn workspace @paparats/server build && yarn workspace @paparats/cli build",
     "clean": "rm -rf packages/*/dist",
-    "test": "yarn workspace @paparats/server test",
+    "test": "yarn workspace @paparats/server test && yarn workspace @paparats/cli test",
     "typecheck": "yarn workspace @paparats/server typecheck && yarn workspace @paparats/cli typecheck",
     "prepare": "husky",
     "lint": "eslint .",
