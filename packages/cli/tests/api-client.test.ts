@@ -67,7 +67,14 @@ describe('ApiClient', () => {
           req.on('end', () => {
             const data = JSON.parse(body || '{}');
             res.writeHead(200);
-            res.end(JSON.stringify({ status: 'ok', projectDir: data.projectDir }));
+            res.end(
+              JSON.stringify({
+                status: 'ok',
+                group: data.group,
+                project: data.project,
+                chunks: (data.files ?? []).length,
+              })
+            );
           });
         } else if (req.url === '/api/file-changed') {
           res.writeHead(200);
@@ -116,19 +123,23 @@ describe('ApiClient', () => {
       expect((res.data as { results?: unknown[] }).results).toEqual([]);
     });
 
-    it('index sends projectDir and returns data', async () => {
-      const res = await client.index('/tmp/project');
+    it('indexContent sends group, project, files and returns data', async () => {
+      const res = await client.indexContent('g', 'p', [
+        { path: 'src/foo.ts', content: 'const x = 1;', language: 'typescript' },
+      ]);
       expect(res.status).toBe(200);
-      expect((res.data as { projectDir?: string }).projectDir).toBe('/tmp/project');
+      expect((res.data as { group?: string }).group).toBe('g');
+      expect((res.data as { project?: string }).project).toBe('p');
+      expect((res.data as { chunks?: number }).chunks).toBe(1);
     });
 
-    it('fileChanged sends group, project, file', async () => {
-      const res = await client.fileChanged('g', 'p', 'src/foo.ts');
+    it('fileChanged sends group, project, path, content', async () => {
+      const res = await client.fileChanged('g', 'p', 'src/foo.ts', 'const x = 1;');
       expect(res.status).toBe(200);
       expect((res.data as { message?: string }).message).toBe('File reindexed');
     });
 
-    it('fileDeleted sends group, project, file', async () => {
+    it('fileDeleted sends group, project, path', async () => {
       const res = await client.fileDeleted('g', 'p', 'src/foo.ts');
       expect(res.status).toBe(200);
       expect((res.data as { message?: string }).message).toBe('File removed from index');
@@ -226,7 +237,7 @@ describe('ApiClient', () => {
         }
         res.setHeader('Content-Type', 'application/json');
         res.writeHead(200);
-        res.end(JSON.stringify({ status: 'ok' }));
+        res.end(JSON.stringify({ status: 'ok', group: 'g', project: 'p', chunks: 0 }));
       });
       const port = getPort(server);
       const client = new ApiClient({
@@ -234,7 +245,7 @@ describe('ApiClient', () => {
         maxRetries: 3,
       });
 
-      const res = await client.index('/tmp/proj');
+      const res = await client.indexContent('g', 'p', [{ path: 'a.ts', content: 'x' }]);
       expect(res.status).toBe(200);
       expect(attempt).toBe(2);
 
@@ -257,7 +268,9 @@ describe('ApiClient', () => {
         maxRetries: 3,
       });
 
-      await expect(client.index('/tmp/proj')).rejects.toThrow('Bad request');
+      await expect(client.indexContent('g', 'p', [{ path: 'a.ts', content: 'x' }])).rejects.toThrow(
+        'Bad request'
+      );
       expect(attempt).toBe(1);
 
       await new Promise<void>((resolve, reject) => {

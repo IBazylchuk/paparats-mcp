@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@paparats/shared": "*",
     "@modelcontextprotocol/sdk": "^1.26.0",
     "@qdrant/js-client-rest": "^1.16.0",
     "better-sqlite3": "^11.0.0",

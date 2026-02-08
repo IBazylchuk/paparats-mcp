@@ -1,6 +1,8 @@
 # paparats-mcp — Docker Compose template
 # Copied to ~/.paparats/docker-compose.yml by `paparats install`
 #
+# Content-based: CLI sends file contents via HTTP. No volume mounts needed.
+#
 # For Linux users with Ollama on host:
 #   OLLAMA_URL uses host.docker.internal (Mac/Windows only).
 #   Override: OLLAMA_URL=http://172.17.0.1:11434 (or your docker0 IP)
@@ -37,7 +39,7 @@ services:
       - paparats-net
 
   paparats:
-    image: paparats-mcp:latest
+    image: ibaz/paparats-server:latest
     container_name: paparats-mcp
     ports:
       - '${PAPARATS_PORT:-9876}:9876'

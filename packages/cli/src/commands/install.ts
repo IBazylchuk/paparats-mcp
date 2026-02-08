@@ -216,6 +216,7 @@ export async function runInstall(
     const templatePath = findTemplate();
     const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
     copyFile(templatePath, composeDest);
+
     spinner.text = 'Starting Docker containers...';
 
     const composeCmd = getCompose();

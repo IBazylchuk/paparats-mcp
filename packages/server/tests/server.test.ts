@@ -9,8 +9,6 @@ import type { Indexer } from '../src/indexer.js';
 import type { WatcherManager } from '../src/watcher.js';
 import type { CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { ProjectConfig } from '../src/types.js';
-import { CONFIG_FILE } from '../src/config.js';
-
 // ── Test helpers ───────────────────────────────────────────────────────────
 
 function createTempDir(): string {
@@ -20,10 +18,6 @@ function createTempDir(): string {
   );
   fs.mkdirSync(tmpDir, { recursive: true });
   return tmpDir;
-}
-
-function writeConfig(dir: string, content: string): void {
-  fs.writeFileSync(path.join(dir, CONFIG_FILE), content, 'utf8');
 }
 
 function createProjectConfig(overrides?: Partial<ProjectConfig>): ProjectConfig {
@@ -74,9 +68,10 @@ function createMockIndexer(): Indexer {
   return {
     listGroups: vi.fn().mockResolvedValue({}),
     getGroupStats: vi.fn().mockResolvedValue({ points: 0, status: 'not_indexed' }),
-    indexProject: vi.fn().mockResolvedValue(0),
-    updateFile: vi.fn().mockResolvedValue(undefined),
-    deleteFile: vi.fn().mockResolvedValue(undefined),
+    indexFilesContent: vi.fn().mockResolvedValue(0),
+    updateFileContent: vi.fn().mockResolvedValue(0),
+    deleteFileByPath: vi.fn().mockResolvedValue(undefined),
+    deleteProjectChunks: vi.fn().mockResolvedValue(undefined),
     reindexGroup: vi.fn().mockResolvedValue(0),
   } as unknown as Indexer;
 }
@@ -228,7 +223,7 @@ describe('Server API', () => {
   });
 
   describe('POST /api/index', () => {
-    it('returns 400 when projectDir is missing', async () => {
+    it('returns 400 when group, project, or files is missing', async () => {
       const res = await fetchApi('/api/index', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -236,31 +231,32 @@ describe('Server API', () => {
       });
       expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error).toBe('projectDir is required');
+      expect(body.error).toBe('group, project, and files (array) are required');
     });
 
-    it('returns 200 and indexes when valid project dir', async () => {
-      writeConfig(tmpDir, 'group: test-group\nlanguage: typescript');
-      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(tmpDir, 'src', 'foo.ts'), 'const x = 1;');
-
+    it('returns 200 and indexes when valid content', async () => {
       const res = await fetchApi('/api/index', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectDir: tmpDir }),
+        body: JSON.stringify({
+          group: 'test-group',
+          project: 'test-project',
+          files: [{ path: 'src/foo.ts', content: 'const x = 1;', language: 'typescript' }],
+        }),
       });
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('ok');
       expect(body.group).toBe('test-group');
-      expect(body.project).toBeDefined();
+      expect(body.project).toBe('test-project');
       expect(body.chunks).toBeDefined();
       expect(projectsByGroup.has('test-group')).toBe(true);
+      expect(mockIndexer.indexFilesContent).toHaveBeenCalled();
     });
   });
 
   describe('POST /api/file-changed', () => {
-    it('returns 400 when group, project, or file is missing', async () => {
+    it('returns 400 when group, project, path, or content is missing', async () => {
       const res = await fetchApi('/api/file-changed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -268,7 +264,7 @@ describe('Server API', () => {
       });
       expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error).toBe('group, project, and file are required');
+      expect(body.error).toBe('group, project, path, and content are required');
     });
 
     it('returns 400 when project is unknown', async () => {
@@ -278,7 +274,8 @@ describe('Server API', () => {
         body: JSON.stringify({
           group: 'g',
           project: 'unknown',
-          file: 'src/foo.ts',
+          path: 'src/foo.ts',
+          content: 'const x = 1;',
         }),
       });
       expect(res.status).toBe(400);
@@ -290,8 +287,6 @@ describe('Server API', () => {
       projectsByGroup.set('test-group', [
         createProjectConfig({ path: tmpDir, name: 'test-project' }),
       ]);
-      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(tmpDir, 'src', 'foo.ts'), 'const x = 1;');
 
       const res = await fetchApi('/api/file-changed', {
         method: 'POST',
@@ -299,79 +294,27 @@ describe('Server API', () => {
         body: JSON.stringify({
           group: 'test-group',
           project: 'test-project',
-          file: 'src/foo.ts',
+          path: 'src/foo.ts',
+          content: 'const x = 1;',
         }),
       });
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('ok');
       expect(body.message).toBe('File reindexed');
-    });
-
-    it('returns 400 for path traversal (relative)', async () => {
-      projectsByGroup.set('test-group', [
-        createProjectConfig({ path: tmpDir, name: 'test-project' }),
-      ]);
-
-      const res = await fetchApi('/api/file-changed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          group: 'test-group',
-          project: 'test-project',
-          file: '../../etc/passwd',
-        }),
-      });
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toBe('Path outside project');
-    });
-
-    it('returns 400 for absolute path outside project', async () => {
-      projectsByGroup.set('test-group', [
-        createProjectConfig({ path: tmpDir, name: 'test-project' }),
-      ]);
-      const absPathOutside = path.resolve(tmpDir, '..', '..', 'outside-project');
-
-      const res = await fetchApi('/api/file-changed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          group: 'test-group',
-          project: 'test-project',
-          file: absPathOutside,
-        }),
-      });
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toBe('Path outside project');
-    });
-
-    it('returns 200 for absolute path within project', async () => {
-      projectsByGroup.set('test-group', [
-        createProjectConfig({ path: tmpDir, name: 'test-project' }),
-      ]);
-      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(tmpDir, 'src', 'foo.ts'), 'const x = 1;');
-
-      const absPath = path.join(tmpDir, 'src', 'foo.ts');
-      const res = await fetchApi('/api/file-changed', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          group: 'test-group',
-          project: 'test-project',
-          file: absPath,
-        }),
-      });
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.status).toBe('ok');
+      expect(mockIndexer.updateFileContent).toHaveBeenCalledWith(
+        'test-group',
+        'test-project',
+        'src/foo.ts',
+        'const x = 1;',
+        expect.any(String),
+        expect.any(Object)
+      );
     });
   });
 
   describe('POST /api/file-deleted', () => {
-    it('returns 400 when group, project, or file is missing', async () => {
+    it('returns 400 when group, project, or path is missing', async () => {
       const res = await fetchApi('/api/file-deleted', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -379,7 +322,7 @@ describe('Server API', () => {
       });
       expect(res.status).toBe(400);
       const body = await res.json();
-      expect(body.error).toBe('group, project, and file are required');
+      expect(body.error).toBe('group, project, and path are required');
     });
 
     it('returns 400 when project is unknown', async () => {
@@ -389,7 +332,7 @@ describe('Server API', () => {
         body: JSON.stringify({
           group: 'g',
           project: 'unknown',
-          file: 'src/foo.ts',
+          path: 'src/foo.ts',
         }),
       });
       expect(res.status).toBe(400);
@@ -408,52 +351,18 @@ describe('Server API', () => {
         body: JSON.stringify({
           group: 'test-group',
           project: 'test-project',
-          file: 'src/foo.ts',
+          path: 'src/foo.ts',
         }),
       });
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.status).toBe('ok');
       expect(body.message).toBe('File removed from index');
-    });
-
-    it('returns 400 for path traversal (relative)', async () => {
-      projectsByGroup.set('test-group', [
-        createProjectConfig({ path: tmpDir, name: 'test-project' }),
-      ]);
-
-      const res = await fetchApi('/api/file-deleted', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          group: 'test-group',
-          project: 'test-project',
-          file: '../../etc/passwd',
-        }),
-      });
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toBe('Path outside project');
-    });
-
-    it('returns 400 for absolute path outside project', async () => {
-      projectsByGroup.set('test-group', [
-        createProjectConfig({ path: tmpDir, name: 'test-project' }),
-      ]);
-      const absPathOutside = path.resolve(tmpDir, '..', '..', 'outside-project');
-
-      const res = await fetchApi('/api/file-deleted', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          group: 'test-group',
-          project: 'test-project',
-          file: absPathOutside,
-        }),
-      });
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toBe('Path outside project');
+      expect(mockIndexer.deleteFileByPath).toHaveBeenCalledWith(
+        'test-group',
+        'test-project',
+        'src/foo.ts'
+      );
     });
   });
 

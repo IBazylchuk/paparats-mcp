@@ -8,6 +8,50 @@ Semantic code search across multiple repositories. MCP server powered by Qdrant 
 
 Drop a `.paparats.yml` into each project, group them together, and get cross-project semantic search via MCP.
 
+## Prerequisites
+
+Install these **before** running `paparats install` (the CLI does not install them):
+
+| Requirement        | Purpose                         | Install                                                                     |
+| ------------------ | ------------------------------- | --------------------------------------------------------------------------- |
+| **Docker**         | Runs Qdrant and MCP server      | [docker.com](https://docker.com)                                            |
+| **Docker Compose** | Orchestrates containers (v2)    | Included with Docker Desktop; on Linux: `apt install docker-compose-plugin` |
+| **Ollama**         | Local embedding model (on host) | [ollama.com](https://ollama.com)                                            |
+
+The CLI checks that `docker`, `ollama`, and `docker compose` (or `docker-compose`) are available. If any are missing, it exits with installation links.
+
+## Quick start
+
+```bash
+# 1. Ensure Docker, Docker Compose, and Ollama are installed
+docker --version && docker compose version && ollama --version
+
+# 2. One-time setup: starts Qdrant + MCP server, downloads GGUF (~1.6 GB), registers model in Ollama
+paparats install
+
+# 3. In your project
+cd your-project
+paparats init   # creates .paparats.yml
+paparats index  # index the codebase
+
+# 4. Connect your IDE (Cursor, Claude Code) to the MCP server
+```
+
+### What `paparats install` does and does not
+
+| Action                                            | Done by `paparats install`?    |
+| ------------------------------------------------- | ------------------------------ |
+| Install Docker                                    | No — you must install it first |
+| Install Docker Compose                            | No — you must install it first |
+| Install Ollama                                    | No — you must install it first |
+| Copy `docker-compose.yml` to `~/.paparats/`       | Yes                            |
+| Start Qdrant + MCP server containers              | Yes                            |
+| Download GGUF model (~1.65 GB)                    | Yes — to `~/.paparats/models/` |
+| Register model in Ollama (`jina-code-embeddings`) | Yes                            |
+| Start Ollama if not running                       | Yes — spawns `ollama serve`    |
+
+Use `--skip-docker` or `--skip-ollama` if you already have parts set up.
+
 ## How it works
 
 ```
@@ -83,7 +127,13 @@ paparats-mcp/
 
 The default model is [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — a code-optimized embedding model based on Qwen2.5-Coder-1.5B. It's not in the Ollama registry, so we create a local alias via Modelfile.
 
-**One-time setup:**
+**Recommended:** `paparats install` automates the full setup:
+
+- Downloads GGUF (~1.65 GB) to `~/.paparats/models/`
+- Creates Modelfile and runs `ollama create jina-code-embeddings`
+- Starts Ollama with `ollama serve` if not running
+
+**Manual setup** (if you prefer):
 
 ```bash
 # 1. Download the GGUF file
@@ -103,8 +153,6 @@ ollama create jina-code-embeddings -f Modelfile
 ollama list | grep jina
 ```
 
-After this, Ollama serves the model under the alias `jina-code-embeddings`, which is the default in `.paparats.yml`.
-
 | Spec         | Value                                |
 | ------------ | ------------------------------------ |
 | Parameters   | 1.5B                                 |
@@ -112,8 +160,6 @@ After this, Ollama serves the model under the alias `jina-code-embeddings`, whic
 | Context      | 32,768 tokens (recommended <= 8,192) |
 | Quantization | Q8_0 (~1.6 GB)                       |
 | Languages    | 15+ programming languages            |
-
-> `paparats install` (Phase 1c) will automate this setup.
 
 ## Configuration
 
@@ -141,9 +187,80 @@ embeddings:
   dimensions: 1536 # vector dimensions (default: 1536)
 ```
 
-## Development status
+## Docker and Ollama
 
-Phase 1a is complete (core server modules). See [PLAN.md](./PLAN.md) for next steps.
+- **Qdrant** and **MCP server** run in Docker containers.
+- **Ollama** runs on the host (not in Docker). The server connects to it via `host.docker.internal:11434` (Mac/Windows). On Linux, set `OLLAMA_URL=http://172.17.0.1:11434` (or your docker0 IP) in `~/.paparats/docker-compose.yml` or as an env override.
+- **Embedding cache** (SQLite) persists in the `paparats_cache` Docker volume, so re-indexing unchanged code is fast across restarts.
+
+## CLI commands
+
+| Command                   | Description                                                                          |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `paparats init`           | Create `.paparats.yml` in the current directory (interactive or `--non-interactive`) |
+| `paparats install`        | Set up Docker (Qdrant + MCP server) and Ollama embedding model                       |
+| `paparats index`          | Index the current project into the vector database                                   |
+| `paparats search <query>` | Semantic search across indexed projects                                              |
+| `paparats watch`          | Watch for file changes and reindex automatically                                     |
+| `paparats status`         | Show system status (Docker, Ollama, config, server health, groups)                   |
+| `paparats doctor`         | Run diagnostic checks                                                                |
+| `paparats groups`         | List all indexed groups and projects                                                 |
+
+### Common options
+
+Most commands support `--server <url>` (default: `http://localhost:9876`) and `--json` for machine-readable output.
+
+### Command details
+
+**`paparats init`**
+
+- `--force` — Overwrite existing config
+- `--group <name>` — Set group (skip prompt)
+- `--language <lang>` — Set language (skip prompt)
+- `--non-interactive` — Use defaults without prompts
+
+**`paparats install`**
+
+- `--skip-docker` — Skip Docker setup (only set up Ollama model)
+- `--skip-ollama` — Skip Ollama model (only start Docker containers)
+- `-v, --verbose` — Show detailed output
+
+**`paparats index`**
+
+- `-f, --force` — Force reindex (clear existing chunks)
+- `--dry-run` — Show what would be indexed without indexing
+- `--timeout <ms>` — Request timeout (default: 300000)
+- `-v, --verbose` — Show skipped files and errors
+- `--json` — Output as JSON
+
+**`paparats search <query>`**
+
+- `-n, --limit <n>` — Max results (default: 5)
+- `-p, --project <name>` — Filter by project (default: all)
+- `-g, --group <name>` — Override group from config
+- `--timeout <ms>` — Request timeout (default: 30000)
+- `-v, --verbose` — Show token savings
+- `--json` — Output as JSON
+
+**`paparats watch`**
+
+- `--dry-run` — Show what would be watched without watching
+- `-v, --verbose` — Show file events
+- `--json` — Output events as JSON lines
+
+**`paparats status`** — Docker, Ollama, config, server health, groups overview
+
+- `--timeout <ms>` — Request timeout (default: 5000)
+
+**`paparats doctor`** — 6 checks: Docker, Qdrant, Ollama, config, MCP server, install
+
+- `-v, --verbose` — Show detailed error messages
+
+**`paparats groups`**
+
+- `-q, --quiet` — Show only group names
+- `-v, --verbose` — Show project details
+- `--json` — Output as JSON
 
 ## License
 

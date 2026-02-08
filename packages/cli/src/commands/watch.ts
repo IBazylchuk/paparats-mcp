@@ -1,11 +1,12 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { Command } from 'commander';
-import path from 'path';
 import chalk from 'chalk';
 import pLimit from 'p-limit';
 import { watch } from 'chokidar';
 import { minimatch } from 'minimatch';
 import { globSync } from 'glob';
-import { readConfig, CONFIG_FILE } from '../config.js';
+import { readConfig, CONFIG_FILE, getLanguageFromPath } from '../config.js';
 import { ApiClient } from '../api-client.js';
 
 export interface WatchOptions {
@@ -24,8 +25,14 @@ export interface WatchDeps {
   };
   createWatcher?: typeof watch;
   apiClient?: {
-    fileChanged: (group: string, project: string, file: string) => Promise<unknown>;
-    fileDeleted: (group: string, project: string, file: string) => Promise<unknown>;
+    fileChanged: (
+      group: string,
+      project: string,
+      path: string,
+      content: string,
+      opts?: { language?: string }
+    ) => Promise<unknown>;
+    fileDeleted: (group: string, project: string, path: string) => Promise<unknown>;
     health: (opts?: { timeout?: number }) => Promise<{ status: number }>;
   };
 }
@@ -136,9 +143,27 @@ export async function runWatch(opts: WatchOptions, deps?: WatchDeps): Promise<()
   async function reindexWithRetry(filePath: string): Promise<void> {
     const rel = path.relative(projectDir, filePath);
     const start = opts.verbose ? Date.now() : 0;
+    let content: string;
+    try {
+      const buffer = await fs.promises.readFile(filePath);
+      if (buffer.includes(0)) return; // Skip binary
+      content = buffer.toString('utf8');
+      if (content.includes('\uFFFD')) return; // Invalid UTF-8
+      if (!content.trim()) return; // Skip empty/whitespace-only files
+    } catch (err) {
+      if (opts.json) {
+        emitEvent('error', filePath, { error: (err as Error).message });
+      } else {
+        console.error(chalk.red(`  failed to read ${rel}: ${(err as Error).message}`));
+      }
+      stats.errors++;
+      return;
+    }
+    const projectLangs = Array.isArray(cfg.language) ? cfg.language : [cfg.language];
+    const language = getLanguageFromPath(filePath, projectLangs);
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
       try {
-        await client.fileChanged(group, projectName, filePath);
+        await client.fileChanged(group, projectName, rel, content, { language });
         stats.changesProcessed++;
         const elapsed = opts.verbose ? Date.now() - start : 0;
         if (opts.json) {
@@ -169,7 +194,7 @@ export async function runWatch(opts: WatchOptions, deps?: WatchDeps): Promise<()
     if (shouldIgnore(filePath)) return;
     const rel = path.relative(projectDir, filePath);
     try {
-      await client.fileDeleted(group, projectName, filePath);
+      await client.fileDeleted(group, projectName, rel);
       stats.changesProcessed++;
       if (opts.json) {
         emitEvent('removed', filePath);

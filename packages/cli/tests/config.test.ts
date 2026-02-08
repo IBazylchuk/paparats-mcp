@@ -110,6 +110,23 @@ describe('Config', () => {
       expect(() => readConfig(tmpDir)).toThrow('Invalid chunkSize');
     });
 
+    it('rejects absolute paths in indexing.paths', () => {
+      const absolutePath = path.sep === '\\' ? 'C:\\tmp' : '/tmp';
+      fs.writeFileSync(
+        path.join(tmpDir, CONFIG_FILE),
+        `group: g\nlanguage: ruby\nindexing:\n  paths: [${JSON.stringify(absolutePath)}]`
+      );
+      expect(() => readConfig(tmpDir)).toThrow('Absolute paths not allowed in indexing.paths');
+    });
+
+    it('rejects path traversal in indexing.paths', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, CONFIG_FILE),
+        'group: g\nlanguage: ruby\nindexing:\n  paths: [../../etc]'
+      );
+      expect(() => readConfig(tmpDir)).toThrow('Path must be inside project directory');
+    });
+
     it('accepts valid optional fields', () => {
       fs.writeFileSync(
         path.join(tmpDir, CONFIG_FILE),
