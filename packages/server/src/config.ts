@@ -98,6 +98,7 @@ const DEFAULT_INDEXING: ResolvedIndexingConfig = {
 const DEFAULT_WATCHER: Required<WatcherConfig> = {
   enabled: true,
   debounce: 1000,
+  stabilityThreshold: 1000,
 };
 
 // Default model: jinaai/jina-code-embeddings-1.5b-GGUF (HuggingFace)
@@ -283,9 +284,17 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
     }
   }
 
+  if (raw.watcher?.stabilityThreshold !== undefined) {
+    const s = raw.watcher.stabilityThreshold;
+    if (!Number.isInteger(s) || s < 100 || s > 10000) {
+      throw new Error(`watcher.stabilityThreshold must be between 100 and 10000ms, got ${s}`);
+    }
+  }
+
   const watcher: Required<WatcherConfig> = {
     enabled: raw.watcher?.enabled ?? DEFAULT_WATCHER.enabled,
     debounce: raw.watcher?.debounce ?? DEFAULT_WATCHER.debounce,
+    stabilityThreshold: raw.watcher?.stabilityThreshold ?? DEFAULT_WATCHER.stabilityThreshold,
   };
 
   const embeddings: Required<EmbeddingsConfig> = {
