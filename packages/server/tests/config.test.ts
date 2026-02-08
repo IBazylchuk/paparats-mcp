@@ -256,6 +256,25 @@ injection: !!js/function >
           'watcher.debounce must be between 100 and 10000ms'
         );
       });
+
+      it('rejects watcher.stabilityThreshold too small', () => {
+        const raw = { group: 'g', language: 'ruby', watcher: { stabilityThreshold: 50 } };
+        expect(() => resolveProject(projectDir, raw)).toThrow(
+          'watcher.stabilityThreshold must be between 100 and 10000ms'
+        );
+      });
+
+      it('rejects watcher.stabilityThreshold too large', () => {
+        const raw = { group: 'g', language: 'ruby', watcher: { stabilityThreshold: 20000 } };
+        expect(() => resolveProject(projectDir, raw)).toThrow(
+          'watcher.stabilityThreshold must be between 100 and 10000ms'
+        );
+      });
+
+      it('accepts watcher.stabilityThreshold in range', () => {
+        const raw = { group: 'g', language: 'ruby', watcher: { stabilityThreshold: 2000 } };
+        expect(resolveProject(projectDir, raw).watcher.stabilityThreshold).toBe(2000);
+      });
     });
 
     describe('embeddings validation', () => {

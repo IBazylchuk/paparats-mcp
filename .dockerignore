@@ -1,0 +1,51 @@
+# Dependencies
+node_modules
+npm-debug.log
+yarn-error.log
+.yarn/cache
+.pnp.*
+
+# Build artifacts
+dist
+build
+*.tsbuildinfo
+
+# Development
+.git
+.github
+.husky
+.vscode
+*.log
+*.md
+!packages/server/README.md
+
+# Tests
+**/*.test.ts
+**/*.spec.ts
+**/__tests__
+**/__mocks__
+coverage
+**/vitest.config.*
+
+# Config files not needed in container
+.eslintrc*
+eslint.config.*
+.prettierrc*
+.prettierignore
+.editorconfig
+
+# Environment files (use Docker env vars)
+.env
+.env.*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Examples (not needed at runtime)
+examples
+
+# Plan/docs
+PLAN.md
+CLAUDE.md
+LICENSE
