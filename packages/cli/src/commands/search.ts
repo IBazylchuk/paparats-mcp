@@ -251,9 +251,9 @@ export const searchCommand = new Command('search')
 
       const controller = new AbortController();
 
+      let spinner: ReturnType<typeof ora> | null = null;
       const sigintHandler = () => {
-        const spinner = ora();
-        spinner.stop();
+        spinner?.stop();
         if (!opts.json) {
           console.log(chalk.yellow('\nSearch cancelled'));
         }
@@ -269,7 +269,7 @@ export const searchCommand = new Command('search')
         search: (g, q, o) => client.search(g, q, { ...o, signal: controller.signal }),
       };
 
-      const spinner = opts.json ? null : ora('Searching...').start();
+      spinner = opts.json ? null : ora('Searching...').start();
 
       try {
         await runSearch(

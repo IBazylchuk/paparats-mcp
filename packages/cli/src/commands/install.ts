@@ -5,6 +5,7 @@ import os from 'os';
 import { execSync, spawn } from 'child_process';
 import chalk from 'chalk';
 import ora from 'ora';
+import { createTimeoutSignal } from '../abort.js';
 
 const PAPARATS_HOME = path.join(os.homedir(), '.paparats');
 const MODELS_DIR = path.join(PAPARATS_HOME, 'models');
@@ -55,18 +56,6 @@ export function ollamaModelExists(modelName: string): boolean {
   } catch {
     return false;
   }
-}
-
-function createTimeoutSignal(timeoutMs: number): AbortSignal {
-  if (
-    'timeout' in AbortSignal &&
-    typeof (AbortSignal as { timeout?: (ms: number) => AbortSignal }).timeout === 'function'
-  ) {
-    return (AbortSignal as { timeout: (ms: number) => AbortSignal }).timeout(timeoutMs);
-  }
-  const controller = new AbortController();
-  setTimeout(() => controller.abort(), timeoutMs);
-  return controller.signal;
 }
 
 export async function isOllamaRunning(): Promise<boolean> {

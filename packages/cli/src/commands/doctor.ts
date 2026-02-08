@@ -7,6 +7,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { findConfigDir, readConfig, CONFIG_FILE } from '../config.js';
 import { ApiClient } from '../api-client.js';
+import { createTimeoutSignal } from '../abort.js';
 
 export interface CheckResult {
   name: string;
@@ -23,15 +24,6 @@ function commandExists(cmd: string): boolean {
   } catch {
     return false;
   }
-}
-
-function createTimeoutSignal(timeoutMs: number): AbortSignal {
-  if ('timeout' in AbortSignal && typeof AbortSignal.timeout === 'function') {
-    return AbortSignal.timeout(timeoutMs);
-  }
-  const controller = new AbortController();
-  setTimeout(() => controller.abort(), timeoutMs);
-  return controller.signal;
 }
 
 function checkDockerCompose(): boolean {
