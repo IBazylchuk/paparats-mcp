@@ -1,4 +1,5 @@
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import express, { type Express } from 'express';
 import cors from 'cors';
 import { readConfig, resolveProject } from './config.js';
@@ -26,14 +27,31 @@ export const SEARCH_TIMEOUT_MS = 30_000;
 export const INDEX_TIMEOUT_MS = 120_000;
 export const FILE_CHANGED_TIMEOUT_MS = 60_000;
 
-/** Resolve file path and ensure it is strictly within project.path. Rejects path traversal. */
+/** Resolve file path and ensure it is strictly within project.path. Rejects path traversal and symlink escape. */
 function resolveFileWithinProject(project: ProjectConfig, file: string): string {
-  const resolved = path.isAbsolute(file) ? path.resolve(file) : path.resolve(project.path, file);
   const projectRoot = path.resolve(project.path);
-  const prefix = projectRoot + path.sep;
-  if (resolved !== projectRoot && !resolved.startsWith(prefix)) {
-    throw new Error('Path outside project');
+  const resolved = path.isAbsolute(file) ? path.resolve(file) : path.resolve(project.path, file);
+
+  try {
+    const realProjectRoot = fs.realpathSync(projectRoot);
+    const realResolved = fs.realpathSync(resolved);
+    const prefix = realProjectRoot + path.sep;
+    if (realResolved !== realProjectRoot && !realResolved.startsWith(prefix)) {
+      throw new Error('Path outside project');
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      // Path doesn't exist (e.g. file-deleted). Fallback to string check.
+      const prefix = projectRoot + path.sep;
+      if (resolved !== projectRoot && !resolved.startsWith(prefix)) {
+        throw new Error('Path outside project', { cause: err });
+      }
+    } else {
+      throw err;
+    }
   }
+
   return resolved;
 }
 
