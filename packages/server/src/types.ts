@@ -21,6 +21,8 @@ export interface IndexingConfig {
 export interface WatcherConfig {
   enabled?: boolean;
   debounce?: number;
+  /** awaitWriteFinish: ms to wait for file write to stabilize (default: 1000) */
+  stabilityThreshold?: number;
 }
 
 export interface EmbeddingsConfig {
