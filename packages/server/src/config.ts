@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
+import { validateIndexingPaths } from '@paparats/shared';
 import type {
   PaparatsConfig,
   ProjectConfig,
@@ -156,23 +157,6 @@ function validateIndexingConfig(config: Partial<ResolvedIndexingConfig>): void {
   }
 }
 
-/**
- * Validate indexing paths: no absolute paths, no path traversal.
- */
-function validatePaths(paths: string[], projectDir: string): void {
-  const resolvedProject = path.resolve(projectDir);
-  for (const p of paths) {
-    if (path.isAbsolute(p)) {
-      throw new Error(`Absolute paths not allowed in indexing.paths: ${p}`);
-    }
-    const fullPath = path.resolve(projectDir, p);
-    const relative = path.relative(resolvedProject, fullPath);
-    if (relative.startsWith('..') || path.isAbsolute(relative)) {
-      throw new Error(`Path must be inside project directory: ${p}`);
-    }
-  }
-}
-
 // ── Read & resolve ─────────────────────────────────────────────────────────
 
 /**
@@ -231,7 +215,7 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
   // User overrides win
   const userIndexing = raw.indexing ?? {};
   const paths = userIndexing.paths ?? ['./'];
-  validatePaths(paths, projectDir);
+  validateIndexingPaths(paths, projectDir);
 
   const exclude = userIndexing.exclude ?? Array.from(new Set(mergedExclude));
   // Empty extensions = index all files matching patterns
@@ -330,4 +314,45 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
 export function loadProject(projectDir: string): ProjectConfig {
   const raw = readConfig(projectDir);
   return resolveProject(projectDir, raw);
+}
+
+/** Build minimal ProjectConfig from content-based API request (no filesystem) */
+export interface ContentIndexConfig {
+  chunkSize?: number;
+  overlap?: number;
+  batchSize?: number;
+  concurrency?: number;
+  languages?: string[];
+}
+
+export function buildProjectConfigFromContent(
+  projectName: string,
+  group: string,
+  apiConfig?: ContentIndexConfig
+): ProjectConfig {
+  const cfg = apiConfig ?? {};
+  const languages = cfg.languages ?? ['generic'];
+  const indexing: ResolvedIndexingConfig = {
+    paths: [],
+    exclude: [],
+    extensions: [],
+    chunkSize: cfg.chunkSize ?? DEFAULT_INDEXING.chunkSize,
+    overlap: cfg.overlap ?? DEFAULT_INDEXING.overlap,
+    concurrency: cfg.concurrency ?? DEFAULT_INDEXING.concurrency,
+    batchSize: cfg.batchSize ?? DEFAULT_INDEXING.batchSize,
+  };
+  if (apiConfig?.chunkSize !== undefined || apiConfig?.overlap !== undefined) {
+    validateIndexingConfig(apiConfig);
+  }
+  return {
+    name: projectName,
+    path: '',
+    group,
+    languages,
+    patterns: [],
+    exclude: [],
+    indexing,
+    watcher: DEFAULT_WATCHER,
+    embeddings: DEFAULT_EMBEDDINGS,
+  };
 }

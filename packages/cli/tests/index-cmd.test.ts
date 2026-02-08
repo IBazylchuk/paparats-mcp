@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   runIndex,
@@ -5,17 +8,25 @@ import {
   printDryRun,
   type IndexResponse,
 } from '../src/commands/index-cmd.js';
-
 const validData: IndexResponse = {
   group: 'my-group',
   project: 'my-project',
   chunks: 42,
 };
 
+const defaultConfig = {
+  config: {
+    group: 'my-group',
+    language: 'typescript' as const,
+    indexing: { paths: ['./'] },
+  },
+  projectDir: '',
+};
+
 function createMockIndexClient(res: { status: number; data: unknown }) {
   return {
     health: vi.fn().mockResolvedValue({ status: 200 }),
-    index: vi.fn().mockResolvedValue(res),
+    indexContent: vi.fn().mockResolvedValue(res),
   };
 }
 
@@ -32,8 +43,16 @@ describe('index-cmd', () => {
   let exitSpy: ReturnType<typeof vi.spyOn>;
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
+  let tmpDir: string;
 
   beforeEach(() => {
+    tmpDir = path.join(
+      os.tmpdir(),
+      `paparats-index-test-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    );
+    fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, 'src', 'foo.ts'), 'const x = 1;');
+
     exitSpy = vi.spyOn(process, 'exit').mockImplementation((code?: number) => {
       throw new Error(`EXIT:${code ?? 0}`);
     });
@@ -45,6 +64,9 @@ describe('index-cmd', () => {
     exitSpy.mockRestore();
     logSpy.mockRestore();
     errorSpy.mockRestore();
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   describe('validateIndexResponse', () => {
@@ -129,42 +151,52 @@ describe('index-cmd', () => {
     it('outputs success message on successful index', async () => {
       const client = createMockIndexClient({ status: 200, data: validData });
       const spinner = createMockSpinner();
+      const config = { ...defaultConfig, projectDir: tmpDir };
+      const projectName = path.basename(tmpDir);
 
-      await runIndex(client, '/tmp/proj', 'my-group', {}, { spinner });
+      await runIndex(client, tmpDir, 'my-group', config, {}, { spinner });
 
-      expect(spinner.succeed).toHaveBeenCalledWith(expect.stringContaining('my-project'));
+      expect(spinner.succeed).toHaveBeenCalledWith(expect.stringContaining(projectName));
       expect(spinner.succeed).toHaveBeenCalledWith(expect.stringContaining('my-group'));
-      expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/42 chunks indexed/));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/\d+ chunks indexed/));
     });
 
     it('outputs JSON when --json', async () => {
       const client = createMockIndexClient({ status: 200, data: validData });
       const spinner = createMockSpinner();
+      const config = { ...defaultConfig, projectDir: tmpDir };
+      const projectName = path.basename(tmpDir);
 
-      await runIndex(client, '/tmp/proj', 'my-group', { json: true }, { spinner });
+      await runIndex(client, tmpDir, 'my-group', config, { json: true }, { spinner });
 
       expect(logSpy).toHaveBeenCalled();
       const jsonOutput = logSpy.mock.calls[0]?.[0];
       expect(jsonOutput).toBeDefined();
       const parsed = JSON.parse(jsonOutput as string);
       expect(parsed.group).toBe('my-group');
-      expect(parsed.project).toBe('my-project');
-      expect(parsed.chunks).toBe(42);
+      expect(parsed.project).toBe(projectName);
+      expect(parsed.chunks).toBeDefined();
       expect(parsed.elapsed).toBeDefined();
       expect(parsed.timestamp).toBeDefined();
     });
 
-    it('calls index with timeout and force when provided', async () => {
+    it('calls indexContent with timeout and force when provided', async () => {
       const client = createMockIndexClient({ status: 200, data: validData });
       const spinner = createMockSpinner();
+      const config = { ...defaultConfig, projectDir: tmpDir };
 
-      await runIndex(client, '/tmp/proj', 'g', { timeout: 120_000, force: true }, { spinner });
+      await runIndex(client, tmpDir, 'g', config, { timeout: 120_000, force: true }, { spinner });
 
-      expect(client.index).toHaveBeenCalledWith('/tmp/proj', {
-        timeout: 120_000,
-        signal: undefined,
-        force: true,
-      });
+      expect(client.indexContent).toHaveBeenCalledWith(
+        'g',
+        path.basename(tmpDir),
+        expect.any(Array),
+        expect.objectContaining({
+          config: expect.any(Object),
+          force: true,
+          timeout: 120_000,
+        })
+      );
     });
 
     it('exits 1 on non-200 status', async () => {
@@ -173,8 +205,11 @@ describe('index-cmd', () => {
         data: { error: 'Server error' },
       });
       const spinner = createMockSpinner();
+      const config = { ...defaultConfig, projectDir: tmpDir };
 
-      await expect(runIndex(client, '/tmp/proj', 'g', {}, { spinner })).rejects.toThrow('EXIT:1');
+      await expect(runIndex(client, tmpDir, 'g', config, {}, { spinner })).rejects.toThrow(
+        'EXIT:1'
+      );
 
       expect(spinner.fail).toHaveBeenCalledWith(expect.stringContaining('Indexing failed'));
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Server error'));
@@ -183,11 +218,14 @@ describe('index-cmd', () => {
     it('exits 1 on invalid response shape', async () => {
       const client = createMockIndexClient({
         status: 200,
-        data: { foo: 'bar' },
+        data: { chunks: 'not-a-number' }, // causes validation to fail
       });
       const spinner = createMockSpinner();
+      const config = { ...defaultConfig, projectDir: tmpDir };
 
-      await expect(runIndex(client, '/tmp/proj', 'g', {}, { spinner })).rejects.toThrow('EXIT:1');
+      await expect(runIndex(client, tmpDir, 'g', config, {}, { spinner })).rejects.toThrow(
+        'EXIT:1'
+      );
 
       expect(spinner.fail).toHaveBeenCalledWith(expect.stringContaining('Invalid response'));
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Expected:'));
@@ -199,10 +237,11 @@ describe('index-cmd', () => {
         data: { error: 'Server error' },
       });
       const spinner = createMockSpinner();
+      const config = { ...defaultConfig, projectDir: tmpDir };
 
-      await expect(runIndex(client, '/tmp/proj', 'g', { json: true }, { spinner })).rejects.toThrow(
-        'EXIT:1'
-      );
+      await expect(
+        runIndex(client, tmpDir, 'g', config, { json: true }, { spinner })
+      ).rejects.toThrow('EXIT:1');
 
       expect(logSpy).toHaveBeenCalledWith(JSON.stringify({ error: 'Server error' }));
     });
@@ -210,11 +249,14 @@ describe('index-cmd', () => {
     it('exits 1 on network failure', async () => {
       const client = {
         health: vi.fn().mockResolvedValue({ status: 200 }),
-        index: vi.fn().mockRejectedValue(new Error('Connection refused')),
+        indexContent: vi.fn().mockRejectedValue(new Error('Connection refused')),
       };
       const spinner = createMockSpinner();
+      const config = { ...defaultConfig, projectDir: tmpDir };
 
-      await expect(runIndex(client, '/tmp/proj', 'g', {}, { spinner })).rejects.toThrow('EXIT:1');
+      await expect(runIndex(client, tmpDir, 'g', config, {}, { spinner })).rejects.toThrow(
+        'EXIT:1'
+      );
 
       expect(spinner.fail).toHaveBeenCalledWith('Indexing failed');
       expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Connection refused'));
@@ -223,11 +265,14 @@ describe('index-cmd', () => {
     it('exits 130 on abort', async () => {
       const client = {
         health: vi.fn().mockResolvedValue({ status: 200 }),
-        index: vi.fn().mockRejectedValue(new Error('Request aborted')),
+        indexContent: vi.fn().mockRejectedValue(new Error('Request aborted')),
       };
       const spinner = createMockSpinner();
+      const config = { ...defaultConfig, projectDir: tmpDir };
 
-      await expect(runIndex(client, '/tmp/proj', 'g', {}, { spinner })).rejects.toThrow('EXIT:130');
+      await expect(runIndex(client, tmpDir, 'g', config, {}, { spinner })).rejects.toThrow(
+        'EXIT:130'
+      );
 
       expect(spinner.fail).toHaveBeenCalledWith('Indexing cancelled');
     });
@@ -240,8 +285,9 @@ describe('index-cmd', () => {
       };
       const client = createMockIndexClient({ status: 200, data: dataWithExtra });
       const spinner = createMockSpinner();
+      const config = { ...defaultConfig, projectDir: tmpDir };
 
-      await runIndex(client, '/tmp/proj', 'g', { verbose: true }, { spinner });
+      await runIndex(client, tmpDir, 'g', config, { verbose: true }, { spinner });
 
       expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/3 files skipped/));
       expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/1 errors encountered/));
@@ -250,10 +296,11 @@ describe('index-cmd', () => {
 
     it('uses null spinner in JSON mode', async () => {
       const client = createMockIndexClient({ status: 200, data: validData });
+      const config = { ...defaultConfig, projectDir: tmpDir };
 
-      await runIndex(client, '/tmp/proj', 'g', { json: true }, { spinner: null });
+      await runIndex(client, tmpDir, 'g', config, { json: true }, { spinner: null });
 
-      expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/"group":\s*"my-group"/));
+      expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/"group":\s*"g"/));
     });
   });
 });

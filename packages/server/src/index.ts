@@ -1,4 +1,3 @@
-import { resolveProject, readConfig } from './config.js';
 import { createEmbeddingProvider } from './embeddings.js';
 import { Indexer } from './indexer.js';
 import { Searcher } from './searcher.js';
@@ -55,8 +54,6 @@ const { app, mcpHandler, setShuttingDown, getShuttingDown } = createApp({
   watcherManager,
   embeddingProvider,
   projectsByGroup,
-  readConfigFn: readConfig,
-  resolveProjectFn: resolveProject,
 });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
