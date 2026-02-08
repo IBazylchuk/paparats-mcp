@@ -1,0 +1,343 @@
+import { QdrantClient } from '@qdrant/js-client-rest';
+import { glob } from 'glob';
+import fs from 'fs';
+import path from 'path';
+import { v7 as uuidv7 } from 'uuid';
+import PQueue from 'p-queue';
+import { Chunker } from './chunker.js';
+import type { CachedEmbeddingProvider } from './embeddings.js';
+import type { ProjectConfig, IndexerStats } from './types.js';
+
+export interface IndexerConfig {
+  qdrantUrl: string;
+  embeddingProvider: CachedEmbeddingProvider;
+  dimensions: number;
+  /** Qdrant request timeout in milliseconds (default: 30000) */
+  timeout?: number;
+  /** Optional Qdrant client for testing (skips creating from qdrantUrl) */
+  qdrantClient?: QdrantClient;
+}
+
+/** Qdrant timeout in milliseconds (default: 30s) */
+const QDRANT_TIMEOUT_MS = 30_000;
+const QDRANT_MAX_RETRIES = 3;
+
+export class Indexer {
+  private qdrant: QdrantClient;
+  private chunkers = new Map<string, Chunker>();
+  private provider: CachedEmbeddingProvider;
+  private dimensions: number;
+  stats: IndexerStats;
+
+  constructor(config: IndexerConfig) {
+    this.qdrant =
+      config.qdrantClient ??
+      new QdrantClient({
+        url: config.qdrantUrl,
+        timeout: config.timeout ?? QDRANT_TIMEOUT_MS,
+      });
+    this.provider = config.embeddingProvider;
+    this.dimensions = config.dimensions;
+    this.stats = { files: 0, chunks: 0, cached: 0, errors: 0 };
+  }
+
+  private getChunker(project: ProjectConfig): Chunker {
+    const key = `${project.indexing.chunkSize}:${project.indexing.overlap}`;
+    if (!this.chunkers.has(key)) {
+      this.chunkers.set(
+        key,
+        new Chunker({
+          chunkSize: project.indexing.chunkSize,
+          overlap: project.indexing.overlap,
+        })
+      );
+    }
+    return this.chunkers.get(key)!;
+  }
+
+  private async retryQdrant<T>(fn: () => Promise<T>, retries = QDRANT_MAX_RETRIES): Promise<T> {
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastError = err as Error;
+        if (attempt < retries - 1) {
+          const delay = 1000 * 2 ** attempt;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+          console.warn(
+            `[indexer] Qdrant operation failed, retrying (${attempt + 1}/${retries})...`
+          );
+        }
+      }
+    }
+    throw new Error(`Qdrant failed after ${retries} retries: ${lastError?.message}`);
+  }
+
+  /** Ensure group collection exists in Qdrant */
+  async ensureCollection(groupName: string): Promise<void> {
+    try {
+      await this.qdrant.getCollection(groupName);
+      return;
+    } catch {
+      // Collection doesn't exist, try to create
+    }
+
+    try {
+      await this.retryQdrant(() =>
+        this.qdrant.createCollection(groupName, {
+          vectors: {
+            size: this.dimensions,
+            distance: 'Cosine',
+          },
+        })
+      );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(groupName, {
+          field_name: 'project',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(groupName, {
+          field_name: 'file',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
+    } catch (err) {
+      // If creation failed, check if another process created it
+      try {
+        await this.qdrant.getCollection(groupName);
+        // Collection exists now, that's OK
+      } catch {
+        throw err;
+      }
+    }
+  }
+
+  /** Index a single file into its group collection */
+  async indexFile(groupName: string, project: ProjectConfig, filePath: string): Promise<number> {
+    const relPath = path.relative(project.path, filePath);
+
+    let content: string;
+    try {
+      const buffer = await fs.promises.readFile(filePath);
+      if (buffer.includes(0)) return 0; // Binary file
+      content = buffer.toString('utf8');
+      if (content.includes('\uFFFD')) return 0; // Invalid UTF-8
+    } catch (err) {
+      console.error(`  Failed to read ${relPath}: ${(err as Error).message}`);
+      return 0;
+    }
+
+    if (!content.trim()) return 0;
+
+    const chunker = this.getChunker(project);
+    const language = project.languages[0] ?? 'generic';
+    const chunks = chunker.chunk(content, language);
+    if (chunks.length === 0) return 0;
+
+    const contents = chunks.map((c) => c.content);
+    const embeddings = await this.provider.embedBatch(contents);
+
+    if (embeddings.length !== chunks.length) {
+      throw new Error(
+        `Embedding mismatch: got ${embeddings.length} embeddings for ${chunks.length} chunks in ${relPath}`
+      );
+    }
+
+    const points = chunks.map((chunk, i) => ({
+      id: uuidv7(),
+      vector: embeddings[i]!,
+      payload: {
+        project: project.name,
+        file: relPath,
+        language,
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        content: chunk.content,
+        hash: chunk.hash,
+      },
+    }));
+
+    const batchSize = project.indexing.batchSize;
+    for (let i = 0; i < points.length; i += batchSize) {
+      const batch = points.slice(i, i + batchSize);
+      await this.retryQdrant(() => this.qdrant.upsert(groupName, { points: batch, wait: true }));
+    }
+
+    return points.length;
+  }
+
+  /** Index all files in a project into its group collection */
+  async indexProject(project: ProjectConfig): Promise<number> {
+    const groupName = project.group;
+
+    if (!fs.existsSync(project.path)) {
+      console.error(`  Project path not found: ${project.path}`);
+      return 0;
+    }
+
+    await this.ensureCollection(groupName);
+
+    const fileSet = new Set<string>();
+    for (const pattern of project.patterns) {
+      const found = await glob(pattern, {
+        cwd: project.path,
+        absolute: true,
+        ignore: project.exclude,
+        nodir: true,
+      });
+      found.forEach((f) => fileSet.add(f));
+    }
+    const files = Array.from(fileSet);
+    console.error(`  ${files.length} files found`);
+
+    const queue = new PQueue({ concurrency: project.indexing.concurrency });
+    let totalChunks = 0;
+    let processed = 0;
+
+    const tasks = files.map((file) =>
+      queue.add(async () => {
+        try {
+          const n = await this.indexFile(groupName, project, file);
+          totalChunks += n;
+          processed++;
+          this.stats.files++;
+          this.stats.chunks += n;
+
+          if (processed % 20 === 0 || processed === files.length) {
+            console.error(`  [${processed}/${files.length}] ${totalChunks} chunks`);
+          }
+        } catch (err) {
+          this.stats.errors++;
+          const rel = path.relative(project.path, file);
+          console.error(`  Error indexing ${rel}:`);
+          console.error(`    ${(err as Error).message}`);
+          if (process.env.DEBUG) {
+            console.error((err as Error).stack);
+          }
+        }
+      })
+    );
+
+    await Promise.all(tasks);
+    this.stats.cached = this.provider.cacheHits; // Update once after all tasks complete
+    return totalChunks;
+  }
+
+  /** Index multiple projects (all in the same or different groups) */
+  async indexAll(projects: ProjectConfig[]): Promise<void> {
+    console.error('Starting full index...\n');
+    const start = Date.now();
+
+    for (const project of projects) {
+      console.error(`[${project.group}/${project.name}]`);
+      const n = await this.indexProject(project);
+      console.error(`  Done: ${n} chunks\n`);
+    }
+
+    this.stats.cached = this.provider.cacheHits;
+    const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+    const cacheStats = this.provider.getCacheStats();
+    console.error(`Indexing complete in ${elapsed}s`);
+    console.error(
+      `  Files: ${this.stats.files}, Chunks: ${this.stats.chunks}, Cached: ${this.stats.cached}, Errors: ${this.stats.errors}`
+    );
+    console.error(
+      `  Cache: ${cacheStats.size}/${cacheStats.maxSize} entries, hit rate ${(cacheStats.hitRate * 100).toFixed(1)}%`
+    );
+  }
+
+  /** Update a single file (delete old chunks + re-index) */
+  async updateFile(groupName: string, project: ProjectConfig, filePath: string): Promise<void> {
+    const relPath = path.relative(project.path, filePath);
+
+    try {
+      await this.retryQdrant(() =>
+        this.qdrant.delete(groupName, {
+          filter: {
+            must: [
+              { key: 'project', match: { value: project.name } },
+              { key: 'file', match: { value: relPath } },
+            ],
+          },
+          wait: true,
+        })
+      );
+    } catch (err) {
+      console.warn(
+        `[indexer] Could not delete old chunks for ${relPath}: ${(err as Error).message}`
+      );
+    }
+
+    if (fs.existsSync(filePath)) {
+      const n = await this.indexFile(groupName, project, filePath);
+      console.error(`[indexer] Updated ${groupName}/${project.name}/${relPath} (${n} chunks)`);
+    } else {
+      console.error(`[indexer] Deleted ${groupName}/${project.name}/${relPath}`);
+    }
+  }
+
+  /** Remove all chunks for a file */
+  async deleteFile(groupName: string, project: ProjectConfig, filePath: string): Promise<void> {
+    const relPath = path.relative(project.path, filePath);
+
+    try {
+      await this.retryQdrant(() =>
+        this.qdrant.delete(groupName, {
+          filter: {
+            must: [
+              { key: 'project', match: { value: project.name } },
+              { key: 'file', match: { value: relPath } },
+            ],
+          },
+          wait: true,
+        })
+      );
+      console.error(`[indexer] Removed ${groupName}/${project.name}/${relPath}`);
+    } catch {
+      // ignore
+    }
+  }
+
+  /** Delete entire group collection and re-index all its projects */
+  async reindexGroup(groupName: string, projects: ProjectConfig[]): Promise<number> {
+    try {
+      await this.qdrant.deleteCollection(groupName);
+    } catch {
+      // may not exist
+    }
+
+    let total = 0;
+    for (const project of projects) {
+      total += await this.indexProject(project);
+    }
+    return total;
+  }
+
+  /** Get collection stats for a group */
+  async getGroupStats(groupName: string): Promise<{ points: number; status: string }> {
+    try {
+      const info = await this.qdrant.getCollection(groupName);
+      return { points: info.points_count ?? 0, status: String(info.status) };
+    } catch {
+      return { points: 0, status: 'not_indexed' };
+    }
+  }
+
+  /** List all collections (groups) */
+  async listGroups(): Promise<Record<string, number>> {
+    const collections = await this.qdrant.getCollections();
+    const infos = await Promise.all(
+      collections.collections.map((col) => this.qdrant.getCollection(col.name))
+    );
+    const result: Record<string, number> = {};
+    collections.collections.forEach((col, i) => {
+      result[col.name] = infos[i]!.points_count ?? 0;
+    });
+    return result;
+  }
+}
