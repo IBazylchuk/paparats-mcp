@@ -307,6 +307,67 @@ describe('Server API', () => {
       expect(body.status).toBe('ok');
       expect(body.message).toBe('File reindexed');
     });
+
+    it('returns 400 for path traversal (relative)', async () => {
+      projectsByGroup.set('test-group', [
+        createProjectConfig({ path: tmpDir, name: 'test-project' }),
+      ]);
+
+      const res = await fetchApi('/api/file-changed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group: 'test-group',
+          project: 'test-project',
+          file: '../../etc/passwd',
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Path outside project');
+    });
+
+    it('returns 400 for absolute path outside project', async () => {
+      projectsByGroup.set('test-group', [
+        createProjectConfig({ path: tmpDir, name: 'test-project' }),
+      ]);
+      const absPathOutside = path.resolve(tmpDir, '..', '..', 'outside-project');
+
+      const res = await fetchApi('/api/file-changed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group: 'test-group',
+          project: 'test-project',
+          file: absPathOutside,
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Path outside project');
+    });
+
+    it('returns 200 for absolute path within project', async () => {
+      projectsByGroup.set('test-group', [
+        createProjectConfig({ path: tmpDir, name: 'test-project' }),
+      ]);
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'src', 'foo.ts'), 'const x = 1;');
+
+      const absPath = path.join(tmpDir, 'src', 'foo.ts');
+      const res = await fetchApi('/api/file-changed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group: 'test-group',
+          project: 'test-project',
+          file: absPath,
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.status).toBe('ok');
+    });
   });
 
   describe('POST /api/file-deleted', () => {
@@ -354,6 +415,45 @@ describe('Server API', () => {
       const body = await res.json();
       expect(body.status).toBe('ok');
       expect(body.message).toBe('File removed from index');
+    });
+
+    it('returns 400 for path traversal (relative)', async () => {
+      projectsByGroup.set('test-group', [
+        createProjectConfig({ path: tmpDir, name: 'test-project' }),
+      ]);
+
+      const res = await fetchApi('/api/file-deleted', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group: 'test-group',
+          project: 'test-project',
+          file: '../../etc/passwd',
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Path outside project');
+    });
+
+    it('returns 400 for absolute path outside project', async () => {
+      projectsByGroup.set('test-group', [
+        createProjectConfig({ path: tmpDir, name: 'test-project' }),
+      ]);
+      const absPathOutside = path.resolve(tmpDir, '..', '..', 'outside-project');
+
+      const res = await fetchApi('/api/file-deleted', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group: 'test-group',
+          project: 'test-project',
+          file: absPathOutside,
+        }),
+      });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toBe('Path outside project');
     });
   });
 

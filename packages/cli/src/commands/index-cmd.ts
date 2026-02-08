@@ -228,9 +228,9 @@ export const indexCommand = new Command('index')
 
       const controller = new AbortController();
 
+      let spinner: ReturnType<typeof ora> | null = null;
       const sigintHandler = () => {
-        const spinner = ora();
-        spinner.stop();
+        spinner?.stop();
         if (!opts.json) {
           console.log(chalk.yellow('\nIndexing cancelled by user'));
         }
@@ -240,9 +240,7 @@ export const indexCommand = new Command('index')
 
       process.on('SIGINT', sigintHandler);
 
-      const spinner = opts.json
-        ? null
-        : ora(`Indexing ${projectConfig.group}/${projectDir}...`).start();
+      spinner = opts.json ? null : ora(`Indexing ${projectConfig.group}/${projectDir}...`).start();
 
       try {
         await runIndex(

@@ -1,3 +1,4 @@
+import path from 'path';
 import express, { type Express } from 'express';
 import cors from 'cors';
 import { readConfig, resolveProject } from './config.js';
@@ -24,6 +25,17 @@ export async function withTimeout<T>(
 export const SEARCH_TIMEOUT_MS = 30_000;
 export const INDEX_TIMEOUT_MS = 120_000;
 export const FILE_CHANGED_TIMEOUT_MS = 60_000;
+
+/** Resolve file path and ensure it is strictly within project.path. Rejects path traversal. */
+function resolveFileWithinProject(project: ProjectConfig, file: string): string {
+  const resolved = path.isAbsolute(file) ? path.resolve(file) : path.resolve(project.path, file);
+  const projectRoot = path.resolve(project.path);
+  const prefix = projectRoot + path.sep;
+  if (resolved !== projectRoot && !resolved.startsWith(prefix)) {
+    throw new Error('Path outside project');
+  }
+  return resolved;
+}
 
 /** Options for createApp - all services required for the HTTP server */
 export interface CreateAppOptions {
@@ -183,7 +195,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         return;
       }
 
-      const filePath = file.startsWith('/') ? file : `${project.path}/${file}`;
+      const filePath = resolveFileWithinProject(project, file);
       await withTimeout(
         indexer.updateFile(group, project, filePath),
         FILE_CHANGED_TIMEOUT_MS,
@@ -192,7 +204,9 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
       res.json({ status: 'ok', message: 'File reindexed' });
     } catch (err) {
-      if ((err as Error).message === 'File-changed timeout') {
+      if ((err as Error).message === 'Path outside project') {
+        res.status(400).json({ error: 'Path outside project' });
+      } else if ((err as Error).message === 'File-changed timeout') {
         res.status(504).json({ error: 'File-changed request timed out after 60s' });
       } else {
         console.error('[api] File-changed error:', err);
@@ -220,7 +234,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         return;
       }
 
-      const filePath = file.startsWith('/') ? file : `${project.path}/${file}`;
+      const filePath = resolveFileWithinProject(project, file);
       await withTimeout(
         indexer.deleteFile(group, project, filePath),
         FILE_CHANGED_TIMEOUT_MS,
@@ -229,7 +243,9 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
       res.json({ status: 'ok', message: 'File removed from index' });
     } catch (err) {
-      if ((err as Error).message === 'File-deleted timeout') {
+      if ((err as Error).message === 'Path outside project') {
+        res.status(400).json({ error: 'Path outside project' });
+      } else if ((err as Error).message === 'File-deleted timeout') {
         res.status(504).json({ error: 'File-deleted request timed out after 60s' });
       } else {
         console.error('[api] File-deleted error:', err);
