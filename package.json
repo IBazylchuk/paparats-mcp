@@ -1,0 +1,15 @@
+{
+  "name": "paparats-mcp-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "yarn workspace @paparats/server build && yarn workspace @paparats/cli build",
+    "clean": "rm -rf packages/*/dist"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

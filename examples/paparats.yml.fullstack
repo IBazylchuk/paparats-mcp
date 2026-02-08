@@ -1,0 +1,11 @@
+# Multi-language project (e.g. monorepo with backend + infra)
+group: "my-platform"
+language: [typescript, terraform]
+
+indexing:
+  paths: ["src/", "infra/"]
+  exclude: ["node_modules/**", "dist/**", ".terraform/**"]
+
+embeddings:
+  provider: "ollama"
+  model: "jina-code-embeddings"  # Ollama alias for jinaai/jina-code-embeddings-1.5b-GGUF
