@@ -11,6 +11,7 @@ RUN apk add --no-cache python3 make g++
 # Copy dependency files first (rarely change → better layer caching)
 COPY package.json yarn.lock ./
 COPY tsconfig.base.json ./
+COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
 # packages/cli required for yarn workspaces resolution (root has "packages/*")
 COPY packages/cli/package.json packages/cli/
@@ -20,11 +21,13 @@ COPY packages/cli/package.json packages/cli/
 RUN yarn install --frozen-lockfile --ignore-engines
 
 # Copy source code (changes frequently)
+COPY packages/shared/src packages/shared/src
+COPY packages/shared/tsconfig.json packages/shared/
 COPY packages/server/src packages/server/src
 COPY packages/server/tsconfig.json packages/server/
 
-# Build TypeScript
-RUN cd packages/server && yarn build
+# Build TypeScript (shared first, server depends on it)
+RUN yarn workspace @paparats/shared build && yarn workspace @paparats/server build
 
 # Prune devDependencies
 RUN yarn install --frozen-lockfile --production --ignore-engines && yarn cache clean
@@ -48,6 +51,8 @@ RUN chmod +x /entrypoint.sh
 
 # Copy only built artifacts and production dependencies
 COPY --from=builder --chown=nodejs:nodejs /app/package.json /app/yarn.lock ./
+COPY --from=builder --chown=nodejs:nodejs /app/packages/shared/package.json packages/shared/
+COPY --from=builder --chown=nodejs:nodejs /app/packages/shared/dist packages/shared/dist
 COPY --from=builder --chown=nodejs:nodejs /app/packages/server/package.json packages/server/
 COPY --from=builder --chown=nodejs:nodejs /app/packages/server/dist packages/server/dist
 COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
