@@ -21,5 +21,19 @@ if (!/^\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?(\+[a-zA-Z0-9.-]+)?$/.test(version)) {
 }
 const tag = `v${version}`;
 
-console.log(`Tagging ${tag} and pushing (triggers Docker publish)...`);
-execSync(`git tag ${tag} && git push origin ${tag}`, { stdio: 'inherit' });
+let tagExisted = false;
+try {
+  execSync(`git tag ${tag}`, { encoding: 'utf8' });
+} catch (err) {
+  const output = (err?.stderr ?? err?.message ?? '') || '';
+  if (output.includes('already exists')) {
+    tagExisted = true;
+    console.log(`Tag ${tag} already exists, pushing...`);
+  } else {
+    throw err;
+  }
+}
+if (!tagExisted) {
+  console.log(`Tagging ${tag} and pushing (triggers Docker publish)...`);
+}
+execSync(`git push origin ${tag}`, { stdio: 'inherit' });
