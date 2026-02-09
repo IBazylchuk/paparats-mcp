@@ -39,7 +39,7 @@ export class Indexer {
       });
     this.provider = config.embeddingProvider;
     this.dimensions = config.dimensions;
-    this.stats = { files: 0, chunks: 0, cached: 0, errors: 0 };
+    this.stats = { files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 };
   }
 
   private getChunker(project: ProjectConfig): Chunker {
@@ -73,6 +73,48 @@ export class Indexer {
       }
     }
     throw new Error(`Qdrant failed after ${retries} retries: ${lastError?.message}`);
+  }
+
+  /** Fetch existing chunk hashes for a file from Qdrant */
+  private async getFileChunkHashes(
+    groupName: string,
+    projectName: string,
+    relPath: string
+  ): Promise<Set<string>> {
+    try {
+      const result = await this.qdrant.scroll(groupName, {
+        filter: {
+          must: [
+            { key: 'project', match: { value: projectName } },
+            { key: 'file', match: { value: relPath } },
+          ],
+        },
+        with_payload: { include: ['hash'] },
+        with_vector: false,
+        limit: 1000,
+      });
+      const hashes = new Set<string>();
+      for (const point of result.points) {
+        const hash = (point.payload as Record<string, unknown> | null)?.['hash'];
+        if (typeof hash === 'string') {
+          hashes.add(hash);
+        }
+      }
+      return hashes;
+    } catch (err) {
+      console.warn(
+        `[indexer] Failed to get chunk hashes for ${projectName}/${relPath}: ${(err as Error).message}`
+      );
+      return new Set<string>();
+    }
+  }
+
+  private hashSetsEqual(a: Set<string>, b: Set<string>): boolean {
+    if (a.size !== b.size) return false;
+    for (const h of a) {
+      if (!b.has(h)) return false;
+    }
+    return true;
   }
 
   /** Ensure group collection exists in Qdrant */
@@ -140,8 +182,31 @@ export class Indexer {
     const chunks = chunker.chunk(content, language);
     if (chunks.length === 0) return 0;
 
+    // Compare chunk hashes to skip unchanged files
+    const newHashes = new Set(chunks.map((c) => c.hash));
+    const existingHashes = await this.getFileChunkHashes(groupName, project.name, relPath);
+    if (this.hashSetsEqual(newHashes, existingHashes)) {
+      this.stats.skipped++;
+      return 0;
+    }
+
+    // Delete old chunks if file was previously indexed
+    if (existingHashes.size > 0) {
+      await this.retryQdrant(() =>
+        this.qdrant.delete(groupName, {
+          filter: {
+            must: [
+              { key: 'project', match: { value: project.name } },
+              { key: 'file', match: { value: relPath } },
+            ],
+          },
+          wait: true,
+        })
+      );
+    }
+
     const contents = chunks.map((c) => c.content);
-    const embeddings = await this.provider.embedBatch(contents);
+    const embeddings = await this.provider.embedBatchPassage(contents);
 
     if (embeddings.length !== chunks.length) {
       throw new Error(
@@ -229,6 +294,11 @@ export class Indexer {
 
     await Promise.all(tasks);
     this.stats.cached = this.provider.cacheHits; // Update once after all tasks complete
+
+    if (this.stats.skipped > 0) {
+      console.log(`  [indexer] Skipped ${this.stats.skipped}/${files.length} files (unchanged)`);
+    }
+
     return totalChunks;
   }
 
@@ -248,7 +318,7 @@ export class Indexer {
     const cacheStats = this.provider.getCacheStats();
     console.log(`Indexing complete in ${elapsed}s`);
     console.log(
-      `  Files: ${this.stats.files}, Chunks: ${this.stats.chunks}, Cached: ${this.stats.cached}, Errors: ${this.stats.errors}`
+      `  Files: ${this.stats.files}, Chunks: ${this.stats.chunks}, Cached: ${this.stats.cached}, Skipped: ${this.stats.skipped}, Errors: ${this.stats.errors}`
     );
     console.log(
       `  Cache: ${cacheStats.size}/${cacheStats.maxSize} entries, hit rate ${(cacheStats.hitRate * 100).toFixed(1)}%`
@@ -330,8 +400,31 @@ export class Indexer {
         const chunks = chunker.chunk(content, lang);
         if (chunks.length === 0) return;
 
+        // Compare chunk hashes to skip unchanged files
+        const newHashes = new Set(chunks.map((c) => c.hash));
+        const existingHashes = await this.getFileChunkHashes(groupName, project.name, relPath);
+        if (this.hashSetsEqual(newHashes, existingHashes)) {
+          this.stats.skipped++;
+          return;
+        }
+
+        // Delete old chunks if file was previously indexed
+        if (existingHashes.size > 0) {
+          await this.retryQdrant(() =>
+            this.qdrant.delete(groupName, {
+              filter: {
+                must: [
+                  { key: 'project', match: { value: project.name } },
+                  { key: 'file', match: { value: relPath } },
+                ],
+              },
+              wait: true,
+            })
+          );
+        }
+
         const contents = chunks.map((c) => c.content);
-        const embeddings = await this.provider.embedBatch(contents);
+        const embeddings = await this.provider.embedBatchPassage(contents);
 
         if (embeddings.length !== chunks.length) {
           throw new Error(
@@ -412,7 +505,7 @@ export class Indexer {
     }
 
     const contents = chunks.map((c) => c.content);
-    const embeddings = await this.provider.embedBatch(contents);
+    const embeddings = await this.provider.embedBatchPassage(contents);
 
     if (embeddings.length !== chunks.length) {
       throw new Error(

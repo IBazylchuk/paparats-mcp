@@ -437,6 +437,234 @@ describe('Searcher', () => {
     expect(formatted).toBe('No results found. Make sure the project is indexed.');
   });
 
+  it('expandedSearch returns merged results from multiple query variations', async () => {
+    // "auth middleware" expands to ["auth middleware", "authentication middleware", ...]
+    // Each call returns different results
+    mockQdrant.client.search
+      .mockResolvedValueOnce([
+        {
+          id: '1',
+          score: 0.9,
+          payload: {
+            project: 'p',
+            file: 'src/auth.ts',
+            language: 'ts',
+            startLine: 1,
+            endLine: 10,
+            content: 'auth check',
+            hash: 'h1',
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: '2',
+          score: 0.85,
+          payload: {
+            project: 'p',
+            file: 'src/middleware.ts',
+            language: 'ts',
+            startLine: 5,
+            endLine: 15,
+            content: 'authentication middleware',
+            hash: 'h2',
+          },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const response = await searcher.expandedSearch('test-group', 'auth middleware', { limit: 5 });
+
+    expect(response.results.length).toBeGreaterThanOrEqual(2);
+    expect(response.results.map((r) => r.hash)).toContain('h1');
+    expect(response.results.map((r) => r.hash)).toContain('h2');
+    // Sorted by score descending
+    for (let i = 1; i < response.results.length; i++) {
+      expect(response.results[i - 1]!.score).toBeGreaterThanOrEqual(response.results[i]!.score);
+    }
+  });
+
+  it('expandedSearch deduplicates by hash, keeping highest score', async () => {
+    // Same hash returned by two variations with different scores
+    mockQdrant.client.search
+      .mockResolvedValueOnce([
+        {
+          id: '1',
+          score: 0.7,
+          payload: {
+            project: 'p',
+            file: 'src/auth.ts',
+            language: 'ts',
+            startLine: 1,
+            endLine: 10,
+            content: 'auth',
+            hash: 'shared-hash',
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: '2',
+          score: 0.95,
+          payload: {
+            project: 'p',
+            file: 'src/auth.ts',
+            language: 'ts',
+            startLine: 1,
+            endLine: 10,
+            content: 'auth',
+            hash: 'shared-hash',
+          },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const response = await searcher.expandedSearch('test-group', 'auth middleware', { limit: 5 });
+
+    expect(response.results).toHaveLength(1);
+    expect(response.results[0]!.hash).toBe('shared-hash');
+    expect(response.results[0]!.score).toBe(0.95);
+  });
+
+  it('expandedSearch falls through to single search when no expansions generated', async () => {
+    mockQdrant.client.search.mockResolvedValue([
+      {
+        id: '1',
+        score: 0.9,
+        payload: {
+          project: 'p',
+          file: 'f.ts',
+          language: 'ts',
+          startLine: 1,
+          endLine: 10,
+          content: 'result',
+          hash: 'h',
+        },
+      },
+    ]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    // "Searcher" is a single PascalCase word with no abbreviations - no expansion
+    const response = await searcher.expandedSearch('test-group', 'Searcher', { limit: 5 });
+
+    expect(response.results).toHaveLength(1);
+    expect(response.results[0]!.content).toBe('result');
+    // Single search: only 1 call to qdrant
+    expect(mockQdrant.client.search).toHaveBeenCalledTimes(1);
+  });
+
+  it('expandedSearch logs which variations contributed results', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    mockQdrant.client.search
+      .mockResolvedValueOnce([
+        {
+          id: '1',
+          score: 0.9,
+          payload: {
+            project: 'p',
+            file: 'src/auth.ts',
+            language: 'ts',
+            startLine: 1,
+            endLine: 10,
+            content: 'auth',
+            hash: 'h1',
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: '2',
+          score: 0.85,
+          payload: {
+            project: 'p',
+            file: 'src/auth2.ts',
+            language: 'ts',
+            startLine: 1,
+            endLine: 10,
+            content: 'authentication',
+            hash: 'h2',
+          },
+        },
+      ])
+      .mockResolvedValue([]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    await searcher.expandedSearch('test-group', 'auth middleware', { limit: 5 });
+
+    const logCall = consoleSpy.mock.calls.find(
+      (args) => typeof args[0] === 'string' && args[0].includes('[searcher] Query expansion:')
+    );
+    expect(logCall).toBeDefined();
+    expect(logCall![0]).toContain('"auth middleware"');
+    expect(logCall![0]).toContain('variations');
+    expect(logCall![0]).toContain('results');
+
+    consoleSpy.mockRestore();
+  });
+
+  it('expandedSearch respects limit parameter', async () => {
+    // Return many results from multiple expansions
+    const makeHit = (id: string, score: number, hash: string) => ({
+      id,
+      score,
+      payload: {
+        project: 'p',
+        file: 'f.ts',
+        language: 'ts',
+        startLine: 1,
+        endLine: 10,
+        content: 'x',
+        hash,
+      },
+    });
+
+    mockQdrant.client.search
+      .mockResolvedValueOnce([
+        makeHit('1', 0.9, 'h1'),
+        makeHit('2', 0.8, 'h2'),
+        makeHit('3', 0.7, 'h3'),
+      ])
+      .mockResolvedValueOnce([makeHit('4', 0.85, 'h4'), makeHit('5', 0.75, 'h5')])
+      .mockResolvedValue([]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const response = await searcher.expandedSearch('test-group', 'auth middleware', { limit: 3 });
+
+    expect(response.results).toHaveLength(3);
+    // Top 3 by score: 0.9, 0.85, 0.8
+    expect(response.results[0]!.score).toBe(0.9);
+    expect(response.results[1]!.score).toBe(0.85);
+    expect(response.results[2]!.score).toBe(0.8);
+  });
+
   it('formatResults formats results as markdown', () => {
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
