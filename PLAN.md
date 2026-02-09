@@ -38,7 +38,7 @@
 
 ### Phase 2 — Distribution
 
-- Publish CLI to npm as `paparats-mcp`
+- Publish CLI to npm as `@paparats/cli`
 - Publish Docker image to Docker Hub
 - GitHub Actions for CI/CD
 - Auto-configure Claude Code / Cursor MCP settings

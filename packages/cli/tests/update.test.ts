@@ -31,7 +31,7 @@ describe('update', () => {
 
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Update complete'));
       expect(execMock).toHaveBeenCalledWith(
-        expect.stringContaining('npm install -g paparats-mcp@latest'),
+        expect.stringContaining('npm install -g @paparats/cli@latest'),
         expect.any(Object)
       );
       expect(execMock).toHaveBeenCalledWith(
