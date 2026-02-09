@@ -73,6 +73,7 @@ function createMockIndexer(): Indexer {
     deleteFileByPath: vi.fn().mockResolvedValue(undefined),
     deleteProjectChunks: vi.fn().mockResolvedValue(undefined),
     reindexGroup: vi.fn().mockResolvedValue(0),
+    stats: { files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 },
   } as unknown as Indexer;
 }
 

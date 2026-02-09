@@ -11,6 +11,7 @@ import {
   type PaparatsConfig,
   type SupportedLanguage,
 } from '../config.js';
+import { upsertMcpServer } from './install.js';
 
 const DEFAULT_EXCLUDE = ['node_modules', 'dist', 'build', '.git', '.next', 'coverage', '.turbo'];
 
@@ -226,6 +227,18 @@ export async function runInit(
 
   writeConfig(projectDir, config);
   console.log(chalk.green(`\n✓ Created ${CONFIG_FILE}`));
+
+  // Auto-configure Claude Code MCP
+  const mcpJsonPath = path.join(projectDir, '.mcp.json');
+  const mcpResult = upsertMcpServer(mcpJsonPath, 'paparats', {
+    type: 'http',
+    url: 'http://localhost:9876/mcp',
+  });
+  if (mcpResult === 'unchanged') {
+    console.log(chalk.green('✓ .mcp.json already configured'));
+  } else {
+    console.log(chalk.green('✓ Added paparats to .mcp.json'));
+  }
 
   if (!skipPrompts) {
     const gitignorePath = path.join(projectDir, '.gitignore');

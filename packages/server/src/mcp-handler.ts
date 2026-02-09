@@ -7,6 +7,16 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { Searcher } from './searcher.js';
 import type { Indexer } from './indexer.js';
 import type { ProjectConfig } from './types.js';
+import { prompts, buildProjectOverviewSections } from './prompts/index.js';
+
+const HIGH_CONFIDENCE_THRESHOLD = 0.6;
+const LOW_CONFIDENCE_THRESHOLD = 0.4;
+
+function confidenceTier(score: number): string {
+  if (score >= HIGH_CONFIDENCE_THRESHOLD) return 'high confidence';
+  if (score >= LOW_CONFIDENCE_THRESHOLD) return 'partial match';
+  return 'low confidence';
+}
 
 export interface McpHandlerConfig {
   searcher: Searcher;
@@ -106,10 +116,7 @@ export class McpHandler {
   private createMcpServer(): McpServer {
     const server = new McpServer(
       { name: 'paparats-mcp', version: '0.1.0' },
-      {
-        instructions:
-          'Semantic code search across workspace projects. Use search_code for exploratory questions.',
-      }
+      { instructions: prompts.serverInstructions }
     );
 
     // ── Resource: project overview ──────────────────────────────────────────
@@ -127,19 +134,7 @@ export class McpHandler {
           );
         }
 
-        sections.push(
-          '## Search Capabilities',
-          '',
-          'Use `search_code` tool to find relevant code across all projects.',
-          'This is MORE EFFICIENT than loading full files.',
-          '',
-          'Example queries:',
-          '- "authentication flow"',
-          '- "GraphQL mutations for user"',
-          '- "AWS infrastructure setup"',
-          '',
-          'Always search before answering code questions.'
-        );
+        sections.push(...buildProjectOverviewSections());
 
         const usage = this.searcher.getUsageStats();
         if (usage.searchCount > 0) {
@@ -176,15 +171,7 @@ export class McpHandler {
     // ── Tool: search_code ───────────────────────────────────────────────────
     server.tool(
       'search_code',
-      `Semantic code search across all indexed projects.
-
-USE THIS when user asks about code location, implementation, or "how X works".
-
-WHY: Returns only relevant chunks (50-90% fewer tokens vs full files). Searches by meaning, not keywords.
-
-WORKFLOW: Search first → understand context → load specific files only if needed.
-
-Examples: "auth flow", "GraphQL mutations", "error handling patterns"`,
+      prompts.tools.search_code.description,
       {
         query: z.string().describe('Natural language query or code snippet'),
         group: z.string().optional().describe('Specific group or omit for all'),
@@ -218,7 +205,7 @@ Examples: "auth flow", "GraphQL mutations", "error handling patterns"`,
           }> = [];
 
           for (const g of groupNames) {
-            const response = await this.searcher.search(g, query, {
+            const response = await this.searcher.expandedSearch(g, query, {
               project,
               limit: limit * 2,
             });
@@ -249,11 +236,27 @@ Examples: "auth flow", "GraphQL mutations", "error handling patterns"`,
           const formatted = top
             .map((r) => {
               const score = (r.score * 100).toFixed(1);
-              return `**[${r.project}] ${r.file}:${r.startLine}** (${score}%)\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
+              const tier = confidenceTier(r.score);
+              return `**[${r.project}] ${r.file}:${r.startLine}** (${score}% — ${tier})\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
             })
             .join('\n\n---\n\n');
 
-          return { content: [{ type: 'text' as const, text: formatted }] };
+          const highCount = top.filter((r) => r.score >= HIGH_CONFIDENCE_THRESHOLD).length;
+          const lowCount = top.filter((r) => r.score < LOW_CONFIDENCE_THRESHOLD).length;
+          const bestScore = top[0]?.score ?? 0;
+
+          let guidance = '';
+          if (bestScore < LOW_CONFIDENCE_THRESHOLD) {
+            guidance =
+              '> **Low confidence results.** Use grep or file reading to find what you need.\n\n';
+          } else if (bestScore < HIGH_CONFIDENCE_THRESHOLD) {
+            guidance =
+              '> **Partial match results.** Supplement with grep or file reading for better coverage.\n\n';
+          } else if (highCount > 0 && lowCount > 0) {
+            guidance = `> **${highCount} high-confidence and ${lowCount} low-confidence results.** Review low-confidence results carefully.\n\n`;
+          }
+
+          return { content: [{ type: 'text' as const, text: guidance + formatted }] };
         } catch (err) {
           const details = group ? `group "${group}"` : `${this.getGroupNames().length} groups`;
 
@@ -271,45 +274,36 @@ Examples: "auth flow", "GraphQL mutations", "error handling patterns"`,
     );
 
     // ── Tool: health_check ──────────────────────────────────────────────────
-    server.tool(
-      'health_check',
-      `Check indexing status: number of indexed chunks per group and any running reindex jobs.
+    server.tool('health_check', prompts.tools.health_check.description, {}, async () => {
+      try {
+        const groups = await this.indexer.listGroups();
+        const jobs = Object.fromEntries(this.reindexJobs.entries());
 
-Use to verify projects are indexed before searching or debugging empty results.`,
-      {},
-      async () => {
-        try {
-          const groups = await this.indexer.listGroups();
-          const jobs = Object.fromEntries(this.reindexJobs.entries());
-
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({ status: 'ok', groups, reindexJobs: jobs }, null, 2),
-              },
-            ],
-          };
-        } catch (err) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({ status: 'error', error: (err as Error).message }, null, 2),
-              },
-            ],
-            isError: true,
-          };
-        }
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ status: 'ok', groups, reindexJobs: jobs }, null, 2),
+            },
+          ],
+        };
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({ status: 'error', error: (err as Error).message }, null, 2),
+            },
+          ],
+          isError: true,
+        };
       }
-    );
+    });
 
     // ── Tool: reindex ───────────────────────────────────────────────────────
     server.tool(
       'reindex',
-      `Trigger full reindex of a group or all groups. Runs in background.
-
-Returns job ID to track progress via health_check. Use after adding new files or changing project config.`,
+      prompts.tools.reindex.description,
       {
         group: z.string().optional().describe('Group name or omit for all groups'),
       },

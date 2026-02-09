@@ -69,7 +69,7 @@ export async function isOllamaRunning(): Promise<boolean> {
   }
 }
 
-async function waitForHealth(
+export async function waitForHealth(
   url: string,
   label: string,
   maxRetries = 30,
@@ -138,6 +138,59 @@ function findTemplatePath(): string {
   );
 }
 
+export interface UpsertMcpDeps {
+  readFileSync?: (path: string, encoding: 'utf8') => string;
+  writeFileSync?: (path: string, data: string) => void;
+  existsSync?: (path: string) => boolean;
+  mkdirSync?: (dir: string) => void;
+}
+
+export function upsertMcpServer(
+  filePath: string,
+  serverName: string,
+  serverConfig: Record<string, unknown>,
+  deps?: UpsertMcpDeps
+): 'added' | 'updated' | 'unchanged' {
+  const readFile = deps?.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
+  const writeFile = deps?.writeFileSync ?? ((p: string, d: string) => fs.writeFileSync(p, d));
+  const exists = deps?.existsSync ?? ((p: string) => fs.existsSync(p));
+  const mkdir = deps?.mkdirSync ?? ((p: string) => fs.mkdirSync(p, { recursive: true }));
+
+  let data: { mcpServers?: Record<string, Record<string, unknown>> };
+
+  if (!exists(filePath)) {
+    const dir = path.dirname(filePath);
+    if (!exists(dir)) {
+      mkdir(dir);
+    }
+    data = { mcpServers: { [serverName]: serverConfig } };
+    writeFile(filePath, JSON.stringify(data, null, 2) + '\n');
+    return 'added';
+  }
+
+  const raw = readFile(filePath, 'utf8');
+  data = JSON.parse(raw) as typeof data;
+
+  if (!data.mcpServers) {
+    data.mcpServers = {};
+  }
+
+  const existing = data.mcpServers[serverName];
+  if (!existing) {
+    data.mcpServers[serverName] = serverConfig;
+    writeFile(filePath, JSON.stringify(data, null, 2) + '\n');
+    return 'added';
+  }
+
+  if (existing['url'] === serverConfig['url']) {
+    return 'unchanged';
+  }
+
+  data.mcpServers[serverName] = serverConfig;
+  writeFile(filePath, JSON.stringify(data, null, 2) + '\n');
+  return 'updated';
+}
+
 export interface InstallOptions {
   skipDocker?: boolean;
   skipOllama?: boolean;
@@ -155,6 +208,7 @@ export interface InstallDeps {
   findTemplatePath?: () => string;
   mkdirSync?: (dir: string) => void;
   copyFileSync?: (src: string, dest: string) => void;
+  readFileSync?: (path: string, encoding: 'utf8') => string;
   writeFileSync?: (path: string, data: string) => void;
   existsSync?: (path: string) => boolean;
   unlinkSync?: (path: string) => void;
@@ -173,6 +227,7 @@ export async function runInstall(
   const findTemplate = deps?.findTemplatePath ?? findTemplatePath;
   const mkdir = deps?.mkdirSync ?? ((p: string) => fs.mkdirSync(p, { recursive: true }));
   const copyFile = deps?.copyFileSync ?? fs.copyFileSync.bind(fs);
+  const readFile = deps?.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
   const writeFile = deps?.writeFileSync ?? fs.writeFileSync.bind(fs);
   const exists = deps?.existsSync ?? fs.existsSync.bind(fs);
   const unlink = deps?.unlinkSync ?? fs.unlinkSync.bind(fs);
@@ -287,6 +342,30 @@ export async function runInstall(
         throw err;
       }
     }
+  }
+
+  // Auto-configure Cursor MCP
+  const cursorDir = path.join(os.homedir(), '.cursor');
+  if (exists(cursorDir)) {
+    const cursorMcpPath = path.join(cursorDir, 'mcp.json');
+    const result = upsertMcpServer(
+      cursorMcpPath,
+      'paparats',
+      { url: 'http://localhost:9876/sse' },
+      {
+        readFileSync: readFile,
+        writeFileSync: writeFile,
+        existsSync: exists,
+        mkdirSync: mkdir,
+      }
+    );
+    if (result === 'unchanged') {
+      console.log(chalk.green('✓ Cursor MCP already configured'));
+    } else {
+      console.log(chalk.green('✓ Cursor MCP configured'));
+    }
+  } else {
+    console.log(chalk.dim('Cursor not detected, skipping MCP config'));
   }
 
   console.log(chalk.bold.green('\n✓ Installation complete!\n'));

@@ -90,6 +90,29 @@ function createMockQdrant() {
       return Promise.resolve(true);
     }),
 
+    scroll: vi.fn().mockImplementation((groupName: string, opts: { filter?: unknown }) => {
+      if (!collections.has(groupName)) {
+        return Promise.resolve({ points: [], next_page_offset: null });
+      }
+      const filter = opts?.filter as {
+        must?: { key: string; match: { value: string } }[];
+      };
+      const fileMatch = filter?.must?.find((m) => m.key === 'file');
+      const projectMatch = filter?.must?.find((m) => m.key === 'project');
+      const points = collections.get(groupName)!;
+      const matched: unknown[] = [];
+      for (const point of points.values()) {
+        const payload = (point as { payload?: { file?: string; project?: string } }).payload;
+        if (
+          (!fileMatch || payload?.file === fileMatch.match.value) &&
+          (!projectMatch || payload?.project === projectMatch.match.value)
+        ) {
+          matched.push(point);
+        }
+      }
+      return Promise.resolve({ points: matched, next_page_offset: null });
+    }),
+
     deleteCollection: vi.fn().mockImplementation((name: string) => {
       collections.delete(name);
       return Promise.resolve(true);
@@ -157,7 +180,7 @@ describe('Indexer', () => {
       dimensions: 4,
       qdrantClient: mockQdrant.client as never,
     });
-    expect(indexer.stats).toEqual({ files: 0, chunks: 0, cached: 0, errors: 0 });
+    expect(indexer.stats).toEqual({ files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 });
   });
 
   it('getGroupStats returns not_indexed for missing collection', async () => {
@@ -409,6 +432,107 @@ describe('Indexer', () => {
     );
     expect(files.some((f) => f.includes('secrets'))).toBe(true);
     expect(files.some((f) => f.includes('src/index.ts'))).toBe(true);
+  });
+
+  it('indexFile skips unchanged file on re-index', async () => {
+    const srcDir = path.join(projectDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    const tsPath = path.join(srcDir, 'same.ts');
+    fs.writeFileSync(tsPath, 'export const x = 1;\n');
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir);
+
+    // First index: should create chunks
+    const first = await indexer.indexFile('test-group', project, tsPath);
+    expect(first).toBeGreaterThan(0);
+    expect(indexer.stats.skipped).toBe(0);
+
+    // Second index: same content, should skip
+    const second = await indexer.indexFile('test-group', project, tsPath);
+    expect(second).toBe(0);
+    expect(indexer.stats.skipped).toBe(1);
+  });
+
+  it('indexFile re-indexes when file content changes', async () => {
+    const srcDir = path.join(projectDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    const tsPath = path.join(srcDir, 'changing.ts');
+    fs.writeFileSync(tsPath, 'export const x = 1;\n');
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir);
+
+    // First index
+    const first = await indexer.indexFile('test-group', project, tsPath);
+    expect(first).toBeGreaterThan(0);
+
+    // Change file content
+    fs.writeFileSync(tsPath, 'export const x = 2;\nexport const y = 3;\n');
+
+    // Second index: different content, should re-index
+    const second = await indexer.indexFile('test-group', project, tsPath);
+    expect(second).toBeGreaterThan(0);
+    expect(indexer.stats.skipped).toBe(0);
+
+    // Verify delete was called to remove old chunks before re-indexing
+    expect(mockQdrant.client.delete).toHaveBeenCalled();
+  });
+
+  it('indexFile proceeds with full index when no existing chunks', async () => {
+    const srcDir = path.join(projectDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    const tsPath = path.join(srcDir, 'new.ts');
+    fs.writeFileSync(tsPath, 'export const fresh = true;\n');
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir);
+
+    const result = await indexer.indexFile('test-group', project, tsPath);
+    expect(result).toBeGreaterThan(0);
+    expect(indexer.stats.skipped).toBe(0);
+    // delete should NOT have been called since there were no existing chunks
+    expect(mockQdrant.client.delete).not.toHaveBeenCalled();
+  });
+
+  it('indexFilesContent skips unchanged files', async () => {
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir);
+    const files = [{ path: 'src/a.ts', content: 'export const a = 1;\n' }];
+
+    // First index
+    const first = await indexer.indexFilesContent(project, files);
+    expect(first).toBeGreaterThan(0);
+    expect(indexer.stats.skipped).toBe(0);
+
+    // Second index: same content
+    const second = await indexer.indexFilesContent(project, files);
+    expect(second).toBe(0);
+    expect(indexer.stats.skipped).toBe(1);
   });
 
   it('listGroups returns groups with point counts', async () => {

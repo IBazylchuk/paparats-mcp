@@ -7,6 +7,7 @@ import {
   commandExists,
   getDockerComposeCommand,
   ollamaModelExists,
+  upsertMcpServer,
 } from '../src/commands/install.js';
 
 function createTempDir(): string {
@@ -120,6 +121,119 @@ describe('install', () => {
       );
 
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('already exists'));
+    });
+
+    it('configures Cursor MCP when ~/.cursor/ exists', async () => {
+      const cursorDir = path.join(os.homedir(), '.cursor');
+      const mcpPath = path.join(cursorDir, 'mcp.json');
+      const files = new Map<string, string>();
+
+      await runInstall(
+        { skipDocker: true, skipOllama: true },
+        {
+          commandExists: () => true,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          existsSync: (p) => {
+            if (p === cursorDir) return true;
+            return files.has(p);
+          },
+          readFileSync: (p) => {
+            if (files.has(p)) return files.get(p)!;
+            throw new Error('ENOENT');
+          },
+          writeFileSync: (p, d) => files.set(p, d),
+          mkdirSync: () => {},
+        }
+      );
+
+      expect(files.has(mcpPath)).toBe(true);
+      const parsed = JSON.parse(files.get(mcpPath)!);
+      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/sse');
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Cursor MCP configured'));
+    });
+
+    it('skips Cursor config when ~/.cursor/ does not exist', async () => {
+      await runInstall(
+        { skipDocker: true, skipOllama: true },
+        {
+          commandExists: () => true,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          existsSync: () => false,
+        }
+      );
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Cursor not detected'));
+    });
+  });
+
+  describe('upsertMcpServer', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = createTempDir();
+    });
+
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('creates new file when missing', () => {
+      const filePath = path.join(tmpDir, 'mcp.json');
+      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+
+      expect(result).toBe('added');
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/sse');
+    });
+
+    it('adds server to existing file with other servers', () => {
+      const filePath = path.join(tmpDir, 'mcp.json');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ mcpServers: { other: { url: 'http://other:1234' } } }, null, 2)
+      );
+
+      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+
+      expect(result).toBe('added');
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      expect(parsed.mcpServers.other.url).toBe('http://other:1234');
+      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/sse');
+    });
+
+    it('returns unchanged when URL matches', () => {
+      const filePath = path.join(tmpDir, 'mcp.json');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ mcpServers: { paparats: { url: 'http://localhost:9876/sse' } } }, null, 2)
+      );
+
+      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+      expect(result).toBe('unchanged');
+    });
+
+    it('returns updated when URL differs', () => {
+      const filePath = path.join(tmpDir, 'mcp.json');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify({ mcpServers: { paparats: { url: 'http://old:1234/sse' } } }, null, 2)
+      );
+
+      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+
+      expect(result).toBe('updated');
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/sse');
+    });
+
+    it('creates parent directory if needed', () => {
+      const filePath = path.join(tmpDir, 'subdir', 'mcp.json');
+      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+
+      expect(result).toBe('added');
+      expect(fs.existsSync(filePath)).toBe(true);
     });
   });
 });
