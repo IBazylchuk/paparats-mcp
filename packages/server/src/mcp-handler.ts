@@ -489,9 +489,46 @@ export class McpHandler {
         return;
       }
 
-      if (sessionId) {
-        // Session ID was provided but not found — expired or invalid.
-        // Per MCP spec: 404 tells the client to re-initialize a new session.
+      if (sessionId && (req.method === 'POST' || req.method === 'GET')) {
+        // Session ID was provided but not found — expired or server restarted.
+        // Instead of returning 404, transparently recreate the session with the same ID.
+        // This allows clients to survive server restarts without re-initializing.
+        console.log(`[mcp] Recreating lost session ${sessionId}`);
+
+        try {
+          const server = this.createMcpServer();
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => sessionId,
+          });
+
+          // Force-initialize the underlying transport so it accepts non-initialize requests.
+          // The SDK's _webStandardTransport tracks initialization state internally.
+          const inner = (transport as unknown as { _webStandardTransport: Record<string, unknown> })
+            ._webStandardTransport;
+          inner.sessionId = sessionId;
+          inner._initialized = true;
+
+          const now = Date.now();
+          this.transports[sessionId] = { transport, created: now, lastActivity: now };
+          this.servers.set(sessionId, server);
+
+          transport.onclose = () => this.cleanupSession(sessionId);
+
+          await server.connect(transport);
+          await transport.handleRequest(req, res, req.body);
+        } catch (err) {
+          console.error(`[mcp] Failed to recreate session ${sessionId}:`, err);
+          res.status(404).json({
+            jsonrpc: '2.0',
+            error: {
+              code: -32000,
+              message: 'Session not found. Client should start a new session.',
+            },
+            id: null,
+          });
+        }
+      } else if (sessionId) {
+        // DELETE or other methods with unknown session
         res.status(404).json({
           jsonrpc: '2.0',
           error: {
