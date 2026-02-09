@@ -1,0 +1,31 @@
+{
+  "serverInstructions": "Semantic code search across workspace projects.\n\nMANDATORY: You MUST call search_code BEFORE answering ANY question about the codebase. This includes questions containing: \"how does X work\", \"where is X\", \"find X\", \"what does X do\", \"how many X\", \"list X\", \"count X\", \"which files\", \"show me X\", \"is there a X\", implementation details, patterns, flows, or any reference to project code.\n\nDo NOT answer from memory or guess. search_code returns relevant code chunks ranked by cosine similarity.\n\nScore interpretation (included with each result):\n- 60%+ = high confidence — trust these results\n- 40-59% = partial match — use these as hints, supplement with grep or file reading\n- <40% = low confidence — do not rely on these; fall back to grep, file reading, or ask the user\n\nWorkflow: search_code first → evaluate result scores → supplement with grep/file reading if scores are low → answer with citations.",
+  "common": {
+    "searchFirst": "MANDATORY: Always call search_code BEFORE answering any code question. Never guess or answer from memory."
+  },
+  "tools": {
+    "search_code": {
+      "description": "REQUIRED — call this FIRST for ANY code question.\n\nSemantic code search across all indexed projects. Returns relevant code chunks ranked by cosine similarity score.\n\nTriggers (call this when the user asks about): code location, implementation, \"how X works\", \"how many X\", \"what versions of X\", \"count X\", \"list X\", patterns, flows, error handling, auth, API usage, or ANY reference to project code.\n\nScore interpretation:\n- 60%+ = high confidence — trust these results\n- 40-59% = partial match — supplement with grep or file reading\n- <40% = low confidence — fall back to grep/file reading\n\nWHY: Returns only relevant chunks (50-90% fewer tokens vs full files). Searches by meaning, not just keywords.\n\nWORKFLOW: Search first → evaluate scores → load specific files only if scores are low or more context is needed.\n\nExamples: \"auth flow\", \"how many versions of authentication\", \"GraphQL mutations for user\", \"error handling patterns\""
+    },
+    "health_check": {
+      "description": "Check indexing status: number of indexed chunks per group and any running reindex jobs.\n\nUse to verify projects are indexed before searching or debugging empty results."
+    },
+    "reindex": {
+      "description": "Trigger full reindex of a group or all groups. Runs in background.\n\nReturns job ID to track progress via health_check. Use after adding new files or changing project config."
+    }
+  },
+  "resources": {
+    "projectOverview": {
+      "searchCapabilitiesTitle": "## Search Capabilities",
+      "searchCapabilitiesBody": "MANDATORY: Use search_code tool FIRST for ANY code question. This is MORE EFFICIENT than loading full files (50-90% fewer tokens). Do not guess or answer from memory — always search first.",
+      "exampleQueries": [
+        "\"authentication flow\"",
+        "\"how many versions of auth\"",
+        "\"GraphQL mutations for user\"",
+        "\"AWS infrastructure setup\""
+      ],
+      "scoreInterpretation": "Each search result includes a confidence score. 60%+ means high confidence (trust the result). 40-59% means partial match (supplement with grep or file reading). Below 40% means low confidence (fall back to grep, file reading, or ask the user).",
+      "searchFirstNote": "MANDATORY: Always call search_code BEFORE answering any code question. Never guess or answer from memory."
+    }
+  }
+}

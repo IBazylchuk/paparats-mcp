@@ -1,6 +1,7 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { SearchResult, SearchMetrics, SearchResponse } from './types.js';
+import { expandQuery } from './query-expansion.js';
 
 export interface SearcherConfig {
   qdrantUrl: string;
@@ -46,6 +47,92 @@ export class Searcher {
     query: string,
     options?: { project?: string; limit?: number }
   ): Promise<SearchResponse> {
+    const response = await this._searchInternal(groupName, query, options);
+
+    this.searchCount++;
+    this.totalTokensSaved += response.metrics.tokensSaved;
+
+    return response;
+  }
+
+  /** Search with automatic query expansion for broader semantic coverage */
+  async expandedSearch(
+    groupName: string,
+    query: string,
+    options?: { project?: string; limit?: number }
+  ): Promise<SearchResponse> {
+    const variations = expandQuery(query);
+
+    if (variations.length <= 1) {
+      return this.search(groupName, query, options);
+    }
+
+    const limit = options?.limit ?? 5;
+    const internalLimit = Math.max(1, Math.min(limit * 2, 100));
+
+    const responses = await Promise.all(
+      variations.map((q) =>
+        this._searchInternal(groupName, q, { ...options, limit: internalLimit })
+      )
+    );
+
+    // Merge: keep highest score per unique hash, track which variation contributed each result
+    const byHash = new Map<string, SearchResult>();
+    const contributedBy = new Map<string, number>(); // hash -> variation index that first added it
+    for (let i = 0; i < responses.length; i++) {
+      const response = responses[i]!;
+      for (const result of response.results) {
+        const existing = byHash.get(result.hash);
+        if (!existing) {
+          byHash.set(result.hash, result);
+          contributedBy.set(result.hash, i);
+        } else if (result.score > existing.score) {
+          byHash.set(result.hash, result);
+        }
+      }
+    }
+
+    const merged = Array.from(byHash.values())
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit);
+
+    // Log which variations contributed to final results
+    const variationHits = new Map<number, number>();
+    for (const result of merged) {
+      const idx = contributedBy.get(result.hash) ?? 0;
+      variationHits.set(idx, (variationHits.get(idx) ?? 0) + 1);
+    }
+
+    if (merged.length > 0) {
+      const breakdown = variations
+        .map((q, i) => {
+          const count = variationHits.get(i) ?? 0;
+          return count > 0 ? `"${q}" (${count})` : null;
+        })
+        .filter(Boolean)
+        .join(', ');
+      console.log(
+        `[searcher] Query expansion: "${query}" → ${variations.length} variations, ${merged.length} results [${breakdown}]`
+      );
+    }
+
+    const metrics = this.computeMetrics(merged);
+    this.searchCount++;
+    this.totalTokensSaved += metrics.tokensSaved;
+
+    return {
+      results: merged,
+      total: merged.length,
+      metrics,
+    };
+  }
+
+  /** Core search logic without counter updates */
+  private async _searchInternal(
+    groupName: string,
+    query: string,
+    options?: { project?: string; limit?: number }
+  ): Promise<SearchResponse> {
     // Input validation
     if (!groupName?.trim()) {
       throw new Error('Group name is required');
@@ -56,7 +143,7 @@ export class Searcher {
     const limit = Math.max(1, Math.min(options?.limit ?? 5, 100));
     const project = options?.project ?? 'all';
 
-    const queryVector = await this.provider.embed(query);
+    const queryVector = await this.provider.embedQuery(query);
 
     const filter =
       project !== 'all'
@@ -103,8 +190,6 @@ export class Searcher {
     }
 
     const metrics = this.computeMetrics(results);
-    this.searchCount++;
-    this.totalTokensSaved += metrics.tokensSaved;
 
     return {
       results,

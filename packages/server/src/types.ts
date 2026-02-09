@@ -125,4 +125,5 @@ export interface IndexerStats {
   chunks: number;
   cached: number;
   errors: number;
+  skipped: number;
 }

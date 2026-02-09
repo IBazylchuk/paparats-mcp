@@ -152,6 +152,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         group: project.group,
         project: project.name,
         chunks,
+        skipped: indexer.stats.skipped,
       });
     } catch (err) {
       if ((err as Error).message === 'Index timeout') {

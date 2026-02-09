@@ -58,8 +58,8 @@ const { app, mcpHandler, setShuttingDown, getShuttingDown } = createApp({
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`paparats-mcp listening on http://0.0.0.0:${PORT}`);
-  console.log(`  MCP SSE (Cursor):         http://localhost:${PORT}/sse`);
-  console.log(`  MCP Streamable HTTP:      http://localhost:${PORT}/mcp`);
+  console.log(`  MCP (Cursor/Claude Code): http://localhost:${PORT}/mcp`);
+  console.log(`  MCP SSE (legacy):         http://localhost:${PORT}/sse`);
   console.log(`  Health:                   http://localhost:${PORT}/health`);
   console.log(`  Stats:                    http://localhost:${PORT}/api/stats`);
   console.log(`  Qdrant:                   ${QDRANT_URL}`);
@@ -128,6 +128,17 @@ export type { IndexerConfig } from './indexer.js';
 
 export { Searcher } from './searcher.js';
 export type { SearcherConfig } from './searcher.js';
+
+export { expandQuery } from './query-expansion.js';
+
+export {
+  detectQueryType,
+  prefixQuery,
+  prefixPassage,
+  getQueryPrefix,
+  getPassagePrefix,
+} from './task-prefixes.js';
+export type { QueryType, TaskPrefixConfig } from './task-prefixes.js';
 
 export { McpHandler } from './mcp-handler.js';
 export type { McpHandlerConfig } from './mcp-handler.js';

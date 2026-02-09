@@ -341,6 +341,36 @@ describe('init', () => {
       expect(count).toBe(1);
     });
 
+    it('creates .mcp.json alongside .paparats.yml', async () => {
+      const mcpJsonPath = path.join(tmpDir, '.mcp.json');
+
+      await runInit(tmpDir, { nonInteractive: true, group: 'test-mcp' });
+
+      expect(fs.existsSync(mcpJsonPath)).toBe(true);
+      const parsed = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+      expect(parsed.mcpServers.paparats).toEqual({
+        type: 'http',
+        url: 'http://localhost:9876/mcp',
+      });
+    });
+
+    it('preserves existing .mcp.json with paparats added', async () => {
+      const mcpJsonPath = path.join(tmpDir, '.mcp.json');
+      fs.writeFileSync(
+        mcpJsonPath,
+        JSON.stringify({ mcpServers: { other: { url: 'http://other:1234' } } }, null, 2)
+      );
+
+      await runInit(tmpDir, { nonInteractive: true, group: 'test-mcp' });
+
+      const parsed = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+      expect(parsed.mcpServers.other.url).toBe('http://other:1234');
+      expect(parsed.mcpServers.paparats).toEqual({
+        type: 'http',
+        url: 'http://localhost:9876/mcp',
+      });
+    });
+
     it('uses OpenAI model default when embeddings provider is openai', async () => {
       const configPath = path.join(tmpDir, CONFIG_FILE);
 

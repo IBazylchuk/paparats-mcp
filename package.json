@@ -10,6 +10,7 @@
     "build": "yarn workspace @paparats/shared build && yarn workspace @paparats/server build && yarn workspace @paparats/cli build",
     "build:docker": "docker build -f packages/server/Dockerfile -t paparats-server:latest .",
     "build:docker:multi": "docker buildx build --platform linux/amd64,linux/arm64 -f packages/server/Dockerfile -t paparats-server:latest .",
+    "docker:rebuild": "docker build -t ibaz/paparats-server:latest -f packages/server/Dockerfile . && docker compose -f $HOME/.paparats/docker-compose.yml up -d --force-recreate paparats",
     "release": "node scripts/release.js",
     "clean": "rm -rf packages/*/dist",
     "test": "yarn workspace @paparats/shared build && yarn workspace @paparats/shared test && yarn workspace @paparats/server test && yarn workspace @paparats/cli test",

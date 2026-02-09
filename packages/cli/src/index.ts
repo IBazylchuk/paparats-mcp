@@ -1,6 +1,7 @@
 import { Command } from 'commander';
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
+import { updateCommand } from './commands/update.js';
 import { indexCommand } from './commands/index-cmd.js';
 import { searchCommand } from './commands/search.js';
 import { statusCommand } from './commands/status.js';
@@ -14,6 +15,7 @@ program.name('paparats').description('Semantic code search for your workspace').
 
 program.addCommand(initCommand);
 program.addCommand(installCommand);
+program.addCommand(updateCommand);
 program.addCommand(indexCommand);
 program.addCommand(searchCommand);
 program.addCommand(statusCommand);

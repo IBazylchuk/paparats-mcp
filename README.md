@@ -34,8 +34,55 @@ cd your-project
 paparats init   # creates .paparats.yml
 paparats index  # index the codebase
 
-# 4. Connect your IDE (Cursor, Claude Code) to the MCP server
+# 4. Connect your IDE (Cursor, Claude Code) to the MCP server — see "Connecting MCP" below
 ```
+
+### Connecting MCP for semantic search
+
+After `paparats install` and `paparats index`, add the MCP server to your IDE so the AI can use semantic search.
+
+**Cursor**
+
+1. Create or edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project)
+2. Add the paparats server (default port 9876):
+
+```json
+{
+  "mcpServers": {
+    "paparats": {
+      "type": "http",
+      "url": "http://localhost:9876/mcp"
+    }
+  }
+}
+```
+
+Restart Cursor after changing the config.
+
+**Claude Code**
+
+```bash
+claude mcp add --transport http paparats http://localhost:9876/mcp
+```
+
+Or add to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "paparats": {
+      "type": "http",
+      "url": "http://localhost:9876/mcp"
+    }
+  }
+}
+```
+
+**Verify**
+
+- Ensure the server is running (`paparats status` or `docker ps`)
+- Check MCP tools in your IDE: you should see `search_code` (semantic search) and `health_check`
+- Ask the AI: _"Search for authentication logic in the codebase"_
 
 ### What `paparats install` does and does not
 
@@ -88,9 +135,65 @@ indexing:
 
 Now searching "authentication flow" finds relevant code in both backend and frontend.
 
-**Language-aware chunking** — code is split at natural boundaries (functions, classes, blocks) rather than fixed sizes. Supports Ruby, TypeScript, JavaScript, Python, Go, Rust, Java, Terraform, C, C++, C#.
+**Language-aware chunking** — code is split at natural boundaries (functions, classes, blocks) rather than fixed sizes. 4 strategies selected per language: block-based (Ruby/Python), brace-based (JS/TS/Go/Rust/Java/C), indent-based, and fixed-size fallback. Supports Ruby, TypeScript, JavaScript, Python, Go, Rust, Java, Terraform, C, C++, C#.
 
-**Embedding cache** — embeddings are cached in SQLite (`~/.paparats/cache/embeddings.db`), so re-indexing unchanged code is instant.
+**Embedding cache** — embeddings are cached in SQLite (`~/.paparats/cache/embeddings.db`) using content-hash keys and Float32 vectors, with LRU cleanup at 100k entries. Re-indexing unchanged code is instant.
+
+## Search features
+
+### Jina task-specific prefixes
+
+The [Jina Code Embeddings](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) model is trained with task-specific prefixes that significantly improve embedding quality. Paparats applies them automatically:
+
+- **Indexing time**: every code chunk is prefixed with `"Candidate code snippet:\n"` before embedding
+- **Query time**: the query type is auto-detected and the appropriate prefix is applied:
+  - `nl2code` — natural language searching for code (default): `"Find the most relevant code snippet..."`
+  - `code2code` — searching with a code snippet: `"Find an equivalent code snippet..."`
+  - `techqa` — technical questions: `"Find the most relevant technical answer..."`
+
+Detection is automatic: code patterns (`function`, `const`, `import`, `=>`) trigger `code2code`, question patterns (`how`, `what`, `why`, `?`) trigger `techqa`, everything else uses `nl2code`. Prefixes are auto-enabled for Jina models and disabled for other providers.
+
+### Server-side query expansion
+
+AI clients often issue a single search query, missing results that match synonyms or different casing. Paparats expands every search query into 2-3 variations server-side:
+
+1. **Abbreviation expansion/contraction** — bidirectional: `auth` <-> `authentication`, `config` <-> `configuration`, `db` <-> `database`, etc. (~30 pairs)
+2. **Filler word stripping** — `"how does the auth flow work"` -> `"auth flow"`
+3. **Case variant generation** — `"user authentication"` -> `"userAuthentication"`, `"handleUserAuth"` -> `"handle user auth"`
+4. **Plural normalization** — `"users"` -> `"user"`, `"dependencies"` -> `"dependency"`
+
+All variations are searched in parallel via `Promise.all()`, results are merged using max-score-per-hash deduplication, preserving 0-1 score semantics. The embedding cache makes repeated/similar queries near-instant.
+
+The server logs which query variations contributed results for effectiveness monitoring:
+
+```
+[searcher] Query expansion: "auth middleware" -> 3 variations, 4 results ["auth middleware" (2), "authentication middleware" (2)]
+```
+
+### Confidence-tiered results
+
+Search results are labeled with confidence tiers to help AI assistants decide next steps:
+
+| Score     | Tier            | Guidance                                                 |
+| --------- | --------------- | -------------------------------------------------------- |
+| >= 60%    | High confidence | Relevant results found                                   |
+| 40% - 60% | Partial match   | Supplement with grep or file reading for better coverage |
+| < 40%     | Low confidence  | Use grep or file reading instead                         |
+
+### Token savings metrics
+
+Every search response includes metrics showing how much context was saved by returning relevant chunks instead of full files:
+
+```json
+{
+  "metrics": {
+    "tokensReturned": 150,
+    "estimatedFullFileTokens": 5000,
+    "tokensSaved": 4850,
+    "savingsPercent": 97
+  }
+}
+```
 
 ## Architecture
 
@@ -99,33 +202,36 @@ paparats-mcp/
 ├── packages/
 │   ├── server/          # MCP server (Docker image)
 │   │   ├── src/
-│   │   │   ├── index.ts        # HTTP server + MCP handler
-│   │   │   ├── indexer.ts      # Group-aware indexing
-│   │   │   ├── searcher.ts     # Search with metrics
-│   │   │   ├── chunker.ts      # AST-aware code chunking
-│   │   │   ├── embeddings.ts   # Ollama provider + SQLite cache
-│   │   │   ├── config.ts       # .paparats.yml reader
-│   │   │   ├── watcher.ts      # File watcher
-│   │   │   └── types.ts        # Shared types
+│   │   │   ├── index.ts           # HTTP server + MCP handler
+│   │   │   ├── indexer.ts         # Group-aware indexing
+│   │   │   ├── searcher.ts        # Search with query expansion + metrics
+│   │   │   ├── query-expansion.ts # Abbreviation, case, plural, filler expansion
+│   │   │   ├── task-prefixes.ts   # Jina task-specific prefix detection
+│   │   │   ├── chunker.ts         # Language-aware code chunking (4 strategies)
+│   │   │   ├── embeddings.ts      # Ollama provider + SQLite cache + prefix-aware methods
+│   │   │   ├── config.ts          # .paparats.yml reader + 11 language profiles
+│   │   │   ├── mcp-handler.ts     # MCP protocol (SSE + Streamable HTTP)
+│   │   │   ├── watcher.ts         # File watcher (chokidar + debounce)
+│   │   │   └── types.ts           # Shared types
 │   │   └── Dockerfile
 │   └── cli/             # CLI tool (npm package)
 │       └── src/
 │           ├── index.ts        # Commander entry
-│           └── commands/       # init, install, index, search, status, watch, doctor, groups
+│           └── commands/       # init, install, update, index, search, status, watch, doctor, groups
 └── examples/
     └── paparats.yml.*   # Config examples per language
 ```
 
 ## Stack
 
-- **Qdrant** — vector database (1 collection per group)
-- **Ollama** — local embeddings via [jina-code-embeddings-1.5b](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) (1.5B params, 1536 dims, 32k context)
-- **MCP** — Model Context Protocol (SSE + Streamable HTTP)
+- **Qdrant** — vector database (1 collection per group, cosine similarity, payload filtering by project/file)
+- **Ollama** — local embeddings via [jina-code-embeddings-1.5b](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) (1.5B params, 1536 dims, 32k context) with task-specific prefixes for nl2code/code2code/techqa
+- **MCP** — Model Context Protocol (SSE for Cursor + Streamable HTTP for Claude Code)
 - **TypeScript** monorepo with yarn workspaces
 
 ## Embedding model setup
 
-The default model is [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — a code-optimized embedding model based on Qwen2.5-Coder-1.5B. It's not in the Ollama registry, so we create a local alias via Modelfile.
+The default model is [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — a code-optimized embedding model based on Qwen2.5-Coder-1.5B. It's not in the Ollama registry, so we create a local alias via Modelfile. Task-specific prefixes (nl2code, code2code, techqa) are applied automatically to maximize embedding quality.
 
 **Recommended:** `paparats install` automates the full setup:
 
@@ -191,7 +297,7 @@ embeddings:
 
 - **Qdrant** and **MCP server** run in Docker containers.
 - **Ollama** runs on the host (not in Docker). The server connects to it via `host.docker.internal:11434` (Mac/Windows). On Linux, set `OLLAMA_URL=http://172.17.0.1:11434` (or your docker0 IP) in `~/.paparats/docker-compose.yml` or as an env override.
-- **Embedding cache** (SQLite) persists in the `paparats_cache` Docker volume, so re-indexing unchanged code is fast across restarts.
+- **Embedding cache** (SQLite) persists in the `paparats_cache` Docker volume, so re-indexing unchanged code is fast across restarts. Cache keys include task prefixes, so switching models doesn't return stale vectors.
 
 ## CLI commands
 
@@ -199,6 +305,7 @@ embeddings:
 | ------------------------- | ------------------------------------------------------------------------------------ |
 | `paparats init`           | Create `.paparats.yml` in the current directory (interactive or `--non-interactive`) |
 | `paparats install`        | Set up Docker (Qdrant + MCP server) and Ollama embedding model                       |
+| `paparats update`         | Update CLI from npm and pull/restart latest server Docker image                      |
 | `paparats index`          | Index the current project into the vector database                                   |
 | `paparats search <query>` | Semantic search across indexed projects                                              |
 | `paparats watch`          | Watch for file changes and reindex automatically                                     |
@@ -223,6 +330,12 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 
 - `--skip-docker` — Skip Docker setup (only set up Ollama model)
 - `--skip-ollama` — Skip Ollama model (only start Docker containers)
+- `-v, --verbose` — Show detailed output
+
+**`paparats update`**
+
+- `--skip-cli` — Skip CLI update (only pull and restart Docker)
+- `--skip-docker` — Skip Docker update (only update CLI from npm)
 - `-v, --verbose` — Show detailed output
 
 **`paparats index`**

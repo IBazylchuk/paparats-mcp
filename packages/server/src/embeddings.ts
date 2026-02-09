@@ -4,6 +4,7 @@ import fs from 'fs';
 import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 import type { EmbeddingProvider } from './types.js';
+import { prefixQuery, prefixPassage, type TaskPrefixConfig } from './task-prefixes.js';
 
 // ── SQLite embedding cache ─────────────────────────────────────────────────
 
@@ -308,6 +309,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   private provider: EmbeddingProvider;
   private cache: EmbeddingCache;
   private embedCalls = 0;
+  private taskPrefixConfig: TaskPrefixConfig;
 
   get dimensions(): number {
     return this.provider.dimensions;
@@ -321,9 +323,18 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     return this.cache.hitCount;
   }
 
-  constructor(provider: EmbeddingProvider, cache?: EmbeddingCache) {
+  get prefixesEnabled(): boolean {
+    return this.taskPrefixConfig.enabled;
+  }
+
+  constructor(
+    provider: EmbeddingProvider,
+    cache?: EmbeddingCache,
+    taskPrefixConfig?: TaskPrefixConfig
+  ) {
     this.provider = provider;
     this.cache = cache ?? new EmbeddingCache();
+    this.taskPrefixConfig = taskPrefixConfig ?? { enabled: false };
     providerRegistry.add(this);
     registerExitHandlers();
   }
@@ -390,6 +401,27 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     return results as number[][];
   }
 
+  /** Embed a search query with auto-detected task prefix (if enabled) */
+  async embedQuery(text: string): Promise<number[]> {
+    const input = this.taskPrefixConfig.enabled ? prefixQuery(text) : text;
+    return this.embed(input);
+  }
+
+  /** Embed a code passage/chunk with passage prefix (if enabled) */
+  async embedPassage(text: string): Promise<number[]> {
+    const input = this.taskPrefixConfig.enabled ? prefixPassage(text) : text;
+    return this.embed(input);
+  }
+
+  /** Embed a batch of code passages/chunks with passage prefix (if enabled) */
+  async embedBatchPassage(texts: string[]): Promise<number[][]> {
+    if (!this.taskPrefixConfig.enabled) {
+      return this.embedBatch(texts);
+    }
+    const prefixed = texts.map((t) => prefixPassage(t));
+    return this.embedBatch(prefixed);
+  }
+
   close(): void {
     providerRegistry.delete(this);
     this.cache.close();
@@ -402,6 +434,7 @@ export function createEmbeddingProvider(config: {
   provider: string;
   model: string;
   dimensions: number;
+  taskPrefixes?: TaskPrefixConfig;
 }): CachedEmbeddingProvider {
   let base: EmbeddingProvider;
 
@@ -416,5 +449,10 @@ export function createEmbeddingProvider(config: {
       throw new Error(`Unsupported embedding provider: ${config.provider}`);
   }
 
-  return new CachedEmbeddingProvider(base);
+  // Auto-enable task prefixes for Jina code embedding models
+  const taskPrefixes = config.taskPrefixes ?? {
+    enabled: config.model.includes('jina-code') || config.model.includes('jina_code'),
+  };
+
+  return new CachedEmbeddingProvider(base, undefined, taskPrefixes);
 }

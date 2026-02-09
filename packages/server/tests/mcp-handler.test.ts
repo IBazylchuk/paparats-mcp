@@ -20,17 +20,19 @@ async function parseMcpResponse(res: Response): Promise<unknown> {
 }
 
 function createMockSearcher(): Searcher {
+  const searchMock = vi.fn().mockResolvedValue({
+    results: [],
+    total: 0,
+    metrics: {
+      tokensReturned: 0,
+      estimatedFullFileTokens: 0,
+      tokensSaved: 0,
+      savingsPercent: 0,
+    },
+  });
   return {
-    search: vi.fn().mockResolvedValue({
-      results: [],
-      total: 0,
-      metrics: {
-        tokensReturned: 0,
-        estimatedFullFileTokens: 0,
-        tokensSaved: 0,
-        savingsPercent: 0,
-      },
-    }),
+    search: searchMock,
+    expandedSearch: searchMock,
     formatResults: vi.fn().mockReturnValue('No results found.'),
     getUsageStats: vi.fn().mockReturnValue({
       searchCount: 0,
@@ -196,7 +198,7 @@ describe('McpHandler', () => {
 
   it('POST /mcp tools/call search_code returns results', async () => {
     const searcher = createMockSearcher();
-    vi.mocked(searcher.search).mockResolvedValue({
+    vi.mocked(searcher.expandedSearch).mockResolvedValue({
       results: [
         {
           project: 'p1',
@@ -281,7 +283,7 @@ describe('McpHandler', () => {
       expect(callBody.result.content[0]?.text).toContain('src/foo.ts');
       expect(callBody.result.content[0]?.text).toContain('const x = 1;');
 
-      expect(searcher.search).toHaveBeenCalledWith('g1', 'authentication', {
+      expect(searcher.expandedSearch).toHaveBeenCalledWith('g1', 'authentication', {
         project: 'all',
         limit: 10,
       });
