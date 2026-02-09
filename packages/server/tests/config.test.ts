@@ -203,6 +203,24 @@ injection: !!js/function >
       });
     });
 
+    describe('respectGitignore', () => {
+      it('defaults to true', () => {
+        const raw = { group: 'g', language: 'ruby' };
+        const config = resolveProject(projectDir, raw);
+        expect(config.indexing.respectGitignore).toBe(true);
+      });
+
+      it('accepts user override to false', () => {
+        const raw = {
+          group: 'g',
+          language: 'ruby',
+          indexing: { respectGitignore: false },
+        };
+        const config = resolveProject(projectDir, raw);
+        expect(config.indexing.respectGitignore).toBe(false);
+      });
+    });
+
     describe('numeric validation', () => {
       it('rejects chunkSize out of range', () => {
         const raw = { group: 'g', language: 'ruby', indexing: { chunkSize: -1 } };
