@@ -304,7 +304,7 @@ export class Chunker {
 
       if (secondHalf.length > 0) {
         const secondSize = secondHalf.reduce((s, l) => s + (l ?? '').length + 1, 0);
-        this.flushBuffer(secondHalf, secondSize, startLine + secondHalf.length - 1, chunks);
+        this.flushBuffer(secondHalf, secondSize, endLine, chunks);
       }
       return;
     }

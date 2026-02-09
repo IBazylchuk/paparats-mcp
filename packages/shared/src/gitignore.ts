@@ -1,10 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { createRequire } from 'module';
-const require = createRequire(import.meta.url);
-const ign = require('ignore') as (opts?: object) => {
-  add: (s: string) => { ignores: (p: string) => boolean };
-};
+import ignore from 'ignore';
 
 const GITIGNORE = '.gitignore';
 
@@ -23,7 +19,12 @@ export function createGitignoreFilter(projectDir: string): ((absPath: string) =>
     return null;
   }
 
-  const ig = ign().add(content);
+  // CJS package; Node16 resolution types don't match. Runtime works.
+  const ig = (
+    ignore as unknown as (opts?: object) => {
+      add: (s: string) => { ignores: (p: string) => boolean };
+    }
+  )().add(content);
 
   return (absPath: string): boolean => {
     const rel = path.relative(projectDir, absPath);
