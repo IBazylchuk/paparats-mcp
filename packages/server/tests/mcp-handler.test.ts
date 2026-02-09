@@ -196,7 +196,7 @@ describe('McpHandler', () => {
     }
   });
 
-  it('POST /mcp with unknown session ID returns 404 (expired session)', async () => {
+  it('POST /mcp with unknown session ID transparently recreates session', async () => {
     const app = express();
     app.use(express.json());
     handler.mount(app);
@@ -209,6 +209,7 @@ describe('McpHandler', () => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
           'mcp-session-id': 'non-existent-session-id',
         },
         body: JSON.stringify({
@@ -219,10 +220,10 @@ describe('McpHandler', () => {
         }),
       });
 
-      expect(res.status).toBe(404);
-      const body = await res.json();
-      expect(body.error?.code).toBe(-32000);
-      expect(body.error?.message).toContain('Session not found');
+      // Session is transparently recreated — the tool call should succeed
+      expect(res.status).toBe(200);
+      const body = (await parseMcpResponse(res)) as { result?: { content?: unknown[] } };
+      expect(body.result).toBeDefined();
     } finally {
       server.close();
     }
