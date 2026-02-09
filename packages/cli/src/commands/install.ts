@@ -182,7 +182,20 @@ export function upsertMcpServer(
     return 'added';
   }
 
-  if (existing['url'] === serverConfig['url']) {
+  const bothHaveUrl = 'url' in existing && 'url' in serverConfig;
+  const bothHaveCommand = 'command' in existing && 'command' in serverConfig;
+
+  if (bothHaveUrl && existing['url'] === serverConfig['url']) {
+    return 'unchanged';
+  }
+  if (bothHaveCommand && JSON.stringify(existing) === JSON.stringify(serverConfig)) {
+    return 'unchanged';
+  }
+  if (
+    !bothHaveUrl &&
+    !bothHaveCommand &&
+    JSON.stringify(existing) === JSON.stringify(serverConfig)
+  ) {
     return 'unchanged';
   }
 

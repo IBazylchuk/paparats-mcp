@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { input, select, confirm, checkbox } from '@inquirer/prompts';
@@ -12,8 +13,141 @@ import {
   type SupportedLanguage,
 } from '../config.js';
 import { upsertMcpServer } from './install.js';
+import {
+  LSP_CONFIGS,
+  buildCclspConfig,
+  CCLSP_CONFIG_RELATIVE,
+  checkLspInstalled,
+  installLspServer,
+  getCclspConfigPath,
+  type LspInstallerDeps,
+} from '../lsp-installers.js';
+import ora from 'ora';
 
-const DEFAULT_EXCLUDE = ['node_modules', 'dist', 'build', '.git', '.next', 'coverage', '.turbo'];
+/**
+ * Language-specific default exclude patterns (bare format).
+ * Best practices and language-specific build/cache artifacts.
+ */
+const LANGUAGE_EXCLUDE_DEFAULTS: Record<string, string[]> = {
+  ruby: [
+    'vendor',
+    'tmp',
+    'log',
+    'spec',
+    'test',
+    'node_modules',
+    '.bundle',
+    'coverage',
+    'public/packs',
+    'public/assets',
+    'storage',
+    '.byebug_history',
+    'sig',
+    'sorbet',
+    '**/*.rbi',
+  ],
+  typescript: [
+    'node_modules',
+    'dist',
+    '.next',
+    'coverage',
+    'build',
+    '.turbo',
+    'out',
+    '.cache',
+    '.vercel',
+    '.swc',
+    '*.tsbuildinfo',
+  ],
+  javascript: [
+    'node_modules',
+    'dist',
+    'coverage',
+    'build',
+    '.cache',
+    '.parcel-cache',
+    'out',
+    '.nuxt',
+    '.output',
+  ],
+  python: [
+    'venv',
+    '__pycache__',
+    '.venv',
+    '.mypy_cache',
+    '*.egg-info',
+    '.pytest_cache',
+    '.tox',
+    '.coverage',
+    'htmlcov',
+    'dist',
+    'build',
+    '.ruff_cache',
+    '.pytype',
+  ],
+  go: ['vendor', 'bin', '.idea', '*.test', '*.out'],
+  rust: ['target', 'Cargo.lock', '**/*.rs.bk', '.cargo'],
+  java: [
+    'build',
+    '.gradle',
+    'target',
+    'bin',
+    '.idea',
+    '.classpath',
+    '.project',
+    '.settings',
+    '*.class',
+    '*.jar',
+    '*.war',
+  ],
+  terraform: [
+    '.terraform',
+    '*.tfstate',
+    '*.tfstate.backup',
+    '.terraform.lock.hcl',
+    'crash.log',
+    'override.tf',
+    'override.tf.json',
+  ],
+  c: ['build', 'cmake-build-*', '*.o', '*.so', '*.a', '*.exe', '*.out', 'compile_commands.json'],
+  cpp: [
+    'build',
+    'cmake-build-*',
+    '*.o',
+    '*.so',
+    '*.a',
+    '*.exe',
+    '*.out',
+    'compile_commands.json',
+    '.ccls-cache',
+    '.clangd',
+  ],
+  csharp: ['bin', 'obj', '.vs', '*.user', '*.suo', 'packages', '.vscode', '*.cache'],
+  php: [
+    'vendor',
+    'node_modules',
+    '.phpunit.cache',
+    'storage/framework/cache',
+    'storage/logs',
+    'bootstrap/cache',
+    '.env',
+  ],
+  elixir: ['_build', 'deps', '.elixir_ls', 'cover', 'doc', '*.beam', '.fetch'],
+  scala: ['target', '.bsp', '.metals', '.bloop', 'project/target', 'project/project'],
+  kotlin: ['build', '.gradle', '.idea', '*.iml', 'out', 'bin'],
+  swift: ['.build', '.swiftpm', 'DerivedData', '*.xcodeproj', '*.xcworkspace', 'Pods'],
+};
+
+const COMMON_EXCLUDE = ['.git'];
+
+function getDefaultExcludeForLanguages(languages: string[]): string[] {
+  const merged = new Set<string>(COMMON_EXCLUDE);
+  for (const lang of languages) {
+    const excludes = LANGUAGE_EXCLUDE_DEFAULTS[lang] ?? LANGUAGE_EXCLUDE_DEFAULTS.typescript ?? [];
+    excludes.forEach((e) => merged.add(e));
+  }
+  return Array.from(merged);
+}
 
 export function validateGroupName(value: string): true | string {
   const trimmed = value.trim();
@@ -36,6 +170,7 @@ export interface InitOptions {
   group?: string;
   language?: string;
   nonInteractive?: boolean;
+  skipCclsp?: boolean;
 }
 
 export interface InitDeps {
@@ -48,6 +183,8 @@ export interface InitDeps {
   promptEmbeddingsProvider?: () => Promise<'ollama' | 'openai'>;
   promptEmbeddingsModel?: (provider: string) => Promise<string>;
   promptGitignore?: () => Promise<boolean>;
+  promptSetupCclsp?: () => Promise<boolean>;
+  lspDeps?: LspInstallerDeps;
 }
 
 export async function runInit(
@@ -160,18 +297,21 @@ export async function runInit(
     }
   }
 
+  const languagesForExclude = Array.isArray(language) ? language : [language];
+  const defaultExclude = getDefaultExcludeForLanguages(languagesForExclude);
+
   let exclude: string[] | undefined;
   if (skipPrompts) {
-    exclude = DEFAULT_EXCLUDE;
+    exclude = defaultExclude;
   } else if (deps?.promptAddExclude) {
     const add = await deps.promptAddExclude();
-    exclude = add ? DEFAULT_EXCLUDE : undefined;
+    exclude = add ? defaultExclude : undefined;
   } else {
     const addExclude = await confirm({
-      message: 'Add common exclusions (node_modules, dist, etc)?',
+      message: 'Add common exclusions for your language(s)?',
       default: true,
     });
-    exclude = addExclude ? DEFAULT_EXCLUDE : undefined;
+    exclude = addExclude ? defaultExclude : undefined;
   }
 
   let embeddings: PaparatsConfig['embeddings'] | undefined;
@@ -240,6 +380,81 @@ export async function runInit(
     console.log(chalk.green('✓ Added paparats to .mcp.json'));
   }
 
+  // CCLSP setup
+  if (!opts.skipCclsp) {
+    const languages = Array.isArray(language) ? language : [language];
+    const supportedLspLanguages = languages.filter((l) => LSP_CONFIGS[l]);
+
+    if (supportedLspLanguages.length > 0) {
+      let setupCclsp: boolean;
+      if (skipPrompts) {
+        setupCclsp = true;
+      } else if (deps?.promptSetupCclsp) {
+        setupCclsp = await deps.promptSetupCclsp();
+      } else {
+        setupCclsp = await confirm({
+          message: 'Set up CCLSP for precise code navigation (go-to-definition, find-references)?',
+          default: true,
+        });
+      }
+
+      if (setupCclsp) {
+        for (const lang of supportedLspLanguages) {
+          const lspConfig = LSP_CONFIGS[lang];
+          if (!lspConfig) continue;
+
+          const installed = checkLspInstalled(lang, deps?.lspDeps);
+          if (installed) {
+            console.log(chalk.green(`✓ ${lspConfig.displayName} already installed`));
+          } else {
+            const spinner = ora(`Installing ${lspConfig.displayName}...`).start();
+            try {
+              installLspServer(lang, deps?.lspDeps);
+              spinner.succeed(`Installed ${lspConfig.displayName}`);
+            } catch {
+              spinner.warn(
+                `Failed to install ${lspConfig.displayName} — install manually: ${lspConfig.installCmd}`
+              );
+            }
+          }
+        }
+
+        const cclspConfig = buildCclspConfig(supportedLspLanguages);
+        const cclspConfigPath = getCclspConfigPath(projectDir);
+        fs.writeFileSync(cclspConfigPath, JSON.stringify(cclspConfig, null, 2) + '\n');
+        console.log(chalk.green('✓ Created cclsp.json'));
+
+        const cclspInstalled = checkLspInstalled('cclsp', deps?.lspDeps);
+        if (!cclspInstalled) {
+          const spinner = ora('Installing cclsp...').start();
+          try {
+            (
+              deps?.lspDeps?.execInstall ??
+              ((cmd: string) => execSync(cmd, { stdio: 'inherit', timeout: 120_000 }))
+            )('npm install -g cclsp');
+            spinner.succeed('Installed cclsp');
+          } catch {
+            spinner.warn('Failed to install cclsp — install manually: npm install -g cclsp');
+          }
+        } else {
+          console.log(chalk.green('✓ cclsp already installed'));
+        }
+
+        const cclspMcpResult = upsertMcpServer(mcpJsonPath, 'cclsp', {
+          command: 'cclsp',
+          env: {
+            CCLSP_CONFIG_PATH: CCLSP_CONFIG_RELATIVE,
+          },
+        });
+        if (cclspMcpResult === 'unchanged') {
+          console.log(chalk.green('✓ CCLSP already configured in .mcp.json'));
+        } else {
+          console.log(chalk.green('✓ Added CCLSP to .mcp.json'));
+        }
+      }
+    }
+  }
+
   if (!skipPrompts) {
     const gitignorePath = path.join(projectDir, '.gitignore');
     if (fs.existsSync(gitignorePath)) {
@@ -276,6 +491,7 @@ export const initCommand = new Command('init')
   .option('--group <name>', 'Group name (skip prompt)')
   .option('--language <lang>', 'Primary language (skip prompt)')
   .option('--non-interactive', 'Use defaults without prompts')
+  .option('--skip-cclsp', 'Skip CCLSP language server setup')
   .action(async (opts: InitOptions) => {
     try {
       await runInit(process.cwd(), opts);
