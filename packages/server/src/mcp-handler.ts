@@ -115,7 +115,7 @@ export class McpHandler {
 
   private createMcpServer(): McpServer {
     const server = new McpServer(
-      { name: 'paparats-mcp', version: '0.1.0' },
+      { name: 'paparats-mcp', version: '0.1.1' },
       { instructions: prompts.serverInstructions }
     );
 

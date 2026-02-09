@@ -391,6 +391,7 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 - `--dry-run` — Show what would be watched
 - `-v, --verbose` — Show file events
 - `--json` — Output events as JSON lines
+- `--polling` — Use polling instead of native watchers (fewer file descriptors; use if EMFILE occurs)
 
 ---
 

@@ -11,7 +11,7 @@ import { groupsCommand } from './commands/groups.js';
 
 const program = new Command();
 
-program.name('paparats').description('Semantic code search for your workspace').version('0.1.0');
+program.name('paparats').description('Semantic code search for your workspace').version('0.1.1');
 
 program.addCommand(initCommand);
 program.addCommand(installCommand);
