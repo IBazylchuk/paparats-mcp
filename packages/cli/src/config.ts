@@ -6,6 +6,7 @@ import {
   validateIndexingPaths,
   normalizeExcludePatterns as normalizeExcludeFromShared,
   filterFilesByGitignore,
+  DEFAULT_EXCLUDE_BARE,
 } from '@paparats/shared';
 
 export const CONFIG_FILE = '.paparats.yml';
@@ -25,14 +26,8 @@ const LANGUAGE_PATTERNS: Record<string, string[]> = {
   generic: ['**/*'],
 };
 
-const DEFAULT_EXCLUDE = [
-  '**/node_modules/**',
-  '**/dist/**',
-  '**/.git/**',
-  '**/build/**',
-  '**/vendor/**',
-  '**/target/**',
-];
+/** Default exclude patterns (glob format). Used when indexing.exclude is empty. Synced with watch command. */
+export const DEFAULT_EXCLUDE = normalizeExcludeFromShared(DEFAULT_EXCLUDE_BARE);
 
 export const normalizeExcludePatterns = normalizeExcludeFromShared;
 

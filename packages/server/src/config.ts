@@ -1,7 +1,11 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import { validateIndexingPaths, normalizeExcludePatterns } from '@paparats/shared';
+import {
+  validateIndexingPaths,
+  normalizeExcludePatterns,
+  LANGUAGE_EXCLUDE_DEFAULTS,
+} from '@paparats/shared';
 import type {
   PaparatsConfig,
   ProjectConfig,
@@ -13,75 +17,74 @@ import type {
 
 // ── Built-in language profiles ─────────────────────────────────────────────
 
+function getExcludeForLanguage(lang: string): string[] {
+  const bare =
+    LANGUAGE_EXCLUDE_DEFAULTS[lang] ??
+    LANGUAGE_EXCLUDE_DEFAULTS.typescript ??
+    LANGUAGE_EXCLUDE_DEFAULTS.generic ??
+    [];
+  return normalizeExcludePatterns(bare);
+}
+
 const LANGUAGE_PROFILES: Record<string, LanguageProfile> = {
   ruby: {
     patterns: ['**/*.rb', '**/*.rake'],
-    exclude: [
-      'vendor/**',
-      'tmp/**',
-      'log/**',
-      'spec/**',
-      'test/**',
-      'node_modules/**',
-      'sig/**',
-      'sorbet/**',
-      '**/*.rbi',
-    ],
+    exclude: getExcludeForLanguage('ruby'),
     extensions: ['.rb', '.rake'],
   },
   typescript: {
     patterns: ['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx'],
-    exclude: ['node_modules/**', 'dist/**', '.next/**', 'coverage/**', 'build/**'],
+    exclude: getExcludeForLanguage('typescript'),
     extensions: ['.ts', '.tsx', '.js', '.jsx'],
   },
   javascript: {
     patterns: ['**/*.js', '**/*.jsx', '**/*.mjs', '**/*.cjs'],
-    exclude: ['node_modules/**', 'dist/**', 'coverage/**', 'build/**'],
+    exclude: getExcludeForLanguage('javascript'),
     extensions: ['.js', '.jsx', '.mjs', '.cjs'],
   },
   python: {
     patterns: ['**/*.py'],
-    exclude: ['venv/**', '__pycache__/**', '.venv/**', '.mypy_cache/**', '*.egg-info/**'],
+    exclude: getExcludeForLanguage('python'),
     extensions: ['.py'],
   },
   go: {
     patterns: ['**/*.go'],
-    exclude: ['vendor/**', 'bin/**'],
+    exclude: getExcludeForLanguage('go'),
     extensions: ['.go'],
   },
   rust: {
     patterns: ['**/*.rs'],
-    exclude: ['target/**'],
+    exclude: getExcludeForLanguage('rust'),
     extensions: ['.rs'],
   },
   java: {
     patterns: ['**/*.java'],
-    exclude: ['build/**', '.gradle/**', 'target/**', 'bin/**'],
+    exclude: getExcludeForLanguage('java'),
     extensions: ['.java'],
   },
   terraform: {
     patterns: ['**/*.tf', '**/*.tfvars'],
-    exclude: ['.terraform/**', '*.tfstate*'],
+    exclude: getExcludeForLanguage('terraform'),
     extensions: ['.tf', '.tfvars'],
   },
   c: {
     patterns: ['**/*.c', '**/*.h'],
-    exclude: ['build/**', 'cmake-build-*/**'],
+    exclude: getExcludeForLanguage('c'),
     extensions: ['.c', '.h'],
   },
   cpp: {
     patterns: ['**/*.cpp', '**/*.hpp', '**/*.cc', '**/*.hh', '**/*.cxx', '**/*.h'],
-    exclude: ['build/**', 'cmake-build-*/**'],
+    exclude: getExcludeForLanguage('cpp'),
     extensions: ['.cpp', '.hpp', '.cc', '.hh', '.cxx', '.h'],
   },
   csharp: {
     patterns: ['**/*.cs'],
-    exclude: ['bin/**', 'obj/**', '.vs/**'],
+    exclude: getExcludeForLanguage('csharp'),
     extensions: ['.cs'],
   },
   generic: {
     patterns: ['**/*'],
-    exclude: ['node_modules/**', 'vendor/**', 'target/**', '.git/**', 'build/**', 'dist/**'],
+    exclude: getExcludeForLanguage('generic'),
     extensions: [],
   },
 };

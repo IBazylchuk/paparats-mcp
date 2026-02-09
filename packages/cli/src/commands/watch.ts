@@ -9,6 +9,7 @@ import { globSync } from 'glob';
 import {
   readConfig,
   CONFIG_FILE,
+  DEFAULT_EXCLUDE,
   getLanguageFromPath,
   normalizeExcludePatterns,
 } from '../config.js';
@@ -20,6 +21,8 @@ export interface WatchOptions {
   verbose?: boolean;
   dryRun?: boolean;
   json?: boolean;
+  /** Use polling instead of native watchers (fewer file descriptors, use if EMFILE occurs) */
+  polling?: boolean;
 }
 
 const CONCURRENT_REINDEX_LIMIT = 5;
@@ -43,7 +46,6 @@ export interface WatchDeps {
   };
 }
 
-const DEFAULT_EXCLUDE = ['**/node_modules/**', '**/dist/**', '**/.git/**', '**/build/**'];
 const MAX_RETRIES = 3;
 
 function formatUptime(seconds: number): string {
@@ -248,8 +250,20 @@ export async function runWatch(opts: WatchOptions, deps?: WatchDeps): Promise<()
 
   const watcher = createWatch(watchPaths, {
     ignoreInitial: true,
+    usePolling: opts.polling ?? false,
     awaitWriteFinish: {
       stabilityThreshold: cfg.watcher?.stabilityThreshold ?? 1000,
+    },
+    ignored: (pathToIgnore: string) => {
+      try {
+        const rel = path.relative(projectDir, pathToIgnore);
+        if (rel.startsWith('..')) return false;
+        if (exclude.some((pattern) => minimatch(rel, pattern, { dot: true }))) return true;
+        if (gitignoreFilter?.(pathToIgnore)) return true;
+      } catch {
+        return false;
+      }
+      return false;
     },
   });
 
@@ -266,6 +280,9 @@ export async function runWatch(opts: WatchOptions, deps?: WatchDeps): Promise<()
       );
     } else {
       console.error(chalk.red(`Watcher error: ${e.message}`));
+      if (e.message.includes('EMFILE') || e.message.includes('too many open files')) {
+        console.error(chalk.dim('  Try: paparats watch --polling (uses fewer file descriptors)'));
+      }
       if (opts.verbose && e.stack) {
         console.error(chalk.dim(e.stack));
       }
@@ -364,6 +381,10 @@ export const watchCommand = new Command('watch')
   .option('-v, --verbose', 'Show detailed output')
   .option('--dry-run', 'Show what would be watched without actually watching')
   .option('--json', 'Output events as JSON lines for piping')
+  .option(
+    '--polling',
+    'Use polling instead of native watchers (fewer file descriptors; use if EMFILE occurs)'
+  )
   .action(async (opts: WatchOptions) => {
     try {
       const cleanup = await runWatch(opts);
