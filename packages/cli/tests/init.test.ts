@@ -102,6 +102,7 @@ describe('init', () => {
         nonInteractive: true,
         group: 'my-group',
         language: 'rust',
+        skipCclsp: true,
       });
 
       const content = fs.readFileSync(configPath, 'utf8');
