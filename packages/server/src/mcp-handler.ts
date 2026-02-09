@@ -30,6 +30,7 @@ export interface McpHandlerConfig {
 type TransportEntry = {
   transport: SSEServerTransport | StreamableHTTPServerTransport;
   created: number;
+  lastActivity: number;
 };
 
 type ReindexJob = {
@@ -50,7 +51,7 @@ export class McpHandler {
   private reindexJobs = new Map<string, ReindexJob>();
   private sessionCreationLocks = new Set<string>();
 
-  private readonly SESSION_TIMEOUT_MS = 1000 * 60 * 30; // 30 min for local use
+  private readonly SESSION_TIMEOUT_MS = 1000 * 60 * 60 * 4; // 4 hours idle timeout
   private cleanupInterval: ReturnType<typeof setInterval>;
 
   constructor(config: McpHandlerConfig) {
@@ -96,7 +97,7 @@ export class McpHandler {
     let cleaned = 0;
 
     for (const [sessionId, entry] of Object.entries(this.transports)) {
-      if (now - entry.created > this.SESSION_TIMEOUT_MS) {
+      if (now - entry.lastActivity > this.SESSION_TIMEOUT_MS) {
         this.cleanupSession(sessionId);
         cleaned++;
       }
@@ -385,7 +386,8 @@ export class McpHandler {
       const transport = new SSEServerTransport('/messages', res);
       const sessionId = transport.sessionId;
 
-      this.transports[sessionId] = { transport, created: Date.now() };
+      const now = Date.now();
+      this.transports[sessionId] = { transport, created: now, lastActivity: now };
       res.on('close', () => this.cleanupSession(sessionId));
 
       const server = this.getMcpServer(sessionId);
@@ -410,6 +412,7 @@ export class McpHandler {
         return;
       }
 
+      entry.lastActivity = Date.now();
       const transport = entry.transport;
       if ('handlePostMessage' in transport) {
         await transport.handlePostMessage(req, res, req.body);
@@ -434,6 +437,7 @@ export class McpHandler {
       let transportEntry = sessionId ? this.transports[sessionId] : undefined;
 
       if (transportEntry) {
+        transportEntry.lastActivity = Date.now();
         const t = transportEntry.transport;
         if ('handleRequest' in t) {
           await t.handleRequest(req, res, req.body);
@@ -467,7 +471,8 @@ export class McpHandler {
             sessionIdGenerator: () => uuidv7(),
             onsessioninitialized: (sid) => {
               resolvedSessionId = sid;
-              this.transports[sid] = { transport, created: Date.now() };
+              const now = Date.now();
+              this.transports[sid] = { transport, created: now, lastActivity: now };
               this.servers.set(sid, server);
             },
           });
@@ -484,14 +489,27 @@ export class McpHandler {
         return;
       }
 
-      res.status(400).json({
-        jsonrpc: '2.0',
-        error: {
-          code: -32000,
-          message: 'Bad Request: No valid session ID or initialize required',
-        },
-        id: null,
-      });
+      if (sessionId) {
+        // Session ID was provided but not found — expired or invalid.
+        // Per MCP spec: 404 tells the client to re-initialize a new session.
+        res.status(404).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'Session not found. Client should start a new session.',
+          },
+          id: null,
+        });
+      } else {
+        res.status(400).json({
+          jsonrpc: '2.0',
+          error: {
+            code: -32000,
+            message: 'Bad Request: No valid session ID or initialize required',
+          },
+          id: null,
+        });
+      }
     } catch (err) {
       console.error('[mcp] Streamable HTTP error:', err);
       if (!res.headersSent) {
