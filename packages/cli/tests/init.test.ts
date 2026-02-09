@@ -85,7 +85,7 @@ describe('init', () => {
       const configPath = path.join(tmpDir, CONFIG_FILE);
       const basename = path.basename(tmpDir);
 
-      await runInit(tmpDir, { nonInteractive: true });
+      await runInit(tmpDir, { nonInteractive: true, skipCclsp: true });
 
       expect(fs.existsSync(configPath)).toBe(true);
       const content = fs.readFileSync(configPath, 'utf8');
