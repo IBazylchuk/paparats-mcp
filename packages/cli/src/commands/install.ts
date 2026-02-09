@@ -351,7 +351,7 @@ export async function runInstall(
     const result = upsertMcpServer(
       cursorMcpPath,
       'paparats',
-      { url: 'http://localhost:9876/sse' },
+      { type: 'http', url: 'http://localhost:9876/mcp' },
       {
         readFileSync: readFile,
         writeFileSync: writeFile,

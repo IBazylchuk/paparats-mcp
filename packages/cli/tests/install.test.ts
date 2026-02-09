@@ -149,7 +149,8 @@ describe('install', () => {
 
       expect(files.has(mcpPath)).toBe(true);
       const parsed = JSON.parse(files.get(mcpPath)!);
-      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/sse');
+      expect(parsed.mcpServers.paparats.type).toBe('http');
+      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/mcp');
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Cursor MCP configured'));
     });
 
@@ -181,11 +182,15 @@ describe('install', () => {
 
     it('creates new file when missing', () => {
       const filePath = path.join(tmpDir, 'mcp.json');
-      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+      const result = upsertMcpServer(filePath, 'paparats', {
+        type: 'http',
+        url: 'http://localhost:9876/mcp',
+      });
 
       expect(result).toBe('added');
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/sse');
+      expect(parsed.mcpServers.paparats.type).toBe('http');
+      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/mcp');
     });
 
     it('adds server to existing file with other servers', () => {
@@ -195,22 +200,33 @@ describe('install', () => {
         JSON.stringify({ mcpServers: { other: { url: 'http://other:1234' } } }, null, 2)
       );
 
-      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+      const result = upsertMcpServer(filePath, 'paparats', {
+        type: 'http',
+        url: 'http://localhost:9876/mcp',
+      });
 
       expect(result).toBe('added');
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       expect(parsed.mcpServers.other.url).toBe('http://other:1234');
-      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/sse');
+      expect(parsed.mcpServers.paparats.type).toBe('http');
+      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/mcp');
     });
 
     it('returns unchanged when URL matches', () => {
       const filePath = path.join(tmpDir, 'mcp.json');
       fs.writeFileSync(
         filePath,
-        JSON.stringify({ mcpServers: { paparats: { url: 'http://localhost:9876/sse' } } }, null, 2)
+        JSON.stringify(
+          { mcpServers: { paparats: { type: 'http', url: 'http://localhost:9876/mcp' } } },
+          null,
+          2
+        )
       );
 
-      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+      const result = upsertMcpServer(filePath, 'paparats', {
+        type: 'http',
+        url: 'http://localhost:9876/mcp',
+      });
       expect(result).toBe('unchanged');
     });
 
@@ -221,16 +237,23 @@ describe('install', () => {
         JSON.stringify({ mcpServers: { paparats: { url: 'http://old:1234/sse' } } }, null, 2)
       );
 
-      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+      const result = upsertMcpServer(filePath, 'paparats', {
+        type: 'http',
+        url: 'http://localhost:9876/mcp',
+      });
 
       expect(result).toBe('updated');
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/sse');
+      expect(parsed.mcpServers.paparats.type).toBe('http');
+      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/mcp');
     });
 
     it('creates parent directory if needed', () => {
       const filePath = path.join(tmpDir, 'subdir', 'mcp.json');
-      const result = upsertMcpServer(filePath, 'paparats', { url: 'http://localhost:9876/sse' });
+      const result = upsertMcpServer(filePath, 'paparats', {
+        type: 'http',
+        url: 'http://localhost:9876/mcp',
+      });
 
       expect(result).toBe('added');
       expect(fs.existsSync(filePath)).toBe(true);

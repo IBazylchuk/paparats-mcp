@@ -101,7 +101,10 @@ export class Indexer {
         }
       }
       return hashes;
-    } catch {
+    } catch (err) {
+      console.warn(
+        `[indexer] Failed to get chunk hashes for ${projectName}/${relPath}: ${(err as Error).message}`
+      );
       return new Set<string>();
     }
   }
