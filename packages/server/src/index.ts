@@ -64,6 +64,21 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`  Stats:                    http://localhost:${PORT}/api/stats`);
   console.log(`  Qdrant:                   ${QDRANT_URL}`);
   console.log(`  Ollama:                   ${OLLAMA_URL}`);
+
+  // Restore groups from Qdrant so search works without re-indexing
+  indexer
+    .listGroups()
+    .then((groups) => {
+      for (const groupName of Object.keys(groups)) {
+        if (!projectsByGroup.has(groupName)) {
+          projectsByGroup.set(groupName, []);
+          console.log(`  Restored group from Qdrant: ${groupName} (${groups[groupName]} chunks)`);
+        }
+      }
+    })
+    .catch((err) => {
+      console.warn('[startup] Could not restore groups from Qdrant:', (err as Error).message);
+    });
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {
