@@ -20,7 +20,10 @@
     "lint:fix": "eslint . --fix",
     "prettier": "prettier --write .",
     "prettier:check": "prettier --check .",
-    "check": "yarn typecheck && yarn lint && yarn prettier:check"
+    "check": "yarn typecheck && yarn lint && yarn prettier:check",
+    "publish:shared": "yarn workspace @paparats/shared exec npm publish",
+    "publish:cli": "yarn build && yarn workspace @paparats/cli exec npm publish",
+    "publish:npm": "yarn publish:shared && yarn publish:cli"
   },
   "engines": {
     "node": ">=20"

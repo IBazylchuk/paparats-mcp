@@ -107,6 +107,22 @@ describe('init', () => {
       const content = fs.readFileSync(configPath, 'utf8');
       expect(content).toContain('group: my-group');
       expect(content).toContain('language: rust');
+      expect(content).toContain('target');
+    });
+
+    it('uses language-specific exclude patterns (e.g. Ruby gets vendor, tmp, spec)', async () => {
+      await runInit(tmpDir, {
+        nonInteractive: true,
+        group: 'jobs',
+        language: 'ruby',
+      });
+
+      const { config } = readConfig(tmpDir);
+      expect(config.indexing?.exclude).toContain('vendor');
+      expect(config.indexing?.exclude).toContain('tmp');
+      expect(config.indexing?.exclude).toContain('spec');
+      expect(config.indexing?.exclude).not.toContain('.next');
+      expect(config.indexing?.exclude).not.toContain('.turbo');
     });
 
     it('throws when config exists and no --force', async () => {
@@ -144,13 +160,14 @@ describe('init', () => {
           promptAddExclude: () => Promise.resolve(true),
           promptConfigureEmbeddings: () => Promise.resolve(false),
           promptGitignore: () => Promise.resolve(false),
+          promptSetupCclsp: () => Promise.resolve(false),
         }
       );
 
       const content = fs.readFileSync(configPath, 'utf8');
       expect(content).toContain('group: test-group');
       expect(content).toContain('language: python');
-      expect(content).toContain('node_modules');
+      expect(content).toContain('venv');
     });
 
     it('throws when --group has invalid format', async () => {
@@ -177,6 +194,7 @@ describe('init', () => {
           promptAddExclude: () => Promise.resolve(true),
           promptConfigureEmbeddings: () => Promise.resolve(false),
           promptGitignore: () => Promise.resolve(false),
+          promptSetupCclsp: () => Promise.resolve(false),
         }
       );
 
@@ -199,6 +217,7 @@ describe('init', () => {
           promptEmbeddingsProvider: () => Promise.resolve('ollama'),
           promptEmbeddingsModel: () => Promise.resolve('jina-code-embeddings'),
           promptGitignore: () => Promise.resolve(false),
+          promptSetupCclsp: () => Promise.resolve(false),
         }
       );
 
@@ -224,6 +243,7 @@ describe('init', () => {
           promptAddExclude: () => Promise.resolve(true),
           promptConfigureEmbeddings: () => Promise.resolve(false),
           promptGitignore: () => Promise.resolve(false),
+          promptSetupCclsp: () => Promise.resolve(false),
         }
       );
 
@@ -245,6 +265,7 @@ describe('init', () => {
           promptAddExclude: () => Promise.resolve(false),
           promptConfigureEmbeddings: () => Promise.resolve(false),
           promptGitignore: () => Promise.resolve(false),
+          promptSetupCclsp: () => Promise.resolve(false),
         }
       );
 
@@ -266,11 +287,156 @@ describe('init', () => {
           promptAddExclude: () => Promise.resolve(false),
           promptConfigureEmbeddings: () => Promise.resolve(false),
           promptGitignore: () => Promise.resolve(true),
+          promptSetupCclsp: () => Promise.resolve(false),
         }
       );
 
       const gitignoreContent = fs.readFileSync(gitignorePath, 'utf8');
       expect(gitignoreContent).toContain(CONFIG_FILE);
+    });
+
+    it('creates cclsp.json in non-interactive mode', async () => {
+      await runInit(
+        tmpDir,
+        {
+          nonInteractive: true,
+          group: 'test-cclsp',
+          language: 'typescript',
+        },
+        {
+          lspDeps: { commandExists: () => true },
+        }
+      );
+
+      const cclspPath = path.join(tmpDir, 'cclsp.json');
+      expect(fs.existsSync(cclspPath)).toBe(true);
+      const cclsp = JSON.parse(fs.readFileSync(cclspPath, 'utf8'));
+      expect(cclsp.servers).toBeDefined();
+      expect(Array.isArray(cclsp.servers)).toBe(true);
+      const tsServer = cclsp.servers.find((s: { extensions: string[] }) =>
+        s.extensions.includes('ts')
+      );
+      expect(tsServer).toBeDefined();
+      expect(tsServer.extensions).toContain('ts');
+      expect(tsServer.rootDir).toBe('.');
+    });
+
+    it('adds cclsp to .mcp.json in non-interactive mode', async () => {
+      await runInit(
+        tmpDir,
+        {
+          nonInteractive: true,
+          group: 'test-cclsp',
+          language: 'typescript',
+        },
+        {
+          lspDeps: { commandExists: () => true },
+        }
+      );
+
+      const mcpJsonPath = path.join(tmpDir, '.mcp.json');
+      const parsed = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+      expect(parsed.mcpServers.cclsp).toBeDefined();
+      expect(parsed.mcpServers.cclsp.command).toBe('cclsp');
+      expect(parsed.mcpServers.cclsp.env.CCLSP_CONFIG_PATH).toBe('./cclsp.json');
+    });
+
+    it('skips cclsp with --skip-cclsp', async () => {
+      await runInit(tmpDir, {
+        nonInteractive: true,
+        group: 'test-skip',
+        language: 'typescript',
+        skipCclsp: true,
+      });
+
+      const cclspPath = path.join(tmpDir, 'cclsp.json');
+      expect(fs.existsSync(cclspPath)).toBe(false);
+
+      const mcpJsonPath = path.join(tmpDir, '.mcp.json');
+      const parsed = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
+      expect(parsed.mcpServers.cclsp).toBeUndefined();
+    });
+
+    it('skips cclsp when promptSetupCclsp returns false', async () => {
+      await runInit(
+        tmpDir,
+        {},
+        {
+          promptGroup: () => Promise.resolve('g'),
+          promptLanguage: () => Promise.resolve('typescript'),
+          promptAddExclude: () => Promise.resolve(false),
+          promptConfigureEmbeddings: () => Promise.resolve(false),
+          promptGitignore: () => Promise.resolve(false),
+          promptSetupCclsp: () => Promise.resolve(false),
+          lspDeps: { commandExists: () => true },
+        }
+      );
+
+      const cclspPath = path.join(tmpDir, 'cclsp.json');
+      expect(fs.existsSync(cclspPath)).toBe(false);
+    });
+
+    it('creates cclsp.json for multi-language projects', async () => {
+      await runInit(
+        tmpDir,
+        {},
+        {
+          promptGroup: () => Promise.resolve('multi-cclsp'),
+          promptLanguage: () => Promise.resolve(['typescript', 'python']),
+          promptAddExclude: () => Promise.resolve(false),
+          promptConfigureEmbeddings: () => Promise.resolve(false),
+          promptGitignore: () => Promise.resolve(false),
+          promptSetupCclsp: () => Promise.resolve(true),
+          lspDeps: { commandExists: () => true },
+        }
+      );
+
+      const cclspPath = path.join(tmpDir, 'cclsp.json');
+      expect(fs.existsSync(cclspPath)).toBe(true);
+      const cclsp = JSON.parse(fs.readFileSync(cclspPath, 'utf8'));
+      expect(cclsp.servers).toBeDefined();
+      const hasTs = cclsp.servers.some((s: { extensions: string[] }) =>
+        s.extensions.includes('ts')
+      );
+      const hasPy = cclsp.servers.some((s: { extensions: string[] }) =>
+        s.extensions.includes('py')
+      );
+      expect(hasTs).toBe(true);
+      expect(hasPy).toBe(true);
+    });
+
+    it('skips cclsp for languages without LSP config (e.g. terraform)', async () => {
+      await runInit(tmpDir, {
+        nonInteractive: true,
+        group: 'test-terraform',
+        language: 'terraform',
+      });
+
+      const cclspPath = path.join(tmpDir, 'cclsp.json');
+      expect(fs.existsSync(cclspPath)).toBe(false);
+    });
+
+    it('warns on LSP install failure but continues', async () => {
+      await runInit(
+        tmpDir,
+        {
+          nonInteractive: true,
+          group: 'test-fail',
+          language: 'typescript',
+        },
+        {
+          lspDeps: {
+            commandExists: () => false,
+            execInstall: () => {
+              throw new Error('install failed');
+            },
+          },
+        }
+      );
+
+      // cclsp.json should still be created even if LSP install fails
+      const cclspPath = path.join(tmpDir, 'cclsp.json');
+      expect(fs.existsSync(cclspPath)).toBe(true);
     });
 
     it('produces valid config readable by readConfig', async () => {
@@ -312,6 +478,7 @@ describe('init', () => {
           promptAddExclude: () => Promise.resolve(false),
           promptConfigureEmbeddings: () => Promise.resolve(false),
           promptGitignore: () => Promise.resolve(false),
+          promptSetupCclsp: () => Promise.resolve(false),
         }
       );
 
@@ -333,6 +500,7 @@ describe('init', () => {
           promptAddExclude: () => Promise.resolve(false),
           promptConfigureEmbeddings: () => Promise.resolve(false),
           promptGitignore: () => Promise.resolve(true),
+          promptSetupCclsp: () => Promise.resolve(false),
         }
       );
 
@@ -385,6 +553,7 @@ describe('init', () => {
           promptEmbeddingsProvider: () => Promise.resolve('openai'),
           promptEmbeddingsModel: () => Promise.resolve('text-embedding-3-small'),
           promptGitignore: () => Promise.resolve(false),
+          promptSetupCclsp: () => Promise.resolve(false),
         }
       );
 

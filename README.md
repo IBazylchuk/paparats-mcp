@@ -1,32 +1,48 @@
-# paparats-mcp
+# Paparats MCP
 
 <img src="docs/paparats-kvetka.png" alt="Paparats-kvetka (fern flower)" width="200" align="right">
 
 **Paparats-kvetka** — a magical flower from Slavic folklore that blooms on Kupala Night and grants power to whoever finds it. Likewise, paparats-mcp helps you find the right code across a sea of repositories.
 
-Semantic code search across multiple repositories. MCP server powered by Qdrant vector search and Ollama embeddings, designed for AI coding assistants (Claude Code, Cursor).
+**Semantic code search for AI coding assistants.** Give Claude Code, Cursor, Windsurf, Codex and rest deep understanding of your entire codebase — single repo or multi-project workspaces. Search by meaning, not keywords. Keep your index fresh with real-time file watching. Return only relevant chunks instead of full files to save tokens.
 
-Drop a `.paparats.yml` into each project, group them together, and get cross-project semantic search via MCP.
+Everything runs locally. No cloud. No API keys. Your code never leaves your machine.
 
-## Prerequisites
+---
 
-Install these **before** running `paparats install` (the CLI does not install them):
+## Why Paparats?
 
-| Requirement        | Purpose                         | Install                                                                     |
-| ------------------ | ------------------------------- | --------------------------------------------------------------------------- |
-| **Docker**         | Runs Qdrant and MCP server      | [docker.com](https://docker.com)                                            |
-| **Docker Compose** | Orchestrates containers (v2)    | Included with Docker Desktop; on Linux: `apt install docker-compose-plugin` |
-| **Ollama**         | Local embedding model (on host) | [ollama.com](https://ollama.com)                                            |
+AI coding assistants are smart, but they can only see files you open. They don't know your codebase structure, where the authentication logic lives, or how services connect. **Paparats fixes that.**
 
-The CLI checks that `docker`, `ollama`, and `docker compose` (or `docker-compose`) are available. If any are missing, it exits with installation links.
+### What you get
 
-## Quick start
+- **🔍 Semantic code search** — ask "where is the rate limiting logic?" and get exact code ranked by meaning, not grep matches
+- **⚡️ Real-time sync** — edit a file, and 2 seconds later it's re-indexed. No manual re-runs
+- **🧠 LSP intelligence** — go-to-definition, find-references, rename symbols via [CCLSP](https://github.com/nicobailon/cclsp) integration
+- **💾 Token savings** — return only relevant chunks instead of full files to reduce context size
+- **🏢 Multi-project workspaces** — search across backend, frontend, infra repos in one query
+- **🔒 100% local & private** — Qdrant vector database + Ollama embeddings. Nothing leaves your laptop
+- **🎯 Language-aware chunking** — code split by functions/classes, not arbitrary character counts (Ruby, TypeScript, Python, Go, Rust, Java, C/C++, C#, Terraform)
+
+### Who benefits
+
+| Use Case                    | How Paparats Helps                                                                                     |
+| --------------------------- | ------------------------------------------------------------------------------------------------------ |
+| **Solo developers**         | Quickly navigate unfamiliar codebases, find examples of patterns, reduce context-switching             |
+| **Multi-repo teams**        | Cross-project search (backend + frontend + infra), consistent patterns, faster onboarding              |
+| **AI agents**               | Foundation for product support bots, QA automation, dev assistants — any agent that needs code context |
+| **Legacy modernization**    | Find all usages of deprecated APIs, identify migration patterns, discover hidden dependencies          |
+| **Contractors/consultants** | Accelerate ramp-up on client codebases, reduce "where is X?" questions                                 |
+
+---
+
+## Quick Start
 
 ```bash
-# 1. Ensure Docker, Docker Compose, and Ollama are installed
-docker --version && docker compose version && ollama --version
+# 1. Install CLI
+npm install -g @paparats/cli
 
-# 2. One-time setup: starts Qdrant + MCP server, downloads GGUF (~1.6 GB), registers model in Ollama
+# 2. One-time setup (downloads ~1.6 GB GGUF model, starts Docker containers)
 paparats install
 
 # 3. In your project
@@ -34,238 +50,152 @@ cd your-project
 paparats init   # creates .paparats.yml
 paparats index  # index the codebase
 
-# 4. Connect your IDE (Cursor, Claude Code) to the MCP server — see "Connecting MCP" below
+# 4. Keep index fresh with file watching
+paparats watch  # run in background or separate terminal
+
+# 5. Connect your IDE (Cursor, Claude Code) — see "Connecting MCP" below
 ```
 
-### Connecting MCP for semantic search
+### Prerequisites
 
-After `paparats install` and `paparats index`, add the MCP server to your IDE so the AI can use semantic search.
+Install these **before** running `paparats install`:
 
-**Cursor**
+| Tool               | Purpose                            | Install                                                                  |
+| ------------------ | ---------------------------------- | ------------------------------------------------------------------------ |
+| **Docker**         | Runs Qdrant vector DB + MCP server | [docker.com](https://docker.com)                                         |
+| **Docker Compose** | Orchestrates containers (v2)       | Included with Docker Desktop; Linux: `apt install docker-compose-plugin` |
+| **Ollama**         | Local embedding model (on host)    | [ollama.com](https://ollama.com)                                         |
 
-1. Create or edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project)
-2. Add the paparats server (default port 9876):
+The CLI checks that `docker`, `ollama`, and `docker compose` are available. If missing, it exits with installation links.
 
-```json
-{
-  "mcpServers": {
-    "paparats": {
-      "type": "http",
-      "url": "http://localhost:9876/mcp"
-    }
-  }
-}
-```
+---
 
-Restart Cursor after changing the config.
-
-**Claude Code**
-
-```bash
-claude mcp add --transport http paparats http://localhost:9876/mcp
-```
-
-Or add to `.mcp.json` in your project root:
-
-```json
-{
-  "mcpServers": {
-    "paparats": {
-      "type": "http",
-      "url": "http://localhost:9876/mcp"
-    }
-  }
-}
-```
-
-**Verify**
-
-- Ensure the server is running (`paparats status` or `docker ps`)
-- Check MCP tools in your IDE: you should see `search_code` (semantic search) and `health_check`
-- Ask the AI: _"Search for authentication logic in the codebase"_
-
-### What `paparats install` does and does not
-
-| Action                                            | Done by `paparats install`?    |
-| ------------------------------------------------- | ------------------------------ |
-| Install Docker                                    | No — you must install it first |
-| Install Docker Compose                            | No — you must install it first |
-| Install Ollama                                    | No — you must install it first |
-| Copy `docker-compose.yml` to `~/.paparats/`       | Yes                            |
-| Start Qdrant + MCP server containers              | Yes                            |
-| Download GGUF model (~1.65 GB)                    | Yes — to `~/.paparats/models/` |
-| Register model in Ollama (`jina-code-embeddings`) | Yes                            |
-| Start Ollama if not running                       | Yes — spawns `ollama serve`    |
-
-Use `--skip-docker` or `--skip-ollama` if you already have parts set up.
-
-## How it works
+## How It Works
 
 ```
-Your projects                     paparats-mcp                    AI assistant
-                                                                   (Claude Code / Cursor)
-  backend/                   ┌─────────────────────┐
-    .paparats.yml ──────────►│  Indexer             │
-  frontend/                  │    chunks code       │           ┌──────────────┐
-    .paparats.yml ──────────►│    embeds via Ollama │──────────►│  MCP search  │
-  infra/                     │    stores in Qdrant  │           │  tool call   │
-    .paparats.yml ──────────►│                      │           └──────────────┘
-                             └─────────────────────┘
+Your projects                   Paparats                       AI assistant
+                                                               (Claude Code / Cursor)
+  backend/                 ┌──────────────────────┐
+    .paparats.yml ────────►│  Indexer              │
+  frontend/                │   - chunks code       │          ┌──────────────┐
+    .paparats.yml ────────►│   - embeds via Ollama │─────────►│ MCP search   │
+  infra/                   │   - stores in Qdrant  │          │ tool call    │
+    .paparats.yml ────────►│   - watches changes   │          └──────────────┘
+                           └──────────────────────┘
 ```
 
-## Key concepts
+1. **Indexing**: Code is chunked at function/class boundaries, embedded via [Jina Code Embeddings 1.5B](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF), stored in Qdrant
+2. **Searching**: AI assistant queries via MCP → server expands query (handles abbreviations, plurals, case variants) → Qdrant returns top matches → only relevant chunks sent back
+3. **Token savings**: Return only relevant chunks instead of loading full files
+4. **Watching**: File changes trigger re-indexing of affected files only (unchanged code never re-embedded thanks to content-hash cache)
 
-**Groups** — projects that share a search scope. All projects in the same group are stored in one Qdrant collection and searched together. Define it in `.paparats.yml`:
+---
 
-```yaml
-# backend/.paparats.yml
-group: 'my-fullstack'
-language: ruby
-indexing:
-  paths: ['app/', 'lib/']
-```
+## Key Features
 
-```yaml
-# frontend/.paparats.yml
-group: 'my-fullstack'
-language: typescript
-indexing:
-  paths: ['src/']
-```
+### 🎯 Better Search Quality
 
-Now searching "authentication flow" finds relevant code in both backend and frontend.
+**Task-specific embeddings** — Jina Code Embeddings supports 3 query types (nl2code, code2code, techqa) with different prefixes for better relevance:
 
-**Language-aware chunking** — code is split at natural boundaries (functions, classes, blocks) rather than fixed sizes. 4 strategies selected per language: block-based (Ruby/Python), brace-based (JS/TS/Go/Rust/Java/C), indent-based, and fixed-size fallback. Supports Ruby, TypeScript, JavaScript, Python, Go, Rust, Java, Terraform, C, C++, C#.
+- `"find authentication middleware"` → `nl2code` prefix (natural language → code)
+- `"function validateUser(req, res)"` → `code2code` prefix (code → similar code)
+- `"how does OAuth work in this app?"` → `techqa` prefix (technical questions)
 
-**Embedding cache** — embeddings are cached in SQLite (`~/.paparats/cache/embeddings.db`) using content-hash keys and Float32 vectors, with LRU cleanup at 100k entries. Re-indexing unchanged code is instant.
+**Query expansion** — every search generates 2-3 variations server-side:
 
-## Search features
+- Abbreviations: `auth` ↔ `authentication`, `db` ↔ `database`
+- Case variants: `userAuth` → `user_auth` → `UserAuth`
+- Plurals: `users` → `user`, `dependencies` → `dependency`
+- Filler removal: `"how does auth work"` → `"auth"`
 
-### Jina task-specific prefixes
+All variants searched in parallel, results merged by max score.
 
-The [Jina Code Embeddings](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) model is trained with task-specific prefixes that significantly improve embedding quality. Paparats applies them automatically:
+**Confidence tiers** — results labeled High (≥60%), Partial (40–60%), Low (<40%) to guide AI next steps.
 
-- **Indexing time**: every code chunk is prefixed with `"Candidate code snippet:\n"` before embedding
-- **Query time**: the query type is auto-detected and the appropriate prefix is applied:
-  - `nl2code` — natural language searching for code (default): `"Find the most relevant code snippet..."`
-  - `code2code` — searching with a code snippet: `"Find an equivalent code snippet..."`
-  - `techqa` — technical questions: `"Find the most relevant technical answer..."`
+### ⚡️ Performance
 
-Detection is automatic: code patterns (`function`, `const`, `import`, `=>`) trigger `code2code`, question patterns (`how`, `what`, `why`, `?`) trigger `techqa`, everything else uses `nl2code`. Prefixes are auto-enabled for Jina models and disabled for other providers.
+**Embedding cache** — SQLite cache with content-hash keys + Float32 vectors. Unchanged code never re-embedded. LRU cleanup at 100k entries.
 
-### Server-side query expansion
+**Language-aware chunking** — 4 strategies per language (block-based for Ruby/Python, brace-based for JS/TS/Go/Rust, indent-based, fixed-size fallback). Supports 11 languages .
 
-AI clients often issue a single search query, missing results that match synonyms or different casing. Paparats expands every search query into 2-3 variations server-side:
+**Real-time watching** — `paparats watch` monitors file changes with debouncing (1s default). Edit → save → re-index in ~2 seconds.
 
-1. **Abbreviation expansion/contraction** — bidirectional: `auth` <-> `authentication`, `config` <-> `configuration`, `db` <-> `database`, etc. (~30 pairs)
-2. **Filler word stripping** — `"how does the auth flow work"` -> `"auth flow"`
-3. **Case variant generation** — `"user authentication"` -> `"userAuthentication"`, `"handleUserAuth"` -> `"handle user auth"`
-4. **Plural normalization** — `"users"` -> `"user"`, `"dependencies"` -> `"dependency"`
+### 🔗 Integrations
 
-All variations are searched in parallel via `Promise.all()`, results are merged using max-score-per-hash deduplication, preserving 0-1 score semantics. The embedding cache makes repeated/similar queries near-instant.
+**CCLSP (Claude Code LSP)** — during `paparats init`, optionally sets up:
 
-The server logs which query variations contributed results for effectiveness monitoring:
+- LSP server for your language (TypeScript, Python, Go, Ruby, etc.)
+- MCP config for go-to-definition, find-references, rename
+- Typical AI workflow: `search_code` (semantic) → `find_definition` (precise navigation) → `find_references` (impact analysis)
 
-```
-[searcher] Query expansion: "auth middleware" -> 3 variations, 4 results ["auth middleware" (2), "authentication middleware" (2)]
-```
+Skip with `--skip-cclsp` if not needed.
 
-### Confidence-tiered results
+---
 
-Search results are labeled with confidence tiers to help AI assistants decide next steps:
+## Comparison with Alternatives
 
-| Score     | Tier            | Guidance                                                 |
-| --------- | --------------- | -------------------------------------------------------- |
-| >= 60%    | High confidence | Relevant results found                                   |
-| 40% - 60% | Partial match   | Supplement with grep or file reading for better coverage |
-| < 40%     | Low confidence  | Use grep or file reading instead                         |
+### Feature Matrix
 
-### Token savings metrics
+<div align="center">
 
-Every search response includes metrics showing how much context was saved by returning relevant chunks instead of full files:
+| Feature                  |  **Paparats**   |   Vexify    |    SeaGOAT    | Augment Context |  Sourcegraph   |    Greptile    |    Bloop     |
+| :----------------------- | :-------------: | :---------: | :-----------: | :-------------: | :------------: | :------------: | :----------: |
+| **Deployment**           |
+| Open source              |     ✅ MIT      |   ✅ MIT    |    ✅ MIT     | ❌ Proprietary  |   ⚠️ Partial   | ❌ Proprietary | ⚠️ Archived¹ |
+| Fully local              |       ✅        |     ✅      |      ✅       |    ❌ Cloud²    |    ❌ Cloud    |    ❌ SaaS     |      ✅      |
+| **Search Quality**       |
+| Code embeddings          |  ✅ Jina 1.5B³  | ⚠️ Limited⁴ |  ❌ MiniLM⁵   | ⚠️ Proprietary  | ⚠️ Proprietary | ⚠️ Proprietary |      ✅      |
+| Vector database          |     Qdrant      |   SQLite    |   ChromaDB    |   Proprietary   |  Proprietary   |    pgvector    |    Qdrant    |
+| AST-aware chunking       | ✅ 4 strategies |     ❌      |      ❌       |   ⚠️ Unknown    |   ⚠️ Partial   |   ⚠️ Unknown   |      ✅      |
+| Query expansion          |   ✅ 4 types⁶   |     ❌      |      ❌       |   ⚠️ Unknown    |   ⚠️ Partial   |   ⚠️ Unknown   |      ❌      |
+| **Developer Experience** |
+| Real-time file watching  |     ✅ Auto     |  ❌ Manual  |   ❌ Manual   |    ✅ CI/CD     |       ✅       |   ⚠️ Unknown   |      ⚠️      |
+| Embedding cache          |    ✅ SQLite    | ⚠️ Implicit |      ❌       |   ⚠️ Unknown    |   ⚠️ Unknown   |   ⚠️ Unknown   |      ❌      |
+| Multi-project search     |    ✅ Groups    |     ✅      |   ❌ Single   |       ✅        |       ✅       |       ✅       |      ✅      |
+| One-command install      |       ✅        |  ⚠️ Manual  | `pip install` |  Account + CI   |    Account     |  SaaS signup   | Build source |
+| **AI Integration**       |
+| MCP native               |       ✅        |     ✅      |      ❌       |       ✅        |       ❌       |     ⚠️ API     |      ❌      |
+| LSP integration          |    ✅ CCLSP     |     ❌      |      ❌       |       ❌        |   ⚠️ Partial   |       ❌       |      ❌      |
+| Token savings metrics    |  ✅ Per-query   |     ❌      |      ❌       |   ⚠️ Unknown    |       ❌       |       ❌       |      ❌      |
+| **Pricing**              |
+| Cost                     |    **Free**     |  **Free**   |   **Free**    |      Paid       |      Paid      |      Paid      |   Archived   |
 
-```json
-{
-  "metrics": {
-    "tokensReturned": 150,
-    "estimatedFullFileTokens": 5000,
-    "tokensSaved": 4850,
-    "savingsPercent": 97
-  }
-}
-```
+</div>
 
-## Architecture
+**Notes:**
 
-```
-paparats-mcp/
-├── packages/
-│   ├── server/          # MCP server (Docker image)
-│   │   ├── src/
-│   │   │   ├── index.ts           # HTTP server + MCP handler
-│   │   │   ├── indexer.ts         # Group-aware indexing
-│   │   │   ├── searcher.ts        # Search with query expansion + metrics
-│   │   │   ├── query-expansion.ts # Abbreviation, case, plural, filler expansion
-│   │   │   ├── task-prefixes.ts   # Jina task-specific prefix detection
-│   │   │   ├── chunker.ts         # Language-aware code chunking (4 strategies)
-│   │   │   ├── embeddings.ts      # Ollama provider + SQLite cache + prefix-aware methods
-│   │   │   ├── config.ts          # .paparats.yml reader + 11 language profiles
-│   │   │   ├── mcp-handler.ts     # MCP protocol (SSE + Streamable HTTP)
-│   │   │   ├── watcher.ts         # File watcher (chokidar + debounce)
-│   │   │   └── types.ts           # Shared types
-│   │   └── Dockerfile
-│   └── cli/             # CLI tool (npm package)
-│       └── src/
-│           ├── index.ts        # Commander entry
-│           └── commands/       # init, install, update, index, search, status, watch, doctor, groups
-└── examples/
-    └── paparats.yml.*   # Config examples per language
-```
+1. Bloop archived January 2, 2025
+2. Augment Context Engine indexes locally but stores vectors in cloud
+3. Jina Code Embeddings 1.5B (1536 dims) with task-specific prefixes (nl2code, code2code, techqa)
+4. Vexify supports Ollama models but limited to specific embeddings (jina-embeddings-2-base-code, nomic-embed-text)
+5. SeaGOAT locked to all-MiniLM-L6-v2 (384 dims, general-purpose)
+6. Abbreviations, case variants, plurals, filler word removal
 
-## Stack
+---
 
-- **Qdrant** — vector database (1 collection per group, cosine similarity, payload filtering by project/file)
-- **Ollama** — local embeddings via [jina-code-embeddings-1.5b](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) (1.5B params, 1536 dims, 32k context) with task-specific prefixes for nl2code/code2code/techqa
-- **MCP** — Model Context Protocol (SSE for Cursor + Streamable HTTP for Claude Code)
-- **TypeScript** monorepo with yarn workspaces
+### Why Paparats?
 
-## Embedding model setup
+**🔒 Privacy-first** — Everything runs locally. Augment and Greptile store your code vectors in the cloud, Sourcegraph requires cloud deployment.
 
-The default model is [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — a code-optimized embedding model based on Qwen2.5-Coder-1.5B. It's not in the Ollama registry, so we create a local alias via Modelfile. Task-specific prefixes (nl2code, code2code, techqa) are applied automatically to maximize embedding quality.
+**🧠 Better embeddings** — [Jina Code Embeddings 1.5B](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) (1536 dims) trained specifically for code with task-specific prefixes. Vexify uses smaller jina-embeddings-2-base-code; SeaGOAT uses general-purpose MiniLM (384 dims).
 
-**Recommended:** `paparats install` automates the full setup:
+**⚡️ Production-grade stack** — Qdrant handles millions of vectors with sub-100ms latency. SQLite with extensions (Vexify) doesn't scale beyond small projects. ChromaDB (SeaGOAT) is designed for prototyping, not production.
 
-- Downloads GGUF (~1.65 GB) to `~/.paparats/models/`
-- Creates Modelfile and runs `ollama create jina-code-embeddings`
-- Starts Ollama with `ollama serve` if not running
+**🎯 Smarter search** — Query expansion (4 strategies) + task prefix detection (nl2code/code2code/techqa) automatically improve relevance. Competitors don't expose these features.
 
-**Manual setup** (if you prefer):
+**🔄 True real-time** — `paparats watch` keeps index fresh automatically with 1s debounce. Vexify and SeaGOAT require manual reindex commands. Augment requires CI/CD hooks.
 
-```bash
-# 1. Download the GGUF file
-curl -L -o jina-code-embeddings-1.5b-Q8_0.gguf \
-  "https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF/resolve/main/jina-code-embeddings-1.5b-Q8_0.gguf"
+**🔗 LSP included** — CCLSP integration gives your AI go-to-definition, find-references, rename. No other tool bundles this.
 
-# 2. Create the Modelfile
-cat > Modelfile <<'EOF'
-FROM ./jina-code-embeddings-1.5b-Q8_0.gguf
-PARAMETER num_ctx 8192
-EOF
+**💰 Free forever** — No usage limits, credits, or per-seat fees.
 
-# 3. Register as Ollama model
-ollama create jina-code-embeddings -f Modelfile
+**📊 Transparent metrics** — Every search shows tokens returned vs full-file tokens, savings %, confidence tier. Helps AI decide next steps.
 
-# 4. Verify
-ollama list | grep jina
-```
+---
 
-| Spec         | Value                                |
-| ------------ | ------------------------------------ |
-| Parameters   | 1.5B                                 |
-| Dimensions   | 1536                                 |
-| Context      | 32,768 tokens (recommended <= 8,192) |
-| Quantization | Q8_0 (~1.6 GB)                       |
-| Languages    | 15+ programming languages            |
+</div>
+
+---
 
 ## Configuration
 
@@ -289,35 +219,141 @@ watcher:
 
 embeddings:
   provider: 'ollama' # embedding provider (default: "ollama")
-  model: 'jina-code-embeddings' # Ollama alias (see "Embedding model setup" above)
+  model: 'jina-code-embeddings' # Ollama alias (see below)
   dimensions: 1536 # vector dimensions (default: 1536)
 ```
 
-## Docker and Ollama
+### Groups
 
-- **Qdrant** and **MCP server** run in Docker containers.
-- **Ollama** runs on the host (not in Docker). The server connects to it via `host.docker.internal:11434` (Mac/Windows). On Linux, set `OLLAMA_URL=http://172.17.0.1:11434` (or your docker0 IP) in `~/.paparats/docker-compose.yml` or as an env override.
-- **Embedding cache** (SQLite) persists in the `paparats_cache` Docker volume, so re-indexing unchanged code is fast across restarts. Cache keys include task prefixes, so switching models doesn't return stale vectors.
+Projects with the same `group` name share a search scope. All indexed together in one Qdrant collection.
 
-## CLI commands
+```yaml
+# backend/.paparats.yml
+group: 'my-fullstack'
+language: ruby
+indexing:
+  paths: ['app/', 'lib/']
+```
 
-| Command                   | Description                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------------ |
-| `paparats init`           | Create `.paparats.yml` in the current directory (interactive or `--non-interactive`) |
-| `paparats install`        | Set up Docker (Qdrant + MCP server) and Ollama embedding model                       |
-| `paparats update`         | Update CLI from npm and pull/restart latest server Docker image                      |
-| `paparats index`          | Index the current project into the vector database                                   |
-| `paparats search <query>` | Semantic search across indexed projects                                              |
-| `paparats watch`          | Watch for file changes and reindex automatically                                     |
-| `paparats status`         | Show system status (Docker, Ollama, config, server health, groups)                   |
-| `paparats doctor`         | Run diagnostic checks                                                                |
-| `paparats groups`         | List all indexed groups and projects                                                 |
+```yaml
+# frontend/.paparats.yml
+group: 'my-fullstack'
+language: typescript
+indexing:
+  paths: ['src/']
+```
 
-### Common options
+Now searching `"authentication flow"` finds code in **both** backend and frontend.
+
+---
+
+## Connecting MCP
+
+After `paparats install` and `paparats index`, connect your IDE:
+
+### Cursor
+
+Create or edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
+
+```json
+{
+  "mcpServers": {
+    "paparats": {
+      "type": "http",
+      "url": "http://localhost:9876/mcp"
+    }
+  }
+}
+```
+
+Restart Cursor after changing config.
+
+### Claude Code
+
+```bash
+claude mcp add --transport http paparats http://localhost:9876/mcp
+```
+
+Or add to `.mcp.json` in project root:
+
+```json
+{
+  "mcpServers": {
+    "paparats": {
+      "type": "http",
+      "url": "http://localhost:9876/mcp"
+    }
+  }
+}
+```
+
+### Verify
+
+- `paparats status` — check server is running
+- In your IDE, look for MCP tools: `search_code` and `health_check`
+- Ask the AI: _"Search for authentication logic in the codebase"_
+
+---
+
+## Embedding Model Setup
+
+Default: [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — code-optimized, 1.5B params, 1536 dims, 32k context. Not in Ollama registry, so we create a local alias.
+
+**Recommended:** `paparats install` automates this:
+
+- Downloads GGUF (~1.65 GB) to `~/.paparats/models/`
+- Creates Modelfile and runs `ollama create jina-code-embeddings`
+- Starts Ollama with `ollama serve` if not running
+
+**Manual setup:**
+
+```bash
+# 1. Download GGUF
+curl -L -o jina-code-embeddings-1.5b-Q8_0.gguf \
+  "https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF/resolve/main/jina-code-embeddings-1.5b-Q8_0.gguf"
+
+# 2. Create Modelfile
+cat > Modelfile <<'EOF'
+FROM ./jina-code-embeddings-1.5b-Q8_0.gguf
+PARAMETER num_ctx 8192
+EOF
+
+# 3. Register in Ollama
+ollama create jina-code-embeddings -f Modelfile
+
+# 4. Verify
+ollama list | grep jina
+```
+
+| Spec         | Value                               |
+| ------------ | ----------------------------------- |
+| Parameters   | 1.5B                                |
+| Dimensions   | 1536                                |
+| Context      | 32,768 tokens (recommended ≤ 8,192) |
+| Quantization | Q8_0 (~1.6 GB)                      |
+| Languages    | 15+ programming languages           |
+
+Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
+
+---
+
+## CLI Commands
+
+| Command                   | Description                                                   |
+| ------------------------- | ------------------------------------------------------------- |
+| `paparats init`           | Create `.paparats.yml` (interactive or `--non-interactive`)   |
+| `paparats install`        | Set up Docker + Ollama model (~1.6 GB download)               |
+| `paparats update`         | Update CLI from npm + pull latest Docker image                |
+| `paparats index`          | Index the current project                                     |
+| `paparats search <query>` | Semantic search across indexed projects                       |
+| `paparats watch`          | Watch files and auto-reindex on changes                       |
+| `paparats status`         | System status (Docker, Ollama, config, server health, groups) |
+| `paparats doctor`         | Run diagnostic checks                                         |
+| `paparats groups`         | List all indexed groups and projects                          |
 
 Most commands support `--server <url>` (default: `http://localhost:9876`) and `--json` for machine-readable output.
 
-### Command details
+### Common Options
 
 **`paparats init`**
 
@@ -325,23 +361,18 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 - `--group <name>` — Set group (skip prompt)
 - `--language <lang>` — Set language (skip prompt)
 - `--non-interactive` — Use defaults without prompts
+- `--skip-cclsp` — Skip CCLSP language server setup
 
 **`paparats install`**
 
-- `--skip-docker` — Skip Docker setup (only set up Ollama model)
-- `--skip-ollama` — Skip Ollama model (only start Docker containers)
-- `-v, --verbose` — Show detailed output
-
-**`paparats update`**
-
-- `--skip-cli` — Skip CLI update (only pull and restart Docker)
-- `--skip-docker` — Skip Docker update (only update CLI from npm)
+- `--skip-docker` — Skip Docker setup (only set up Ollama)
+- `--skip-ollama` — Skip Ollama model (only start Docker)
 - `-v, --verbose` — Show detailed output
 
 **`paparats index`**
 
 - `-f, --force` — Force reindex (clear existing chunks)
-- `--dry-run` — Show what would be indexed without indexing
+- `--dry-run` — Show what would be indexed
 - `--timeout <ms>` — Request timeout (default: 300000)
 - `-v, --verbose` — Show skipped files and errors
 - `--json` — Output as JSON
@@ -349,7 +380,7 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 **`paparats search <query>`**
 
 - `-n, --limit <n>` — Max results (default: 5)
-- `-p, --project <name>` — Filter by project (default: all)
+- `-p, --project <name>` — Filter by project
 - `-g, --group <name>` — Override group from config
 - `--timeout <ms>` — Request timeout (default: 30000)
 - `-v, --verbose` — Show token savings
@@ -357,24 +388,249 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 
 **`paparats watch`**
 
-- `--dry-run` — Show what would be watched without watching
+- `--dry-run` — Show what would be watched
 - `-v, --verbose` — Show file events
 - `--json` — Output events as JSON lines
 
-**`paparats status`** — Docker, Ollama, config, server health, groups overview
+---
 
-- `--timeout <ms>` — Request timeout (default: 5000)
+## Use Cases Beyond Coding
 
-**`paparats doctor`** — 6 checks: Docker, Qdrant, Ollama, config, MCP server, install
+Paparats is a foundation for building AI agents that need code context:
 
-- `-v, --verbose` — Show detailed error messages
+### 🎯 Product Support Bots
 
-**`paparats groups`**
+- Index product codebase → support bot answers "how do I configure X?" with exact code examples
+- Reduces ticket volume, improves response accuracy
 
-- `-q, --quiet` — Show only group names
-- `-v, --verbose` — Show project details
-- `--json` — Output as JSON
+### 🧪 QA Automation
+
+- Index test suites → AI generates new test cases based on existing patterns
+- Finds untested code paths by searching for functions without corresponding tests
+
+### 👨‍💻 Developer Onboarding
+
+- New hire asks "where is the payment processing logic?" → instant answers
+- Reduces ramp-up time from weeks to days
+
+### 📊 Code Analytics
+
+- Search for anti-patterns: "SQL injection vulnerabilities", "deprecated API usage"
+- Find migration candidates: "uses old auth library"
+
+### 🤖 AI Agent Memory
+
+- Persistent code knowledge for agents that span multiple sessions
+- Agent learns codebase structure over time
+
+---
+
+## Architecture
+
+```
+paparats-mcp/
+├── packages/
+│   ├── server/          # MCP server (Docker image)
+│   │   ├── src/
+│   │   │   ├── index.ts           # HTTP server + MCP handler
+│   │   │   ├── indexer.ts         # Group-aware indexing
+│   │   │   ├── searcher.ts        # Search with query expansion + metrics
+│   │   │   ├── query-expansion.ts # Abbreviation, case, plural expansion
+│   │   │   ├── task-prefixes.ts   # Jina task prefix detection
+│   │   │   ├── chunker.ts         # Language-aware code chunking
+│   │   │   ├── embeddings.ts      # Ollama provider + SQLite cache
+│   │   │   ├── config.ts          # .paparats.yml reader
+│   │   │   ├── mcp-handler.ts     # MCP protocol (SSE + HTTP)
+│   │   │   ├── watcher.ts         # File watcher (chokidar)
+│   │   │   └── types.ts           # Shared types
+│   │   └── Dockerfile
+│   ├── cli/             # CLI tool (npm package)
+│   │   └── src/
+│   │       ├── index.ts        # Commander entry
+│   │       └── commands/       # init, install, update, index, etc.
+│   └── shared/          # Shared utilities
+│       └── src/
+│           ├── path-validator.ts   # Path validation
+│           ├── gitignore-filter.ts # Gitignore parsing
+│           └── exclude-patterns.ts # Language-specific excludes
+└── examples/
+    └── paparats.yml.*   # Config examples per language
+```
+
+---
+
+## Stack
+
+- **Qdrant** — vector database (1 collection per group, cosine similarity, payload filtering)
+- **Ollama** — local embeddings via Jina Code Embeddings 1.5B with task-specific prefixes
+- **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code)
+- **TypeScript** monorepo with Yarn workspaces
+
+---
+
+## Docker and Ollama
+
+- **Qdrant** and **MCP server** run in Docker containers
+- **Ollama** runs on the host (not Docker). Server connects via `host.docker.internal:11434` (Mac/Windows). On Linux, set `OLLAMA_URL=http://172.17.0.1:11434` in `~/.paparats/docker-compose.yml`
+- **Embedding cache** (SQLite) persists in `paparats_cache` Docker volume. Re-indexing unchanged code is instant across restarts
+
+---
+
+## Token Savings Metrics
+
+### What we measure (and what we don't)
+
+Paparats provides **estimated** token savings to help you understand the order of magnitude of context reduction. These are heuristics, not precise measurements.
+
+#### Per-search response
+
+```json
+{
+  "metrics": {
+    "tokensReturned": 150, // Actual chunk content length ÷ 4
+    "estimatedFullFileTokens": 5000, // Heuristic: maxEndLine × 50 ÷ 4
+    "tokensSaved": 4850, // Difference between estimates
+    "savingsPercent": 97 // (tokensSaved ÷ estimated) × 100
+  }
+}
+```
+
+| Field                     | Calculation                  | Reality Check                                                     |
+| ------------------------- | ---------------------------- | ----------------------------------------------------------------- |
+| `tokensReturned`          | `Σ ceil(content.length / 4)` | ✅ Based on actual returned content; ÷4 is rough approximation    |
+| `estimatedFullFileTokens` | `Σ ceil(endLine × 50 / 4)`   | ⚠️ **Heuristic**: assumes 50 chars/line, never loads actual files |
+| `tokensSaved`             | `estimated - returned`       | ⚠️ **Derived**: difference between two estimates                  |
+| `savingsPercent`          | `(saved / estimated) × 100`  | ⚠️ **Relative**: percentage of heuristic estimate                 |
+
+#### Cumulative stats
+
+```bash
+curl -s http://localhost:9876/api/stats | jq '.usage'
+```
+
+```json
+{
+  "searchCount": 47,
+  "totalTokensSaved": 152340, // Sum of all tokensSaved estimates
+  "avgTokensSavedPerSearch": 3241 // totalTokensSaved ÷ searchCount
+}
+```
+
+These are **sums of estimates**, not measured token counts from a real tokenizer.
+
+---
+
+### Why heuristics?
+
+**We don't:**
+
+- Load full files to compare (defeats the purpose of chunking)
+- Run a tokenizer on file content (slow, model-dependent)
+- Know the exact file size (only chunk line ranges)
+
+**We estimate:**
+
+- **50 chars/line** — typical for code (comments, whitespace, logic)
+- **4 chars/token** — rough average for code tokens (OpenAI GPT-3.5/4, Claude)
+- **File size from line count** — `endLine × 50` assumes uniform density
+
+These constants work reasonably well across languages, but individual files vary:
+
+- Minified JS: 200+ chars/line → underestimate savings
+- Ruby with comments: 30 chars/line → overestimate savings
+- Dense C++: 60 chars/line → close to estimate
+
+---
+
+### What the metrics tell you
+
+✅ **Order of magnitude** — are you returning 100 tokens or 10,000?  
+✅ **Relative benefit** — is semantic search better than loading full files? (Yes, typically 50–90% reduction)  
+✅ **Trend over time** — is avgTokensSavedPerSearch increasing as your codebase grows?
+
+❌ **Exact token count** — don't use this for billing or precise LLM context budgeting  
+❌ **Model-specific accuracy** — different tokenizers (GPT-4 vs Claude vs Llama) produce different counts  
+❌ **File-level precision** — individual file estimates can be off by 20–40%
+
+---
+
+### Real-world validation
+
+To verify actual savings, compare:
+
+**Without Paparats:**
+
+```
+User: "Find authentication logic"
+AI: *loads 5 full files*
+Context: 25,000 tokens (measured by your LLM API)
+```
+
+**With Paparats:**
+
+```
+User: "Find authentication logic"
+AI: *uses search_code, gets 5 chunks*
+Context: 1,200 tokens (measured by your LLM API)
+Savings: ~95% (real)
+```
+
+The metrics are directionally correct but use `÷4` as a proxy, not your LLM's actual tokenizer.
+
+---
+
+### Why we still show them
+
+Even as estimates, token savings metrics are useful:
+
+1. **AI decision-making** — if `savingsPercent < 40%`, the AI might decide to use grep or file reading instead
+2. **Performance monitoring** — track `avgTokensSavedPerSearch` over time to see if chunking strategies need tuning
+3. **User feedback** — "search saved ~10k tokens" gives intuition about the benefit
+
+If you need exact counts, instrument your LLM API calls and compare before/after adding Paparats.
+
+---
+
+### Honest comparison
+
+Most code search tools **don't provide any metrics**. When they do:
+
+- **Sourcegraph** — no token metrics, only "results found"
+- **Greptile** — API response sizes, not token estimates
+- **Vexify** — no metrics
+- **SeaGOAT** — no metrics
+
+Paparats shows **rough estimates** to give you visibility into context reduction, even if imperfect. Use them as indicators, not ground truth.
+
+---
 
 ## License
 
 MIT
+
+---
+
+## Contributing
+
+Contributions welcome! Areas of interest:
+
+- Additional language support (PHP, Elixir, Scala, Kotlin, Swift)
+- Alternative embedding providers (OpenAI, Cohere, local GGUF via llama.cpp)
+- Performance optimizations (chunking strategies, cache eviction)
+- Agent use cases (support bots, QA automation, code analytics)
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+---
+
+## Links
+
+- [Jina Code Embeddings](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — embedding model
+- [CCLSP](https://github.com/nicobailon/cclsp) — LSP integration for MCP
+- [Qdrant](https://qdrant.tech) — vector database
+- [Ollama](https://ollama.com) — local LLM runtime
+- [MCP](https://modelcontextprotocol.io) — Model Context Protocol
+
+---
+
+**Star the repo if Paparats helps you code faster!** ⭐️

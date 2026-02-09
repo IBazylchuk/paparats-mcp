@@ -282,6 +282,76 @@ describe('install', () => {
       expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/mcp');
     });
 
+    it('returns unchanged for matching command-based config', () => {
+      const filePath = path.join(tmpDir, 'mcp.json');
+      const config = {
+        command: 'npx',
+        args: ['-y', 'cclsp'],
+        env: { CCLSP_CONFIG_PATH: '/project/.claude/cclsp.json' },
+      };
+      fs.writeFileSync(filePath, JSON.stringify({ mcpServers: { cclsp: config } }, null, 2));
+
+      const result = upsertMcpServer(filePath, 'cclsp', config);
+      expect(result).toBe('unchanged');
+    });
+
+    it('returns updated when command-based config differs', () => {
+      const filePath = path.join(tmpDir, 'mcp.json');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(
+          {
+            mcpServers: {
+              cclsp: {
+                command: 'npx',
+                args: ['-y', 'cclsp'],
+                env: { CCLSP_CONFIG_PATH: '/old/.claude/cclsp.json' },
+              },
+            },
+          },
+          null,
+          2
+        )
+      );
+
+      const result = upsertMcpServer(filePath, 'cclsp', {
+        command: 'npx',
+        args: ['-y', 'cclsp'],
+        env: { CCLSP_CONFIG_PATH: '/new/.claude/cclsp.json' },
+      });
+
+      expect(result).toBe('updated');
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      expect(parsed.mcpServers.cclsp.env.CCLSP_CONFIG_PATH).toBe('/new/.claude/cclsp.json');
+    });
+
+    it('adds command-based server alongside url-based server', () => {
+      const filePath = path.join(tmpDir, 'mcp.json');
+      fs.writeFileSync(
+        filePath,
+        JSON.stringify(
+          {
+            mcpServers: {
+              paparats: { type: 'http', url: 'http://localhost:9876/mcp' },
+            },
+          },
+          null,
+          2
+        )
+      );
+
+      const result = upsertMcpServer(filePath, 'cclsp', {
+        command: 'npx',
+        args: ['-y', 'cclsp'],
+        env: { CCLSP_CONFIG_PATH: '/project/.claude/cclsp.json' },
+      });
+
+      expect(result).toBe('added');
+      const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      expect(parsed.mcpServers.paparats.url).toBe('http://localhost:9876/mcp');
+      expect(parsed.mcpServers.cclsp.command).toBe('npx');
+    });
+
     it('creates parent directory if needed', () => {
       const filePath = path.join(tmpDir, 'subdir', 'mcp.json');
       const result = upsertMcpServer(filePath, 'paparats', {

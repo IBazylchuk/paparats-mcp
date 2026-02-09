@@ -16,7 +16,17 @@ import type {
 const LANGUAGE_PROFILES: Record<string, LanguageProfile> = {
   ruby: {
     patterns: ['**/*.rb', '**/*.rake'],
-    exclude: ['vendor/**', 'tmp/**', 'log/**', 'spec/**', 'node_modules/**'],
+    exclude: [
+      'vendor/**',
+      'tmp/**',
+      'log/**',
+      'spec/**',
+      'test/**',
+      'node_modules/**',
+      'sig/**',
+      'sorbet/**',
+      '**/*.rbi',
+    ],
     extensions: ['.rb', '.rake'],
   },
   typescript: {

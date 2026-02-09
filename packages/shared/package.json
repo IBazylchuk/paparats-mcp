@@ -1,21 +1,60 @@
 {
   "name": "@paparats/shared",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "description": "Shared utilities for Paparats MCP (path validation, gitignore filtering, exclude patterns)",
+  "license": "MIT",
+  "author": "Ilya Bazylchuk",
+  "homepage": "https://github.com/IBazylchuk/paparats-mcp#readme",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "gitignore",
+    "path-validation",
+    "exclude-patterns",
+    "file-filtering"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IBazylchuk/paparats-mcp.git",
+    "directory": "packages/shared"
+  },
+  "bugs": {
+    "url": "https://github.com/IBazylchuk/paparats-mcp/issues"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm run test"
+  },
+  "dependencies": {
+    "ignore": "^5.3.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.7.0",
     "vitest": "^4.0.18"
-  },
-  "dependencies": {
-    "ignore": "^5.3.2"
   }
 }
