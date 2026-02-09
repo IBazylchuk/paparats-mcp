@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -9,6 +10,13 @@ import {
   ollamaModelExists,
   upsertMcpServer,
 } from '../src/commands/install.js';
+
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  return { ...actual, execSync: vi.fn() };
+});
+
+const mockedExecSync = vi.mocked(execSync);
 
 function createTempDir(): string {
   const tmpDir = path.join(
@@ -26,6 +34,13 @@ describe('install', () => {
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    mockedExecSync.mockImplementation((cmd: string) => {
+      if (cmd === 'command -v node') return undefined as never;
+      if (cmd === 'command -v nonexistent-command-xyz-123') throw new Error('not found');
+      if (cmd === 'ollama list') return 'other-model' as never;
+      throw new Error(`Unexpected execSync: ${cmd}`);
+    });
   });
 
   afterEach(() => {
@@ -44,9 +59,28 @@ describe('install', () => {
   });
 
   describe('getDockerComposeCommand', () => {
-    it('returns docker compose or docker-compose when available', () => {
-      const cmd = getDockerComposeCommand();
-      expect(cmd).toMatch(/docker(\s+compose|-compose)/);
+    it('returns docker compose when available', () => {
+      mockedExecSync.mockImplementation((cmd: string) => {
+        if (cmd === 'docker compose version') return undefined as never;
+        throw new Error('Command failed');
+      });
+      expect(getDockerComposeCommand()).toBe('docker compose');
+    });
+
+    it('returns docker-compose when docker compose not available', () => {
+      mockedExecSync.mockImplementation((cmd: string) => {
+        if (cmd === 'docker compose version') throw new Error('not found');
+        if (cmd === 'docker-compose version') return undefined as never;
+        throw new Error('Command failed');
+      });
+      expect(getDockerComposeCommand()).toBe('docker-compose');
+    });
+
+    it('throws when neither available', () => {
+      mockedExecSync.mockImplementation(() => {
+        throw new Error('not found');
+      });
+      expect(() => getDockerComposeCommand()).toThrow(/Docker Compose not found/);
     });
   });
 
