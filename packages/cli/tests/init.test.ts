@@ -116,6 +116,7 @@ describe('init', () => {
         nonInteractive: true,
         group: 'jobs',
         language: 'ruby',
+        skipCclsp: true,
       });
 
       const { config } = readConfig(tmpDir);
@@ -142,7 +143,12 @@ describe('init', () => {
       const configPath = path.join(tmpDir, CONFIG_FILE);
       fs.writeFileSync(configPath, 'group: old\nlanguage: ruby');
 
-      await runInit(tmpDir, { force: true, nonInteractive: true, group: 'new-group' });
+      await runInit(tmpDir, {
+        force: true,
+        nonInteractive: true,
+        group: 'new-group',
+        skipCclsp: true,
+      });
 
       const content = fs.readFileSync(configPath, 'utf8');
       expect(content).toContain('group: new-group');
@@ -445,6 +451,7 @@ describe('init', () => {
         nonInteractive: true,
         group: 'valid-group',
         language: 'typescript',
+        skipCclsp: true,
       });
 
       const { config } = readConfig(tmpDir);
@@ -462,6 +469,7 @@ describe('init', () => {
         force: true,
         nonInteractive: true,
         group: 'new',
+        skipCclsp: true,
       });
 
       expect(logSpy).toHaveBeenCalledWith(
@@ -513,7 +521,7 @@ describe('init', () => {
     it('creates .mcp.json alongside .paparats.yml', async () => {
       const mcpJsonPath = path.join(tmpDir, '.mcp.json');
 
-      await runInit(tmpDir, { nonInteractive: true, group: 'test-mcp' });
+      await runInit(tmpDir, { nonInteractive: true, group: 'test-mcp', skipCclsp: true });
 
       expect(fs.existsSync(mcpJsonPath)).toBe(true);
       const parsed = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
@@ -530,7 +538,7 @@ describe('init', () => {
         JSON.stringify({ mcpServers: { other: { url: 'http://other:1234' } } }, null, 2)
       );
 
-      await runInit(tmpDir, { nonInteractive: true, group: 'test-mcp' });
+      await runInit(tmpDir, { nonInteractive: true, group: 'test-mcp', skipCclsp: true });
 
       const parsed = JSON.parse(fs.readFileSync(mcpJsonPath, 'utf8'));
       expect(parsed.mcpServers.other.url).toBe('http://other:1234');
