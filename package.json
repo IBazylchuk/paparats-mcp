@@ -13,7 +13,7 @@
     "release": "node scripts/release.js",
     "clean": "rm -rf packages/*/dist",
     "test": "yarn workspace @paparats/shared build && yarn workspace @paparats/shared test && yarn workspace @paparats/server test && yarn workspace @paparats/cli test",
-    "typecheck": "yarn workspace @paparats/shared typecheck && yarn workspace @paparats/server typecheck && yarn workspace @paparats/cli typecheck",
+    "typecheck": "yarn workspace @paparats/shared build && yarn workspace @paparats/shared typecheck && yarn workspace @paparats/server typecheck && yarn workspace @paparats/cli typecheck",
     "prepare": "husky",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
