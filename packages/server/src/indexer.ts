@@ -2,6 +2,7 @@ import { QdrantClient } from '@qdrant/js-client-rest';
 import { glob } from 'glob';
 import fs from 'fs';
 import path from 'path';
+import { filterFilesByGitignore } from '@paparats/shared';
 import { v7 as uuidv7 } from 'uuid';
 import PQueue from 'p-queue';
 import { Chunker } from './chunker.js';
@@ -192,7 +193,10 @@ export class Indexer {
       });
       found.forEach((f) => fileSet.add(f));
     }
-    const files = Array.from(fileSet);
+    let files = Array.from(fileSet);
+    if (project.indexing.respectGitignore) {
+      files = filterFilesByGitignore(files, project.path);
+    }
     console.log(`  ${files.length} files found`);
 
     const queue = new PQueue({ concurrency: project.indexing.concurrency });

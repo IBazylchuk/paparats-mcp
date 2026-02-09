@@ -9,6 +9,8 @@ import {
   writeConfig,
   detectLanguage,
   detectLanguages,
+  collectProjectFiles,
+  normalizeExcludePatterns,
   SUPPORTED_LANGUAGES,
   type PaparatsConfig,
 } from '../src/config.js';
@@ -254,6 +256,121 @@ embeddings:
       expect(SUPPORTED_LANGUAGES).toContain('typescript');
       expect(SUPPORTED_LANGUAGES).toContain('csharp');
       expect(SUPPORTED_LANGUAGES).toContain('rust');
+    });
+  });
+
+  describe('normalizeExcludePatterns', () => {
+    it('wraps bare dir names with **/ and /**', () => {
+      expect(normalizeExcludePatterns(['node_modules', 'dist'])).toEqual([
+        '**/node_modules/**',
+        '**/dist/**',
+      ]);
+    });
+
+    it('leaves patterns with / or ** unchanged', () => {
+      expect(normalizeExcludePatterns(['**/node_modules/**', 'foo/bar'])).toEqual([
+        '**/node_modules/**',
+        'foo/bar',
+      ]);
+    });
+  });
+
+  describe('collectProjectFiles', () => {
+    let tmpDir: string;
+
+    beforeEach(() => {
+      tmpDir = createTempDir();
+    });
+
+    afterEach(() => {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    });
+
+    it('excludes node_modules when using bare exclude pattern', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'node_modules', 'pkg'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'src', 'index.ts'), 'export {}');
+      fs.writeFileSync(path.join(tmpDir, 'node_modules', 'pkg', 'index.js'), 'module.exports = {}');
+
+      const config: PaparatsConfig = {
+        group: 'g',
+        language: 'typescript',
+        indexing: { exclude: ['node_modules'] },
+      };
+      const files = await collectProjectFiles(tmpDir, config);
+      expect(files.some((f) => f.includes('node_modules'))).toBe(false);
+      expect(files.some((f) => f.includes('src/index.ts'))).toBe(true);
+    });
+
+    it('excludes dist, build, .next, coverage, .turbo when using bare patterns', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'dist'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'build'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, '.next'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'src', 'index.ts'), 'export {}');
+      fs.writeFileSync(path.join(tmpDir, 'dist', 'index.js'), '');
+      fs.writeFileSync(path.join(tmpDir, 'build', 'out.js'), '');
+      fs.writeFileSync(path.join(tmpDir, '.next', 'page.js'), '');
+
+      const config: PaparatsConfig = {
+        group: 'g',
+        language: 'typescript',
+        indexing: { exclude: ['dist', 'build', '.next'] },
+      };
+      const files = await collectProjectFiles(tmpDir, config);
+      expect(files.some((f) => f.includes('dist'))).toBe(false);
+      expect(files.some((f) => f.includes('build'))).toBe(false);
+      expect(files.some((f) => f.includes('.next'))).toBe(false);
+      expect(files.some((f) => f.includes('src/index.ts'))).toBe(true);
+    });
+
+    it('excludes files matching .gitignore when respectGitignore is true', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'secrets'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'src', 'index.ts'), 'export {}');
+      fs.writeFileSync(path.join(tmpDir, 'secrets', 'key.ts'), 'const secret = "key";');
+      fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'secrets/\n*.log\n');
+
+      const config: PaparatsConfig = {
+        group: 'g',
+        language: 'typescript',
+        indexing: { respectGitignore: true },
+      };
+      const files = await collectProjectFiles(tmpDir, config);
+      expect(files.some((f) => f.includes('secrets'))).toBe(false);
+      expect(files.some((f) => f.includes('src/index.ts'))).toBe(true);
+    });
+
+    it('includes gitignored files when respectGitignore is false', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'secrets'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'src', 'index.ts'), 'export {}');
+      fs.writeFileSync(path.join(tmpDir, 'secrets', 'key.ts'), 'const secret = "key";');
+      fs.writeFileSync(path.join(tmpDir, '.gitignore'), 'secrets/\n');
+
+      const config: PaparatsConfig = {
+        group: 'g',
+        language: 'typescript',
+        indexing: { respectGitignore: false },
+      };
+      const files = await collectProjectFiles(tmpDir, config);
+      expect(files.some((f) => f.includes('secrets'))).toBe(true);
+      expect(files.some((f) => f.includes('src/index.ts'))).toBe(true);
+    });
+
+    it('uses default exclude when indexing.exclude is empty', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, 'node_modules', 'pkg'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'src', 'index.ts'), 'export {}');
+      fs.writeFileSync(path.join(tmpDir, 'node_modules', 'pkg', 'index.js'), '');
+
+      const config: PaparatsConfig = {
+        group: 'g',
+        language: 'typescript',
+      };
+      const files = await collectProjectFiles(tmpDir, config);
+      expect(files.some((f) => f.includes('node_modules'))).toBe(false);
+      expect(files.some((f) => f.includes('src/index.ts'))).toBe(true);
     });
   });
 });

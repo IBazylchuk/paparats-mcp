@@ -211,6 +211,14 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         return;
       }
 
+      const projects = projectsByGroup.get(group);
+      const project = projects?.find((p) => p.name === projectName);
+
+      if (!project) {
+        res.status(400).json({ error: `Unknown project: ${group}/${projectName}` });
+        return;
+      }
+
       await withTimeout(
         indexer.deleteFileByPath(group, projectName, filePath),
         FILE_CHANGED_TIMEOUT_MS,

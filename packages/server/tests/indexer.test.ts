@@ -119,6 +119,7 @@ function createProjectConfig(
     indexing: {
       paths: [],
       exclude: [],
+      respectGitignore: true,
       extensions: [],
       chunkSize: 1024,
       overlap: 128,
@@ -330,6 +331,84 @@ describe('Indexer', () => {
       },
       wait: true,
     });
+  });
+
+  it('indexProject excludes files matching .gitignore when respectGitignore is true', async () => {
+    fs.mkdirSync(path.join(projectDir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'secrets'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'src', 'index.ts'), 'export const x = 1;');
+    fs.writeFileSync(path.join(projectDir, 'secrets', 'key.ts'), 'const secret = "key";');
+    fs.writeFileSync(path.join(projectDir, '.gitignore'), 'secrets/\n');
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir, {
+      patterns: ['**/*.ts'],
+      exclude: [],
+      indexing: {
+        paths: [],
+        exclude: [],
+        respectGitignore: true,
+        extensions: [],
+        chunkSize: 1024,
+        overlap: 128,
+        concurrency: 2,
+        batchSize: 50,
+      },
+    });
+
+    const count = await indexer.indexProject(project);
+    expect(count).toBeGreaterThan(0);
+
+    const files = mockQdrant.upsertedPoints.flatMap((u) =>
+      (u.points as { payload?: { file?: string } }[]).map((p) => p.payload?.file ?? '')
+    );
+    expect(files.some((f) => f.includes('secrets'))).toBe(false);
+    expect(files.some((f) => f.includes('src/index.ts'))).toBe(true);
+  });
+
+  it('indexProject includes gitignored files when respectGitignore is false', async () => {
+    fs.mkdirSync(path.join(projectDir, 'src'), { recursive: true });
+    fs.mkdirSync(path.join(projectDir, 'secrets'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, 'src', 'index.ts'), 'export const x = 1;');
+    fs.writeFileSync(path.join(projectDir, 'secrets', 'key.ts'), 'const secret = "key";');
+    fs.writeFileSync(path.join(projectDir, '.gitignore'), 'secrets/\n');
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir, {
+      patterns: ['**/*.ts'],
+      exclude: [],
+      indexing: {
+        paths: [],
+        exclude: [],
+        respectGitignore: false,
+        extensions: [],
+        chunkSize: 1024,
+        overlap: 128,
+        concurrency: 2,
+        batchSize: 50,
+      },
+    });
+
+    const count = await indexer.indexProject(project);
+    expect(count).toBeGreaterThan(0);
+
+    const files = mockQdrant.upsertedPoints.flatMap((u) =>
+      (u.points as { payload?: { file?: string } }[]).map((p) => p.payload?.file ?? '')
+    );
+    expect(files.some((f) => f.includes('secrets'))).toBe(true);
+    expect(files.some((f) => f.includes('src/index.ts'))).toBe(true);
   });
 
   it('listGroups returns groups with point counts', async () => {

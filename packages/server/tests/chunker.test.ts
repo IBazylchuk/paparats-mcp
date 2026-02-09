@@ -161,6 +161,18 @@ describe('Chunker', () => {
 
       expect(chunks.length).toBeGreaterThan(1);
     });
+
+    it('splits single very long line without stack overflow', () => {
+      const small = new Chunker({ chunkSize: 512, overlap: 64 });
+      // TS/JS triggers chunkByBraces -> flushBuffer; single line exceeds maxChunkSize
+      const hugeLine = 'export const x = "' + 'a'.repeat(10_000) + '";';
+      const chunks = small.chunk(hugeLine, 'typescript');
+
+      expect(chunks.length).toBeGreaterThan(1);
+      for (const c of chunks) {
+        expect(c.content.length).toBeLessThanOrEqual(512 * 3 + 1);
+      }
+    });
   });
 
   describe('hash', () => {

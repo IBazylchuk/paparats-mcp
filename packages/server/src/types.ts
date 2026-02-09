@@ -11,6 +11,7 @@ export interface PaparatsConfig {
 export interface IndexingConfig {
   paths?: string[];
   exclude?: string[];
+  respectGitignore?: boolean;
   extensions?: string[];
   chunkSize?: number;
   overlap?: number;
@@ -48,6 +49,7 @@ export interface ProjectConfig {
 export interface ResolvedIndexingConfig {
   paths: string[];
   exclude: string[];
+  respectGitignore: boolean;
   extensions: string[];
   chunkSize: number;
   overlap: number;

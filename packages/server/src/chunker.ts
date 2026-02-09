@@ -267,12 +267,32 @@ export class Chunker {
     if (!text.trim()) return;
 
     if (text.length > this.maxChunkSize) {
+      const startLine = endLine - buffer.length + 1;
+
+      // If single line too long, split by character (avoids infinite recursion)
+      if (buffer.length === 1) {
+        const line = buffer[0] ?? '';
+        let pos = 0;
+        while (pos < line.length) {
+          const chunk = line.slice(pos, pos + this.maxChunkSize);
+          if (chunk.trim()) {
+            chunks.push({
+              content: chunk,
+              startLine,
+              endLine: startLine,
+              hash: this.hash(chunk),
+            });
+          }
+          pos += this.maxChunkSize;
+        }
+        return;
+      }
+
       const mid = Math.floor(buffer.length / 2);
       const firstHalf = buffer.slice(0, mid);
       const secondHalf = buffer.slice(mid);
-      const startLine = endLine - buffer.length + 1;
-
       const firstText = firstHalf.join('\n');
+
       if (firstText.trim()) {
         chunks.push({
           content: firstText,
@@ -282,7 +302,6 @@ export class Chunker {
         });
       }
 
-      // Recurse for second half (handles > 2x oversized)
       if (secondHalf.length > 0) {
         const secondSize = secondHalf.reduce((s, l) => s + (l ?? '').length + 1, 0);
         this.flushBuffer(secondHalf, secondSize, endLine, chunks);
