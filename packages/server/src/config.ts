@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import { validateIndexingPaths } from '@paparats/shared';
+import { validateIndexingPaths, normalizeExcludePatterns } from '@paparats/shared';
 import type {
   PaparatsConfig,
   ProjectConfig,
@@ -89,6 +89,7 @@ export function getSupportedLanguages(): string[] {
 const DEFAULT_INDEXING: ResolvedIndexingConfig = {
   paths: [],
   exclude: [],
+  respectGitignore: true,
   extensions: [],
   chunkSize: 1024,
   overlap: 128,
@@ -217,7 +218,9 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
   const paths = userIndexing.paths ?? ['./'];
   validateIndexingPaths(paths, projectDir);
 
-  const exclude = userIndexing.exclude ?? Array.from(new Set(mergedExclude));
+  const exclude = normalizeExcludePatterns(
+    userIndexing.exclude ?? Array.from(new Set(mergedExclude))
+  );
   // Empty extensions = index all files matching patterns
   const extensions = userIndexing.extensions ?? Array.from(new Set(mergedExtensions));
 
@@ -244,6 +247,7 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
   const indexing: ResolvedIndexingConfig = {
     paths,
     exclude,
+    respectGitignore: raw.indexing?.respectGitignore ?? DEFAULT_INDEXING.respectGitignore,
     extensions,
     chunkSize: userIndexing.chunkSize ?? DEFAULT_INDEXING.chunkSize,
     overlap: userIndexing.overlap ?? DEFAULT_INDEXING.overlap,
@@ -335,6 +339,7 @@ export function buildProjectConfigFromContent(
   const indexing: ResolvedIndexingConfig = {
     paths: [],
     exclude: [],
+    respectGitignore: true,
     extensions: [],
     chunkSize: cfg.chunkSize ?? DEFAULT_INDEXING.chunkSize,
     overlap: cfg.overlap ?? DEFAULT_INDEXING.overlap,

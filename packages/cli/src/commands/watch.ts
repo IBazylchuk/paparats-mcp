@@ -6,7 +6,13 @@ import pLimit from 'p-limit';
 import { watch } from 'chokidar';
 import { minimatch } from 'minimatch';
 import { globSync } from 'glob';
-import { readConfig, CONFIG_FILE, getLanguageFromPath } from '../config.js';
+import {
+  readConfig,
+  CONFIG_FILE,
+  getLanguageFromPath,
+  normalizeExcludePatterns,
+} from '../config.js';
+import { createGitignoreFilter } from '@paparats/shared';
 import { ApiClient } from '../api-client.js';
 
 export interface WatchOptions {
@@ -65,7 +71,9 @@ export async function runWatch(opts: WatchOptions, deps?: WatchDeps): Promise<()
   const group = cfg.group;
   const client = deps?.apiClient ?? new ApiClient(opts.server ?? 'http://localhost:9876');
 
-  const exclude = cfg.indexing?.exclude ?? DEFAULT_EXCLUDE;
+  const exclude = normalizeExcludePatterns(cfg.indexing?.exclude ?? DEFAULT_EXCLUDE);
+  const respectGitignore = cfg.indexing?.respectGitignore ?? true;
+  const gitignoreFilter = respectGitignore ? createGitignoreFilter(projectDir) : null;
   const indexPaths = cfg.indexing?.paths ?? ['./'];
   const watchPaths = indexPaths.map((p) => path.resolve(projectDir, p));
   const debounceMs = cfg.watcher?.debounce ?? 1000;
@@ -81,7 +89,9 @@ export async function runWatch(opts: WatchOptions, deps?: WatchDeps): Promise<()
 
   function shouldIgnore(filePath: string): boolean {
     const rel = path.relative(projectDir, filePath);
-    return exclude.some((pattern) => minimatch(rel, pattern, { dot: true }));
+    if (exclude.some((pattern) => minimatch(rel, pattern, { dot: true }))) return true;
+    if (gitignoreFilter?.(filePath)) return true;
+    return false;
   }
 
   if (opts.dryRun) {
@@ -101,7 +111,10 @@ export async function runWatch(opts: WatchOptions, deps?: WatchDeps): Promise<()
         ignore: exclude,
         nodir: true,
       });
-      totalFiles += files.length;
+      const filtered = gitignoreFilter
+        ? files.filter((f) => !gitignoreFilter(path.join(watchPath, f)))
+        : files;
+      totalFiles += filtered.length;
     }
     console.log(chalk.dim(`\n  Total files: ${totalFiles}`));
     return async () => {};

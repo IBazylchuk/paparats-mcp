@@ -2,7 +2,11 @@ import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
 import yaml from 'js-yaml';
-import { validateIndexingPaths } from '@paparats/shared';
+import {
+  validateIndexingPaths,
+  normalizeExcludePatterns as normalizeExcludeFromShared,
+  filterFilesByGitignore,
+} from '@paparats/shared';
 
 export const CONFIG_FILE = '.paparats.yml';
 
@@ -30,12 +34,15 @@ const DEFAULT_EXCLUDE = [
   '**/target/**',
 ];
 
+export const normalizeExcludePatterns = normalizeExcludeFromShared;
+
 export interface PaparatsConfig {
   group: string;
   language: string | string[];
   indexing?: {
     paths?: string[];
     exclude?: string[];
+    respectGitignore?: boolean;
     extensions?: string[];
     chunkSize?: number;
     overlap?: number;
@@ -310,7 +317,9 @@ export async function collectProjectFiles(
   config: PaparatsConfig
 ): Promise<string[]> {
   const patterns = getIndexPatterns(config);
-  const exclude = config.indexing?.exclude ?? DEFAULT_EXCLUDE;
+  const exclude = normalizeExcludePatterns(config.indexing?.exclude ?? DEFAULT_EXCLUDE);
+  const respectGitignore = config.indexing?.respectGitignore ?? true;
+
   const fileSet = new Set<string>();
   for (const pattern of patterns) {
     const found = await glob(pattern, {
@@ -321,7 +330,12 @@ export async function collectProjectFiles(
     });
     found.forEach((f) => fileSet.add(f));
   }
-  return Array.from(fileSet);
+
+  let files = Array.from(fileSet);
+  if (respectGitignore) {
+    files = filterFilesByGitignore(files, projectDir);
+  }
+  return files;
 }
 
 /** Infer language from file extension (for content-based API) */
