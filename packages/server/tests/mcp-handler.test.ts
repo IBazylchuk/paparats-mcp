@@ -196,6 +196,91 @@ describe('McpHandler', () => {
     }
   });
 
+  it('POST /mcp with unknown session ID returns 404 (expired session)', async () => {
+    const app = express();
+    app.use(express.json());
+    handler.mount(app);
+
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'mcp-session-id': 'non-existent-session-id',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'health_check', arguments: {} },
+        }),
+      });
+
+      expect(res.status).toBe(404);
+      const body = await res.json();
+      expect(body.error?.code).toBe(-32000);
+      expect(body.error?.message).toContain('Session not found');
+    } finally {
+      server.close();
+    }
+  });
+
+  it('session stays alive when actively used within timeout', async () => {
+    const app = express();
+    app.use(express.json());
+    handler.mount(app);
+
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      // Initialize session
+      const initRes = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '1.0.0' },
+          },
+        }),
+      });
+
+      const sessionId = initRes.headers.get('mcp-session-id');
+      expect(sessionId).toBeTruthy();
+
+      // Make a follow-up request — session should still work
+      const callRes = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'mcp-session-id': sessionId!,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'health_check', arguments: {} },
+        }),
+      });
+
+      expect(callRes.status).toBe(200);
+    } finally {
+      server.close();
+    }
+  });
+
   it('POST /mcp tools/call search_code returns results', async () => {
     const searcher = createMockSearcher();
     vi.mocked(searcher.expandedSearch).mockResolvedValue({
