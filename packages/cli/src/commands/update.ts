@@ -10,7 +10,7 @@ import { waitForHealth } from './install.js';
 
 const PAPARATS_HOME = path.join(os.homedir(), '.paparats');
 const COMPOSE_FILE = path.join(PAPARATS_HOME, 'docker-compose.yml');
-const NPM_PACKAGE = 'paparats-mcp';
+const NPM_PACKAGE = '@paparats/cli';
 
 export interface UpdateOptions {
   skipCli?: boolean;
