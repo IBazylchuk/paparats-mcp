@@ -1,0 +1,39 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.IBazylchuk/paparats-mcp",
+  "title": "Paparats",
+  "description": "Semantic code search for AI coding assistants. Local Qdrant, multi-repo, no API keys.",
+  "version": "0.1.6",
+  "license": "MIT",
+  "author": {
+    "name": "Ilya Bazylchuk",
+    "url": "https://github.com/IBazylchuk"
+  },
+  "keywords": [
+    "code-search",
+    "semantic-search",
+    "vector-search",
+    "qdrant",
+    "ollama",
+    "multi-repository",
+    "ai-assistant",
+    "local-first"
+  ],
+  "repository": {
+    "url": "https://github.com/IBazylchuk/paparats-mcp",
+    "source": "github",
+    "subfolder": "packages/server"
+  },
+  "websiteUrl": "https://github.com/IBazylchuk/paparats-mcp#readme",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@paparats/cli",
+      "version": "0.1.6",
+      "transport": {
+        "type": "streamable-http",
+        "url": "http://localhost:9876"
+      }
+    }
+  ]
+}

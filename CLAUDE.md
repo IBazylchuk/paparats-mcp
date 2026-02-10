@@ -57,6 +57,13 @@ yarn test              # vitest
 yarn typecheck         # tsc --noEmit
 ```
 
+## Versioning
+
+**Single source of truth:** root `package.json` field `version`. All other versions are derived by `scripts/sync-version.js` (writes to packages/shared, packages/cli, packages/server, and server.json). Do not edit version in those files by hand.
+
+- `yarn sync-version` — copy root version into all packages and server.json.
+- `yarn release [version]` — runs sync-version (and sets root if version given), then tags and pushes. E.g. `yarn release 0.1.7` sets 0.1.7 everywhere and pushes tag `v0.1.7`.
+
 ## Docker
 
 - `packages/server/Dockerfile` — builds and runs the server

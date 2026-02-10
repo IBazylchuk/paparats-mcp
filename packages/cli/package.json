@@ -1,6 +1,7 @@
 {
   "name": "@paparats/cli",
-  "version": "0.1.2",
+  "version": "0.1.6",
+  "mcpName": "io.github.IBazylchuk/paparats-mcp",
   "type": "module",
   "description": "CLI for Paparats MCP — semantic code search for AI coding assistants",
   "license": "MIT",
