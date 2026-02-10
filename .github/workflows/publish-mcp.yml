@@ -1,0 +1,28 @@
+# Publishes server.json to the MCP Registry when a GitHub Release is created.
+# Prerequisites: publish @paparats/cli (and @paparats/shared) to npm first,
+# then create a Release from the same tag (e.g. v0.1.6). server.json must exist in repo root.
+name: Publish to MCP Registry
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mcp-publisher
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz
+          sudo mv mcp-publisher /usr/local/bin/
+          mcp-publisher --version
+
+      - name: Publish to registry
+        run: |
+          mcp-publisher login github-oidc
+          mcp-publisher publish

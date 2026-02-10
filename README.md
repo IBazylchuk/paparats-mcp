@@ -611,6 +611,15 @@ MIT
 
 ---
 
+## Releasing (maintainers)
+
+1. **Release:** Commit everything, then `yarn release patch` (or `minor`/`major`). This syncs version, commits the bump, pushes the tag.
+2. **CI:** On tag push, [docker-publish.yml](.github/workflows/docker-publish.yml) builds and pushes the Docker image.
+3. **npm (local):** Publish packages from your machine: `npm login` (if session expired), then `yarn publish:npm`. No CI token to rotate.
+4. **Optional:** Create a GitHub Release from the tag; [publish-mcp.yml](.github/workflows/publish-mcp.yml) will publish to the MCP registry.
+
+---
+
 ## Contributing
 
 Contributions welcome! Areas of interest:
