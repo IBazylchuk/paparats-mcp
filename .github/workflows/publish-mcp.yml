@@ -1,9 +1,10 @@
-# Publishes server.json to the MCP Registry when a GitHub Release is created.
-# Prerequisites: publish @paparats/cli (and @paparats/shared) to npm first,
-# then create a Release from the same tag (e.g. v0.1.6). server.json must exist in repo root.
+# Publishes server.json to the MCP Registry when a version tag is pushed or a GitHub Release is published.
+# Prerequisites: server.json in repo root; @paparats/cli published to npm (for registry to resolve the package).
 name: Publish to MCP Registry
 
 on:
+  push:
+    tags: ['v*']
   release:
     types: [published]
 
