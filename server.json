@@ -3,7 +3,7 @@
   "name": "io.github.IBazylchuk/paparats-mcp",
   "title": "Paparats",
   "description": "Semantic code search for AI coding assistants. Local Qdrant, multi-repo, no API keys.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "license": "MIT",
   "author": {
     "name": "Ilya Bazylchuk",
@@ -29,7 +29,7 @@
     {
       "registryType": "npm",
       "identifier": "@paparats/cli",
-      "version": "0.1.6",
+      "version": "0.1.7",
       "transport": {
         "type": "streamable-http",
         "url": "http://localhost:9876"
