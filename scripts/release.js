@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 /**
- * Syncs version from root to all packages and server.json, commits the bump, tags v{VERSION}, pushes branch and tag.
+ * Bumps version, syncs to all packages and server.json, commits. Does NOT tag or push.
+ * Run this first, then publish to npm, then run yarn release:push so the MCP registry finds the package.
  * Single source of truth: root package.json. See scripts/sync-version.js.
- * Triggers .github/workflows/docker-publish.yml
  *
  * Usage: yarn release [version | patch | minor | major]
- *   yarn release         → use version from root, sync, commit, tag, push (no bump)
- *   yarn release 1.0.0   → set 1.0.0, sync, commit, tag v1.0.0, push
- *   yarn release patch   → bump patch (0.1.6 → 0.1.7), sync, commit, tag, push
- *   yarn release minor   → bump minor (0.1.6 → 0.2.0), sync, commit, tag, push
- *   yarn release major   → bump major (0.1.6 → 1.0.0), sync, commit, tag, push
+ *   yarn release         → use version from root, sync, commit (no bump)
+ *   yarn release 1.0.0  → set 1.0.0, sync, commit
+ *   yarn release patch   → bump patch (0.1.6 → 0.1.7), sync, commit
+ *   yarn release minor   → bump minor, sync, commit
+ *   yarn release major   → bump major, sync, commit
  *
- * Run on a clean working tree (all changes committed). The script will create one new commit with the version bump.
+ * Then: yarn publish:npm  (publish to npm)
+ * Then: yarn release:push (tag and push — triggers Docker + MCP workflows)
  */
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -32,7 +33,7 @@ function bumpVersion(current, type) {
   return current;
 }
 
-// Require clean working tree so the version-bump commit is the only change
+// Require clean working tree
 const status = execSync('git status --porcelain', { encoding: 'utf8', cwd: rootDir }).trim();
 if (status) {
   console.error('Working tree is not clean. Commit or stash changes before running yarn release.');
@@ -46,7 +47,7 @@ if (versionArg === 'patch' || versionArg === 'minor' || versionArg === 'major') 
   console.log(`Bumping ${versionArg}: ${root.version} → ${versionToSet}`);
 }
 
-// Sync version from root to all packages and server.json (and set root if version passed)
+// Sync version from root to all packages and server.json
 execSync(
   `node "${join(__dirname, 'sync-version.js')}" ${versionToSet ? `"${versionToSet}"` : ''}`,
   {
@@ -57,32 +58,12 @@ execSync(
 
 const pkg = JSON.parse(readFileSync(join(rootDir, 'package.json'), 'utf8'));
 const version = pkg.version;
-const tag = `v${version}`;
 
-// Commit the version bump so the tag points to a commit that has the new version
+// Commit the version bump only (no tag, no push)
 execSync(
   'git add package.json packages/shared/package.json packages/cli/package.json packages/server/package.json server.json',
-  {
-    cwd: rootDir,
-  }
+  { cwd: rootDir }
 );
 execSync(`git commit -m "chore: release ${version}"`, { stdio: 'inherit', cwd: rootDir });
 
-let tagExisted = false;
-try {
-  execSync(`git tag ${tag}`, { encoding: 'utf8', cwd: rootDir });
-} catch (err) {
-  const output = (err?.stderr ?? err?.message ?? '') || '';
-  if (output.includes('already exists')) {
-    tagExisted = true;
-    console.log(`Tag ${tag} already exists, pushing...`);
-  } else {
-    throw err;
-  }
-}
-if (!tagExisted) {
-  console.log(`Tagging ${tag} and pushing (triggers Docker publish)...`);
-}
-
-execSync('git push origin HEAD', { stdio: 'inherit', cwd: rootDir });
-execSync(`git push origin ${tag}`, { stdio: 'inherit', cwd: rootDir });
+console.log(`\nCommitted ${version}. Next:\n  1. yarn publish:npm\n  2. yarn release:push`);
