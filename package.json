@@ -13,6 +13,7 @@
     "docker:rebuild": "docker build -t ibaz/paparats-server:latest -f packages/server/Dockerfile . && docker compose -f $HOME/.paparats/docker-compose.yml up -d --force-recreate paparats",
     "sync-version": "node scripts/sync-version.js",
     "release": "node scripts/release.js",
+    "release:push": "node scripts/release-push.js",
     "clean": "rm -rf packages/*/dist",
     "test": "yarn workspace @paparats/shared build && yarn workspace @paparats/shared test && yarn workspace @paparats/server test && yarn workspace @paparats/cli test",
     "typecheck": "yarn workspace @paparats/shared build && yarn workspace @paparats/shared typecheck && yarn workspace @paparats/server typecheck && yarn workspace @paparats/cli typecheck",

@@ -1,5 +1,7 @@
 # Publishes server.json to the MCP Registry when a version tag is pushed or a GitHub Release is published.
-# Prerequisites: server.json in repo root; @paparats/cli published to npm (for registry to resolve the package).
+# Prerequisites: server.json in repo root; @paparats/cli (and @paparats/shared) must already be published to npm —
+# the registry validates the package and returns 400 "NPM package not found" until it exists. Publish locally with
+# yarn publish:npm first, then push the tag (or re-run this workflow after publishing).
 name: Publish to MCP Registry
 
 on:
