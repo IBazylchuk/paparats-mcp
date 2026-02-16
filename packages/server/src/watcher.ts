@@ -92,6 +92,7 @@ export class ProjectWatcher {
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
     this.failedFiles.clear();
+    this.inFlight.clear();
 
     if (this.watcher) {
       await this.watcher.close();
@@ -174,10 +175,15 @@ export class ProjectWatcher {
     fn: () => Promise<void>,
     timeoutMs = CBCALL_TIMEOUT_MS
   ): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Callback timeout')), timeoutMs);
+      timer = setTimeout(() => reject(new Error('Callback timeout')), timeoutMs);
     });
-    await Promise.race([fn(), timeoutPromise]);
+    try {
+      await Promise.race([fn(), timeoutPromise]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   private async retryFailedFiles(): Promise<void> {
@@ -255,14 +261,17 @@ export class WatcherManager {
   async stopAll(timeoutMs = STOP_TIMEOUT_MS): Promise<void> {
     const stops = Array.from(this.watchers.values()).map((w) => w.stop());
 
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error('Stop timeout')), timeoutMs);
+      timer = setTimeout(() => reject(new Error('Stop timeout')), timeoutMs);
     });
 
     try {
       await Promise.race([Promise.all(stops), timeoutPromise]);
     } catch (err) {
       console.error('[watcher] Force closing watchers after timeout:', (err as Error).message);
+    } finally {
+      clearTimeout(timer);
     }
 
     this.watchers.clear();

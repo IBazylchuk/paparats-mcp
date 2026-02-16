@@ -52,6 +52,7 @@ export class McpHandler {
   private sessionCreationLocks = new Set<string>();
 
   private readonly SESSION_TIMEOUT_MS = 1000 * 60 * 60 * 4; // 4 hours idle timeout
+  private readonly REINDEX_JOB_TTL_MS = 1000 * 60 * 60; // keep completed jobs for 1 hour
   private cleanupInterval: ReturnType<typeof setInterval>;
 
   constructor(config: McpHandlerConfig) {
@@ -76,6 +77,7 @@ export class McpHandler {
     for (const sessionId of Object.keys(this.transports)) {
       this.cleanupSession(sessionId);
     }
+    this.reindexJobs.clear();
   }
 
   private getMcpServer(sessionId: string): McpServer {
@@ -103,8 +105,16 @@ export class McpHandler {
       }
     }
 
+    // Evict finished reindex jobs older than TTL
+    for (const [jobId, job] of this.reindexJobs.entries()) {
+      if (job.status !== 'running' && now - job.startedAt > this.REINDEX_JOB_TTL_MS) {
+        this.reindexJobs.delete(jobId);
+        cleaned++;
+      }
+    }
+
     if (cleaned > 0) {
-      console.log(`[mcp] Cleaned up ${cleaned} expired sessions`);
+      console.log(`[mcp] Cleaned up ${cleaned} expired sessions/jobs`);
     }
   }
 

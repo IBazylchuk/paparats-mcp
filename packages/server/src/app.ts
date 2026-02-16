@@ -14,10 +14,15 @@ export async function withTimeout<T>(
   timeoutMs: number,
   errorMsg: string
 ): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error(errorMsg)), timeoutMs);
+    timer = setTimeout(() => reject(new Error(errorMsg)), timeoutMs);
   });
-  return Promise.race([promise, timeoutPromise]);
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export const SEARCH_TIMEOUT_MS = 30_000;
