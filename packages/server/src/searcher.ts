@@ -1,6 +1,6 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
 import type { CachedEmbeddingProvider } from './embeddings.js';
-import type { SearchResult, SearchMetrics, SearchResponse } from './types.js';
+import type { SearchResult, SearchMetrics, SearchResponse, ChunkKind } from './types.js';
 import { expandQuery } from './query-expansion.js';
 
 export interface SearcherConfig {
@@ -23,6 +23,13 @@ interface QdrantPayload {
   endLine: number;
   content: string;
   hash: string;
+  // Phase 1 additions (optional for backward compat with pre-Phase-1 data)
+  chunk_id?: string;
+  symbol_name?: string | null;
+  kind?: string | null;
+  service?: string | null;
+  bounded_context?: string | null;
+  tags?: string[];
 }
 
 export class Searcher {
@@ -174,6 +181,12 @@ export class Searcher {
             content: p.content,
             score: h.score,
             hash: p.hash,
+            chunk_id: p.chunk_id ?? null,
+            symbol_name: (p.symbol_name as string | null) ?? null,
+            kind: (p.kind as ChunkKind | null) ?? null,
+            service: (p.service as string | null) ?? null,
+            bounded_context: (p.bounded_context as string | null) ?? null,
+            tags: p.tags ?? [],
           };
         });
     } catch (err) {
@@ -243,7 +256,9 @@ export class Searcher {
     return response.results
       .map((r) => {
         const score = (r.score * 100).toFixed(1);
-        return `**[${r.project}] ${r.file}:${r.startLine}** (${score}%)\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
+        const symbolInfo = r.symbol_name ? ` — ${r.kind ?? 'unknown'}: ${r.symbol_name}` : '';
+        const chunkRef = r.chunk_id ? `\n_chunk: ${r.chunk_id}_` : '';
+        return `**[${r.project}] ${r.file}:${r.startLine}** (${score}%${symbolInfo})${chunkRef}\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
       })
       .join('\n\n---\n\n');
   }

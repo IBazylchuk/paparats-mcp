@@ -11,6 +11,7 @@ import type {
   ProjectConfig,
   LanguageProfile,
   ResolvedIndexingConfig,
+  ResolvedMetadataConfig,
   WatcherConfig,
   EmbeddingsConfig,
 } from './types.js';
@@ -124,6 +125,18 @@ const DEFAULT_EMBEDDINGS: Required<EmbeddingsConfig> = {
   model: 'jina-code-embeddings', // Ollama alias for jina-code-embeddings-1.5b
   dimensions: 1536,
 };
+
+function resolveMetadata(
+  raw: PaparatsConfig['metadata'],
+  projectName: string
+): ResolvedMetadataConfig {
+  return {
+    service: raw?.service ?? projectName,
+    bounded_context: raw?.bounded_context ?? null,
+    tags: raw?.tags ?? [],
+    directory_tags: raw?.directory_tags ?? {},
+  };
+}
 
 // ── Config file name ───────────────────────────────────────────────────────
 
@@ -312,6 +325,8 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
     );
   }
 
+  const metadata = resolveMetadata(raw.metadata, projectName);
+
   return {
     name: projectName,
     path: path.resolve(projectDir),
@@ -322,6 +337,7 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
     indexing,
     watcher,
     embeddings,
+    metadata,
   };
 }
 
@@ -372,5 +388,6 @@ export function buildProjectConfigFromContent(
     indexing,
     watcher: DEFAULT_WATCHER,
     embeddings: DEFAULT_EMBEDDINGS,
+    metadata: resolveMetadata(undefined, projectName),
   };
 }

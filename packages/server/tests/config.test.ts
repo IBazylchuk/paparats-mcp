@@ -365,4 +365,83 @@ injection: !!js/function >
       expect(langs).not.toContain('generic');
     });
   });
+
+  describe('metadata config', () => {
+    const projectDir = path.resolve('/some/project');
+
+    it('resolves default metadata when none provided', () => {
+      const raw = { group: 'g', language: 'ruby' };
+      const config = resolveProject(projectDir, raw);
+      expect(config.metadata).toBeDefined();
+      expect(config.metadata.service).toBe('project');
+      expect(config.metadata.bounded_context).toBeNull();
+      expect(config.metadata.tags).toEqual([]);
+      expect(config.metadata.directory_tags).toEqual({});
+    });
+
+    it('resolves metadata from config', () => {
+      const raw = {
+        group: 'g',
+        language: 'ruby',
+        metadata: {
+          service: 'user-service',
+          bounded_context: 'identity',
+          tags: ['api', 'auth'],
+          directory_tags: {
+            'src/controllers': ['controller'],
+          },
+        },
+      };
+      const config = resolveProject(projectDir, raw);
+      expect(config.metadata.service).toBe('user-service');
+      expect(config.metadata.bounded_context).toBe('identity');
+      expect(config.metadata.tags).toEqual(['api', 'auth']);
+      expect(config.metadata.directory_tags).toEqual({ 'src/controllers': ['controller'] });
+    });
+
+    it('uses project name as service default', () => {
+      const raw = { group: 'g', language: 'ruby', metadata: {} };
+      const config = resolveProject(projectDir, raw);
+      expect(config.metadata.service).toBe('project');
+    });
+
+    it('handles partial metadata (only service)', () => {
+      const raw = { group: 'g', language: 'ruby', metadata: { service: 'my-svc' } };
+      const config = resolveProject(projectDir, raw);
+      expect(config.metadata.service).toBe('my-svc');
+      expect(config.metadata.bounded_context).toBeNull();
+      expect(config.metadata.tags).toEqual([]);
+      expect(config.metadata.directory_tags).toEqual({});
+    });
+
+    it('parses metadata from YAML file', () => {
+      const tmpDir = createTempDir();
+      try {
+        writeConfig(
+          tmpDir,
+          `
+group: my-group
+language: ruby
+metadata:
+  service: payment-service
+  bounded_context: billing
+  tags: [api, payments]
+  directory_tags:
+    src/controllers: [controller]
+    src/models: [model]
+`
+        );
+        const config = loadProject(tmpDir);
+        expect(config.metadata.service).toBe('payment-service');
+        expect(config.metadata.bounded_context).toBe('billing');
+        expect(config.metadata.tags).toEqual(['api', 'payments']);
+        expect(config.metadata.directory_tags).toEqual({
+          'src/controllers': ['controller'],
+          'src/models': ['model'],
+        });
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
 });

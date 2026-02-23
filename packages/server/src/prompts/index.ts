@@ -12,6 +12,7 @@ export interface Prompts {
     search_code: { description: string };
     health_check: { description: string };
     reindex: { description: string };
+    get_chunk: { description: string };
   };
   resources: {
     projectOverview: {
@@ -43,7 +44,7 @@ function validatePrompts(data: unknown): Prompts {
     throw new Error('prompts.tools must be an object');
   }
   const tools = p.tools as Record<string, unknown>;
-  for (const name of ['search_code', 'health_check', 'reindex']) {
+  for (const name of ['search_code', 'health_check', 'reindex', 'get_chunk']) {
     const t = tools[name];
     if (!t || typeof t !== 'object') {
       throw new Error(`prompts.tools.${name} must be an object`);

@@ -1,4 +1,35 @@
+// ── Chunk kind / symbol types ─────────────────────────────────────────────
+
+export type ChunkKind =
+  | 'function'
+  | 'class'
+  | 'method'
+  | 'interface'
+  | 'type'
+  | 'enum'
+  | 'constant'
+  | 'variable'
+  | 'module'
+  | 'route'
+  | 'resource'
+  | 'block'
+  | 'unknown';
+
 // ── Config types (from .paparats.yml) ──────────────────────────────────────
+
+export interface MetadataConfig {
+  service?: string;
+  bounded_context?: string;
+  tags?: string[];
+  directory_tags?: Record<string, string[]>;
+}
+
+export interface ResolvedMetadataConfig {
+  service: string;
+  bounded_context: string | null;
+  tags: string[];
+  directory_tags: Record<string, string[]>;
+}
 
 export interface PaparatsConfig {
   group: string;
@@ -6,6 +37,7 @@ export interface PaparatsConfig {
   indexing?: IndexingConfig;
   watcher?: WatcherConfig;
   embeddings?: EmbeddingsConfig;
+  metadata?: MetadataConfig;
 }
 
 export interface IndexingConfig {
@@ -44,6 +76,7 @@ export interface ProjectConfig {
   indexing: ResolvedIndexingConfig;
   watcher: Required<WatcherConfig>;
   embeddings: Required<EmbeddingsConfig>;
+  metadata: ResolvedMetadataConfig;
 }
 
 export interface ResolvedIndexingConfig {
@@ -72,6 +105,8 @@ export interface ChunkResult {
   startLine: number;
   endLine: number;
   hash: string;
+  symbol_name?: string;
+  kind?: ChunkKind;
 }
 
 // ── Search types ───────────────────────────────────────────────────────────
@@ -85,6 +120,12 @@ export interface SearchResult {
   content: string;
   score: number;
   hash: string;
+  chunk_id: string | null;
+  symbol_name: string | null;
+  kind: ChunkKind | null;
+  service: string | null;
+  bounded_context: string | null;
+  tags: string[];
 }
 
 export interface SearchMetrics {

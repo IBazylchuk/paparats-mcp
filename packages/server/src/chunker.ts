@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import type { ChunkResult } from './types.js';
+import { extractSymbol } from './symbol-extractor.js';
 
 export interface ChunkerConfig {
   chunkSize: number;
@@ -44,26 +45,44 @@ export class Chunker {
   chunk(content: string, language: string): ChunkResult[] {
     if (!content.trim()) return [];
 
+    let chunks: ChunkResult[];
     switch (language) {
       case 'ruby':
-        return this.chunkByBlocks(content, PATTERNS.ruby.start, PATTERNS.ruby.end);
+        chunks = this.chunkByBlocks(content, PATTERNS.ruby.start, PATTERNS.ruby.end);
+        break;
       case 'typescript':
       case 'javascript':
-        return this.chunkByBraces(content);
+        chunks = this.chunkByBraces(content);
+        break;
       case 'terraform':
-        return this.chunkByBlocks(content, PATTERNS.terraform.start, PATTERNS.terraform.end);
+        chunks = this.chunkByBlocks(content, PATTERNS.terraform.start, PATTERNS.terraform.end);
+        break;
       case 'python':
-        return this.chunkByIndent(content);
+        chunks = this.chunkByIndent(content);
+        break;
       case 'go':
       case 'rust':
       case 'java':
       case 'c':
       case 'cpp':
       case 'csharp':
-        return this.chunkByBraces(content);
+        chunks = this.chunkByBraces(content);
+        break;
       default:
-        return this.chunkFixed(content);
+        chunks = this.chunkFixed(content);
+        break;
     }
+
+    // Post-process: enrich chunks with symbol metadata
+    for (const chunk of chunks) {
+      const symbol = extractSymbol(chunk.content, language);
+      if (symbol) {
+        chunk.symbol_name = symbol.name;
+        chunk.kind = symbol.kind;
+      }
+    }
+
+    return chunks;
   }
 
   /** For Ruby, Terraform — languages with keyword-delimited blocks */

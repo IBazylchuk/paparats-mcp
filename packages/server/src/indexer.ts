@@ -6,8 +6,55 @@ import { filterFilesByGitignore } from '@paparats/shared';
 import { v7 as uuidv7 } from 'uuid';
 import PQueue from 'p-queue';
 import { Chunker } from './chunker.js';
+import { resolveTags } from './metadata.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { ProjectConfig, IndexerStats } from './types.js';
+
+// ── Chunk ID helpers ────────────────────────────────────────────────────────
+
+/**
+ * Build a stable, deterministic chunk_id from its components.
+ * Format: {group}//{project}//{file}//{startLine}-{endLine}//{hash}
+ */
+export function buildChunkId(
+  group: string,
+  project: string,
+  file: string,
+  startLine: number,
+  endLine: number,
+  hash: string
+): string {
+  return `${group}//${project}//${file}//${startLine}-${endLine}//${hash}`;
+}
+
+/**
+ * Parse a chunk_id back into its components.
+ * Returns null if the format is invalid.
+ */
+export function parseChunkId(chunkId: string): {
+  group: string;
+  project: string;
+  file: string;
+  startLine: number;
+  endLine: number;
+  hash: string;
+} | null {
+  const parts = chunkId.split('//');
+  if (parts.length !== 5) return null;
+
+  const [group, project, file, lineRange, hash] = parts;
+  if (!group || !project || !file || !lineRange || !hash) return null;
+
+  const lineParts = lineRange.split('-');
+  if (lineParts.length !== 2) return null;
+
+  const startLine = parseInt(lineParts[0]!, 10);
+  const endLine = parseInt(lineParts[1]!, 10);
+
+  if (isNaN(startLine) || isNaN(endLine)) return null;
+
+  return { group, project, file, startLine, endLine, hash };
+}
 
 export interface IndexerConfig {
   qdrantUrl: string;
@@ -149,6 +196,27 @@ export class Indexer {
           wait: true,
         })
       );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(groupName, {
+          field_name: 'chunk_id',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(groupName, {
+          field_name: 'kind',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(groupName, {
+          field_name: 'tags',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
     } catch (err) {
       // If creation failed, check if another process created it
       try {
@@ -214,6 +282,8 @@ export class Indexer {
       );
     }
 
+    const tags = resolveTags(project.metadata, relPath);
+
     const points = chunks.map((chunk, i) => ({
       id: uuidv7(),
       vector: embeddings[i]!,
@@ -225,6 +295,19 @@ export class Indexer {
         endLine: chunk.endLine,
         content: chunk.content,
         hash: chunk.hash,
+        chunk_id: buildChunkId(
+          groupName,
+          project.name,
+          relPath,
+          chunk.startLine,
+          chunk.endLine,
+          chunk.hash
+        ),
+        symbol_name: chunk.symbol_name ?? null,
+        kind: chunk.kind ?? null,
+        service: project.metadata.service,
+        bounded_context: project.metadata.bounded_context,
+        tags,
       },
     }));
 
@@ -432,6 +515,8 @@ export class Indexer {
           );
         }
 
+        const tags = resolveTags(project.metadata, relPath);
+
         const points = chunks.map((chunk, i) => ({
           id: uuidv7(),
           vector: embeddings[i]!,
@@ -443,6 +528,19 @@ export class Indexer {
             endLine: chunk.endLine,
             content: chunk.content,
             hash: chunk.hash,
+            chunk_id: buildChunkId(
+              groupName,
+              project.name,
+              relPath,
+              chunk.startLine,
+              chunk.endLine,
+              chunk.hash
+            ),
+            symbol_name: chunk.symbol_name ?? null,
+            kind: chunk.kind ?? null,
+            service: project.metadata.service,
+            bounded_context: project.metadata.bounded_context,
+            tags,
           },
         }));
 
@@ -513,6 +611,8 @@ export class Indexer {
       );
     }
 
+    const tags = resolveTags(project.metadata, relPath);
+
     const points = chunks.map((chunk, i) => ({
       id: uuidv7(),
       vector: embeddings[i]!,
@@ -524,6 +624,19 @@ export class Indexer {
         endLine: chunk.endLine,
         content: chunk.content,
         hash: chunk.hash,
+        chunk_id: buildChunkId(
+          groupName,
+          projectName,
+          relPath,
+          chunk.startLine,
+          chunk.endLine,
+          chunk.hash
+        ),
+        symbol_name: chunk.symbol_name ?? null,
+        kind: chunk.kind ?? null,
+        service: project.metadata.service,
+        bounded_context: project.metadata.bounded_context,
+        tags,
       },
     }));
 
@@ -598,6 +711,72 @@ export class Indexer {
       return { points: info.points_count ?? 0, status: String(info.status) };
     } catch {
       return { points: 0, status: 'not_indexed' };
+    }
+  }
+
+  /** Retrieve a chunk by its chunk_id (Qdrant payload filter on keyword index) */
+  async getChunkById(chunkId: string): Promise<Record<string, unknown> | null> {
+    const parsed = parseChunkId(chunkId);
+    if (!parsed) return null;
+
+    try {
+      const result = await this.retryQdrant(() =>
+        this.qdrant.scroll(parsed.group, {
+          filter: {
+            must: [{ key: 'chunk_id', match: { value: chunkId } }],
+          },
+          with_payload: true,
+          with_vector: false,
+          limit: 1,
+        })
+      );
+
+      const point = result.points[0];
+      if (!point) return null;
+      return point.payload as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Get adjacent chunks in the same file, ordered by startLine */
+  async getAdjacentChunks(
+    groupName: string,
+    project: string,
+    file: string,
+    startLine: number,
+    endLine: number,
+    radiusLines: number
+  ): Promise<Array<Record<string, unknown>>> {
+    const minLine = Math.max(0, startLine - radiusLines);
+    const maxLine = endLine + radiusLines;
+
+    try {
+      const result = await this.retryQdrant(() =>
+        this.qdrant.scroll(groupName, {
+          filter: {
+            must: [
+              { key: 'project', match: { value: project } },
+              { key: 'file', match: { value: file } },
+            ],
+          },
+          with_payload: true,
+          with_vector: false,
+          limit: 100,
+        })
+      );
+
+      return result.points
+        .map((p) => p.payload as Record<string, unknown>)
+        .filter((p) => {
+          const sl = p['startLine'] as number;
+          const el = p['endLine'] as number;
+          // Include chunks that overlap with the expanded range
+          return sl <= maxLine && el >= minLine;
+        })
+        .sort((a, b) => (a['startLine'] as number) - (b['startLine'] as number));
+    } catch {
+      return [];
     }
   }
 

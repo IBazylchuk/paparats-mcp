@@ -242,6 +242,52 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     }
   });
 
+  // ── GET /api/chunk/:chunkId ─────────────────────────────────────────────────
+
+  app.get('/api/chunk/:chunkId', async (req, res) => {
+    try {
+      const chunkId = req.params.chunkId;
+      if (!chunkId) {
+        res.status(400).json({ error: 'chunkId parameter is required' });
+        return;
+      }
+
+      const radiusLines = Math.min(
+        200,
+        Math.max(0, parseInt(String(req.query.radius_lines ?? '0'), 10) || 0)
+      );
+
+      const payload = await indexer.getChunkById(chunkId);
+      if (!payload) {
+        res.status(404).json({ error: 'Chunk not found' });
+        return;
+      }
+
+      const result: Record<string, unknown> = { ...payload };
+
+      if (radiusLines > 0) {
+        const { parseChunkId } = await import('./indexer.js');
+        const parsed = parseChunkId(chunkId);
+        if (parsed) {
+          const adjacent = await indexer.getAdjacentChunks(
+            parsed.group,
+            parsed.project,
+            parsed.file,
+            payload['startLine'] as number,
+            payload['endLine'] as number,
+            radiusLines
+          );
+          result.adjacent_chunks = adjacent;
+        }
+      }
+
+      res.json(result);
+    } catch (err) {
+      console.error('[api] Chunk retrieval error:', err);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ── GET /health ────────────────────────────────────────────────────────────
 
   app.get('/health', async (_req, res) => {
