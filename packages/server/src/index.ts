@@ -138,8 +138,13 @@ export {
 } from './embeddings.js';
 export type { CacheStats } from './embeddings.js';
 
-export { Indexer } from './indexer.js';
+export { Indexer, buildChunkId, parseChunkId } from './indexer.js';
 export type { IndexerConfig } from './indexer.js';
+
+export { extractSymbol } from './symbol-extractor.js';
+export type { ExtractedSymbol } from './symbol-extractor.js';
+
+export { resolveTags, autoDetectTags } from './metadata.js';
 
 export { Searcher } from './searcher.js';
 export type { SearcherConfig } from './searcher.js';
@@ -165,6 +170,9 @@ export { createApp, withTimeout } from './app.js';
 export type { CreateAppOptions, CreateAppResult } from './app.js';
 
 export type {
+  ChunkKind,
+  MetadataConfig,
+  ResolvedMetadataConfig,
   PaparatsConfig,
   ProjectConfig,
   GroupInfo,

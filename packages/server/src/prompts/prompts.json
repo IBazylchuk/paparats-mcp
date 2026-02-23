@@ -12,6 +12,9 @@
     },
     "reindex": {
       "description": "Trigger full reindex of a group or all groups. Runs in background.\n\nReturns job ID to track progress via health_check. Use after adding new files or changing project config."
+    },
+    "get_chunk": {
+      "description": "Retrieve a specific code chunk by its chunk_id. Use this to fetch exact code locations from search results.\n\nThe chunk_id is returned by search_code in each result. Optionally expand context with radius_lines to include adjacent chunks from the same file.\n\nReturns: metadata header + code block with line numbers."
     }
   },
   "resources": {

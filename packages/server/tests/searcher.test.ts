@@ -101,6 +101,12 @@ describe('Searcher', () => {
       content: 'const x = 1;',
       score: 0.95,
       hash: 'abc123',
+      chunk_id: null,
+      symbol_name: null,
+      kind: null,
+      service: null,
+      bounded_context: null,
+      tags: [],
     });
     expect(response.total).toBe(1);
     expect(response.metrics.tokensReturned).toBeGreaterThan(0);
@@ -683,6 +689,12 @@ describe('Searcher', () => {
           content: 'const x = 1;',
           score: 0.95,
           hash: 'h1',
+          chunk_id: null,
+          symbol_name: null,
+          kind: null,
+          service: null,
+          bounded_context: null,
+          tags: [],
         },
       ],
       total: 1,

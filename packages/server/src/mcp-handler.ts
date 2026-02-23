@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { Searcher } from './searcher.js';
 import type { Indexer } from './indexer.js';
+import { parseChunkId } from './indexer.js';
 import type { ProjectConfig } from './types.js';
 import { prompts, buildProjectOverviewSections } from './prompts/index.js';
 
@@ -213,6 +214,9 @@ export class McpHandler {
             content: string;
             score: number;
             hash: string;
+            chunk_id: string | null;
+            symbol_name: string | null;
+            kind: string | null;
           }> = [];
 
           for (const g of groupNames) {
@@ -248,7 +252,9 @@ export class McpHandler {
             .map((r) => {
               const score = (r.score * 100).toFixed(1);
               const tier = confidenceTier(r.score);
-              return `**[${r.project}] ${r.file}:${r.startLine}** (${score}% — ${tier})\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
+              const symbolInfo = r.symbol_name ? ` — ${r.kind ?? 'unknown'}: ${r.symbol_name}` : '';
+              const chunkRef = r.chunk_id ? `\n_chunk: ${r.chunk_id}_` : '';
+              return `**[${r.project}] ${r.file}:${r.startLine}** (${score}% — ${tier}${symbolInfo})${chunkRef}\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
             })
             .join('\n\n---\n\n');
 
@@ -310,6 +316,102 @@ export class McpHandler {
         };
       }
     });
+
+    // ── Tool: get_chunk ──────────────────────────────────────────────────────
+    server.tool(
+      'get_chunk',
+      prompts.tools.get_chunk.description,
+      {
+        chunk_id: z.string().describe('Chunk ID from search_code results'),
+        radius_lines: z
+          .number()
+          .min(0)
+          .max(200)
+          .default(0)
+          .describe('Lines of surrounding context to include (0-200)'),
+      },
+      async ({ chunk_id, radius_lines }) => {
+        try {
+          const payload = await this.indexer.getChunkById(chunk_id);
+
+          if (!payload) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Chunk not found: ${chunk_id}\n\nThe chunk may have been removed during reindexing. Try searching again.`,
+                },
+              ],
+            };
+          }
+
+          const project = payload['project'] as string;
+          const file = payload['file'] as string;
+          const language = payload['language'] as string;
+          const startLine = payload['startLine'] as number;
+          const endLine = payload['endLine'] as number;
+          const content = payload['content'] as string;
+          const symbolName = payload['symbol_name'] as string | null;
+          const kind = payload['kind'] as string | null;
+          const service = payload['service'] as string | null;
+          const boundedContext = payload['bounded_context'] as string | null;
+          const tags = (payload['tags'] as string[]) ?? [];
+
+          let text = '';
+
+          // Metadata header
+          text += `**[${project}] ${file}:${startLine}-${endLine}**\n`;
+          if (symbolName) text += `Symbol: \`${symbolName}\` (${kind ?? 'unknown'})\n`;
+          if (service) text += `Service: ${service}\n`;
+          if (boundedContext) text += `Context: ${boundedContext}\n`;
+          if (tags.length > 0) text += `Tags: ${tags.join(', ')}\n`;
+          text += '\n';
+
+          if (radius_lines > 0) {
+            const parsed = parseChunkId(chunk_id);
+            if (parsed) {
+              const adjacentChunks = await this.indexer.getAdjacentChunks(
+                parsed.group,
+                parsed.project,
+                parsed.file,
+                startLine,
+                endLine,
+                radius_lines
+              );
+
+              if (adjacentChunks.length > 1) {
+                text += `_Showing ${adjacentChunks.length} chunks within ${radius_lines} lines of context:_\n\n`;
+                for (const chunk of adjacentChunks) {
+                  const sl = chunk['startLine'] as number;
+                  const el = chunk['endLine'] as number;
+                  const c = chunk['content'] as string;
+                  const isTarget = sl === startLine && el === endLine;
+                  const marker = isTarget ? ' ← target' : '';
+                  text += `**Lines ${sl}-${el}${marker}**\n\`\`\`${language}\n${c}\n\`\`\`\n\n`;
+                }
+
+                return { content: [{ type: 'text' as const, text }] };
+              }
+            }
+          }
+
+          // Single chunk (no radius or no adjacent chunks found)
+          text += `\`\`\`${language}\n${content}\n\`\`\``;
+
+          return { content: [{ type: 'text' as const, text }] };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Failed to retrieve chunk: ${(err as Error).message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+    );
 
     // ── Tool: reindex ───────────────────────────────────────────────────────
     server.tool(
