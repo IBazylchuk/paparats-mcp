@@ -31,14 +31,21 @@ function createProjectConfig(overrides?: Partial<ProjectConfig>): ProjectConfig 
     indexing: {
       paths: [],
       exclude: [],
+      respectGitignore: true,
       extensions: [],
       chunkSize: 1024,
       overlap: 128,
       concurrency: 2,
       batchSize: 50,
     },
-    watcher: { enabled: false, debounce: 1000 },
+    watcher: { enabled: false, debounce: 1000, stabilityThreshold: 1000 },
     embeddings: { provider: 'ollama', model: 'test', dimensions: 4 },
+    metadata: {
+      service: 'test-project',
+      bounded_context: null,
+      tags: [],
+      directory_tags: {},
+    },
     ...overrides,
   };
 }
