@@ -6,6 +6,8 @@ import { execSync, spawn } from 'child_process';
 import chalk from 'chalk';
 import ora from 'ora';
 import { createTimeoutSignal } from '../abort.js';
+import { generateDockerCompose, generateServerCompose } from '../docker-compose-generator.js';
+import type { OllamaMode, InstallMode } from '../docker-compose-generator.js';
 
 const PAPARATS_HOME = path.join(os.homedir(), '.paparats');
 const MODELS_DIR = path.join(PAPARATS_HOME, 'models');
@@ -119,25 +121,6 @@ async function downloadFile(url: string, dest: string, signal?: AbortSignal): Pr
   fs.writeFileSync(dest, Buffer.from(buffer));
 }
 
-function findTemplatePath(): string {
-  const templateLocations = [
-    path.join(
-      import.meta.dirname,
-      '../../node_modules/@paparats/server/docker-compose.template.yml'
-    ),
-    path.join(import.meta.dirname, '../../../server/docker-compose.template.yml'),
-    path.join(import.meta.dirname, '../../../../packages/server/docker-compose.template.yml'),
-  ];
-
-  for (const loc of templateLocations) {
-    if (fs.existsSync(loc)) return loc;
-  }
-
-  throw new Error(
-    'Could not find docker-compose.template.yml. ' + 'Looked in: ' + templateLocations.join(', ')
-  );
-}
-
 export interface UpsertMcpDeps {
   readFileSync?: (path: string, encoding: 'utf8') => string;
   writeFileSync?: (path: string, data: string) => void;
@@ -204,10 +187,23 @@ export function upsertMcpServer(
   return 'updated';
 }
 
+// ── Install options & deps (testable via DI) ────────────────────────────────
+
 export interface InstallOptions {
+  mode?: InstallMode;
+  ollamaMode?: OllamaMode;
+  gpu?: boolean;
   skipDocker?: boolean;
   skipOllama?: boolean;
   verbose?: boolean;
+  /** Server mode: comma-separated repos */
+  repos?: string;
+  /** Server mode: GitHub token for private repos */
+  githubToken?: string;
+  /** Server mode: cron expression */
+  cron?: string;
+  /** Support mode: server URL */
+  server?: string;
 }
 
 export interface InstallDeps {
@@ -218,7 +214,8 @@ export interface InstallDeps {
   isOllamaRunning?: () => Promise<boolean>;
   waitForHealth?: (url: string, label: string) => Promise<boolean>;
   downloadFile?: (url: string, dest: string, signal?: AbortSignal) => Promise<void>;
-  findTemplatePath?: () => string;
+  generateDockerCompose?: typeof generateDockerCompose;
+  generateServerCompose?: typeof generateServerCompose;
   mkdirSync?: (dir: string) => void;
   copyFileSync?: (src: string, dest: string) => void;
   readFileSync?: (path: string, encoding: 'utf8') => string;
@@ -227,29 +224,34 @@ export interface InstallDeps {
   unlinkSync?: (path: string) => void;
 }
 
-export async function runInstall(
+// ── Developer mode ──────────────────────────────────────────────────────────
+
+async function runDeveloperInstall(
   opts: InstallOptions,
-  deps?: InstallDeps & { signal?: AbortSignal }
+  deps: Required<
+    Pick<
+      InstallDeps,
+      | 'commandExists'
+      | 'getDockerComposeCommand'
+      | 'ollamaModelExists'
+      | 'isOllamaRunning'
+      | 'waitForHealth'
+      | 'downloadFile'
+      | 'generateDockerCompose'
+      | 'mkdirSync'
+      | 'readFileSync'
+      | 'writeFileSync'
+      | 'existsSync'
+      | 'unlinkSync'
+    >
+  > & { signal?: AbortSignal }
 ): Promise<void> {
-  const cmdExists = deps?.commandExists ?? commandExists;
-  const getCompose = deps?.getDockerComposeCommand ?? getDockerComposeCommand;
-  const modelExists = deps?.ollamaModelExists ?? ollamaModelExists;
-  const ollamaRunning = deps?.isOllamaRunning ?? isOllamaRunning;
-  const waitHealth = deps?.waitForHealth ?? waitForHealth;
-  const download = deps?.downloadFile ?? downloadFile;
-  const findTemplate = deps?.findTemplatePath ?? findTemplatePath;
-  const mkdir = deps?.mkdirSync ?? ((p: string) => fs.mkdirSync(p, { recursive: true }));
-  const copyFile = deps?.copyFileSync ?? fs.copyFileSync.bind(fs);
-  const readFile = deps?.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
-  const writeFile = deps?.writeFileSync ?? fs.writeFileSync.bind(fs);
-  const exists = deps?.existsSync ?? fs.existsSync.bind(fs);
-  const unlink = deps?.unlinkSync ?? fs.unlinkSync.bind(fs);
-  const signal = deps?.signal;
+  const ollamaMode = opts.ollamaMode ?? 'local';
+  const gpu = opts.gpu ?? false;
 
   const cleanupTasks: Array<() => void> = [];
-
-  if (signal) {
-    signal.addEventListener('abort', () => {
+  if (deps.signal) {
+    deps.signal.addEventListener('abort', () => {
       console.log(chalk.yellow('\nInstallation cancelled'));
       for (const task of cleanupTasks) {
         try {
@@ -262,32 +264,37 @@ export async function runInstall(
     });
   }
 
-  console.log(chalk.bold('\npaparats install\n'));
-
-  const checks = [
+  // Check prerequisites
+  const checks: Array<{ cmd: string; name: string; install: string }> = [
     { cmd: 'docker', name: 'Docker', install: 'https://docker.com' },
-    { cmd: 'ollama', name: 'Ollama', install: 'https://ollama.com' },
   ];
 
+  if (ollamaMode === 'local') {
+    checks.push({ cmd: 'ollama', name: 'Ollama', install: 'https://ollama.com' });
+  }
+
   for (const check of checks) {
-    if (!cmdExists(check.cmd)) {
+    if (!deps.commandExists(check.cmd)) {
       throw new Error(`${check.name} not found. Install from ${check.install}`);
     }
   }
-  console.log(chalk.green('✓ Prerequisites found (Docker, Ollama)\n'));
 
+  const prereqNames = checks.map((c) => c.name).join(', ');
+  console.log(chalk.green(`\u2713 Prerequisites found (${prereqNames})\n`));
+
+  // Docker setup
   if (!opts.skipDocker) {
     const spinner = ora('Setting up Docker containers...').start();
 
-    mkdir(PAPARATS_HOME);
+    deps.mkdirSync(PAPARATS_HOME);
 
-    const templatePath = findTemplate();
+    const composeContent = deps.generateDockerCompose({ ollamaMode, gpu });
     const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
-    copyFile(templatePath, composeDest);
+    deps.writeFileSync(composeDest, composeContent);
 
     spinner.text = 'Starting Docker containers...';
 
-    const composeCmd = getCompose();
+    const composeCmd = deps.getDockerComposeCommand();
     const fullCmd = `${composeCmd} -f "${composeDest}" up -d`;
     try {
       execSync(fullCmd, {
@@ -300,30 +307,31 @@ export async function runInstall(
       throw err;
     }
 
-    const qdrantReady = await waitHealth('http://localhost:6333/healthz', 'Qdrant');
+    const qdrantReady = await deps.waitForHealth('http://localhost:6333/healthz', 'Qdrant');
     if (!qdrantReady) throw new Error('Qdrant failed to start');
 
-    const mcpReady = await waitHealth('http://localhost:9876/health', 'MCP server');
+    const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
     if (!mcpReady) throw new Error('MCP server failed to start');
   }
 
-  if (!opts.skipOllama) {
-    if (modelExists(OLLAMA_MODEL_NAME)) {
-      console.log(chalk.green(`✓ Ollama model ${OLLAMA_MODEL_NAME} already exists\n`));
+  // Ollama setup (local mode only)
+  if (!opts.skipOllama && ollamaMode === 'local') {
+    if (deps.ollamaModelExists(OLLAMA_MODEL_NAME)) {
+      console.log(chalk.green(`\u2713 Ollama model ${OLLAMA_MODEL_NAME} already exists\n`));
     } else {
-      if (!(await ollamaRunning())) {
+      if (!(await deps.isOllamaRunning())) {
         console.log(chalk.dim('Starting Ollama...'));
         spawn('ollama', ['serve'], { stdio: 'ignore', detached: true }).unref();
         await new Promise((r) => setTimeout(r, 3000));
-        if (!(await ollamaRunning())) {
+        if (!(await deps.isOllamaRunning())) {
           throw new Error('Failed to start Ollama. Please start it manually: ollama serve');
         }
       }
 
-      if (exists(GGUF_FILE)) {
+      if (deps.existsSync(GGUF_FILE)) {
         console.log(chalk.dim(`GGUF already downloaded at ${GGUF_FILE}`));
       } else {
-        if (!cmdExists('curl')) {
+        if (!deps.commandExists('curl')) {
           console.log(
             chalk.yellow(
               'Note: curl not found. Using Node fetch (slower for large files). Install curl for better download performance.'
@@ -331,17 +339,17 @@ export async function runInstall(
           );
         }
         console.log(chalk.bold('Downloading jina-code-embeddings (~1.65 GB)...'));
-        mkdir(MODELS_DIR);
+        deps.mkdirSync(MODELS_DIR);
         cleanupTasks.push(() => {
-          if (exists(GGUF_FILE)) unlink(GGUF_FILE);
+          if (deps.existsSync(GGUF_FILE)) deps.unlinkSync(GGUF_FILE);
         });
-        await download(GGUF_URL, GGUF_FILE, signal);
+        await deps.downloadFile(GGUF_URL, GGUF_FILE, deps.signal);
         cleanupTasks.pop();
-        console.log(chalk.green('✓ Download complete'));
+        console.log(chalk.green('\u2713 Download complete'));
       }
 
       const modelfilePath = path.join(MODELS_DIR, 'Modelfile');
-      writeFile(modelfilePath, `FROM ${GGUF_FILE}\n`);
+      deps.writeFileSync(modelfilePath, `FROM ${GGUF_FILE}\n`);
 
       const spinner = ora('Registering model in Ollama...').start();
       try {
@@ -358,30 +366,9 @@ export async function runInstall(
   }
 
   // Auto-configure Cursor MCP
-  const cursorDir = path.join(os.homedir(), '.cursor');
-  if (exists(cursorDir)) {
-    const cursorMcpPath = path.join(cursorDir, 'mcp.json');
-    const result = upsertMcpServer(
-      cursorMcpPath,
-      'paparats',
-      { type: 'http', url: 'http://localhost:9876/mcp' },
-      {
-        readFileSync: readFile,
-        writeFileSync: writeFile,
-        existsSync: exists,
-        mkdirSync: mkdir,
-      }
-    );
-    if (result === 'unchanged') {
-      console.log(chalk.green('✓ Cursor MCP already configured'));
-    } else {
-      console.log(chalk.green('✓ Cursor MCP configured'));
-    }
-  } else {
-    console.log(chalk.dim('Cursor not detected, skipping MCP config'));
-  }
+  configureCursorMcp('http://localhost:9876/mcp', deps);
 
-  console.log(chalk.bold.green('\n✓ Installation complete!\n'));
+  console.log(chalk.bold.green('\n\u2713 Installation complete!\n'));
   console.log('Next steps:');
   console.log(chalk.dim('  1. cd <your-project>'));
   console.log(chalk.dim('  2. paparats init'));
@@ -389,17 +376,259 @@ export async function runInstall(
   console.log(chalk.dim('  4. Connect your IDE (see README)\n'));
 }
 
+// ── Server mode ─────────────────────────────────────────────────────────────
+
+async function runServerInstall(
+  opts: InstallOptions,
+  deps: Required<
+    Pick<
+      InstallDeps,
+      | 'commandExists'
+      | 'getDockerComposeCommand'
+      | 'generateServerCompose'
+      | 'waitForHealth'
+      | 'mkdirSync'
+      | 'writeFileSync'
+      | 'existsSync'
+    >
+  >
+): Promise<void> {
+  // Check Docker only
+  if (!deps.commandExists('docker')) {
+    throw new Error('Docker not found. Install from https://docker.com');
+  }
+  console.log(chalk.green('\u2713 Prerequisites found (Docker)\n'));
+
+  const gpu = opts.gpu ?? false;
+
+  deps.mkdirSync(PAPARATS_HOME);
+
+  // Generate docker-compose with all services
+  const composeContent = deps.generateServerCompose({
+    ollamaMode: 'docker',
+    gpu,
+    repos: opts.repos,
+    githubToken: opts.githubToken,
+    cron: opts.cron,
+  });
+  const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
+  deps.writeFileSync(composeDest, composeContent);
+
+  // Create .env file for docker-compose variable substitution
+  const envLines: string[] = [];
+  if (opts.repos) envLines.push(`REPOS=${opts.repos}`);
+  if (opts.githubToken) envLines.push(`GITHUB_TOKEN=${opts.githubToken}`);
+  if (opts.cron) envLines.push(`CRON=${opts.cron}`);
+  if (envLines.length > 0) {
+    const envPath = path.join(PAPARATS_HOME, '.env');
+    deps.writeFileSync(envPath, envLines.join('\n') + '\n');
+    console.log(chalk.dim(`Created ${envPath}`));
+  }
+
+  // Start containers
+  const spinner = ora('Starting Docker containers (this may take a while on first run)...').start();
+  const composeCmd = deps.getDockerComposeCommand();
+  const fullCmd = `${composeCmd} -f "${composeDest}" up -d`;
+  try {
+    execSync(fullCmd, {
+      stdio: opts.verbose ? 'inherit' : ['pipe', 'pipe', 'pipe'],
+      timeout: 300_000,
+    });
+    spinner.succeed('Docker containers started');
+  } catch (err) {
+    spinner.fail('Failed to start Docker containers');
+    throw err;
+  }
+
+  const qdrantReady = await deps.waitForHealth('http://localhost:6333/healthz', 'Qdrant');
+  if (!qdrantReady) throw new Error('Qdrant failed to start');
+
+  const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
+  if (!mcpReady) throw new Error('MCP server failed to start');
+
+  console.log(chalk.bold.green('\n\u2713 Server installation complete!\n'));
+  console.log('MCP endpoints:');
+  console.log(chalk.dim('  Coding:  http://localhost:9876/mcp'));
+  console.log(chalk.dim('  Support: http://localhost:9876/support/mcp'));
+  console.log(chalk.dim('  Health:  http://localhost:9876/health'));
+  if (opts.repos) {
+    console.log(
+      chalk.dim(`\nIndexer will process repos on schedule: ${opts.cron ?? '0 */6 * * *'}`)
+    );
+    console.log(chalk.dim('  Trigger now: curl -X POST http://localhost:9877/trigger'));
+    console.log(chalk.dim('  Status:      curl http://localhost:9877/health'));
+  }
+  console.log('');
+}
+
+// ── Support mode ────────────────────────────────────────────────────────────
+
+async function runSupportInstall(
+  opts: InstallOptions,
+  deps: Required<
+    Pick<
+      InstallDeps,
+      'waitForHealth' | 'existsSync' | 'readFileSync' | 'writeFileSync' | 'mkdirSync'
+    >
+  >
+): Promise<void> {
+  const serverUrl = opts.server ?? 'http://localhost:9876';
+
+  // Verify server is reachable
+  const healthUrl = `${serverUrl}/health`;
+  console.log(chalk.dim(`Checking server at ${healthUrl}...`));
+  const reachable = await deps.waitForHealth(healthUrl, 'MCP server');
+  if (!reachable) {
+    throw new Error(`Server not reachable at ${serverUrl}. Is the server running?`);
+  }
+
+  const mcpUrl = `${serverUrl}/support/mcp`;
+
+  // Configure Cursor MCP (support endpoint)
+  configureCursorMcp(mcpUrl, deps, 'paparats-support');
+
+  // Configure Claude Code MCP
+  const claudeConfigDir = path.join(os.homedir(), '.claude');
+  if (deps.existsSync(claudeConfigDir)) {
+    const claudeMcpPath = path.join(claudeConfigDir, 'mcp.json');
+    const result = upsertMcpServer(
+      claudeMcpPath,
+      'paparats-support',
+      { type: 'http', url: mcpUrl },
+      {
+        readFileSync: deps.readFileSync,
+        writeFileSync: deps.writeFileSync,
+        existsSync: deps.existsSync,
+        mkdirSync: deps.mkdirSync,
+      }
+    );
+    if (result === 'unchanged') {
+      console.log(chalk.green('\u2713 Claude Code MCP already configured'));
+    } else {
+      console.log(chalk.green('\u2713 Claude Code MCP configured'));
+    }
+  }
+
+  console.log(chalk.bold.green('\n\u2713 Support setup complete!\n'));
+  console.log('Configured endpoint:');
+  console.log(chalk.dim(`  Support MCP: ${mcpUrl}\n`));
+  console.log('Available tools: search_code, get_chunk, find_usages, health_check,');
+  console.log(
+    '  get_chunk_meta, search_changes, explain_feature, recent_changes, impact_analysis\n'
+  );
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function configureCursorMcp(
+  mcpUrl: string,
+  deps: Pick<InstallDeps, 'existsSync' | 'readFileSync' | 'writeFileSync' | 'mkdirSync'>,
+  serverName = 'paparats'
+): void {
+  const exists = deps.existsSync ?? ((p: string) => fs.existsSync(p));
+  const readFile = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
+  const writeFile = deps.writeFileSync ?? fs.writeFileSync.bind(fs);
+  const mkdir = deps.mkdirSync ?? ((p: string) => fs.mkdirSync(p, { recursive: true }));
+
+  const cursorDir = path.join(os.homedir(), '.cursor');
+  if (exists(cursorDir)) {
+    const cursorMcpPath = path.join(cursorDir, 'mcp.json');
+    const result = upsertMcpServer(
+      cursorMcpPath,
+      serverName,
+      { type: 'http', url: mcpUrl },
+      { readFileSync: readFile, writeFileSync: writeFile, existsSync: exists, mkdirSync: mkdir }
+    );
+    if (result === 'unchanged') {
+      console.log(chalk.green('\u2713 Cursor MCP already configured'));
+    } else {
+      console.log(chalk.green('\u2713 Cursor MCP configured'));
+    }
+  } else {
+    console.log(chalk.dim('Cursor not detected, skipping MCP config'));
+  }
+}
+
+// ── Main entry point ────────────────────────────────────────────────────────
+
+export async function runInstall(
+  opts: InstallOptions,
+  deps?: InstallDeps & { signal?: AbortSignal }
+): Promise<void> {
+  const cmdExists = deps?.commandExists ?? commandExists;
+  const getCompose = deps?.getDockerComposeCommand ?? getDockerComposeCommand;
+  const modelExists = deps?.ollamaModelExists ?? ollamaModelExists;
+  const ollamaRunning = deps?.isOllamaRunning ?? isOllamaRunning;
+  const waitHealth = deps?.waitForHealth ?? waitForHealth;
+  const download = deps?.downloadFile ?? downloadFile;
+  const genCompose = deps?.generateDockerCompose ?? generateDockerCompose;
+  const genServerCompose = deps?.generateServerCompose ?? generateServerCompose;
+  const mkdir = deps?.mkdirSync ?? ((p: string) => fs.mkdirSync(p, { recursive: true }));
+  const readFile = deps?.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
+  const writeFile = deps?.writeFileSync ?? fs.writeFileSync.bind(fs);
+  const exists = deps?.existsSync ?? fs.existsSync.bind(fs);
+  const unlink = deps?.unlinkSync ?? fs.unlinkSync.bind(fs);
+  const signal = deps?.signal;
+
+  const mode = opts.mode ?? 'developer';
+  console.log(chalk.bold(`\npaparats install --mode ${mode}\n`));
+
+  const resolvedDeps = {
+    commandExists: cmdExists,
+    getDockerComposeCommand: getCompose,
+    ollamaModelExists: modelExists,
+    isOllamaRunning: ollamaRunning,
+    waitForHealth: waitHealth,
+    downloadFile: download,
+    generateDockerCompose: genCompose,
+    generateServerCompose: genServerCompose,
+    mkdirSync: mkdir,
+    readFileSync: readFile,
+    writeFileSync: writeFile,
+    existsSync: exists,
+    unlinkSync: unlink,
+    signal,
+  };
+
+  switch (mode) {
+    case 'developer':
+      await runDeveloperInstall(opts, resolvedDeps);
+      break;
+    case 'server':
+      await runServerInstall(opts, resolvedDeps);
+      break;
+    case 'support':
+      await runSupportInstall(opts, resolvedDeps);
+      break;
+    default:
+      throw new Error(`Unknown install mode: ${mode as string}`);
+  }
+}
+
 export const installCommand = new Command('install')
-  .description('Set up Docker containers (Qdrant + MCP server) and Ollama embedding model')
-  .option('--skip-docker', 'Skip Docker setup')
-  .option('--skip-ollama', 'Skip Ollama model setup')
+  .description('Set up Paparats — Docker containers, Ollama model, and MCP configuration')
+  .option('--mode <mode>', 'Install mode: developer, server, or support', 'developer')
+  .option('--ollama-mode <mode>', 'Ollama deployment: docker or local (developer mode)', 'local')
+  .option('--gpu', 'Enable GPU support for Docker Ollama (Linux NVIDIA only)')
+  .option('--skip-docker', 'Skip Docker setup (developer mode)')
+  .option('--skip-ollama', 'Skip Ollama model setup (developer mode)')
+  .option('--repos <repos>', 'Comma-separated repos to index (server mode)')
+  .option('--github-token <token>', 'GitHub token for private repos (server mode)')
+  .option('--cron <expression>', 'Cron schedule for indexing (server mode)')
+  .option('--server <url>', 'Server URL to connect to (support mode)', 'http://localhost:9876')
   .option('-v, --verbose', 'Show detailed output')
-  .action(async (opts: InstallOptions) => {
+  .action(async (opts: InstallOptions & { ollamaMode?: string }) => {
     const controller = new AbortController();
     process.on('SIGINT', () => controller.abort());
 
     try {
-      await runInstall(opts, { signal: controller.signal });
+      await runInstall(
+        {
+          ...opts,
+          ollamaMode: (opts.ollamaMode as OllamaMode) ?? 'local',
+        },
+        { signal: controller.signal }
+      );
     } catch (err) {
       console.error(chalk.red((err as Error).message));
       process.exit(1);

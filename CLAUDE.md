@@ -1,6 +1,6 @@
 # paparats-mcp
 
-Semantic code search MCP server. Monorepo: `packages/shared` (shared utilities), `packages/server` (MCP server + HTTP API), and `packages/cli` (CLI tool).
+Semantic code search MCP server. Monorepo: `packages/shared` (shared utilities), `packages/server` (MCP server + HTTP API), `packages/cli` (CLI tool), `packages/indexer` (automated repo indexer), and `packages/ollama` (custom Ollama Docker image).
 
 ## IDs
 
@@ -35,6 +35,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 | Module                    | Responsibility                                                                                                            |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | `types.ts`                | Shared interfaces — all type definitions live here                                                                        |
+| `lib.ts`                  | Public library entry point — all re-exports for programmatic use (imported by `index.ts`, used by `@paparats/indexer`)    |
 | `config.ts`               | `.paparats.yml` reader, 11 built-in language profiles, `loadProject()`                                                    |
 | `app.ts`                  | Express app factory (`createApp()`), HTTP API routes, `withTimeout()`, `sanitizeForLog()`                                 |
 | `index.ts`                | Server bootstrap — starts HTTP server, wires components, graceful shutdown                                                |
@@ -58,6 +59,27 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 | `mcp-handler.ts`          | MCP protocol — dual-mode endpoints: coding (`/mcp`) and support (`/support/mcp`) with isolated tool sets and instructions |
 | `watcher.ts`              | `ProjectWatcher` (chokidar) + `WatcherManager` for file change detection                                                  |
 
+**packages/indexer/src/**
+
+| Module            | Responsibility                                                                                       |
+| ----------------- | ---------------------------------------------------------------------------------------------------- |
+| `index.ts`        | Entry point — Express mini-server + cron scheduler bootstrap, uses `Indexer` from `@paparats/server` |
+| `repo-manager.ts` | `parseReposEnv()`, `cloneOrPull()` using simple-git — clone/pull repos to local filesystem           |
+| `scheduler.ts`    | `startScheduler()` — node-cron wrapper for scheduled index cycles                                    |
+| `types.ts`        | `IndexerConfig`, `RepoConfig`, `RunStatus`, `HealthResponse`                                         |
+
+**packages/ollama/**
+
+| File         | Responsibility                                                                             |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| `Dockerfile` | Custom Ollama image with pre-baked Jina Code Embeddings model (~3 GB, zero-config startup) |
+
+**packages/cli/src/**
+
+| Module                        | Responsibility                                                                                                   |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `docker-compose-generator.ts` | Programmatic YAML generation — `generateDockerCompose()` (developer) and `generateServerCompose()` (server mode) |
+
 ## Key patterns
 
 - **AST-first chunking**: `indexer.chunkFile()` parses once with tree-sitter, uses the AST for both chunking (`chunkByAst`) and symbol extraction (`extractSymbolsForChunks`), then deletes the tree. Falls back to regex `Chunker` for unsupported languages (Terraform, etc.)
@@ -70,6 +92,11 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - **Prometheus metrics**: opt-in via `PAPARATS_METRICS=true`. `GET /metrics` exposes counters (search, index, watcher), histograms (search/embedding duration), gauges (cache sizes, hit rates). `NoOpMetrics` fallback when disabled — zero overhead
 - **Dual MCP modes**: coding (`/mcp`, `/sse`) and support (`/support/mcp`, `/support/sse`). Each mode has its own tool set and `serverInstructions`. Coding: `search_code`, `get_chunk`, `find_usages`, `health_check`, `reindex`. Support adds `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`. Tool sets defined by `CODING_TOOLS`/`SUPPORT_TOOLS` constants; `createMcpServer(mode)` registers only the relevant tools
 - **Orchestration tools** (`explain_feature`, `recent_changes`, `impact_analysis`): support-mode only. Compose search + metadata + edges in a single MCP call. Return structured markdown without code content. Use `resolveChunkLocation()` helper for payload extraction. Gracefully degrade when `metadataStore` is null (skip metadata sections, still return search results)
+- **Server lib extraction**: `packages/server/src/lib.ts` is the public library entry point (all re-exports). `index.ts` re-exports from `lib.ts`. Server's `package.json` `exports` map points to `lib.js` so importing `@paparats/server` doesn't execute the server bootstrap
+- **Docker Ollama**: `ibaz/paparats-ollama` image pre-bakes Jina Code Embeddings at build time. Model immediately ready on container start
+- **Docker Compose generator**: `packages/cli/src/docker-compose-generator.ts` builds YAML programmatically. `generateDockerCompose()` for developer mode, `generateServerCompose()` for server mode (adds indexer service)
+- **Install modes**: `paparats install --mode <developer|server|support>`. Developer = current flow + Ollama mode choice. Server = full Docker stack with auto-indexer. Support = client-only MCP config (no Docker)
+- **Indexer container**: `packages/indexer` — separate Docker image that clones repos and indexes on a schedule. Uses `Indexer` class from `@paparats/server` as a library. HTTP trigger at `POST /trigger`, health at `GET /health`
 
 ## Testing
 
@@ -80,7 +107,7 @@ yarn typecheck         # tsc --noEmit
 
 ## Versioning
 
-**Single source of truth:** root `package.json` field `version`. All other versions are derived by `scripts/sync-version.js` (writes to packages/shared, packages/cli, packages/server, and server.json). Do not edit version in those files by hand.
+**Single source of truth:** root `package.json` field `version`. All other versions are derived by `scripts/sync-version.js` (writes to packages/shared, packages/cli, packages/server, packages/indexer, and server.json). Do not edit version in those files by hand.
 
 - `yarn sync-version` — copy root version into all packages and server.json.
 - `yarn release [version]` — bump/set version, sync, commit only (no tag, no push). Then run `yarn publish:npm` and `yarn release:push` so npm has the version before the tag triggers MCP registry.
@@ -88,7 +115,10 @@ yarn typecheck         # tsc --noEmit
 
 ## Docker
 
-- `packages/server/Dockerfile` — builds and runs the server
-- `packages/server/docker-compose.template.yml` — copied to `~/.paparats/` by CLI install command
-- Qdrant at `:6333`, MCP server at `:9876`
-- Ollama accessed via `host.docker.internal:11434`
+- `packages/server/Dockerfile` — builds and runs the server (`ibaz/paparats-server`)
+- `packages/indexer/Dockerfile` — builds the indexer (`ibaz/paparats-indexer`)
+- `packages/ollama/Dockerfile` — builds Ollama with pre-baked model (`ibaz/paparats-ollama`)
+- `packages/server/docker-compose.template.yml` — reference template (install uses generator now)
+- `packages/cli/src/docker-compose-generator.ts` — generates docker-compose.yml at install time
+- Qdrant at `:6333`, MCP server at `:9876`, Indexer at `:9877`
+- Ollama: local mode via `host.docker.internal:11434`, Docker mode via `http://ollama:11434`

@@ -10,22 +10,55 @@ Everything runs locally. No cloud. No API keys. Your code never leaves your mach
 
 ---
 
+## Table of Contents
+
+- [Why Paparats?](#why-paparats)
+- [Quick Start](#quick-start)
+- [Deployment Guides](#deployment-guides)
+  - [Developer Local Setup](#developer-local-setup)
+  - [Server / Production Setup](#server--production-setup)
+  - [Support Agent Setup](#support-agent-setup)
+- [How It Works](#how-it-works)
+- [Key Features](#key-features)
+- [Use Cases](#use-cases)
+  - [For Developers (Coding)](#for-developers-coding)
+  - [For Support Teams](#for-support-teams)
+- [Configuration](#configuration)
+- [MCP Tools Reference](#mcp-tools-reference)
+  - [Coding Endpoint](#coding-endpoint-mcp)
+  - [Support Endpoint](#support-endpoint-supportmcp)
+- [Connecting MCP](#connecting-mcp)
+- [CLI Commands](#cli-commands)
+- [Docker & Ollama](#docker--ollama)
+  - [Local Ollama](#local-ollama)
+  - [Docker Ollama](#docker-ollama)
+  - [GPU Setup](#gpu-setup)
+- [Monitoring](#monitoring)
+- [Architecture](#architecture)
+- [Embedding Model Setup](#embedding-model-setup)
+- [Comparison with Alternatives](#comparison-with-alternatives)
+- [Token Savings Metrics](#token-savings-metrics)
+- [Contributing](#contributing)
+- [Links](#links)
+
+---
+
 ## Why Paparats?
 
 AI coding assistants are smart, but they can only see files you open. They don't know your codebase structure, where the authentication logic lives, or how services connect. **Paparats fixes that.**
 
 ### What you get
 
-- **🔍 Semantic code search** — ask "where is the rate limiting logic?" and get exact code ranked by meaning, not grep matches
-- **⚡️ Real-time sync** — edit a file, and 2 seconds later it's re-indexed. No manual re-runs
-- **🧠 LSP intelligence** — go-to-definition, find-references, rename symbols via [CCLSP](https://github.com/nicobailon/cclsp) integration
-- **💾 Token savings** — return only relevant chunks instead of full files to reduce context size
-- **🏢 Multi-project workspaces** — search across backend, frontend, infra repos in one query
-- **🔒 100% local & private** — Qdrant vector database + Ollama embeddings. Nothing leaves your laptop
-- **🎯 AST-aware chunking** — code split by AST nodes (functions/classes) via tree-sitter, not arbitrary character counts (TypeScript, JavaScript, TSX, Python, Go, Rust, Java, Ruby, C, C++, C#; regex fallback for Terraform)
-- **🏷️ Rich metadata** — each chunk knows its symbol name (from tree-sitter AST), service, domain context, and tags from directory structure
-- **🔗 Symbol graph** — find usages and cross-chunk relationships powered by AST-based symbol extraction (defines/uses analysis)
-- **📜 Git history per chunk** — see who last modified a chunk, when, and which tickets (Jira, GitHub) are linked to it
+- **Semantic code search** — ask "where is the rate limiting logic?" and get exact code ranked by meaning, not grep matches
+- **Real-time sync** — edit a file, and 2 seconds later it's re-indexed. No manual re-runs
+- **LSP intelligence** — go-to-definition, find-references, rename symbols via [CCLSP](https://github.com/nicobailon/cclsp) integration
+- **Token savings** — return only relevant chunks instead of full files to reduce context size
+- **Multi-project workspaces** — search across backend, frontend, infra repos in one query
+- **100% local & private** — Qdrant vector database + Ollama embeddings. Nothing leaves your laptop
+- **AST-aware chunking** — code split by AST nodes (functions/classes) via tree-sitter, not arbitrary character counts (TypeScript, JavaScript, TSX, Python, Go, Rust, Java, Ruby, C, C++, C#; regex fallback for Terraform)
+- **Rich metadata** — each chunk knows its symbol name (from tree-sitter AST), service, domain context, and tags from directory structure
+- **Symbol graph** — find usages and cross-chunk relationships powered by AST-based symbol extraction (defines/uses analysis)
+- **Git history per chunk** — see who last modified a chunk, when, and which tickets (Jira, GitHub) are linked to it
 
 ### Who benefits
 
@@ -67,9 +100,109 @@ Install these **before** running `paparats install`:
 | ------------------ | ---------------------------------- | ------------------------------------------------------------------------ |
 | **Docker**         | Runs Qdrant vector DB + MCP server | [docker.com](https://docker.com)                                         |
 | **Docker Compose** | Orchestrates containers (v2)       | Included with Docker Desktop; Linux: `apt install docker-compose-plugin` |
-| **Ollama**         | Local embedding model (on host)    | [ollama.com](https://ollama.com)                                         |
+| **Ollama**         | Local embedding model (on host)    | [ollama.com](https://ollama.com) (or use `--ollama-mode docker`)         |
 
-The CLI checks that `docker`, `ollama`, and `docker compose` are available. If missing, it exits with installation links.
+The CLI checks that `docker` and `ollama` (or `docker` only in Docker Ollama mode) are available. If missing, it exits with installation links.
+
+---
+
+## Deployment Guides
+
+Paparats supports three deployment modes, each designed for a different use case:
+
+### Developer Local Setup
+
+The default mode — for developers using Claude Code, Cursor, or other AI assistants locally.
+
+```bash
+# Install with local Ollama (default, requires Ollama installed on host)
+paparats install --mode developer
+
+# Or with Docker Ollama (no host Ollama needed)
+paparats install --mode developer --ollama-mode docker
+
+# Then, in each project:
+cd your-project
+paparats init   # creates .paparats.yml
+paparats index  # index the codebase
+paparats watch  # auto-reindex on file changes
+```
+
+**What happens:**
+
+1. Checks Docker (and Ollama if local mode)
+2. Generates docker-compose with qdrant + paparats server (+ ollama if docker mode)
+3. Downloads and registers the embedding model (local mode) or uses pre-baked Docker image (docker mode)
+4. Auto-configures Cursor MCP if `~/.cursor/` exists
+
+### Server / Production Setup
+
+For teams wanting a self-contained Docker stack that auto-indexes repos on a schedule. No IDE integration — headless operation.
+
+```bash
+# Full stack: qdrant + ollama + paparats server + indexer
+paparats install --mode server --repos org/repo1,org/repo2
+
+# With private repos
+paparats install --mode server \
+  --repos org/private-repo,org/other \
+  --github-token ghp_xxx
+
+# Custom schedule (default: every 6 hours)
+paparats install --mode server \
+  --repos org/repo \
+  --cron "0 */2 * * *"
+
+# With GPU support (Linux NVIDIA only)
+paparats install --mode server --repos org/repo --gpu
+```
+
+**What happens:**
+
+1. Checks Docker only (no Ollama check — runs in Docker)
+2. Generates docker-compose with all services: qdrant + ollama + paparats + indexer
+3. Creates `~/.paparats/.env` with `REPOS`, `GITHUB_TOKEN`, `CRON`
+4. Starts all containers
+5. Indexer clones repos and indexes them on the configured schedule
+
+**After setup:**
+
+```bash
+# Trigger immediate reindex
+curl -X POST http://localhost:9877/trigger
+
+# Trigger specific repos only
+curl -X POST http://localhost:9877/trigger -H 'Content-Type: application/json' \
+  -d '{"repos": ["org/repo1"]}'
+
+# Check indexer status
+curl http://localhost:9877/health
+
+# MCP endpoints for clients
+# Coding:  http://localhost:9876/mcp
+# Support: http://localhost:9876/support/mcp
+```
+
+### Support Agent Setup
+
+For support teams and bots that connect to an existing Paparats server — no Docker, no Ollama needed.
+
+```bash
+# Connect to a running server (default: localhost:9876)
+paparats install --mode support
+
+# Connect to a remote server
+paparats install --mode support --server http://prod-server:9876
+```
+
+**What happens:**
+
+1. Verifies the server is reachable (health check)
+2. Configures Cursor MCP with support endpoint (`/support/mcp`)
+3. Configures Claude Code MCP if `~/.claude/` exists
+4. Prints available tools and endpoint info
+
+**Support endpoint tools:** `search_code`, `get_chunk`, `find_usages`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`
 
 ---
 
@@ -162,7 +295,7 @@ AI assistant queries via MCP → server detects query type (nl2code / code2code 
 
 ## Key Features
 
-### 🎯 Better Search Quality
+### Better Search Quality
 
 **Task-specific embeddings** — Jina Code Embeddings supports 3 query types (nl2code, code2code, techqa) with different prefixes for better relevance:
 
@@ -181,7 +314,7 @@ All variants searched in parallel, results merged by max score.
 
 **Confidence scores** — each result includes a percentage score (≥60% high, 40–60% partial, <40% low) to guide AI next steps.
 
-### ⚡️ Performance
+### Performance
 
 **Embedding cache** — SQLite cache with content-hash keys + Float32 vectors. Unchanged code never re-embedded. LRU cleanup at 100k entries.
 
@@ -189,7 +322,7 @@ All variants searched in parallel, results merged by max score.
 
 **Real-time watching** — `paparats watch` monitors file changes with debouncing (1s default). Edit → save → re-index in ~2 seconds.
 
-### 🔗 Integrations
+### Integrations
 
 **CCLSP (Claude Code LSP)** — during `paparats init`, optionally sets up:
 
@@ -201,82 +334,42 @@ Skip with `--skip-cclsp` if not needed.
 
 ---
 
-## Comparison with Alternatives
+## Use Cases
 
-### Feature Matrix
+### For Developers (Coding)
 
-#### Deployment
+Connect via the **coding endpoint** (`/mcp`):
 
-| Feature     | Paparats | Vexify | SeaGOAT | Augment | Sourcegraph | Greptile | Bloop |
-| :---------- | :------: | :----: | :-----: | :-----: | :---------: | :------: | :---: |
-| Open source |  ✅ MIT  | ✅ MIT | ✅ MIT  |   ❌    | ⚠️ Partial  |    ❌    | ⚠️ ¹  |
-| Fully local |    ✅    |   ✅   |   ✅    |  ❌ ²   |     ❌      |    ❌    |  ✅   |
+| Use Case                     | How                                                         |
+| ---------------------------- | ----------------------------------------------------------- |
+| **Navigate unfamiliar code** | `search_code "authentication middleware"` → exact locations |
+| **Find similar patterns**    | `search_code "retry with exponential backoff"` → examples   |
+| **Trace dependencies**       | `find_usages <chunk_id> --direction both` → callers + deps  |
+| **Explore context**          | `get_chunk <chunk_id> --radius_lines 50` → expand around    |
 
-#### Search Quality
+### For Support Teams
 
-| Feature         | Paparats  | Vexify | SeaGOAT  | Augment | Sourcegraph | Greptile | Bloop  |
-| :-------------- | :-------: | :----: | :------: | :-----: | :---------: | :------: | :----: |
-| Code embeddings | ✅ Jina ³ |  ⚠️ ⁴  |   ❌ ⁵   |   ⚠️    |     ⚠️      |    ⚠️    |   ✅   |
-| Vector database |  Qdrant   | SQLite | ChromaDB | Propri. |   Propri.   | pgvector | Qdrant |
-| AST chunking    |    ✅     |   ❌   |    ❌    |   ⚠️    |     ⚠️      |    ⚠️    |   ✅   |
-| Query expansion |   ✅ ⁶    |   ❌   |    ❌    |   ⚠️    |     ⚠️      |    ⚠️    |   ❌   |
+Connect via the **support endpoint** (`/support/mcp`):
 
-#### Developer Experience
+| Use Case              | How                                                                    |
+| --------------------- | ---------------------------------------------------------------------- |
+| **Explain a feature** | `explain_feature "rate limiting"` → code locations + changes + modules |
+| **Recent changes**    | `recent_changes "auth" --since 2024-01-01` → timeline with tickets     |
+| **Impact analysis**   | `impact_analysis "payment processing"` → blast radius + service graph  |
+| **Change history**    | `get_chunk_meta <chunk_id>` → authors, dates, linked tickets           |
 
-| Feature            | Paparats  | Vexify | SeaGOAT | Augment  | Sourcegraph | Greptile | Bloop |
-| :----------------- | :-------: | :----: | :-----: | :------: | :---------: | :------: | :---: |
-| Real-time watching |  ✅ Auto  |   ❌   |   ❌    | ✅ CI/CD |     ✅      |    ⚠️    |  ⚠️   |
-| Embedding cache    | ✅ SQLite |   ⚠️   |   ❌    |    ⚠️    |     ⚠️      |    ⚠️    |  ❌   |
-| Multi-project      | ✅ Groups |   ✅   |   ❌    |    ✅    |     ✅      |    ✅    |  ✅   |
-| One-cmd install    |    ✅     |   ⚠️   | ⚠️ pip  |    ❌    |     ❌      |    ❌    |  ❌   |
+**Support chatbot example:**
 
-#### AI Integration
+```
+User: "How do I configure rate limiting?"
 
-| Feature           | Paparats | Vexify | SeaGOAT | Augment | Sourcegraph | Greptile | Bloop |
-| :---------------- | :------: | :----: | :-----: | :-----: | :---------: | :------: | :---: |
-| MCP native        |    ✅    |   ✅   |   ❌    |   ✅    |     ❌      |  ⚠️ API  |  ❌   |
-| LSP integration   | ✅ CCLSP |   ❌   |   ❌    |   ❌    |     ⚠️      |    ❌    |  ❌   |
-| Token metrics     |    ✅    |   ❌   |   ❌    |   ⚠️    |     ❌      |    ❌    |  ❌   |
-| Git history       |    ✅    |   ❌   |   ❌    |   ❌    |     ⚠️      |    ❌    |  ❌   |
-| Ticket extraction |    ✅    |   ❌   |   ❌    |   ❌    |     ❌      |    ❌    |  ❌   |
-
-#### Pricing
-
-|      | Paparats |  Vexify  | SeaGOAT  | Augment | Sourcegraph | Greptile |  Bloop   |
-| :--- | :------: | :------: | :------: | :-----: | :---------: | :------: | :------: |
-| Cost | **Free** | **Free** | **Free** |  Paid   |    Paid     |   Paid   | Archived |
-
-<details>
-<summary>Notes</summary>
-
-1. Bloop archived January 2, 2025
-2. Augment Context Engine indexes locally but stores vectors in cloud
-3. Jina Code Embeddings 1.5B (1536 dims) with task-specific prefixes (nl2code, code2code, techqa)
-4. Vexify supports Ollama models but limited to specific embeddings (jina-embeddings-2-base-code, nomic-embed-text)
-5. SeaGOAT locked to all-MiniLM-L6-v2 (384 dims, general-purpose)
-6. Abbreviations, case variants, plurals, filler word removal
-
-</details>
-
----
-
-### Why Paparats?
-
-**🔒 Privacy-first** — Everything runs locally. Augment and Greptile store your code vectors in the cloud, Sourcegraph requires cloud deployment.
-
-**🧠 Better embeddings** — [Jina Code Embeddings 1.5B](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) (1536 dims) trained specifically for code with task-specific prefixes. Vexify uses smaller jina-embeddings-2-base-code; SeaGOAT uses general-purpose MiniLM (384 dims).
-
-**⚡️ Production-grade stack** — Qdrant handles millions of vectors with sub-100ms latency. SQLite with extensions (Vexify) doesn't scale beyond small projects. ChromaDB (SeaGOAT) is designed for prototyping, not production.
-
-**🎯 Smarter search** — Query expansion (4 strategies) + task prefix detection (nl2code/code2code/techqa) automatically improve relevance. Competitors don't expose these features.
-
-**🔄 True real-time** — `paparats watch` keeps index fresh automatically with 1s debounce. Vexify and SeaGOAT require manual reindex commands. Augment requires CI/CD hooks.
-
-**🔗 LSP included** — CCLSP integration gives your AI go-to-definition, find-references, rename. No other tool bundles this.
-
-**💰 Free forever** — No usage limits, credits, or per-seat fees.
-
-**📊 Transparent metrics** — Every search shows tokens returned vs full-file tokens, savings %, confidence score. Helps AI decide next steps.
+Bot workflow (via /support/mcp):
+1. explain_feature("rate limiting", group="my-app")
+   → returns code locations + recent changes + related modules
+2. get_chunk_meta(<chunk_id>)
+   → returns who last modified it, when, linked tickets
+3. Bot synthesizes response in plain language with ticket references
+```
 
 ---
 
@@ -384,11 +477,11 @@ Git metadata extraction is non-fatal — if a project is not a git repository or
 
 ---
 
-## MCP Tools
+## MCP Tools Reference
 
 Paparats exposes 10 tools via the Model Context Protocol on **two separate endpoints**, each with its own tool set and system instructions:
 
-### Coding endpoint (`/mcp`)
+### Coding Endpoint (`/mcp`)
 
 For developers using Claude Code, Cursor, etc. Focus: search code, read chunks, trace symbol dependencies, manage indexing.
 
@@ -400,7 +493,7 @@ For developers using Claude Code, Cursor, etc. Focus: search code, read chunks, 
 | `health_check` | Indexing status: chunks per group, running jobs                                                                 |
 | `reindex`      | Trigger full reindex; track progress with `health_check`                                                        |
 
-### Support endpoint (`/support/mcp`)
+### Support Endpoint (`/support/mcp`)
 
 For support teams and bots without direct code access. Focus: feature explanations, change history, impact analysis — all in plain language.
 
@@ -505,6 +598,257 @@ Or add to `.mcp.json` in project root:
 
 ---
 
+## CLI Commands
+
+| Command                   | Description                                                   |
+| ------------------------- | ------------------------------------------------------------- |
+| `paparats init`           | Create `.paparats.yml` (interactive or `--non-interactive`)   |
+| `paparats install`        | Set up Docker + Ollama + MCP configuration                    |
+| `paparats update`         | Update CLI from npm + pull latest Docker image                |
+| `paparats index`          | Index the current project                                     |
+| `paparats search <query>` | Semantic search across indexed projects                       |
+| `paparats watch`          | Watch files and auto-reindex on changes                       |
+| `paparats status`         | System status (Docker, Ollama, config, server health, groups) |
+| `paparats doctor`         | Run diagnostic checks                                         |
+| `paparats groups`         | List all indexed groups and projects                          |
+
+Most commands support `--server <url>` (default: `http://localhost:9876`) and `--json` for machine-readable output.
+
+### Common Options
+
+**`paparats init`**
+
+- `--force` — Overwrite existing config
+- `--group <name>` — Set group (skip prompt)
+- `--language <lang>` — Set language (skip prompt)
+- `--non-interactive` — Use defaults without prompts
+- `--skip-cclsp` — Skip CCLSP language server setup
+
+**`paparats install`**
+
+- `--mode <mode>` — Install mode: `developer` (default), `server`, or `support`
+- `--ollama-mode <mode>` — Ollama deployment: `docker` or `local` (default, developer mode)
+- `--gpu` — Enable GPU support for Docker Ollama (Linux NVIDIA only)
+- `--skip-docker` — Skip Docker setup (developer mode)
+- `--skip-ollama` — Skip Ollama model (developer mode)
+- `--repos <repos>` — Comma-separated repos to index (server mode)
+- `--github-token <token>` — GitHub token for private repos (server mode)
+- `--cron <expression>` — Cron schedule for indexing (server mode, default: `0 */6 * * *`)
+- `--server <url>` — Server URL to connect to (support mode)
+- `-v, --verbose` — Show detailed output
+
+**`paparats index`**
+
+- `-f, --force` — Force reindex (clear existing chunks)
+- `--dry-run` — Show what would be indexed
+- `--timeout <ms>` — Request timeout (default: 300000)
+- `-v, --verbose` — Show skipped files and errors
+- `--json` — Output as JSON
+
+**`paparats search <query>`**
+
+- `-n, --limit <n>` — Max results (default: 5)
+- `-p, --project <name>` — Filter by project
+- `-g, --group <name>` — Override group from config
+- `--timeout <ms>` — Request timeout (default: 30000)
+- `-v, --verbose` — Show token savings
+- `--json` — Output as JSON
+
+**`paparats watch`**
+
+- `--dry-run` — Show what would be watched
+- `-v, --verbose` — Show file events
+- `--json` — Output events as JSON lines
+- `--polling` — Use polling instead of native watchers (fewer file descriptors; use if EMFILE occurs)
+
+---
+
+## Docker & Ollama
+
+Paparats supports two ways to run Ollama: on the host (local) or in Docker.
+
+### Local Ollama
+
+The default mode. Ollama runs on your host machine, and the Docker containers connect to it.
+
+- **Qdrant** and **MCP server** run in Docker containers
+- **Ollama** runs on the host (not Docker). Server connects via `host.docker.internal:11434` (Mac/Windows)
+- On Linux, set `OLLAMA_URL=http://172.17.0.1:11434` in `~/.paparats/docker-compose.yml`
+- **Embedding cache** (SQLite) persists in `paparats_data` Docker volume
+
+```bash
+paparats install                            # local Ollama (default)
+paparats install --ollama-mode local        # explicit
+```
+
+### Docker Ollama
+
+Ollama runs in a Docker container using `ibaz/paparats-ollama` — a custom image with the Jina Code Embeddings model pre-baked (~3 GB). No host Ollama installation needed.
+
+```bash
+paparats install --ollama-mode docker       # Docker Ollama
+```
+
+**Benefits:**
+
+- Zero host setup — no Ollama binary, no GGUF download
+- Model immediately ready on container start
+- Consistent across environments
+
+**Trade-offs:**
+
+- ~3 GB Docker image (one-time pull)
+- CPU-only on macOS (Docker Desktop has no GPU passthrough)
+- Slightly slower inference than host-native Ollama with GPU
+
+### GPU Setup
+
+GPU acceleration is available when running Ollama in Docker on **Linux with NVIDIA GPUs** only.
+
+```bash
+paparats install --ollama-mode docker --gpu
+```
+
+This adds the following to the docker-compose:
+
+```yaml
+ollama:
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+```
+
+**Requirements:**
+
+- Linux host with NVIDIA GPU
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed
+- Docker 19.03+ with NVIDIA runtime
+
+**macOS:** Docker Desktop for Mac has no GPU passthrough. `--gpu` flag is ignored on Mac; Ollama runs on CPU. For best Mac performance, use `--ollama-mode local` with host-native Ollama (which uses Metal/CPU natively).
+
+---
+
+## Monitoring
+
+Paparats exposes Prometheus metrics for operational visibility. Opt in by setting `PAPARATS_METRICS=true` in the server's environment:
+
+```yaml
+# In ~/.paparats/docker-compose.yml, under paparats service:
+environment:
+  PAPARATS_METRICS: 'true'
+```
+
+### Metrics endpoint
+
+```bash
+curl http://localhost:9876/metrics
+```
+
+### Key metrics
+
+| Metric                              | Type      | Description                         |
+| ----------------------------------- | --------- | ----------------------------------- |
+| `paparats_search_total`             | Counter   | Search requests by group and method |
+| `paparats_search_duration_seconds`  | Histogram | Search latency                      |
+| `paparats_index_files_total`        | Counter   | Files indexed                       |
+| `paparats_index_chunks_total`       | Counter   | Chunks indexed                      |
+| `paparats_query_cache_hit_rate`     | Gauge     | Query result cache hit rate         |
+| `paparats_embedding_cache_hit_rate` | Gauge     | Embedding cache hit rate            |
+| `paparats_watcher_events_total`     | Counter   | File watcher events                 |
+
+### Prometheus scrape config
+
+```yaml
+scrape_configs:
+  - job_name: paparats
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['localhost:9876']
+```
+
+### Query cache
+
+Search results are cached in-memory (LRU, default 1000 entries, 5-minute TTL). The cache is automatically invalidated when files change. Configure via environment variables:
+
+- `QUERY_CACHE_MAX_ENTRIES` — max cached queries (default: 1000)
+- `QUERY_CACHE_TTL_MS` — TTL in milliseconds (default: 300000)
+
+Cache stats are included in `GET /api/stats` under the `queryCache` field.
+
+---
+
+## Architecture
+
+```
+paparats-mcp/
+├── packages/
+│   ├── server/          # MCP server (Docker image: ibaz/paparats-server)
+│   │   ├── src/
+│   │   │   ├── lib.ts                # Public library exports (for programmatic use)
+│   │   │   ├── index.ts              # HTTP server bootstrap + graceful shutdown
+│   │   │   ├── app.ts                # Express app + HTTP API routes
+│   │   │   ├── indexer.ts            # Group-aware indexing, single-parse chunkFile()
+│   │   │   ├── searcher.ts           # Search with query expansion, cache, metrics
+│   │   │   ├── query-expansion.ts    # Abbreviation, case, plural expansion
+│   │   │   ├── task-prefixes.ts      # Jina task prefix detection
+│   │   │   ├── query-cache.ts        # In-memory LRU search result cache
+│   │   │   ├── metrics.ts            # Prometheus metrics (opt-in)
+│   │   │   ├── ast-chunker.ts        # AST-based code chunking (tree-sitter, primary strategy)
+│   │   │   ├── chunker.ts            # Regex-based code chunking (fallback for unsupported languages)
+│   │   │   ├── ast-symbol-extractor.ts # AST-based symbol extraction (tree-sitter, 10 languages)
+│   │   │   ├── ast-queries.ts        # Tree-sitter S-expression queries per language
+│   │   │   ├── tree-sitter-parser.ts # WASM tree-sitter manager
+│   │   │   ├── symbol-graph.ts       # Cross-chunk symbol edges
+│   │   │   ├── embeddings.ts         # Ollama provider + SQLite cache
+│   │   │   ├── config.ts             # .paparats.yml reader + validation
+│   │   │   ├── metadata.ts           # Tag resolution + auto-detection
+│   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets
+│   │   │   ├── git-metadata.ts       # Git history extraction + chunk mapping
+│   │   │   ├── ticket-extractor.ts   # Jira/GitHub/custom ticket parsing
+│   │   │   ├── mcp-handler.ts        # MCP protocol — dual-mode (coding /mcp + support /support/mcp)
+│   │   │   ├── watcher.ts            # File watcher (chokidar)
+│   │   │   └── types.ts              # Shared types
+│   │   └── Dockerfile
+│   ├── indexer/         # Automated repo indexer (Docker image: ibaz/paparats-indexer)
+│   │   ├── src/
+│   │   │   ├── index.ts              # Entry: Express mini-server + cron scheduler
+│   │   │   ├── repo-manager.ts       # parseReposEnv(), cloneOrPull() using simple-git
+│   │   │   ├── scheduler.ts          # node-cron wrapper
+│   │   │   └── types.ts              # IndexerConfig, RepoConfig, RunStatus
+│   │   └── Dockerfile
+│   ├── ollama/          # Custom Ollama with pre-baked model (Docker image: ibaz/paparats-ollama)
+│   │   └── Dockerfile
+│   ├── cli/             # CLI tool (npm package: @paparats/cli)
+│   │   └── src/
+│   │       ├── index.ts                    # Commander entry
+│   │       ├── docker-compose-generator.ts # Programmatic YAML generation
+│   │       └── commands/                   # init, install, update, index, etc.
+│   └── shared/          # Shared utilities (npm package: @paparats/shared)
+│       └── src/
+│           ├── path-validation.ts    # Path validation
+│           ├── gitignore.ts          # Gitignore parsing
+│           ├── exclude-patterns.ts   # Glob exclude normalization
+│           └── language-excludes.ts  # Language-specific exclude defaults
+└── examples/
+    └── paparats.yml.*   # Config examples per language
+```
+
+---
+
+## Stack
+
+- **Qdrant** — vector database (1 collection per group, cosine similarity, payload filtering)
+- **Ollama** — local embeddings via Jina Code Embeddings 1.5B with task-specific prefixes
+- **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata store (`~/.paparats/metadata.db`)
+- **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
+- **TypeScript** monorepo with Yarn workspaces
+
+---
+
 ## Integration Examples
 
 ### Support Chatbot
@@ -547,6 +891,26 @@ jobs:
       - run: paparats index --server http://localhost:9876
 ```
 
+### CI/CD with Indexer Container
+
+For server deployments, trigger the indexer directly via HTTP:
+
+```yaml
+name: Trigger Paparats Reindex
+on:
+  push:
+    branches: [main]
+
+jobs:
+  reindex:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          curl -X POST http://your-server:9877/trigger \
+            -H 'Content-Type: application/json' \
+            -d '{"repos": ["your-org/your-repo"]}'
+```
+
 ### Code Review Assistant
 
 Combine multiple tools to analyze the impact of a pull request:
@@ -562,62 +926,14 @@ Combine multiple tools to analyze the impact of a pull request:
 
 ---
 
-## Monitoring
-
-Paparats exposes Prometheus metrics for operational visibility. Opt in with an environment variable:
-
-```bash
-PAPARATS_METRICS=true paparats install  # or set in docker-compose.yml
-```
-
-### Metrics endpoint
-
-```bash
-curl http://localhost:9876/metrics
-```
-
-### Key metrics
-
-| Metric                              | Type      | Description                         |
-| ----------------------------------- | --------- | ----------------------------------- |
-| `paparats_search_total`             | Counter   | Search requests by group and method |
-| `paparats_search_duration_seconds`  | Histogram | Search latency                      |
-| `paparats_index_files_total`        | Counter   | Files indexed                       |
-| `paparats_index_chunks_total`       | Counter   | Chunks indexed                      |
-| `paparats_query_cache_hit_rate`     | Gauge     | Query result cache hit rate         |
-| `paparats_embedding_cache_hit_rate` | Gauge     | Embedding cache hit rate            |
-| `paparats_watcher_events_total`     | Counter   | File watcher events                 |
-
-### Prometheus scrape config
-
-```yaml
-scrape_configs:
-  - job_name: paparats
-    scrape_interval: 15s
-    static_configs:
-      - targets: ['localhost:9876']
-```
-
-### Query cache
-
-Search results are cached in-memory (LRU, default 1000 entries, 5-minute TTL). The cache is automatically invalidated when files change. Configure via environment variables:
-
-- `QUERY_CACHE_MAX_ENTRIES` — max cached queries (default: 1000)
-- `QUERY_CACHE_TTL_MS` — TTL in milliseconds (default: 300000)
-
-Cache stats are included in `GET /api/stats` under the `queryCache` field.
-
----
-
 ## Embedding Model Setup
 
 Default: [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — code-optimized, 1.5B params, 1536 dims, 32k context. Not in Ollama registry, so we create a local alias.
 
 **Recommended:** `paparats install` automates this:
 
-- Downloads GGUF (~1.65 GB) to `~/.paparats/models/`
-- Creates Modelfile and runs `ollama create jina-code-embeddings`
-- Starts Ollama with `ollama serve` if not running
+- **Local mode** (`--ollama-mode local`): Downloads GGUF (~1.65 GB) to `~/.paparats/models/`, creates Modelfile and runs `ollama create jina-code-embeddings`
+- **Docker mode** (`--ollama-mode docker`): Uses `ibaz/paparats-ollama` image with model pre-baked — zero setup
 
 **Manual setup:**
 
@@ -651,157 +967,62 @@ Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
 
 ---
 
-## CLI Commands
+## Comparison with Alternatives
 
-| Command                   | Description                                                   |
-| ------------------------- | ------------------------------------------------------------- |
-| `paparats init`           | Create `.paparats.yml` (interactive or `--non-interactive`)   |
-| `paparats install`        | Set up Docker + Ollama model (~1.6 GB download)               |
-| `paparats update`         | Update CLI from npm + pull latest Docker image                |
-| `paparats index`          | Index the current project                                     |
-| `paparats search <query>` | Semantic search across indexed projects                       |
-| `paparats watch`          | Watch files and auto-reindex on changes                       |
-| `paparats status`         | System status (Docker, Ollama, config, server health, groups) |
-| `paparats doctor`         | Run diagnostic checks                                         |
-| `paparats groups`         | List all indexed groups and projects                          |
+### Feature Matrix
 
-Most commands support `--server <url>` (default: `http://localhost:9876`) and `--json` for machine-readable output.
+#### Deployment
 
-### Common Options
+| Feature     | Paparats | Vexify | SeaGOAT | Augment | Sourcegraph | Greptile | Bloop |
+| :---------- | :------: | :----: | :-----: | :-----: | :---------: | :------: | :---: |
+| Open source |   MIT    |  MIT   |   MIT   |   No    |   Partial   |    No    |   1   |
+| Fully local |   Yes    |  Yes   |   Yes   |  No 2   |     No      |    No    |  Yes  |
 
-**`paparats init`**
+#### Search Quality
 
-- `--force` — Overwrite existing config
-- `--group <name>` — Set group (skip prompt)
-- `--language <lang>` — Set language (skip prompt)
-- `--non-interactive` — Use defaults without prompts
-- `--skip-cclsp` — Skip CCLSP language server setup
+| Feature         | Paparats | Vexify | SeaGOAT  | Augment | Sourcegraph | Greptile | Bloop  |
+| :-------------- | :------: | :----: | :------: | :-----: | :---------: | :------: | :----: |
+| Code embeddings |  Jina 3  |   4    |   No 5   | Partial |   Partial   | Partial  |  Yes   |
+| Vector database |  Qdrant  | SQLite | ChromaDB | Propri. |   Propri.   | pgvector | Qdrant |
+| AST chunking    |   Yes    |   No   |    No    | Partial |   Partial   | Partial  |  Yes   |
+| Query expansion |  Yes 6   |   No   |    No    | Partial |   Partial   | Partial  |   No   |
 
-**`paparats install`**
+#### Developer Experience
 
-- `--skip-docker` — Skip Docker setup (only set up Ollama)
-- `--skip-ollama` — Skip Ollama model (only start Docker)
-- `-v, --verbose` — Show detailed output
+| Feature            | Paparats | Vexify  | SeaGOAT | Augment | Sourcegraph | Greptile |  Bloop  |
+| :----------------- | :------: | :-----: | :-----: | :-----: | :---------: | :------: | :-----: |
+| Real-time watching |   Auto   |   No    |   No    |  CI/CD  |     Yes     | Partial  | Partial |
+| Embedding cache    |  SQLite  | Partial |   No    | Partial |   Partial   | Partial  |   No    |
+| Multi-project      |  Groups  |   Yes   |   No    |   Yes   |     Yes     |   Yes    |   Yes   |
+| One-cmd install    |   Yes    | Partial | Partial |   No    |     No      |    No    |   No    |
 
-**`paparats index`**
+#### AI Integration
 
-- `-f, --force` — Force reindex (clear existing chunks)
-- `--dry-run` — Show what would be indexed
-- `--timeout <ms>` — Request timeout (default: 300000)
-- `-v, --verbose` — Show skipped files and errors
-- `--json` — Output as JSON
+| Feature           | Paparats | Vexify | SeaGOAT | Augment | Sourcegraph | Greptile | Bloop |
+| :---------------- | :------: | :----: | :-----: | :-----: | :---------: | :------: | :---: |
+| MCP native        |   Yes    |  Yes   |   No    |   Yes   |     No      |   API    |  No   |
+| LSP integration   |  CCLSP   |   No   |   No    |   No    |   Partial   |    No    |  No   |
+| Token metrics     |   Yes    |   No   |   No    | Partial |     No      |    No    |  No   |
+| Git history       |   Yes    |   No   |   No    |   No    |   Partial   |    No    |  No   |
+| Ticket extraction |   Yes    |   No   |   No    |   No    |     No      |    No    |  No   |
 
-**`paparats search <query>`**
+#### Pricing
 
-- `-n, --limit <n>` — Max results (default: 5)
-- `-p, --project <name>` — Filter by project
-- `-g, --group <name>` — Override group from config
-- `--timeout <ms>` — Request timeout (default: 30000)
-- `-v, --verbose` — Show token savings
-- `--json` — Output as JSON
+|      | Paparats |  Vexify  | SeaGOAT  | Augment | Sourcegraph | Greptile |  Bloop   |
+| :--- | :------: | :------: | :------: | :-----: | :---------: | :------: | :------: |
+| Cost | **Free** | **Free** | **Free** |  Paid   |    Paid     |   Paid   | Archived |
 
-**`paparats watch`**
+<details>
+<summary>Notes</summary>
 
-- `--dry-run` — Show what would be watched
-- `-v, --verbose` — Show file events
-- `--json` — Output events as JSON lines
-- `--polling` — Use polling instead of native watchers (fewer file descriptors; use if EMFILE occurs)
+1. Bloop archived January 2, 2025
+2. Augment Context Engine indexes locally but stores vectors in cloud
+3. Jina Code Embeddings 1.5B (1536 dims) with task-specific prefixes (nl2code, code2code, techqa)
+4. Vexify supports Ollama models but limited to specific embeddings (jina-embeddings-2-base-code, nomic-embed-text)
+5. SeaGOAT locked to all-MiniLM-L6-v2 (384 dims, general-purpose)
+6. Abbreviations, case variants, plurals, filler word removal
 
----
-
-## Use Cases Beyond Coding
-
-Paparats is a foundation for building AI agents that need code context:
-
-### 🎯 Product Support Bots
-
-- Index product codebase → support bot answers "how do I configure X?" with exact code examples
-- Reduces ticket volume, improves response accuracy
-
-### 🧪 QA Automation
-
-- Index test suites → AI generates new test cases based on existing patterns
-- Finds untested code paths by searching for functions without corresponding tests
-
-### 👨‍💻 Developer Onboarding
-
-- New hire asks "where is the payment processing logic?" → instant answers
-- Reduces ramp-up time from weeks to days
-
-### 📊 Code Analytics
-
-- Search for anti-patterns: "SQL injection vulnerabilities", "deprecated API usage"
-- Find migration candidates: "uses old auth library"
-
-### 🤖 AI Agent Memory
-
-- Persistent code knowledge for agents that span multiple sessions
-- Agent learns codebase structure over time
-
----
-
-## Architecture
-
-```
-paparats-mcp/
-├── packages/
-│   ├── server/          # MCP server (Docker image)
-│   │   ├── src/
-│   │   │   ├── index.ts              # HTTP server + MCP handler
-│   │   │   ├── app.ts                # Express app + HTTP API routes
-│   │   │   ├── indexer.ts            # Group-aware indexing, single-parse chunkFile()
-│   │   │   ├── searcher.ts           # Search with query expansion, cache, metrics
-│   │   │   ├── query-expansion.ts    # Abbreviation, case, plural expansion
-│   │   │   ├── task-prefixes.ts      # Jina task prefix detection
-│   │   │   ├── query-cache.ts        # In-memory LRU search result cache
-│   │   │   ├── metrics.ts            # Prometheus metrics (opt-in)
-│   │   │   ├── ast-chunker.ts        # AST-based code chunking (tree-sitter, primary strategy)
-│   │   │   ├── chunker.ts            # Regex-based code chunking (fallback for unsupported languages)
-│   │   │   ├── ast-symbol-extractor.ts # AST-based symbol extraction (tree-sitter, 10 languages)
-│   │   │   ├── ast-queries.ts        # Tree-sitter S-expression queries per language
-│   │   │   ├── tree-sitter-parser.ts # WASM tree-sitter manager
-│   │   │   ├── symbol-graph.ts       # Cross-chunk symbol edges
-│   │   │   ├── embeddings.ts         # Ollama provider + SQLite cache
-│   │   │   ├── config.ts             # .paparats.yml reader + validation
-│   │   │   ├── metadata.ts           # Tag resolution + auto-detection
-│   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets
-│   │   │   ├── git-metadata.ts       # Git history extraction + chunk mapping
-│   │   │   ├── ticket-extractor.ts   # Jira/GitHub/custom ticket parsing
-│   │   │   ├── mcp-handler.ts        # MCP protocol — dual-mode (coding /mcp + support /support/mcp)
-│   │   │   ├── watcher.ts            # File watcher (chokidar)
-│   │   │   └── types.ts              # Shared types
-│   │   └── Dockerfile
-│   ├── cli/             # CLI tool (npm package)
-│   │   └── src/
-│   │       ├── index.ts        # Commander entry
-│   │       └── commands/       # init, install, update, index, etc.
-│   └── shared/          # Shared utilities
-│       └── src/
-│           ├── path-validation.ts    # Path validation
-│           ├── gitignore.ts          # Gitignore parsing
-│           ├── exclude-patterns.ts   # Glob exclude normalization
-│           └── language-excludes.ts  # Language-specific exclude defaults
-└── examples/
-    └── paparats.yml.*   # Config examples per language
-```
-
----
-
-## Stack
-
-- **Qdrant** — vector database (1 collection per group, cosine similarity, payload filtering)
-- **Ollama** — local embeddings via Jina Code Embeddings 1.5B with task-specific prefixes
-- **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata store (`~/.paparats/metadata.db`)
-- **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
-- **TypeScript** monorepo with Yarn workspaces
-
----
-
-## Docker and Ollama
-
-- **Qdrant** and **MCP server** run in Docker containers
-- **Ollama** runs on the host (not Docker). Server connects via `host.docker.internal:11434` (Mac/Windows). On Linux, set `OLLAMA_URL=http://172.17.0.1:11434` in `~/.paparats/docker-compose.yml`
-- **Embedding cache** (SQLite) persists in `paparats_cache` Docker volume. Re-indexing unchanged code is instant across restarts
+</details>
 
 ---
 
@@ -816,20 +1037,20 @@ Paparats provides **estimated** token savings to help you understand the order o
 ```json
 {
   "metrics": {
-    "tokensReturned": 150, // Actual chunk content length ÷ 4
-    "estimatedFullFileTokens": 5000, // Heuristic: maxEndLine × 50 ÷ 4
-    "tokensSaved": 4850, // Difference between estimates
-    "savingsPercent": 97 // (tokensSaved ÷ estimated) × 100
+    "tokensReturned": 150,
+    "estimatedFullFileTokens": 5000,
+    "tokensSaved": 4850,
+    "savingsPercent": 97
   }
 }
 ```
 
-| Field                     | Calculation                  | Reality Check                                                     |
-| ------------------------- | ---------------------------- | ----------------------------------------------------------------- |
-| `tokensReturned`          | `Σ ceil(content.length / 4)` | ✅ Based on actual returned content; ÷4 is rough approximation    |
-| `estimatedFullFileTokens` | `Σ ceil(endLine × 50 / 4)`   | ⚠️ **Heuristic**: assumes 50 chars/line, never loads actual files |
-| `tokensSaved`             | `estimated - returned`       | ⚠️ **Derived**: difference between two estimates                  |
-| `savingsPercent`          | `(saved / estimated) × 100`  | ⚠️ **Relative**: percentage of heuristic estimate                 |
+| Field                     | Calculation                 | Reality Check                                                  |
+| ------------------------- | --------------------------- | -------------------------------------------------------------- |
+| `tokensReturned`          | `ceil(content.length / 4)`  | Based on actual returned content; /4 is rough approximation    |
+| `estimatedFullFileTokens` | `ceil(endLine * 50 / 4)`    | **Heuristic**: assumes 50 chars/line, never loads actual files |
+| `tokensSaved`             | `estimated - returned`      | **Derived**: difference between two estimates                  |
+| `savingsPercent`          | `(saved / estimated) * 100` | **Relative**: percentage of heuristic estimate                 |
 
 #### Cumulative stats
 
@@ -840,96 +1061,12 @@ curl -s http://localhost:9876/api/stats | jq '.usage'
 ```json
 {
   "searchCount": 47,
-  "totalTokensSaved": 152340, // Sum of all tokensSaved estimates
-  "avgTokensSavedPerSearch": 3241 // totalTokensSaved ÷ searchCount
+  "totalTokensSaved": 152340,
+  "avgTokensSavedPerSearch": 3241
 }
 ```
 
 These are **sums of estimates**, not measured token counts from a real tokenizer.
-
----
-
-### Why heuristics?
-
-**We don't:**
-
-- Load full files to compare (defeats the purpose of chunking)
-- Run a tokenizer on file content (slow, model-dependent)
-- Know the exact file size (only chunk line ranges)
-
-**We estimate:**
-
-- **50 chars/line** — typical for code (comments, whitespace, logic)
-- **4 chars/token** — rough average for code tokens (OpenAI GPT-3.5/4, Claude)
-- **File size from line count** — `endLine × 50` assumes uniform density
-
-These constants work reasonably well across languages, but individual files vary:
-
-- Minified JS: 200+ chars/line → underestimate savings
-- Ruby with comments: 30 chars/line → overestimate savings
-- Dense C++: 60 chars/line → close to estimate
-
----
-
-### What the metrics tell you
-
-✅ **Order of magnitude** — are you returning 100 tokens or 10,000?  
-✅ **Relative benefit** — is semantic search better than loading full files? (Yes, typically 50–90% reduction)  
-✅ **Trend over time** — is avgTokensSavedPerSearch increasing as your codebase grows?
-
-❌ **Exact token count** — don't use this for billing or precise LLM context budgeting  
-❌ **Model-specific accuracy** — different tokenizers (GPT-4 vs Claude vs Llama) produce different counts  
-❌ **File-level precision** — individual file estimates can be off by 20–40%
-
----
-
-### Real-world validation
-
-To verify actual savings, compare:
-
-**Without Paparats:**
-
-```
-User: "Find authentication logic"
-AI: *loads 5 full files*
-Context: 25,000 tokens (measured by your LLM API)
-```
-
-**With Paparats:**
-
-```
-User: "Find authentication logic"
-AI: *uses search_code, gets 5 chunks*
-Context: 1,200 tokens (measured by your LLM API)
-Savings: ~95% (real)
-```
-
-The metrics are directionally correct but use `÷4` as a proxy, not your LLM's actual tokenizer.
-
----
-
-### Why we still show them
-
-Even as estimates, token savings metrics are useful:
-
-1. **AI decision-making** — if `savingsPercent < 40%`, the AI might decide to use grep or file reading instead
-2. **Performance monitoring** — track `avgTokensSavedPerSearch` over time to see if chunking strategies need tuning
-3. **User feedback** — "search saved ~10k tokens" gives intuition about the benefit
-
-If you need exact counts, instrument your LLM API calls and compare before/after adding Paparats.
-
----
-
-### Honest comparison
-
-Most code search tools **don't provide any metrics**. When they do:
-
-- **Sourcegraph** — no token metrics, only "results found"
-- **Greptile** — API response sizes, not token estimates
-- **Vexify** — no metrics
-- **SeaGOAT** — no metrics
-
-Paparats shows **rough estimates** to give you visibility into context reduction, even if imperfect. Use them as indicators, not ground truth.
 
 ---
 
@@ -941,9 +1078,42 @@ MIT
 
 ## Releasing (maintainers)
 
-1. **Commit** all changes, then **bump and commit version:** `yarn release patch` (or `minor`/`major`). This only syncs version and commits — no tag, no push.
-2. **Publish to npm:** `npm login` (if needed), then `yarn publish:npm`. The MCP registry requires the package to exist on npm before it accepts the publish.
-3. **Tag and push:** `yarn release:push`. This creates the tag and pushes; [docker-publish.yml](.github/workflows/docker-publish.yml) and [publish-mcp.yml](.github/workflows/publish-mcp.yml) run and will succeed because npm already has the version.
+### Full release checklist
+
+```bash
+# 1. Commit all changes, clean working tree
+git status  # must be clean
+
+# 2. Bump version, sync to all packages, commit (no tag, no push)
+yarn release minor   # 0.1.x → 0.2.0 (or: patch, major, or explicit version)
+
+# 3. Publish npm packages
+npm login            # if needed
+yarn publish:npm     # publishes @paparats/shared + @paparats/cli
+
+# 4. Tag and push (triggers CI workflows)
+yarn release:push    # creates git tag, pushes branch + tag
+
+# 5. Build and push Docker images
+./scripts/release-docker.sh --push   # builds and pushes all 3 images
+```
+
+### What each step does
+
+| Step                          | Script                      | Effect                                                                                                                                                                      |
+| ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `yarn release <ver>`          | `scripts/release.js`        | Bumps version in root `package.json`, syncs to all packages via `sync-version.js`, commits                                                                                  |
+| `yarn publish:npm`            | root scripts                | Publishes `@paparats/shared` and `@paparats/cli` to npm                                                                                                                     |
+| `yarn release:push`           | `scripts/release-push.js`   | Creates `v{version}` tag, pushes branch + tag. Triggers [docker-publish.yml](.github/workflows/docker-publish.yml) and [publish-mcp.yml](.github/workflows/publish-mcp.yml) |
+| `./scripts/release-docker.sh` | `scripts/release-docker.sh` | Builds `ibaz/paparats-server`, `ibaz/paparats-indexer`, `ibaz/paparats-ollama` with version + latest tags. `--push` pushes to Docker Hub                                    |
+
+### Docker images
+
+| Image                   | Source                        | Size                   |
+| ----------------------- | ----------------------------- | ---------------------- |
+| `ibaz/paparats-server`  | `packages/server/Dockerfile`  | ~200 MB                |
+| `ibaz/paparats-indexer` | `packages/indexer/Dockerfile` | ~200 MB                |
+| `ibaz/paparats-ollama`  | `packages/ollama/Dockerfile`  | ~3 GB (includes model) |
 
 ---
 
@@ -970,4 +1140,4 @@ Open an issue or pull request to get started.
 
 ---
 
-**Star the repo if Paparats helps you code faster!** ⭐️
+**Star the repo if Paparats helps you code faster!**

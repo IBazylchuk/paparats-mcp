@@ -61,7 +61,7 @@ const version = pkg.version;
 
 // Commit the version bump only (no tag, no push)
 execSync(
-  'git add package.json packages/shared/package.json packages/cli/package.json packages/server/package.json server.json',
+  'git add package.json packages/shared/package.json packages/cli/package.json packages/server/package.json packages/indexer/package.json server.json',
   { cwd: rootDir }
 );
 execSync(`git commit -m "chore: release ${version}"`, { stdio: 'inherit', cwd: rootDir });

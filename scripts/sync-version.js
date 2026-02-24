@@ -39,7 +39,8 @@ const writeJson = (filePath, update) => {
 writeJson(join(rootDir, 'packages/shared/package.json'), { version });
 writeJson(join(rootDir, 'packages/cli/package.json'), { version });
 writeJson(join(rootDir, 'packages/server/package.json'), { version });
-console.log('Updated packages/shared, packages/cli, packages/server');
+writeJson(join(rootDir, 'packages/indexer/package.json'), { version });
+console.log('Updated packages/shared, packages/cli, packages/server, packages/indexer');
 
 const serverPath = join(rootDir, 'server.json');
 writeJson(serverPath, (data) => {

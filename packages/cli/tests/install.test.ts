@@ -10,6 +10,7 @@ import {
   ollamaModelExists,
   upsertMcpServer,
 } from '../src/commands/install.js';
+import { generateDockerCompose, generateServerCompose } from '../src/docker-compose-generator.js';
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>();
@@ -91,19 +92,18 @@ describe('install', () => {
     });
   });
 
-  describe('runInstall', () => {
+  describe('runInstall (developer mode)', () => {
     it('throws when docker not found', async () => {
       await expect(
         runInstall(
-          { skipOllama: true },
+          { mode: 'developer', skipOllama: true },
           {
             commandExists: (c) => c === 'ollama',
             getDockerComposeCommand: () => 'docker compose',
             isOllamaRunning: () => Promise.resolve(true),
             waitForHealth: () => Promise.resolve(true),
-            findTemplatePath: () => createTempDir() + '/template.yml',
+            generateDockerCompose,
             mkdirSync: () => {},
-            copyFileSync: () => {},
             existsSync: () => false,
             writeFileSync: () => {},
             unlinkSync: () => {},
@@ -112,16 +112,16 @@ describe('install', () => {
       ).rejects.toThrow(/Docker not found/);
     });
 
-    it('throws when ollama not found when skipOllama is false', async () => {
+    it('throws when ollama not found in local mode', async () => {
       await expect(
         runInstall(
-          { skipDocker: true },
+          { mode: 'developer', skipDocker: true, ollamaMode: 'local' },
           {
             commandExists: (c) => c === 'docker',
             ollamaModelExists: () => false,
             isOllamaRunning: () => Promise.resolve(false),
             downloadFile: () => Promise.resolve(),
-            findTemplatePath: () => '',
+            generateDockerCompose,
             mkdirSync: () => {},
             existsSync: () => false,
             writeFileSync: () => {},
@@ -131,13 +131,29 @@ describe('install', () => {
       ).rejects.toThrow(/Ollama not found/);
     });
 
+    it('does NOT check ollama in docker mode', async () => {
+      await runInstall(
+        { mode: 'developer', skipDocker: true, skipOllama: true, ollamaMode: 'docker' },
+        {
+          commandExists: (c) => c === 'docker',
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          generateDockerCompose,
+          existsSync: () => false,
+        }
+      );
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Installation complete'));
+    });
+
     it('completes when skipDocker and skipOllama', async () => {
       await runInstall(
-        { skipDocker: true, skipOllama: true },
+        { mode: 'developer', skipDocker: true, skipOllama: true },
         {
           commandExists: () => true,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
+          generateDockerCompose,
         }
       );
 
@@ -146,15 +162,42 @@ describe('install', () => {
 
     it('skips ollama when model already exists', async () => {
       await runInstall(
-        { skipDocker: true },
+        { mode: 'developer', skipDocker: true },
         {
           commandExists: () => true,
           ollamaModelExists: () => true,
           isOllamaRunning: () => Promise.resolve(true),
+          generateDockerCompose,
         }
       );
 
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('already exists'));
+    });
+
+    it('writes generated docker-compose to ~/.paparats/', async () => {
+      const files = new Map<string, string>();
+
+      mockedExecSync.mockImplementation(() => undefined as never);
+
+      await runInstall(
+        { mode: 'developer', skipOllama: true },
+        {
+          commandExists: () => true,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          generateDockerCompose,
+          mkdirSync: () => {},
+          writeFileSync: (p, d) => files.set(p, d),
+          existsSync: () => false,
+          unlinkSync: () => {},
+        }
+      );
+
+      const composePath = path.join(os.homedir(), '.paparats', 'docker-compose.yml');
+      expect(files.has(composePath)).toBe(true);
+      const content = files.get(composePath)!;
+      expect(content).toContain('qdrant');
+      expect(content).toContain('paparats');
     });
 
     it('configures Cursor MCP when ~/.cursor/ exists', async () => {
@@ -163,11 +206,12 @@ describe('install', () => {
       const files = new Map<string, string>();
 
       await runInstall(
-        { skipDocker: true, skipOllama: true },
+        { mode: 'developer', skipDocker: true, skipOllama: true },
         {
           commandExists: () => true,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
+          generateDockerCompose,
           existsSync: (p) => {
             if (p === cursorDir) return true;
             return files.has(p);
@@ -190,16 +234,134 @@ describe('install', () => {
 
     it('skips Cursor config when ~/.cursor/ does not exist', async () => {
       await runInstall(
-        { skipDocker: true, skipOllama: true },
+        { mode: 'developer', skipDocker: true, skipOllama: true },
         {
           commandExists: () => true,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
+          generateDockerCompose,
           existsSync: () => false,
         }
       );
 
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Cursor not detected'));
+    });
+  });
+
+  describe('runInstall (server mode)', () => {
+    it('throws when docker not found', async () => {
+      await expect(
+        runInstall(
+          { mode: 'server' },
+          {
+            commandExists: () => false,
+            getDockerComposeCommand: () => 'docker compose',
+            waitForHealth: () => Promise.resolve(true),
+            generateServerCompose,
+            mkdirSync: () => {},
+            writeFileSync: () => {},
+            existsSync: () => false,
+          }
+        )
+      ).rejects.toThrow(/Docker not found/);
+    });
+
+    it('generates server compose with all services', async () => {
+      const files = new Map<string, string>();
+
+      mockedExecSync.mockImplementation(() => undefined as never);
+
+      await runInstall(
+        { mode: 'server', repos: 'org/repo1,org/repo2' },
+        {
+          commandExists: () => true,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          generateServerCompose,
+          mkdirSync: () => {},
+          writeFileSync: (p, d) => files.set(p, d),
+          existsSync: () => false,
+        }
+      );
+
+      const composePath = path.join(os.homedir(), '.paparats', 'docker-compose.yml');
+      expect(files.has(composePath)).toBe(true);
+      const content = files.get(composePath)!;
+      expect(content).toContain('paparats-indexer');
+      expect(content).toContain('ollama');
+
+      // Should create .env
+      const envPath = path.join(os.homedir(), '.paparats', '.env');
+      expect(files.has(envPath)).toBe(true);
+      expect(files.get(envPath)).toContain('org/repo1,org/repo2');
+    });
+
+    it('does not configure IDE MCP', async () => {
+      mockedExecSync.mockImplementation(() => undefined as never);
+
+      await runInstall(
+        { mode: 'server' },
+        {
+          commandExists: () => true,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          generateServerCompose,
+          mkdirSync: () => {},
+          writeFileSync: () => {},
+          existsSync: () => false,
+        }
+      );
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Server installation complete'));
+      // Should not mention Cursor
+      const cursorLogs = logSpy.mock.calls.filter(
+        (c) => typeof c[0] === 'string' && c[0].includes('Cursor')
+      );
+      expect(cursorLogs).toHaveLength(0);
+    });
+  });
+
+  describe('runInstall (support mode)', () => {
+    it('throws when server not reachable', async () => {
+      await expect(
+        runInstall(
+          { mode: 'support', server: 'http://unreachable:9876' },
+          {
+            waitForHealth: () => Promise.resolve(false),
+            existsSync: () => false,
+            readFileSync: () => '',
+            writeFileSync: () => {},
+            mkdirSync: () => {},
+          }
+        )
+      ).rejects.toThrow(/Server not reachable/);
+    });
+
+    it('configures support MCP endpoint', async () => {
+      const cursorDir = path.join(os.homedir(), '.cursor');
+      const files = new Map<string, string>();
+
+      await runInstall(
+        { mode: 'support', server: 'http://prod:9876' },
+        {
+          waitForHealth: () => Promise.resolve(true),
+          existsSync: (p) => {
+            if (p === cursorDir) return true;
+            return files.has(p);
+          },
+          readFileSync: (p) => {
+            if (files.has(p)) return files.get(p)!;
+            throw new Error('ENOENT');
+          },
+          writeFileSync: (p, d) => files.set(p, d),
+          mkdirSync: () => {},
+        }
+      );
+
+      const mcpPath = path.join(cursorDir, 'mcp.json');
+      expect(files.has(mcpPath)).toBe(true);
+      const parsed = JSON.parse(files.get(mcpPath)!);
+      expect(parsed.mcpServers['paparats-support'].url).toBe('http://prod:9876/support/mcp');
     });
   });
 
