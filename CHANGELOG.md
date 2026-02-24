@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-02-24
+
+### Fixed
+
+- **Restore MANDATORY prompt directives** — the 0.2.0 refactor softened server instructions from `MANDATORY/MUST/REQUIRED` to `Always`, causing Claude Code to skip `search_code` calls and answer from memory. Restored strong directives in `codingInstructions`, `supportInstructions`, `search_code` tool description, and project overview resource
+- **Flaky doctor test** — replaced real HTTP servers with mocked `fetch` in Qdrant and Ollama config tests to prevent timeouts under load (e.g. during `npm publish`)
+
+### Changed
+
+- **Lightweight Ollama image** — multi-stage Docker build uses `alpine/ollama` (~70 MB, CPU-only) as final base instead of `ollama/ollama` (~4.8 GB). Final image ~1.7 GB
+- **CI builds server + indexer Docker images** — `docker-publish.yml` now uses matrix strategy for `paparats-server` and `paparats-indexer` on tag push
+- **Local script builds ollama only** — `release-docker.sh` slimmed to ollama image only (server/indexer handled by CI)
+- **Removed `--gpu` flag** — GPU/NVIDIA support removed from CLI, Docker Compose generator, and docs in favor of CPU-only `alpine/ollama`
+
 ## [0.2.0] - 2026-02-24
 
 ### Added
