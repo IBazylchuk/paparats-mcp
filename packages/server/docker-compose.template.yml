@@ -1,5 +1,6 @@
-# paparats-mcp — Docker Compose template
-# Copied to ~/.paparats/docker-compose.yml by `paparats install`
+# paparats-mcp — Docker Compose reference template
+# NOTE: `paparats install` now generates docker-compose.yml programmatically.
+# This file is kept as a reference for the default local-Ollama developer setup.
 #
 # Content-based: CLI sends file contents via HTTP. No volume mounts needed.
 #
