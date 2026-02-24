@@ -3,7 +3,7 @@
   "version": "0.2.2",
   "mcpName": "io.github.IBazylchuk/paparats-mcp",
   "type": "module",
-  "description": "CLI for Paparats MCP — semantic code search for AI coding assistants",
+  "description": "CLI for Paparats MCP - semantic code search with AST chunking, symbol graph, and vector search for AI coding assistants",
   "license": "MIT",
   "author": "Ilya Bazylchuk",
   "homepage": "https://github.com/IBazylchuk/paparats-mcp#readme",
@@ -15,10 +15,16 @@
     "ollama",
     "cursor",
     "claude",
+    "claude-code",
     "model-context-protocol",
     "cli",
     "code-search",
-    "ai-assistant"
+    "ai-assistant",
+    "tree-sitter",
+    "ast",
+    "symbol-graph",
+    "docker",
+    "code-intelligence"
   ],
   "repository": {
     "type": "git",
