@@ -7,7 +7,7 @@
 FROM ollama/ollama:latest
 
 RUN ollama serve & \
-    sleep 5 && \
+    while ! curl -s -f http://localhost:11434/api/tags > /dev/null; do echo "Waiting for Ollama..."; sleep 1; done && \
     curl -L -o /tmp/jina.gguf \
       "https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF/resolve/main/jina-code-embeddings-1.5b-Q8_0.gguf" && \
     printf 'FROM /tmp/jina.gguf\nPARAMETER num_ctx 8192\n' > /tmp/Modelfile && \

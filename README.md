@@ -975,42 +975,42 @@ Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
 
 | Feature     | Paparats | Vexify | SeaGOAT | Augment | Sourcegraph | Greptile | Bloop |
 | :---------- | :------: | :----: | :-----: | :-----: | :---------: | :------: | :---: |
-| Open source |   MIT    |  MIT   |   MIT   |   No    |   Partial   |    No    |   1   |
-| Fully local |   Yes    |  Yes   |   Yes   |  No 2   |     No      |    No    |  Yes  |
+| Open source |  ✅ MIT  | ✅ MIT | ✅ MIT  |   ❌    | ⚠️ Partial  |    ❌    | ⚠️ 1  |
+| Fully local |    ✅    |   ✅   |   ✅    | ⚠️ No 2 |     ❌      |    ❌    |  ✅   |
 
 #### Search Quality
 
-| Feature         | Paparats | Vexify | SeaGOAT  | Augment | Sourcegraph | Greptile | Bloop  |
-| :-------------- | :------: | :----: | :------: | :-----: | :---------: | :------: | :----: |
-| Code embeddings |  Jina 3  |   4    |   No 5   | Partial |   Partial   | Partial  |  Yes   |
-| Vector database |  Qdrant  | SQLite | ChromaDB | Propri. |   Propri.   | pgvector | Qdrant |
-| AST chunking    |   Yes    |   No   |    No    | Partial |   Partial   | Partial  |  Yes   |
-| Query expansion |  Yes 6   |   No   |    No    | Partial |   Partial   | Partial  |   No   |
+| Feature         | Paparats  | Vexify | SeaGOAT  |  Augment   | Sourcegraph |  Greptile  | Bloop  |
+| :-------------- | :-------: | :----: | :------: | :--------: | :---------: | :--------: | :----: |
+| Code embeddings | ✅ Jina 3 |  ⚠️ 4  |   ❌ 5   | ⚠️ Partial | ⚠️ Partial  | ⚠️ Partial |   ✅   |
+| Vector database | ✅ Qdrant | SQLite | ChromaDB |  Propri.   |   Propri.   |  pgvector  | Qdrant |
+| AST chunking    |    ✅     |   ❌   |    ❌    | ⚠️ Partial | ⚠️ Partial  | ⚠️ Partial |   ✅   |
+| Query expansion |   ✅ 6    |   ❌   |    ❌    | ⚠️ Partial | ⚠️ Partial  | ⚠️ Partial |   ❌   |
 
 #### Developer Experience
 
-| Feature            | Paparats | Vexify  | SeaGOAT | Augment | Sourcegraph | Greptile |  Bloop  |
-| :----------------- | :------: | :-----: | :-----: | :-----: | :---------: | :------: | :-----: |
-| Real-time watching |   Auto   |   No    |   No    |  CI/CD  |     Yes     | Partial  | Partial |
-| Embedding cache    |  SQLite  | Partial |   No    | Partial |   Partial   | Partial  |   No    |
-| Multi-project      |  Groups  |   Yes   |   No    |   Yes   |     Yes     |   Yes    |   Yes   |
-| One-cmd install    |   Yes    | Partial | Partial |   No    |     No      |    No    |   No    |
+| Feature            | Paparats  |   Vexify   |  SeaGOAT   |  Augment   | Sourcegraph |  Greptile  |   Bloop    |
+| :----------------- | :-------: | :--------: | :--------: | :--------: | :---------: | :--------: | :--------: |
+| Real-time watching |  ✅ Auto  |     ❌     |     ❌     |  ⚠️ CI/CD  |     ✅      | ⚠️ Partial | ⚠️ Partial |
+| Embedding cache    | ✅ SQLite | ⚠️ Partial |     ❌     | ⚠️ Partial | ⚠️ Partial  | ⚠️ Partial |     ❌     |
+| Multi-project      | ✅ Groups |     ✅     |     ❌     |     ✅     |     ✅      |     ✅     |     ✅     |
+| One-cmd install    |    ✅     | ⚠️ Partial | ⚠️ Partial |     ❌     |     ❌      |     ❌     |     ❌     |
 
 #### AI Integration
 
-| Feature           | Paparats | Vexify | SeaGOAT | Augment | Sourcegraph | Greptile | Bloop |
-| :---------------- | :------: | :----: | :-----: | :-----: | :---------: | :------: | :---: |
-| MCP native        |   Yes    |  Yes   |   No    |   Yes   |     No      |   API    |  No   |
-| LSP integration   |  CCLSP   |   No   |   No    |   No    |   Partial   |    No    |  No   |
-| Token metrics     |   Yes    |   No   |   No    | Partial |     No      |    No    |  No   |
-| Git history       |   Yes    |   No   |   No    |   No    |   Partial   |    No    |  No   |
-| Ticket extraction |   Yes    |   No   |   No    |   No    |     No      |    No    |  No   |
+| Feature           | Paparats | Vexify | SeaGOAT |  Augment   | Sourcegraph | Greptile | Bloop |
+| :---------------- | :------: | :----: | :-----: | :--------: | :---------: | :------: | :---: |
+| MCP native        |    ✅    |   ✅   |   ❌    |     ✅     |     ❌      |  ⚠️ API  |  ❌   |
+| LSP integration   | ✅ CCLSP |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
+| Token metrics     |    ✅    |   ❌   |   ❌    | ⚠️ Partial |     ❌      |    ❌    |  ❌   |
+| Git history       |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
+| Ticket extraction |    ✅    |   ❌   |   ❌    |     ❌     |     ❌      |    ❌    |  ❌   |
 
 #### Pricing
 
-|      | Paparats |  Vexify  | SeaGOAT  | Augment | Sourcegraph | Greptile |  Bloop   |
-| :--- | :------: | :------: | :------: | :-----: | :---------: | :------: | :------: |
-| Cost | **Free** | **Free** | **Free** |  Paid   |    Paid     |   Paid   | Archived |
+|      |  Paparats   |   Vexify    |   SeaGOAT   | Augment | Sourcegraph | Greptile |    Bloop    |
+| :--- | :---------: | :---------: | :---------: | :-----: | :---------: | :------: | :---------: |
+| Cost | ✅ **Free** | ✅ **Free** | ✅ **Free** | ❌ Paid |   ❌ Paid   | ❌ Paid  | ⚠️ Archived |
 
 <details>
 <summary>Notes</summary>
