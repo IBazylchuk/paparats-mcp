@@ -22,8 +22,9 @@ AI coding assistants are smart, but they can only see files you open. They don't
 - **💾 Token savings** — return only relevant chunks instead of full files to reduce context size
 - **🏢 Multi-project workspaces** — search across backend, frontend, infra repos in one query
 - **🔒 100% local & private** — Qdrant vector database + Ollama embeddings. Nothing leaves your laptop
-- **🎯 Language-aware chunking** — code split by functions/classes, not arbitrary character counts (Ruby, TypeScript, Python, Go, Rust, Java, C/C++, C#, Terraform)
-- **🏷️ Rich metadata** — each chunk knows its symbol name, service, domain context, and tags from directory structure
+- **🎯 AST-aware chunking** — code split by AST nodes (functions/classes) via tree-sitter, not arbitrary character counts (TypeScript, JavaScript, TSX, Python, Go, Rust, Java, Ruby, C, C++, C#; regex fallback for Terraform)
+- **🏷️ Rich metadata** — each chunk knows its symbol name (from tree-sitter AST), service, domain context, and tags from directory structure
+- **🔗 Symbol graph** — find usages and cross-chunk relationships powered by AST-based symbol extraction (defines/uses analysis)
 - **📜 Git history per chunk** — see who last modified a chunk, when, and which tickets (Jira, GitHub) are linked to it
 
 ### Who benefits
@@ -86,7 +87,7 @@ Your projects                   Paparats                       AI assistant
                            └──────────────────────┘
 ```
 
-1. **Indexing**: Code is chunked at function/class boundaries, embedded via [Jina Code Embeddings 1.5B](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF), stored in Qdrant. Each chunk is enriched with symbol name, metadata tags, and service context
+1. **Indexing**: Code is parsed once with tree-sitter, chunked at AST node boundaries (functions, classes, methods), embedded via [Jina Code Embeddings 1.5B](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF), stored in Qdrant. Each chunk is enriched with symbol name, metadata tags, and service context from the same parse
 2. **Git enrichment**: After indexing, git history is extracted per file — commits are mapped to chunks by line-range overlap, ticket references (Jira, GitHub) are extracted from commit messages, and results are stored in a local SQLite database
 3. **Searching**: AI assistant queries via MCP → server expands query (handles abbreviations, plurals, case variants) → Qdrant returns top matches → only relevant chunks sent back
 4. **Token savings**: Return only relevant chunks instead of loading full files
@@ -119,7 +120,7 @@ All variants searched in parallel, results merged by max score.
 
 **Embedding cache** — SQLite cache with content-hash keys + Float32 vectors. Unchanged code never re-embedded. LRU cleanup at 100k entries.
 
-**Language-aware chunking** — 4 strategies per language (block-based for Ruby/Python, brace-based for JS/TS/Go/Rust, indent-based, fixed-size fallback). Supports 11 languages .
+**AST-aware chunking** — tree-sitter AST nodes define natural chunk boundaries for 11 languages. Falls back to regex strategies (block-based for Ruby, brace-based for JS/TS, indent-based for Python, fixed-size) for unsupported languages.
 
 **Real-time watching** — `paparats watch` monitors file changes with debouncing (1s default). Edit → save → re-index in ~2 seconds.
 
@@ -141,29 +142,29 @@ Skip with `--skip-cclsp` if not needed.
 
 <div align="center">
 
-| Feature                  |  **Paparats**   |   Vexify    |    SeaGOAT    | Augment Context |  Sourcegraph   |    Greptile    |    Bloop     |
-| :----------------------- | :-------------: | :---------: | :-----------: | :-------------: | :------------: | :------------: | :----------: |
+| Feature                  |  **Paparats**  |   Vexify    |    SeaGOAT    | Augment Context |  Sourcegraph   |    Greptile    |    Bloop     |
+| :----------------------- | :------------: | :---------: | :-----------: | :-------------: | :------------: | :------------: | :----------: |
 | **Deployment**           |
-| Open source              |     ✅ MIT      |   ✅ MIT    |    ✅ MIT     | ❌ Proprietary  |   ⚠️ Partial   | ❌ Proprietary | ⚠️ Archived¹ |
-| Fully local              |       ✅        |     ✅      |      ✅       |    ❌ Cloud²    |    ❌ Cloud    |    ❌ SaaS     |      ✅      |
+| Open source              |     ✅ MIT     |   ✅ MIT    |    ✅ MIT     | ❌ Proprietary  |   ⚠️ Partial   | ❌ Proprietary | ⚠️ Archived¹ |
+| Fully local              |       ✅       |     ✅      |      ✅       |    ❌ Cloud²    |    ❌ Cloud    |    ❌ SaaS     |      ✅      |
 | **Search Quality**       |
-| Code embeddings          |  ✅ Jina 1.5B³  | ⚠️ Limited⁴ |  ❌ MiniLM⁵   | ⚠️ Proprietary  | ⚠️ Proprietary | ⚠️ Proprietary |      ✅      |
-| Vector database          |     Qdrant      |   SQLite    |   ChromaDB    |   Proprietary   |  Proprietary   |    pgvector    |    Qdrant    |
-| AST-aware chunking       | ✅ 4 strategies |     ❌      |      ❌       |   ⚠️ Unknown    |   ⚠️ Partial   |   ⚠️ Unknown   |      ✅      |
-| Query expansion          |   ✅ 4 types⁶   |     ❌      |      ❌       |   ⚠️ Unknown    |   ⚠️ Partial   |   ⚠️ Unknown   |      ❌      |
+| Code embeddings          | ✅ Jina 1.5B³  | ⚠️ Limited⁴ |  ❌ MiniLM⁵   | ⚠️ Proprietary  | ⚠️ Proprietary | ⚠️ Proprietary |      ✅      |
+| Vector database          |     Qdrant     |   SQLite    |   ChromaDB    |   Proprietary   |  Proprietary   |    pgvector    |    Qdrant    |
+| AST-aware chunking       | ✅ Tree-sitter |     ❌      |      ❌       |   ⚠️ Unknown    |   ⚠️ Partial   |   ⚠️ Unknown   |      ✅      |
+| Query expansion          |  ✅ 4 types⁶   |     ❌      |      ❌       |   ⚠️ Unknown    |   ⚠️ Partial   |   ⚠️ Unknown   |      ❌      |
 | **Developer Experience** |
-| Real-time file watching  |     ✅ Auto     |  ❌ Manual  |   ❌ Manual   |    ✅ CI/CD     |       ✅       |   ⚠️ Unknown   |      ⚠️      |
-| Embedding cache          |    ✅ SQLite    | ⚠️ Implicit |      ❌       |   ⚠️ Unknown    |   ⚠️ Unknown   |   ⚠️ Unknown   |      ❌      |
-| Multi-project search     |    ✅ Groups    |     ✅      |   ❌ Single   |       ✅        |       ✅       |       ✅       |      ✅      |
-| One-command install      |       ✅        |  ⚠️ Manual  | `pip install` |  Account + CI   |    Account     |  SaaS signup   | Build source |
+| Real-time file watching  |    ✅ Auto     |  ❌ Manual  |   ❌ Manual   |    ✅ CI/CD     |       ✅       |   ⚠️ Unknown   |      ⚠️      |
+| Embedding cache          |   ✅ SQLite    | ⚠️ Implicit |      ❌       |   ⚠️ Unknown    |   ⚠️ Unknown   |   ⚠️ Unknown   |      ❌      |
+| Multi-project search     |   ✅ Groups    |     ✅      |   ❌ Single   |       ✅        |       ✅       |       ✅       |      ✅      |
+| One-command install      |       ✅       |  ⚠️ Manual  | `pip install` |  Account + CI   |    Account     |  SaaS signup   | Build source |
 | **AI Integration**       |
-| MCP native               |       ✅        |     ✅      |      ❌       |       ✅        |       ❌       |     ⚠️ API     |      ❌      |
-| LSP integration          |    ✅ CCLSP     |     ❌      |      ❌       |       ❌        |   ⚠️ Partial   |       ❌       |      ❌      |
-| Token savings metrics    |  ✅ Per-query   |     ❌      |      ❌       |   ⚠️ Unknown    |       ❌       |       ❌       |      ❌      |
-| Git history per chunk    |       ✅        |     ❌      |      ❌       |       ❌        |   ⚠️ Partial   |       ❌       |      ❌      |
-| Ticket extraction        |     ✅ Auto     |     ❌      |      ❌       |       ❌        |       ❌       |       ❌       |      ❌      |
+| MCP native               |       ✅       |     ✅      |      ❌       |       ✅        |       ❌       |     ⚠️ API     |      ❌      |
+| LSP integration          |    ✅ CCLSP    |     ❌      |      ❌       |       ❌        |   ⚠️ Partial   |       ❌       |      ❌      |
+| Token savings metrics    |  ✅ Per-query  |     ❌      |      ❌       |   ⚠️ Unknown    |       ❌       |       ❌       |      ❌      |
+| Git history per chunk    |       ✅       |     ❌      |      ❌       |       ❌        |   ⚠️ Partial   |       ❌       |      ❌      |
+| Ticket extraction        |    ✅ Auto     |     ❌      |      ❌       |       ❌        |       ❌       |       ❌       |      ❌      |
 | **Pricing**              |
-| Cost                     |    **Free**     |  **Free**   |   **Free**    |      Paid       |      Paid      |      Paid      |   Archived   |
+| Cost                     |    **Free**    |  **Free**   |   **Free**    |      Paid       |      Paid      |      Paid      |   Archived   |
 
 </div>
 
@@ -308,16 +309,18 @@ Git metadata extraction is non-fatal — if a project is not a git repository or
 
 ## MCP Tools
 
-Paparats exposes 6 tools via the Model Context Protocol:
+Paparats exposes 8 tools via the Model Context Protocol:
 
-| Tool             | Description                                                                                                                                                              |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `search_code`    | Semantic code search across all indexed projects. Returns relevant chunks ranked by cosine similarity. Supports query expansion (abbreviations, case variants, plurals). |
-| `get_chunk`      | Retrieve a specific chunk by its `chunk_id`. Optionally expand context with `radius_lines` (0-200) to include adjacent chunks from the same file.                        |
-| `get_chunk_meta` | Get git metadata for a chunk: recent commits with authors and dates, plus ticket references. Use after `search_code` to understand change history.                       |
-| `search_changes` | Search for recently changed code. Combines semantic search with a date filter on the last commit time. Use to find what changed since a date.                            |
-| `health_check`   | Check indexing status: number of indexed chunks per group and running reindex jobs.                                                                                      |
-| `reindex`        | Trigger full reindex of a group or all groups. Runs in the background; track with `health_check`.                                                                        |
+| Tool                  | Description                                                                                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `search_code`         | Semantic code search across all indexed projects. Returns relevant chunks ranked by cosine similarity. Supports query expansion (abbreviations, case variants, plurals). |
+| `get_chunk`           | Retrieve a specific chunk by its `chunk_id`. Optionally expand context with `radius_lines` (0-200) to include adjacent chunks from the same file.                        |
+| `get_chunk_meta`      | Get git metadata for a chunk: recent commits with authors and dates, plus ticket references. Use after `search_code` to understand change history.                       |
+| `search_changes`      | Search for recently changed code. Combines semantic search with a date filter on the last commit time. Use to find what changed since a date.                            |
+| `find_usages`         | Find all chunks that define or use a given symbol name. Powered by AST-based symbol extraction and Qdrant keyword indices.                                               |
+| `list_related_chunks` | List chunks related to a given chunk via symbol graph edges (calls, called_by, references, referenced_by).                                                               |
+| `health_check`        | Check indexing status: number of indexed chunks per group and running reindex jobs.                                                                                      |
+| `reindex`             | Trigger full reindex of a group or all groups. Runs in the background; track with `health_check`.                                                                        |
 
 ### Typical Workflow
 
@@ -325,7 +328,9 @@ Paparats exposes 6 tools via the Model Context Protocol:
 1. search_code "authentication middleware"     → find relevant chunks
 2. get_chunk <chunk_id> --radius_lines 50      → expand context around a result
 3. get_chunk_meta <chunk_id>                   → see who modified it, when, linked tickets
-4. search_changes "auth" --since 2024-01-01    → find recent auth changes
+4. find_usages "AuthMiddleware"                → find all chunks that define or use a symbol
+5. list_related_chunks <chunk_id>              → see call/reference relationships
+6. search_changes "auth" --since 2024-01-01    → find recent auth changes
 ```
 
 ---
@@ -518,12 +523,16 @@ paparats-mcp/
 │   │   ├── src/
 │   │   │   ├── index.ts              # HTTP server + MCP handler
 │   │   │   ├── app.ts                # Express app + HTTP API routes
-│   │   │   ├── indexer.ts            # Group-aware indexing + chunk ID management
+│   │   │   ├── indexer.ts            # Group-aware indexing, single-parse chunkFile()
 │   │   │   ├── searcher.ts           # Search with query expansion + filter support
 │   │   │   ├── query-expansion.ts    # Abbreviation, case, plural expansion
 │   │   │   ├── task-prefixes.ts      # Jina task prefix detection
-│   │   │   ├── chunker.ts            # Language-aware code chunking
-│   │   │   ├── symbol-extractor.ts   # Regex-based symbol extraction (11 languages)
+│   │   │   ├── ast-chunker.ts        # AST-based code chunking (tree-sitter, primary strategy)
+│   │   │   ├── chunker.ts            # Regex-based code chunking (fallback for unsupported languages)
+│   │   │   ├── ast-symbol-extractor.ts # AST-based symbol extraction (tree-sitter, 10 languages)
+│   │   │   ├── ast-queries.ts        # Tree-sitter S-expression queries per language
+│   │   │   ├── tree-sitter-parser.ts # WASM tree-sitter manager
+│   │   │   ├── symbol-graph.ts       # Cross-chunk symbol edges
 │   │   │   ├── embeddings.ts         # Ollama provider + SQLite cache
 │   │   │   ├── config.ts             # .paparats.yml reader + validation
 │   │   │   ├── metadata.ts           # Tag resolution + auto-detection

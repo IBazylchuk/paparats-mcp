@@ -240,4 +240,129 @@ describe('MetadataStore', () => {
     expect(store.getCommits('nonexistent')).toEqual([]);
     expect(store.getTickets('nonexistent')).toEqual([]);
   });
+
+  // ── Symbol edge tests ───────────────────────────────────────────────────
+
+  it('stores and retrieves symbol edges', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//p//caller.ts//1-5//h1',
+        to_chunk_id: 'g//p//def.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'greet',
+      },
+    ]);
+
+    const from = store.getEdgesFrom('g//p//caller.ts//1-5//h1');
+    expect(from).toHaveLength(1);
+    expect(from[0]!.symbol_name).toBe('greet');
+    expect(from[0]!.to_chunk_id).toBe('g//p//def.ts//1-5//h2');
+
+    const to = store.getEdgesTo('g//p//def.ts//1-5//h2');
+    expect(to).toHaveLength(1);
+    expect(to[0]!.from_chunk_id).toBe('g//p//caller.ts//1-5//h1');
+  });
+
+  it('returns empty for unknown chunk edges', () => {
+    expect(store.getEdgesFrom('nonexistent')).toEqual([]);
+    expect(store.getEdgesTo('nonexistent')).toEqual([]);
+  });
+
+  it('deleteEdgesForChunk removes edges in both directions', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//p//a.ts//1-5//h1',
+        to_chunk_id: 'g//p//b.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+      },
+      {
+        from_chunk_id: 'g//p//c.ts//1-5//h3',
+        to_chunk_id: 'g//p//a.ts//1-5//h1',
+        relation_type: 'calls',
+        symbol_name: 'bar',
+      },
+    ]);
+
+    store.deleteEdgesForChunk('g//p//a.ts//1-5//h1');
+
+    // Both directions should be cleared
+    expect(store.getEdgesFrom('g//p//a.ts//1-5//h1')).toHaveLength(0);
+    expect(store.getEdgesTo('g//p//a.ts//1-5//h1')).toHaveLength(0);
+  });
+
+  it('deleteChunk cascades to symbol edges', () => {
+    const chunkId = 'g//p//file.ts//1-10//h1';
+
+    store.upsertCommits(chunkId, [
+      {
+        commit_hash: 'abc',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'test',
+      },
+    ]);
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: chunkId,
+        to_chunk_id: 'g//p//other.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'greet',
+      },
+    ]);
+
+    store.deleteChunk(chunkId);
+
+    expect(store.getCommits(chunkId)).toHaveLength(0);
+    expect(store.getEdgesFrom(chunkId)).toHaveLength(0);
+  });
+
+  it('deleteByProject cascades to symbol edges', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'mygroup//proj1//a.ts//1-5//h1',
+        to_chunk_id: 'mygroup//proj1//b.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+      },
+      {
+        from_chunk_id: 'mygroup//proj2//c.ts//1-5//h3',
+        to_chunk_id: 'mygroup//proj2//d.ts//1-5//h4',
+        relation_type: 'calls',
+        symbol_name: 'bar',
+      },
+    ]);
+
+    store.deleteByProject('mygroup', 'proj1');
+
+    expect(store.getEdgesFrom('mygroup//proj1//a.ts//1-5//h1')).toHaveLength(0);
+    // proj2 should be untouched
+    expect(store.getEdgesFrom('mygroup//proj2//c.ts//1-5//h3')).toHaveLength(1);
+  });
+
+  it('deleteEdgesByProject removes only target project edges', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//p1//a.ts//1-5//h1',
+        to_chunk_id: 'g//p1//b.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+      },
+      {
+        from_chunk_id: 'g//p2//c.ts//1-5//h3',
+        to_chunk_id: 'g//p2//d.ts//1-5//h4',
+        relation_type: 'calls',
+        symbol_name: 'bar',
+      },
+    ]);
+
+    store.deleteEdgesByProject('g', 'p1');
+
+    expect(store.getEdgesFrom('g//p1//a.ts//1-5//h1')).toHaveLength(0);
+    expect(store.getEdgesFrom('g//p2//c.ts//1-5//h3')).toHaveLength(1);
+  });
+
+  it('upsertSymbolEdges handles empty array', () => {
+    expect(() => store.upsertSymbolEdges([])).not.toThrow();
+  });
 });

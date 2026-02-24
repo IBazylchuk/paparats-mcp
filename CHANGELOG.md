@@ -15,105 +15,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `buildChunkId()` and `parseChunkId()` helpers in `indexer.ts`
 - Qdrant keyword payload index on `chunk_id` for fast lookup
 
-#### Symbol Extraction
+#### AST-Based Symbol Extraction
 
-- New `symbol-extractor.ts` module with regex-based symbol extraction from code chunks
-- Supports 11 languages: TypeScript/JavaScript, Python, Go, Rust, Java, Ruby, C/C++, C#, Terraform
-- Extracts symbol name and kind (function, class, method, interface, type, enum, constant, variable, module, route, resource, block) from the first 5 lines of each chunk
-- Chunker automatically enriches chunks with `symbol_name` and `kind` during processing
+- New `ast-symbol-extractor.ts` module with tree-sitter WASM-based symbol extraction
+- Supports 10 languages: TypeScript/JavaScript/TSX, Python, Go, Rust, Java, Ruby, C, C++, C#
+- Extracts `defined_symbols` (name + kind) and `uses_symbols` per chunk from AST
+- `kind` classification derived from tree-sitter parent node types (function, class, method, interface, type, enum, constant, variable, module)
+- New `ast-queries.ts` — tree-sitter S-expression query patterns per language
+- Indexer populates `symbol_name` and `kind` from tree-sitter results (replaces old regex-based extraction)
+
+#### Symbol Graph
+
+- New `symbol-graph.ts` — builds cross-chunk symbol edges (`calls`, `called_by`, `references`, `referenced_by`)
+- Edges stored in SQLite metadata store for fast lookup
+- Post-indexing hook builds symbol graph automatically when tree-sitter is available
+
+#### New MCP Tool: `find_usages`
+
+- Find all chunks that use a given symbol name
+- Powered by Qdrant `defines_symbols` / `uses_symbols` keyword indices
+
+#### New MCP Tool: `list_related_chunks`
+
+- List chunks related to a given chunk via symbol graph edges
+- Shows call/reference relationships between chunks
 
 #### Metadata Configuration
 
 - New `metadata` section in `.paparats.yml` supporting `service`, `bounded_context`, `tags`, and `directory_tags`
 - New `metadata.ts` module with `resolveTags()` and `autoDetectTags()` helpers
-- Auto-detection fallback: `service` defaults to project name, `tags` inferred from directory structure (e.g., `src/controllers/foo.ts` produces `controllers` tag)
+- Auto-detection fallback: `service` defaults to project name, `tags` inferred from directory structure
 
-#### New MCP Tool: `get_chunk`
+#### New MCP Tools: `get_chunk` and `get_chunk_meta`
 
-- Retrieve a specific chunk by `chunk_id` via `get_chunk(chunk_id, radius_lines?)`
-- `radius_lines` parameter (0-200) expands context by fetching adjacent chunks in the same file
-- Returns formatted metadata header + code block
-
-#### New HTTP Endpoint
-
-- `GET /api/chunk/:chunkId` with optional `radius_lines` query parameter
-- Returns chunk payload as JSON, includes `adjacent_chunks` when radius is specified
-
-#### Enriched Search Results
-
-- `search_code` results now include `chunk_id`, `symbol_name`, `kind`, `service`, `bounded_context`, and `tags`
-- Formatted output shows symbol info and chunk reference for each result
-
-#### Extended Qdrant Payload
-
-- New payload fields per chunk: `chunk_id`, `symbol_name`, `kind`, `service`, `bounded_context`, `tags`
-- Qdrant keyword indices on `chunk_id`, `kind`, and `tags` for filtered queries
-- All new fields are optional for backward compatibility with pre-existing data
-
-#### New Types
-
-- `ChunkKind` type union for symbol classification
-- `MetadataConfig` and `ResolvedMetadataConfig` interfaces
-- Extended `ChunkResult`, `SearchResult`, `PaparatsConfig`, and `ProjectConfig` types
-
-#### Tests
-
-- `symbol-extractor.test.ts` — 45 tests across all 11 languages and edge cases
-- `metadata.test.ts` — 12 tests for tag resolution and auto-detection
-- `chunk-id.test.ts` — 8 tests for chunk ID building, parsing, and roundtrip
-- `chunker.test.ts` — 6 new tests for symbol enrichment in chunk results
-- `config.test.ts` — 5 new tests for metadata config parsing
-- Updated existing tests in `searcher.test.ts`, `indexer.test.ts`, `server.test.ts`, `mcp-handler.test.ts`, `watcher.test.ts` for new type requirements
-- Total: 266 server tests (up from 190)
-
-#### Git History Extraction
-
-- New `git-metadata.ts` module — extracts commit history per file via `git log`, maps commits to chunks by diff hunk line-range overlap
-- New `metadata-db.ts` module — SQLite store at `~/.paparats/metadata.db` with `chunk_commits` and `chunk_tickets` tables
-- New `ticket-extractor.ts` module — extracts ticket references from commit messages (Jira `PROJ-123`, GitHub `#42` and `org/repo#42`, custom regex patterns)
-- Post-indexing hook in `indexer.ts`: after chunking, automatically extracts git metadata and enriches Qdrant payloads
-- Git metadata extraction is non-fatal — errors are logged but don't block indexing
-
-#### Git Metadata Configuration
-
-- New `metadata.git` section in `.paparats.yml` with `enabled` (default: `true`), `maxCommitsPerFile` (default: `50`, range 1–500), and `ticketPatterns` (custom regex strings)
-- Config validation for `maxCommitsPerFile` bounds and `ticketPatterns` regex validity
-- New types: `GitMetadataConfig`, `ChunkCommit`, `ChunkTicket`
-
-#### New MCP Tool: `get_chunk_meta`
-
-- Retrieve chunk metadata including recent git commits and ticket references via `get_chunk_meta(chunk_id, commit_limit?)`
-- Returns formatted metadata header + code block + recent commits table with ticket links
+- `get_chunk(chunk_id, radius_lines?)` — retrieve a chunk with optional context expansion
+- `get_chunk_meta(chunk_id, commit_limit?)` — git metadata including commits and ticket references
 
 #### New MCP Tool: `search_changes`
 
-- Search for recently changed code via `search_changes(query, since?, group?, project?, limit?)`
-- Uses Qdrant `last_commit_at` range filter to narrow results to a time window
-- Searches across all groups when `group` is omitted
+- Search for recently changed code with date filter on last commit time
 
-#### New HTTP Endpoint: Chunk Metadata
+#### Git History Extraction
 
-- `GET /api/chunk/:chunkId/meta` with optional `commit_limit` query parameter (default: 10, max: 50)
-- Returns chunk payload enriched with `commits`, `tickets`, and `latest_commit` from the metadata store
+- New `git-metadata.ts` — extracts commit history per file, maps commits to chunks by diff hunk overlap
+- New `metadata-db.ts` — SQLite store for git commits, tickets, and symbol edges
+- New `ticket-extractor.ts` — extracts Jira, GitHub, and custom ticket references from commit messages
+- Git metadata extraction is non-fatal — errors are logged but don't block indexing
 
-#### Extended Qdrant Payload (Phase 2)
+#### Extended Qdrant Payload
 
-- New optional payload fields per chunk: `last_commit_hash`, `last_commit_at`, `last_author_email`, `ticket_keys`
-- Qdrant keyword indices on `last_commit_at` and `ticket_keys` for filtered queries
+- Payload fields per chunk: `chunk_id`, `symbol_name`, `kind`, `service`, `bounded_context`, `tags`, `defines_symbols`, `uses_symbols`, `last_commit_hash`, `last_commit_at`, `last_author_email`, `ticket_keys`
+- Keyword indices on `chunk_id`, `kind`, `tags`, `last_commit_at`, `ticket_keys`, `defines_symbols`, `uses_symbols`
 
 #### Searcher: Filtered Search
 
-- New `searchWithFilter()` method on `Searcher` — accepts additional Qdrant filter conditions merged with the standard project filter
+- New `searchWithFilter()` method — accepts additional Qdrant filter conditions
 
-#### Tests (Phase 2)
+#### AST-Based Code Chunking
 
-- `metadata-db.test.ts` — 11 tests for SQLite metadata store operations
-- `git-metadata.test.ts` — 5 integration tests with real git repos
-- `ticket-extractor.test.ts` — 12 tests for ticket extraction patterns
-- `config.test.ts` — 8 new tests for git metadata config validation
-- `searcher.test.ts` — 4 new tests for `searchWithFilter`
-- Updated existing tests in `server.test.ts`, `mcp-handler.test.ts` for new endpoints and tools
-- Total: 310 server tests (up from 266)
+- New `ast-chunker.ts` — tree-sitter AST-based chunking replaces regex heuristics as primary strategy
+- `chunkByAst()` uses top-level AST nodes as natural chunk boundaries, groups small nodes, splits large nodes recursively by children
+- Fixes broken chunking for Go (`func`), Rust (`fn`), Java (`public class`), C/C++/C# which previously fell through to fixed-size splitting
+- Added TSX support in regex chunker fallback (`chunkByBraces`)
+
+### Changed
+
+- Indexer uses single-parse flow: `chunkFile()` parses once with tree-sitter, uses tree for both AST chunking and symbol extraction, then deletes tree
+- Symbol extraction moved from regex (chunker) to tree-sitter AST (indexer) — single source of truth
+- Removed `symbol-extractor.ts` (regex-based) — replaced by `ast-symbol-extractor.ts`
+- Renamed `ts-queries.ts` → `ast-queries.ts`, `ts-symbol-extractor.ts` → `ast-symbol-extractor.ts`
+- Removed dead `ChunkResult` fields (`symbol_name`, `kind`, `defines_symbols`, `uses_symbols`) — indexer populates these directly in Qdrant payload
+- Removed dead `ChunkKind` values (`route`, `resource`, `block`) — never produced by AST system
+- Standardized chunk line numbers to 0-indexed throughout (chunker, AST chunker, symbol extractor)
+- Chunker no longer enriches chunks with symbol metadata (delegated to indexer)
 
 ### Fixed
 
@@ -127,8 +101,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Notes
 
 - All new payload fields and modules are backward compatible — old indexed data is unaffected
-- A `reindex` call regenerates all metadata including git history (reindex is the migration path)
-- No version bump yet — this covers Phase 1 + Phase 2 of the Support Q&A Roadmap
+- A `reindex` call regenerates all metadata including git history and symbol graph (reindex is the migration path)
+- Languages without tree-sitter grammar (e.g. Terraform) gracefully fall back to `null` for `symbol_name`/`kind`
 
 ## [0.1.10] - 2025-05-22
 

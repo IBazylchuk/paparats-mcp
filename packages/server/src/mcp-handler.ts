@@ -714,6 +714,243 @@ export class McpHandler {
       }
     );
 
+    // ── Tool: find_usages ─────────────────────────────────────────────────
+    server.tool(
+      'find_usages',
+      prompts.tools.find_usages.description,
+      {
+        chunk_id: z.string().describe('Chunk ID to find usages of'),
+        relation_types: z
+          .array(z.enum(['calls', 'called_by', 'references', 'referenced_by']))
+          .optional()
+          .describe('Filter by relation types (default: all)'),
+        limit: z.number().min(1).max(50).default(20).describe('Max results'),
+      },
+      async ({ chunk_id, relation_types, limit }) => {
+        try {
+          if (!this.metadataStore) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: 'Symbol graph is not available. The metadata store is not configured.',
+                },
+              ],
+            };
+          }
+
+          const payload = await this.indexer.getChunkById(chunk_id);
+          if (!payload) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Chunk not found: ${chunk_id}\n\nThe chunk may have been removed during reindexing. Try searching again.`,
+                },
+              ],
+            };
+          }
+
+          const defSymbols = Array.isArray(payload['defines_symbols'])
+            ? (payload['defines_symbols'] as string[])
+            : [];
+
+          // Get edges TO this chunk (chunks that use symbols defined here)
+          let edges = this.metadataStore.getEdgesTo(chunk_id);
+
+          if (relation_types && relation_types.length > 0) {
+            const allowed = new Set(relation_types);
+            edges = edges.filter((e) => allowed.has(e.relation_type));
+          }
+
+          edges = edges.slice(0, limit);
+
+          if (edges.length === 0) {
+            const symbolInfo =
+              defSymbols.length > 0
+                ? `\n\nDefined symbols: ${defSymbols.join(', ')}`
+                : '\n\nNo symbols defined in this chunk.';
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No usages found for chunk: ${chunk_id}${symbolInfo}\n\nThis may mean the symbols are not used in indexed code, or the project needs reindexing.`,
+                },
+              ],
+            };
+          }
+
+          // Group edges by symbol
+          const bySymbol = new Map<string, typeof edges>();
+          for (const edge of edges) {
+            let list = bySymbol.get(edge.symbol_name);
+            if (!list) {
+              list = [];
+              bySymbol.set(edge.symbol_name, list);
+            }
+            list.push(edge);
+          }
+
+          const project = typeof payload['project'] === 'string' ? payload['project'] : 'unknown';
+          const file = typeof payload['file'] === 'string' ? payload['file'] : 'unknown';
+          let text = `## Usages of [${project}] ${file}\n\n`;
+
+          for (const [symbol, symbolEdges] of bySymbol) {
+            text += `### Symbol: \`${symbol}\` (${symbolEdges.length} usages)\n\n`;
+            for (const edge of symbolEdges) {
+              const callerPayload = await this.indexer.getChunkById(edge.from_chunk_id);
+              if (callerPayload) {
+                const callerProject =
+                  typeof callerPayload['project'] === 'string'
+                    ? callerPayload['project']
+                    : 'unknown';
+                const callerFile =
+                  typeof callerPayload['file'] === 'string' ? callerPayload['file'] : 'unknown';
+                const callerStart =
+                  typeof callerPayload['startLine'] === 'number' ? callerPayload['startLine'] : 0;
+                const callerSymbol =
+                  typeof callerPayload['symbol_name'] === 'string'
+                    ? callerPayload['symbol_name']
+                    : null;
+                const symbolInfo = callerSymbol ? ` (${callerSymbol})` : '';
+                text += `- **[${callerProject}] ${callerFile}:${callerStart}**${symbolInfo} — ${edge.relation_type}\n`;
+                text += `  _chunk: ${edge.from_chunk_id}_\n`;
+              } else {
+                text += `- _chunk: ${edge.from_chunk_id}_ — ${edge.relation_type}\n`;
+              }
+            }
+            text += '\n';
+          }
+
+          return { content: [{ type: 'text' as const, text }] };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Failed to find usages: ${(err as Error).message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    // ── Tool: list_related_chunks ───────────────────────────────────────
+    server.tool(
+      'list_related_chunks',
+      prompts.tools.list_related_chunks.description,
+      {
+        chunk_id: z.string().describe('Chunk ID to find relations for'),
+        limit: z.number().min(1).max(50).default(20).describe('Max results per direction'),
+      },
+      async ({ chunk_id, limit }) => {
+        try {
+          if (!this.metadataStore) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: 'Symbol graph is not available. The metadata store is not configured.',
+                },
+              ],
+            };
+          }
+
+          const payload = await this.indexer.getChunkById(chunk_id);
+          if (!payload) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Chunk not found: ${chunk_id}\n\nThe chunk may have been removed during reindexing. Try searching again.`,
+                },
+              ],
+            };
+          }
+
+          const project = typeof payload['project'] === 'string' ? payload['project'] : 'unknown';
+          const file = typeof payload['file'] === 'string' ? payload['file'] : 'unknown';
+          const startLine = typeof payload['startLine'] === 'number' ? payload['startLine'] : 0;
+
+          const edgesFrom = this.metadataStore.getEdgesFrom(chunk_id).slice(0, limit);
+          const edgesTo = this.metadataStore.getEdgesTo(chunk_id).slice(0, limit);
+
+          if (edgesFrom.length === 0 && edgesTo.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No related chunks found for [${project}] ${file}:${startLine}\n\nThis may mean the chunk has no cross-references, or the project needs reindexing.`,
+                },
+              ],
+            };
+          }
+
+          let text = `## Related Chunks for [${project}] ${file}:${startLine}\n\n`;
+
+          // Callers / Users — chunks that use symbols defined in this chunk
+          if (edgesTo.length > 0) {
+            text += `### Callers / Users (${edgesTo.length})\n\n`;
+            for (const edge of edgesTo) {
+              const callerPayload = await this.indexer.getChunkById(edge.from_chunk_id);
+              if (callerPayload) {
+                const p =
+                  typeof callerPayload['project'] === 'string'
+                    ? callerPayload['project']
+                    : 'unknown';
+                const f =
+                  typeof callerPayload['file'] === 'string' ? callerPayload['file'] : 'unknown';
+                const sl =
+                  typeof callerPayload['startLine'] === 'number' ? callerPayload['startLine'] : 0;
+                text += `- **[${p}] ${f}:${sl}** via \`${edge.symbol_name}\`\n`;
+                text += `  _chunk: ${edge.from_chunk_id}_\n`;
+              } else {
+                text += `- _chunk: ${edge.from_chunk_id}_ via \`${edge.symbol_name}\`\n`;
+              }
+            }
+            text += '\n';
+          }
+
+          // Callees / Dependencies — symbols this chunk uses that are defined elsewhere
+          if (edgesFrom.length > 0) {
+            text += `### Callees / Dependencies (${edgesFrom.length})\n\n`;
+            for (const edge of edgesFrom) {
+              const calleePayload = await this.indexer.getChunkById(edge.to_chunk_id);
+              if (calleePayload) {
+                const p =
+                  typeof calleePayload['project'] === 'string'
+                    ? calleePayload['project']
+                    : 'unknown';
+                const f =
+                  typeof calleePayload['file'] === 'string' ? calleePayload['file'] : 'unknown';
+                const sl =
+                  typeof calleePayload['startLine'] === 'number' ? calleePayload['startLine'] : 0;
+                text += `- **[${p}] ${f}:${sl}** via \`${edge.symbol_name}\`\n`;
+                text += `  _chunk: ${edge.to_chunk_id}_\n`;
+              } else {
+                text += `- _chunk: ${edge.to_chunk_id}_ via \`${edge.symbol_name}\`\n`;
+              }
+            }
+            text += '\n';
+          }
+
+          return { content: [{ type: 'text' as const, text }] };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Failed to list related chunks: ${(err as Error).message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+    );
+
     return server;
   }
 

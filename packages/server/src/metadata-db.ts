@@ -2,7 +2,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import Database from 'better-sqlite3';
-import type { ChunkCommit, ChunkTicket } from './types.js';
+import type { ChunkCommit, ChunkTicket, SymbolEdge } from './types.js';
 
 const PAPARATS_DIR = path.join(os.homedir(), '.paparats');
 const DEFAULT_DB_PATH = path.join(PAPARATS_DIR, 'metadata.db');
@@ -21,6 +21,12 @@ export class MetadataStore {
   private getTicketsStmt: Database.Statement;
   private deleteChunkCommitsStmt: Database.Statement;
   private deleteChunkTicketsStmt: Database.Statement;
+  private insertEdgeStmt: Database.Statement;
+  private deleteEdgesFromStmt: Database.Statement;
+  private deleteEdgesToStmt: Database.Statement;
+  private getEdgesFromStmt: Database.Statement;
+  private getEdgesToStmt: Database.Statement;
+  private deleteChunkEdgesStmt: Database.Statement;
 
   constructor(dbPath?: string) {
     const p = dbPath ?? DEFAULT_DB_PATH;
@@ -53,6 +59,17 @@ export class MetadataStore {
       );
       CREATE INDEX IF NOT EXISTS idx_chunk_tickets_chunk_id ON chunk_tickets(chunk_id);
       CREATE INDEX IF NOT EXISTS idx_chunk_tickets_ticket_key ON chunk_tickets(ticket_key);
+
+      CREATE TABLE IF NOT EXISTS symbol_edges (
+        from_chunk_id TEXT NOT NULL,
+        to_chunk_id TEXT NOT NULL,
+        relation_type TEXT NOT NULL,
+        symbol_name TEXT NOT NULL,
+        PRIMARY KEY (from_chunk_id, to_chunk_id, symbol_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_symbol_edges_from ON symbol_edges(from_chunk_id);
+      CREATE INDEX IF NOT EXISTS idx_symbol_edges_to ON symbol_edges(to_chunk_id);
+      CREATE INDEX IF NOT EXISTS idx_symbol_edges_symbol ON symbol_edges(symbol_name);
     `);
 
     this.insertCommitStmt = this.db.prepare(
@@ -76,6 +93,21 @@ export class MetadataStore {
 
     this.deleteChunkCommitsStmt = this.db.prepare('DELETE FROM chunk_commits WHERE chunk_id = ?');
     this.deleteChunkTicketsStmt = this.db.prepare('DELETE FROM chunk_tickets WHERE chunk_id = ?');
+
+    this.insertEdgeStmt = this.db.prepare(
+      'INSERT OR REPLACE INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name) VALUES (?, ?, ?, ?)'
+    );
+    this.deleteEdgesFromStmt = this.db.prepare('DELETE FROM symbol_edges WHERE from_chunk_id = ?');
+    this.deleteEdgesToStmt = this.db.prepare('DELETE FROM symbol_edges WHERE to_chunk_id = ?');
+    this.getEdgesFromStmt = this.db.prepare(
+      'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name FROM symbol_edges WHERE from_chunk_id = ?'
+    );
+    this.getEdgesToStmt = this.db.prepare(
+      'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name FROM symbol_edges WHERE to_chunk_id = ?'
+    );
+    this.deleteChunkEdgesStmt = this.db.prepare(
+      'DELETE FROM symbol_edges WHERE from_chunk_id = ? OR to_chunk_id = ?'
+    );
   }
 
   upsertCommits(chunkId: string, commits: Omit<ChunkCommit, 'chunk_id'>[]): void {
@@ -125,6 +157,7 @@ export class MetadataStore {
     const tx = this.db.transaction(() => {
       this.deleteChunkCommitsStmt.run(chunkId);
       this.deleteChunkTicketsStmt.run(chunkId);
+      this.deleteChunkEdgesStmt.run(chunkId, chunkId);
     });
     tx();
   }
@@ -133,6 +166,39 @@ export class MetadataStore {
     const prefix = `${group}//${project}//`;
     this.db.prepare('DELETE FROM chunk_commits WHERE chunk_id LIKE ?').run(`${prefix}%`);
     this.db.prepare('DELETE FROM chunk_tickets WHERE chunk_id LIKE ?').run(`${prefix}%`);
+    this.db
+      .prepare('DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? OR to_chunk_id LIKE ?')
+      .run(`${prefix}%`, `${prefix}%`);
+  }
+
+  // ── Symbol edge methods ─────────────────────────────────────────────────
+
+  upsertSymbolEdges(edges: SymbolEdge[]): void {
+    const tx = this.db.transaction(() => {
+      for (const e of edges) {
+        this.insertEdgeStmt.run(e.from_chunk_id, e.to_chunk_id, e.relation_type, e.symbol_name);
+      }
+    });
+    tx();
+  }
+
+  getEdgesFrom(chunkId: string): SymbolEdge[] {
+    return this.getEdgesFromStmt.all(chunkId) as SymbolEdge[];
+  }
+
+  getEdgesTo(chunkId: string): SymbolEdge[] {
+    return this.getEdgesToStmt.all(chunkId) as SymbolEdge[];
+  }
+
+  deleteEdgesForChunk(chunkId: string): void {
+    this.deleteChunkEdgesStmt.run(chunkId, chunkId);
+  }
+
+  deleteEdgesByProject(group: string, project: string): void {
+    const prefix = `${group}//${project}//`;
+    this.db
+      .prepare('DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? OR to_chunk_id LIKE ?')
+      .run(`${prefix}%`, `${prefix}%`);
   }
 
   close(): void {

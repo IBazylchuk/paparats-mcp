@@ -23,18 +23,18 @@ interface QdrantPayload {
   endLine: number;
   content: string;
   hash: string;
-  // Phase 1 additions (optional for backward compat with pre-Phase-1 data)
   chunk_id?: string;
   symbol_name?: string | null;
   kind?: string | null;
   service?: string | null;
   bounded_context?: string | null;
   tags?: string[];
-  // Phase 2 additions (git metadata)
   last_commit_hash?: string;
   last_commit_at?: string;
   last_author_email?: string;
   ticket_keys?: string[];
+  defines_symbols?: string[];
+  uses_symbols?: string[];
 }
 
 export class Searcher {
