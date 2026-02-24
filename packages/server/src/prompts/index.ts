@@ -15,6 +15,8 @@ export interface Prompts {
     get_chunk: { description: string };
     get_chunk_meta: { description: string };
     search_changes: { description: string };
+    find_usages: { description: string };
+    list_related_chunks: { description: string };
   };
   resources: {
     projectOverview: {
@@ -53,6 +55,8 @@ function validatePrompts(data: unknown): Prompts {
     'get_chunk',
     'get_chunk_meta',
     'search_changes',
+    'find_usages',
+    'list_related_chunks',
   ]) {
     const t = tools[name];
     if (!t || typeof t !== 'object') {

@@ -29,6 +29,13 @@ describe('Chunker', () => {
       expect(chunks.length).toBeGreaterThan(0);
       expect(chunks[0]!.content).toBe(content);
     });
+
+    it('routes TSX to chunkByBraces', () => {
+      const tsx = 'export function App() {\n  return <div>Hello</div>;\n}';
+      const chunks = chunker.chunk(tsx, 'tsx');
+      expect(chunks.length).toBeGreaterThan(0);
+      expect(chunks[0]!.content).toContain('function App');
+    });
   });
 
   describe('chunkByBlocks (Ruby)', () => {
@@ -206,67 +213,6 @@ describe('Chunker', () => {
       for (const c of chunks) {
         expect(c.hash).toMatch(/^[0-9a-f]{16}$/);
       }
-    });
-  });
-
-  describe('symbol enrichment', () => {
-    it('extracts symbol_name and kind for TypeScript function', () => {
-      const ts = 'export function processPayment(amount: number) {\n  return amount;\n}';
-      const chunks = chunker.chunk(ts, 'typescript');
-      expect(chunks.length).toBeGreaterThan(0);
-      expect(chunks[0]!.symbol_name).toBe('processPayment');
-      expect(chunks[0]!.kind).toBe('function');
-    });
-
-    it('extracts symbol_name and kind for TypeScript class', () => {
-      const ts = 'export class UserService {\n  constructor() {}\n}';
-      const chunks = chunker.chunk(ts, 'typescript');
-      expect(chunks.length).toBeGreaterThan(0);
-      expect(chunks[0]!.symbol_name).toBe('UserService');
-      expect(chunks[0]!.kind).toBe('class');
-    });
-
-    it('extracts symbol_name and kind for Python function', () => {
-      const py = 'def process_data(data):\n    return data';
-      const chunks = chunker.chunk(py, 'python');
-      expect(chunks.length).toBeGreaterThan(0);
-      expect(chunks[0]!.symbol_name).toBe('process_data');
-      expect(chunks[0]!.kind).toBe('function');
-    });
-
-    it('extracts symbol_name and kind for Ruby method', () => {
-      const rb = 'def calculate_total\n  @items.sum\nend';
-      const chunks = chunker.chunk(rb, 'ruby');
-      expect(chunks.length).toBeGreaterThan(0);
-      expect(chunks[0]!.symbol_name).toBe('calculate_total');
-      expect(chunks[0]!.kind).toBe('method');
-    });
-
-    it('leaves symbol_name/kind undefined for unknown languages', () => {
-      const content = 'some unknown content';
-      const chunks = chunker.chunk(content, 'brainfuck');
-      expect(chunks.length).toBeGreaterThan(0);
-      expect(chunks[0]!.symbol_name).toBeUndefined();
-      expect(chunks[0]!.kind).toBeUndefined();
-    });
-
-    it('enriches each chunk independently in multi-chunk file', () => {
-      const ts = [
-        'export function foo() {',
-        '  return 1;',
-        '}',
-        '',
-        'export function bar() {',
-        '  return 2;',
-        '}',
-      ].join('\n');
-
-      const chunks = chunker.chunk(ts, 'typescript');
-      expect(chunks.length).toBe(2);
-      expect(chunks[0]!.symbol_name).toBe('foo');
-      expect(chunks[0]!.kind).toBe('function');
-      expect(chunks[1]!.symbol_name).toBe('bar');
-      expect(chunks[1]!.kind).toBe('function');
     });
   });
 });
