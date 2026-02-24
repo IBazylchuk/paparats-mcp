@@ -28,29 +28,35 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - `path-validation.ts` — `validateIndexingPaths()` — rejects absolute paths and path traversal in `indexing.paths` (used by server and CLI)
 - `exclude-patterns.ts` — `normalizeExcludePatterns()` — bare dir names (e.g. `node_modules`) become `**/node_modules/**` for glob
 - `gitignore.ts` — `createGitignoreFilter()` (per-file checks), `filterFilesByGitignore()` (bulk filter) — used by CLI collectProjectFiles, server indexer, watch
+- `language-excludes.ts` — `LANGUAGE_EXCLUDE_DEFAULTS`, `getDefaultExcludeForLanguages()` — per-language exclude patterns
 
 **packages/server/src/**
 
-| Module                    | Responsibility                                                                                   |
-| ------------------------- | ------------------------------------------------------------------------------------------------ |
-| `types.ts`                | Shared interfaces — all type definitions live here                                               |
-| `config.ts`               | `.paparats.yml` reader, 11 built-in language profiles, `loadProject()`                           |
-| `ast-chunker.ts`          | AST-based code chunking via tree-sitter — groups small nodes, splits large ones recursively      |
-| `chunker.ts`              | Regex-based code splitting (fallback) — 4 strategies (blocks, braces, indent, fixed)             |
-| `ast-symbol-extractor.ts` | AST-based symbol extraction — `extractSymbolsForChunks()` (defines/uses per chunk, 10 languages) |
-| `ast-queries.ts`          | Tree-sitter S-expression query patterns per language                                             |
-| `tree-sitter-parser.ts`   | WASM tree-sitter manager — `createTreeSitterManager()`, lazy grammar loading                     |
-| `symbol-graph.ts`         | Cross-chunk symbol edges (`calls`, `called_by`, `references`, `referenced_by`)                   |
-| `embeddings.ts`           | `OllamaProvider`, `EmbeddingCache` (SQLite), `CachedEmbeddingProvider`                           |
-| `indexer.ts`              | Group-aware Qdrant indexing — single-parse `chunkFile()` (AST chunking + symbols), file CRUD     |
-| `searcher.ts`             | Vector search with project filtering, query expansion, token savings metrics                     |
-| `metadata.ts`             | Tag resolution (`resolveTags()`) + auto-detection from directory structure                       |
-| `metadata-db.ts`          | SQLite store for git commits, tickets, and symbol edges                                          |
-| `git-metadata.ts`         | Git history extraction — commit mapping to chunks by diff hunk overlap                           |
-| `ticket-extractor.ts`     | Jira/GitHub/custom ticket reference parsing from commit messages                                 |
-| `mcp-handler.ts`          | MCP protocol — SSE (Cursor) + Streamable HTTP (Claude Code), tools + resources                   |
-| `watcher.ts`              | `ProjectWatcher` (chokidar) + `WatcherManager` for file change detection                         |
-| `index.ts`                | Express HTTP server entry point, wires everything together                                       |
+| Module                    | Responsibility                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`                | Shared interfaces — all type definitions live here                                                                        |
+| `config.ts`               | `.paparats.yml` reader, 11 built-in language profiles, `loadProject()`                                                    |
+| `app.ts`                  | Express app factory (`createApp()`), HTTP API routes, `withTimeout()`, `sanitizeForLog()`                                 |
+| `index.ts`                | Server bootstrap — starts HTTP server, wires components, graceful shutdown                                                |
+| `ast-chunker.ts`          | AST-based code chunking via tree-sitter — groups small nodes, splits large ones recursively                               |
+| `chunker.ts`              | Regex-based code splitting (fallback) — 4 strategies (blocks, braces, indent, fixed)                                      |
+| `ast-symbol-extractor.ts` | AST-based symbol extraction — `extractSymbolsForChunks()` (defines/uses per chunk, 10 languages)                          |
+| `ast-queries.ts`          | Tree-sitter S-expression query patterns per language                                                                      |
+| `tree-sitter-parser.ts`   | WASM tree-sitter manager — `createTreeSitterManager()`, lazy grammar loading                                              |
+| `symbol-graph.ts`         | Cross-chunk symbol edges (`calls`, `called_by`, `references`, `referenced_by`)                                            |
+| `embeddings.ts`           | `OllamaProvider`, `EmbeddingCache` (SQLite), `CachedEmbeddingProvider`                                                    |
+| `indexer.ts`              | Group-aware Qdrant indexing — single-parse `chunkFile()` (AST chunking + symbols), file CRUD                              |
+| `searcher.ts`             | Vector search with project filtering, query expansion, query cache, metrics instrumentation                               |
+| `query-expansion.ts`      | Abbreviation, case variant, plural, filler word expansion for search queries                                              |
+| `task-prefixes.ts`        | Jina task prefix detection (nl2code / code2code / techqa) based on query content                                          |
+| `query-cache.ts`          | In-memory LRU cache with TTL and group-level invalidation for search results                                              |
+| `metrics.ts`              | Prometheus metrics (`prom-client`) with `NoOpMetrics` fallback. Opt-in via `PAPARATS_METRICS=true`                        |
+| `metadata.ts`             | Tag resolution (`resolveTags()`) + auto-detection from directory structure                                                |
+| `metadata-db.ts`          | SQLite store for git commits, tickets, and symbol edges                                                                   |
+| `git-metadata.ts`         | Git history extraction — commit mapping to chunks by diff hunk overlap                                                    |
+| `ticket-extractor.ts`     | Jira/GitHub/custom ticket reference parsing from commit messages                                                          |
+| `mcp-handler.ts`          | MCP protocol — dual-mode endpoints: coding (`/mcp`) and support (`/support/mcp`) with isolated tool sets and instructions |
+| `watcher.ts`              | `ProjectWatcher` (chokidar) + `WatcherManager` for file change detection                                                  |
 
 ## Key patterns
 
@@ -60,6 +66,10 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - Embedding cache: SQLite at `~/.paparats/cache/embeddings.db`, Float32 vectors, LRU cleanup at 100k entries
 - `CachedEmbeddingProvider` wraps any `EmbeddingProvider` — all embedding calls go through cache
 - Watcher uses debounce per file (configurable via `.paparats.yml`)
+- **Query cache**: in-memory LRU with TTL (default 5min, 1000 entries). Invalidated per-group on file change/delete. Watcher callbacks call `searcher.invalidateGroupCache()` before indexer update
+- **Prometheus metrics**: opt-in via `PAPARATS_METRICS=true`. `GET /metrics` exposes counters (search, index, watcher), histograms (search/embedding duration), gauges (cache sizes, hit rates). `NoOpMetrics` fallback when disabled — zero overhead
+- **Dual MCP modes**: coding (`/mcp`, `/sse`) and support (`/support/mcp`, `/support/sse`). Each mode has its own tool set and `serverInstructions`. Coding: `search_code`, `get_chunk`, `find_usages`, `health_check`, `reindex`. Support adds `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`. Tool sets defined by `CODING_TOOLS`/`SUPPORT_TOOLS` constants; `createMcpServer(mode)` registers only the relevant tools
+- **Orchestration tools** (`explain_feature`, `recent_changes`, `impact_analysis`): support-mode only. Compose search + metadata + edges in a single MCP call. Return structured markdown without code content. Use `resolveChunkLocation()` helper for payload extraction. Gracefully degrade when `metadataStore` is null (skip metadata sections, still return search results)
 
 ## Testing
 

@@ -2,6 +2,8 @@ import { QdrantClient } from '@qdrant/js-client-rest';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { SearchResult, SearchMetrics, SearchResponse, ChunkKind } from './types.js';
 import { expandQuery } from './query-expansion.js';
+import type { QueryCache } from './query-cache.js';
+import type { MetricsRegistry } from './metrics.js';
 
 export interface SearcherConfig {
   qdrantUrl: string;
@@ -10,6 +12,10 @@ export interface SearcherConfig {
   qdrantClient?: QdrantClient;
   /** Qdrant request timeout in milliseconds (default: 30000) */
   timeout?: number;
+  /** Optional query result cache */
+  cache?: QueryCache;
+  /** Optional metrics registry */
+  metrics?: MetricsRegistry;
 }
 
 const QDRANT_TIMEOUT_MS = 30_000;
@@ -42,6 +48,8 @@ export class Searcher {
   private provider: CachedEmbeddingProvider;
   private searchCount = 0;
   private totalTokensSaved = 0;
+  private cache?: QueryCache;
+  private metrics?: MetricsRegistry;
 
   constructor(config: SearcherConfig) {
     this.qdrant =
@@ -51,6 +59,8 @@ export class Searcher {
         timeout: config.timeout ?? QDRANT_TIMEOUT_MS,
       });
     this.provider = config.embeddingProvider;
+    this.cache = config.cache;
+    this.metrics = config.metrics;
   }
 
   /** Search within a group collection, optionally filtering by project */
@@ -59,10 +69,42 @@ export class Searcher {
     query: string,
     options?: { project?: string; limit?: number }
   ): Promise<SearchResponse> {
+    const startTime = performance.now();
+
+    // Check cache
+    if (this.cache) {
+      const cacheKey = this.cache.buildKey(groupName, query, options);
+      const cached = this.cache.get(cacheKey);
+      if (cached) {
+        this.searchCount++;
+        this.totalTokensSaved += cached.metrics.tokensSaved;
+        this.metrics?.incSearchTotal(groupName, 'search');
+        this.metrics?.observeSearchDuration(
+          groupName,
+          'search',
+          (performance.now() - startTime) / 1000
+        );
+        return cached;
+      }
+    }
+
     const response = await this._searchInternal(groupName, query, options);
 
     this.searchCount++;
     this.totalTokensSaved += response.metrics.tokensSaved;
+
+    // Store in cache
+    if (this.cache) {
+      const cacheKey = this.cache.buildKey(groupName, query, options);
+      this.cache.set(cacheKey, groupName, response);
+    }
+
+    this.metrics?.incSearchTotal(groupName, 'search');
+    this.metrics?.observeSearchDuration(
+      groupName,
+      'search',
+      (performance.now() - startTime) / 1000
+    );
 
     return response;
   }
@@ -73,6 +115,25 @@ export class Searcher {
     query: string,
     options?: { project?: string; limit?: number }
   ): Promise<SearchResponse> {
+    const startTime = performance.now();
+
+    // Check cache
+    if (this.cache) {
+      const cacheKey = this.cache.buildKey(groupName, `expanded:${query}`, options);
+      const cached = this.cache.get(cacheKey);
+      if (cached) {
+        this.searchCount++;
+        this.totalTokensSaved += cached.metrics.tokensSaved;
+        this.metrics?.incSearchTotal(groupName, 'expandedSearch');
+        this.metrics?.observeSearchDuration(
+          groupName,
+          'expandedSearch',
+          (performance.now() - startTime) / 1000
+        );
+        return cached;
+      }
+    }
+
     const variations = expandQuery(query);
 
     if (variations.length <= 1) {
@@ -132,11 +193,26 @@ export class Searcher {
     this.searchCount++;
     this.totalTokensSaved += metrics.tokensSaved;
 
-    return {
+    const response: SearchResponse = {
       results: merged,
       total: merged.length,
       metrics,
     };
+
+    // Store in cache
+    if (this.cache) {
+      const cacheKey = this.cache.buildKey(groupName, `expanded:${query}`, options);
+      this.cache.set(cacheKey, groupName, response);
+    }
+
+    this.metrics?.incSearchTotal(groupName, 'expandedSearch');
+    this.metrics?.observeSearchDuration(
+      groupName,
+      'expandedSearch',
+      (performance.now() - startTime) / 1000
+    );
+
+    return response;
   }
 
   /** Search with additional Qdrant filter conditions (e.g. date range on last_commit_at) */
@@ -152,6 +228,26 @@ export class Searcher {
     if (!query?.trim()) {
       throw new Error('Query string is required');
     }
+
+    const startTime = performance.now();
+
+    // Check cache
+    if (this.cache) {
+      const cacheKey = this.cache.buildKey(groupName, query, options, additionalFilter);
+      const cached = this.cache.get(cacheKey);
+      if (cached) {
+        this.searchCount++;
+        this.totalTokensSaved += cached.metrics.tokensSaved;
+        this.metrics?.incSearchTotal(groupName, 'searchWithFilter');
+        this.metrics?.observeSearchDuration(
+          groupName,
+          'searchWithFilter',
+          (performance.now() - startTime) / 1000
+        );
+        return cached;
+      }
+    }
+
     const limit = Math.max(1, Math.min(options?.limit ?? 5, 100));
     const project = options?.project ?? 'all';
 
@@ -175,25 +271,7 @@ export class Searcher {
 
       results = hits
         .filter((h): h is typeof h & { payload: QdrantPayload } => this.validatePayload(h.payload))
-        .map((h) => {
-          const p = h.payload;
-          return {
-            project: p.project,
-            file: p.file,
-            language: p.language,
-            startLine: p.startLine,
-            endLine: p.endLine,
-            content: p.content,
-            score: h.score,
-            hash: p.hash,
-            chunk_id: p.chunk_id ?? null,
-            symbol_name: (p.symbol_name as string | null) ?? null,
-            kind: (p.kind as ChunkKind | null) ?? null,
-            service: (p.service as string | null) ?? null,
-            bounded_context: (p.bounded_context as string | null) ?? null,
-            tags: p.tags ?? [],
-          };
-        });
+        .map((h) => this.mapPayload(h.payload, h.score));
     } catch (err) {
       const errorMsg = (err as Error).message.toLowerCase();
       if (errorMsg.includes('not found') || errorMsg.includes('does not exist')) {
@@ -209,7 +287,22 @@ export class Searcher {
     this.searchCount++;
     this.totalTokensSaved += metrics.tokensSaved;
 
-    return { results, total: results.length, metrics };
+    const response: SearchResponse = { results, total: results.length, metrics };
+
+    // Store in cache
+    if (this.cache) {
+      const cacheKey = this.cache.buildKey(groupName, query, options, additionalFilter);
+      this.cache.set(cacheKey, groupName, response);
+    }
+
+    this.metrics?.incSearchTotal(groupName, 'searchWithFilter');
+    this.metrics?.observeSearchDuration(
+      groupName,
+      'searchWithFilter',
+      (performance.now() - startTime) / 1000
+    );
+
+    return response;
   }
 
   /** Core search logic without counter updates */
@@ -248,25 +341,7 @@ export class Searcher {
 
       results = hits
         .filter((h): h is typeof h & { payload: QdrantPayload } => this.validatePayload(h.payload))
-        .map((h) => {
-          const p = h.payload;
-          return {
-            project: p.project,
-            file: p.file,
-            language: p.language,
-            startLine: p.startLine,
-            endLine: p.endLine,
-            content: p.content,
-            score: h.score,
-            hash: p.hash,
-            chunk_id: p.chunk_id ?? null,
-            symbol_name: (p.symbol_name as string | null) ?? null,
-            kind: (p.kind as ChunkKind | null) ?? null,
-            service: (p.service as string | null) ?? null,
-            bounded_context: (p.bounded_context as string | null) ?? null,
-            tags: p.tags ?? [],
-          };
-        });
+        .map((h) => this.mapPayload(h.payload, h.score));
     } catch (err) {
       const errorMsg = (err as Error).message.toLowerCase();
       if (errorMsg.includes('not found') || errorMsg.includes('does not exist')) {
@@ -286,6 +361,28 @@ export class Searcher {
       results,
       total: results.length,
       metrics,
+    };
+  }
+
+  private mapPayload(p: QdrantPayload, score: number): SearchResult {
+    return {
+      project: p.project,
+      file: p.file,
+      language: p.language,
+      startLine: p.startLine,
+      endLine: p.endLine,
+      content: p.content,
+      score,
+      hash: p.hash,
+      chunk_id: p.chunk_id ?? null,
+      symbol_name: (p.symbol_name as string | null) ?? null,
+      kind: (p.kind as ChunkKind | null) ?? null,
+      service: (p.service as string | null) ?? null,
+      bounded_context: (p.bounded_context as string | null) ?? null,
+      tags: p.tags ?? [],
+      last_commit_at: (p.last_commit_at as string | null) ?? null,
+      defines_symbols: p.defines_symbols ?? [],
+      uses_symbols: p.uses_symbols ?? [],
     };
   }
 
@@ -339,6 +436,16 @@ export class Searcher {
         return `**[${r.project}] ${r.file}:${r.startLine}** (${score}%${symbolInfo})${chunkRef}\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
       })
       .join('\n\n---\n\n');
+  }
+
+  /** Invalidate all cached search results for a group (e.g. after file change) */
+  invalidateGroupCache(groupName: string): void {
+    this.cache?.invalidateGroup(groupName);
+  }
+
+  /** Get query cache stats, or null if cache is not configured */
+  getQueryCacheStats() {
+    return this.cache?.getStats() ?? null;
   }
 
   /** Usage stats */

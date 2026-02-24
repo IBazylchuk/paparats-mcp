@@ -12,8 +12,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@paparats/shared": "*",
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@paparats/shared": "*",
     "@qdrant/js-client-rest": "^1.16.0",
     "better-sqlite3": "^11.0.0",
     "chokidar": "^4.0.0",
@@ -23,6 +23,7 @@
     "js-yaml": "^4.1.0",
     "minimatch": "^10.1.2",
     "p-queue": "^8.0.1",
+    "prom-client": "^15.1.3",
     "tree-sitter-wasms": "^0.1.11",
     "uuid": "^13.0.0",
     "web-tree-sitter": "^0.24.0",

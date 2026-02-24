@@ -6,8 +6,9 @@
 import promptsJson from './prompts.json' with { type: 'json' };
 
 export interface Prompts {
-  serverInstructions: string;
-  common: { searchFirst: string };
+  codingInstructions: string;
+  supportInstructions: string;
+  common: { searchFirst: string; noResults: string };
   tools: {
     search_code: { description: string };
     health_check: { description: string };
@@ -16,7 +17,9 @@ export interface Prompts {
     get_chunk_meta: { description: string };
     search_changes: { description: string };
     find_usages: { description: string };
-    list_related_chunks: { description: string };
+    explain_feature: { description: string };
+    recent_changes: { description: string };
+    impact_analysis: { description: string };
   };
   resources: {
     projectOverview: {
@@ -34,8 +37,11 @@ function validatePrompts(data: unknown): Prompts {
     throw new Error('Prompts must be an object');
   }
   const p = data as Record<string, unknown>;
-  if (typeof p.serverInstructions !== 'string') {
-    throw new Error('prompts.serverInstructions must be a string');
+  if (typeof p.codingInstructions !== 'string') {
+    throw new Error('prompts.codingInstructions must be a string');
+  }
+  if (typeof p.supportInstructions !== 'string') {
+    throw new Error('prompts.supportInstructions must be a string');
   }
   if (!p.common || typeof p.common !== 'object') {
     throw new Error('prompts.common must be an object');
@@ -43,6 +49,9 @@ function validatePrompts(data: unknown): Prompts {
   const common = p.common as Record<string, unknown>;
   if (typeof common.searchFirst !== 'string') {
     throw new Error('prompts.common.searchFirst must be a string');
+  }
+  if (typeof common.noResults !== 'string') {
+    throw new Error('prompts.common.noResults must be a string');
   }
   if (!p.tools || typeof p.tools !== 'object') {
     throw new Error('prompts.tools must be an object');
@@ -56,7 +65,9 @@ function validatePrompts(data: unknown): Prompts {
     'get_chunk_meta',
     'search_changes',
     'find_usages',
-    'list_related_chunks',
+    'explain_feature',
+    'recent_changes',
+    'impact_analysis',
   ]) {
     const t = tools[name];
     if (!t || typeof t !== 'object') {

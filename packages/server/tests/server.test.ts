@@ -69,6 +69,8 @@ function createMockSearcher(): Searcher {
       totalTokensSaved: 0,
       avgTokensSavedPerSearch: 0,
     }),
+    getQueryCacheStats: vi.fn().mockReturnValue(null),
+    invalidateGroupCache: vi.fn(),
   } as unknown as Searcher;
 }
 

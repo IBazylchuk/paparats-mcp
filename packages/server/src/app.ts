@@ -8,6 +8,7 @@ import { WatcherManager } from './watcher.js';
 import type { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
+import type { MetricsRegistry } from './metrics.js';
 
 /** Run a promise with a timeout; reject with Error on timeout */
 export async function withTimeout<T>(
@@ -50,6 +51,8 @@ export interface CreateAppOptions {
   projectsByGroup: Map<string, ProjectConfig[]>;
   /** Optional metadata store for git history */
   metadataStore?: MetadataStore;
+  /** Optional metrics registry for Prometheus metrics */
+  metrics?: MetricsRegistry;
 }
 
 export interface CreateAppResult {
@@ -62,8 +65,15 @@ export interface CreateAppResult {
 }
 
 export function createApp(options: CreateAppOptions): CreateAppResult {
-  const { searcher, indexer, watcherManager, embeddingProvider, projectsByGroup, metadataStore } =
-    options;
+  const {
+    searcher,
+    indexer,
+    watcherManager,
+    embeddingProvider,
+    projectsByGroup,
+    metadataStore,
+    metrics,
+  } = options;
 
   function getGroupNames(): string[] {
     return Array.from(projectsByGroup.keys());
@@ -376,6 +386,20 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
       const usage = searcher.getUsageStats();
       const cacheStats = embeddingProvider.getCacheStats();
       const watcherStats = watcherManager.getStats();
+      const queryCacheStats = searcher.getQueryCacheStats();
+
+      // Update metrics gauges
+      if (metrics) {
+        if (cacheStats) {
+          metrics.setEmbeddingCacheSize(cacheStats.size);
+          metrics.setEmbeddingCacheHitRate(cacheStats.hitRate);
+        }
+        if (queryCacheStats) {
+          metrics.setQueryCacheSize(queryCacheStats.size);
+          metrics.setQueryCacheHitRate(queryCacheStats.hitRate);
+        }
+        metrics.setQdrantCollections(Object.keys(groups).length);
+      }
 
       res.json({
         groups,
@@ -383,6 +407,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
           Array.from(projectsByGroup.entries()).map(([g, ps]) => [g, ps.map((p) => p.name)])
         ),
         cache: cacheStats,
+        queryCache: queryCacheStats,
         watcher: watcherStats,
         memory: process.memoryUsage(),
         usage,
@@ -391,6 +416,12 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
       res.status(500).json({ error: (err as Error).message });
     }
   });
+
+  // ── GET /metrics (Prometheus) ──────────────────────────────────────────────
+
+  if (metrics) {
+    app.get('/metrics', metrics.getMetricsHandler());
+  }
 
   // ── MCP transports ─────────────────────────────────────────────────────────
 
