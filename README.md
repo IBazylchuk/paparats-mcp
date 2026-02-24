@@ -87,11 +87,76 @@ Your projects                   Paparats                       AI assistant
                            └──────────────────────┘
 ```
 
-1. **Indexing**: Code is parsed once with tree-sitter, chunked at AST node boundaries (functions, classes, methods), embedded via [Jina Code Embeddings 1.5B](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF), stored in Qdrant. Each chunk is enriched with symbol name, metadata tags, and service context from the same parse
-2. **Git enrichment**: After indexing, git history is extracted per file — commits are mapped to chunks by line-range overlap, ticket references (Jira, GitHub) are extracted from commit messages, and results are stored in a local SQLite database
-3. **Searching**: AI assistant queries via MCP → server expands query (handles abbreviations, plurals, case variants) → Qdrant returns top matches → only relevant chunks sent back
-4. **Token savings**: Return only relevant chunks instead of loading full files
-5. **Watching**: File changes trigger re-indexing of affected files only (unchanged code never re-embedded thanks to content-hash cache)
+### Indexing Pipeline
+
+When you run `paparats index` (or a file changes during `paparats watch`), each file goes through this pipeline:
+
+```
+ Source file
+     │
+     ▼
+ ┌─────────────────┐
+ │ 1. File discovery│  Collect files from indexing.paths, apply
+ │    & filtering   │  gitignore + exclude patterns, skip binary
+ └────────┬────────┘
+          ▼
+ ┌─────────────────┐
+ │ 2. Content hash  │  SHA-256 of file content → compare with
+ │    check         │  existing Qdrant chunks → skip unchanged
+ └────────┬────────┘
+          ▼
+ ┌─────────────────┐
+ │ 3. AST parsing   │  tree-sitter parses the file once (WASM)
+ │    (single pass) │  → reused for chunking AND symbol extraction
+ └────────┬────────┘
+          ▼
+ ┌─────────────────┐
+ │ 4. Chunking      │  AST nodes → chunks at function/class
+ │                  │  boundaries. Regex fallback for unsupported
+ │                  │  languages (brace/indent/block strategies)
+ └────────┬────────┘
+          ▼
+ ┌─────────────────┐
+ │ 5. Symbol        │  AST queries extract defines (function,
+ │    extraction    │  class, variable names) and uses (calls,
+ │                  │  references) per chunk. 10+ languages
+ └────────┬────────┘
+          ▼
+ ┌─────────────────┐
+ │ 6. Metadata      │  Service name, bounded_context, tags from
+ │    enrichment    │  config + auto-detected directory tags
+ └────────┬────────┘
+          ▼
+ ┌─────────────────┐
+ │ 7. Embedding     │  Jina Code Embeddings 1.5B via Ollama
+ │                  │  SQLite cache (content-hash key) → skip
+ │                  │  already-embedded content
+ └────────┬────────┘
+          ▼
+ ┌─────────────────┐
+ │ 8. Qdrant upsert │  Vectors + payload (content, file, lines,
+ │                  │  symbols, metadata) → batched upsert
+ └────────┬────────┘
+          ▼
+ ┌─────────────────┐
+ │ 9. Git history   │  git log per file → diff hunks → map
+ │    (post-index)  │  commits to chunks by line overlap →
+ │                  │  extract ticket refs → store in SQLite
+ └────────┬────────┘
+          ▼
+ ┌─────────────────┐
+ │10. Symbol graph  │  Cross-chunk edges: calls ↔ called_by,
+ │    (post-index)  │  references ↔ referenced_by → SQLite
+ └─────────────────┘
+```
+
+### Search Flow
+
+AI assistant queries via MCP → server detects query type (nl2code / code2code / techqa) → expands query (abbreviations, case variants, plurals) → all variants searched in parallel against Qdrant → results merged by max score → only relevant chunks returned with confidence scores and symbol info.
+
+### Watching
+
+`paparats watch` monitors file changes via chokidar with debouncing (1s default). On change, only the affected file re-enters the pipeline. Unchanged content is never re-embedded thanks to the content-hash cache.
 
 ---
 
@@ -114,7 +179,7 @@ Your projects                   Paparats                       AI assistant
 
 All variants searched in parallel, results merged by max score.
 
-**Confidence tiers** — results labeled High (≥60%), Partial (40–60%), Low (<40%) to guide AI next steps.
+**Confidence scores** — each result includes a percentage score (≥60% high, 40–60% partial, <40% low) to guide AI next steps.
 
 ### ⚡️ Performance
 
@@ -140,35 +205,49 @@ Skip with `--skip-cclsp` if not needed.
 
 ### Feature Matrix
 
-<div align="center">
+#### Deployment
 
-| Feature                  |  **Paparats**  |   Vexify    |    SeaGOAT    | Augment Context |  Sourcegraph   |    Greptile    |    Bloop     |
-| :----------------------- | :------------: | :---------: | :-----------: | :-------------: | :------------: | :------------: | :----------: |
-| **Deployment**           |
-| Open source              |     ✅ MIT     |   ✅ MIT    |    ✅ MIT     | ❌ Proprietary  |   ⚠️ Partial   | ❌ Proprietary | ⚠️ Archived¹ |
-| Fully local              |       ✅       |     ✅      |      ✅       |    ❌ Cloud²    |    ❌ Cloud    |    ❌ SaaS     |      ✅      |
-| **Search Quality**       |
-| Code embeddings          | ✅ Jina 1.5B³  | ⚠️ Limited⁴ |  ❌ MiniLM⁵   | ⚠️ Proprietary  | ⚠️ Proprietary | ⚠️ Proprietary |      ✅      |
-| Vector database          |     Qdrant     |   SQLite    |   ChromaDB    |   Proprietary   |  Proprietary   |    pgvector    |    Qdrant    |
-| AST-aware chunking       | ✅ Tree-sitter |     ❌      |      ❌       |   ⚠️ Unknown    |   ⚠️ Partial   |   ⚠️ Unknown   |      ✅      |
-| Query expansion          |  ✅ 4 types⁶   |     ❌      |      ❌       |   ⚠️ Unknown    |   ⚠️ Partial   |   ⚠️ Unknown   |      ❌      |
-| **Developer Experience** |
-| Real-time file watching  |    ✅ Auto     |  ❌ Manual  |   ❌ Manual   |    ✅ CI/CD     |       ✅       |   ⚠️ Unknown   |      ⚠️      |
-| Embedding cache          |   ✅ SQLite    | ⚠️ Implicit |      ❌       |   ⚠️ Unknown    |   ⚠️ Unknown   |   ⚠️ Unknown   |      ❌      |
-| Multi-project search     |   ✅ Groups    |     ✅      |   ❌ Single   |       ✅        |       ✅       |       ✅       |      ✅      |
-| One-command install      |       ✅       |  ⚠️ Manual  | `pip install` |  Account + CI   |    Account     |  SaaS signup   | Build source |
-| **AI Integration**       |
-| MCP native               |       ✅       |     ✅      |      ❌       |       ✅        |       ❌       |     ⚠️ API     |      ❌      |
-| LSP integration          |    ✅ CCLSP    |     ❌      |      ❌       |       ❌        |   ⚠️ Partial   |       ❌       |      ❌      |
-| Token savings metrics    |  ✅ Per-query  |     ❌      |      ❌       |   ⚠️ Unknown    |       ❌       |       ❌       |      ❌      |
-| Git history per chunk    |       ✅       |     ❌      |      ❌       |       ❌        |   ⚠️ Partial   |       ❌       |      ❌      |
-| Ticket extraction        |    ✅ Auto     |     ❌      |      ❌       |       ❌        |       ❌       |       ❌       |      ❌      |
-| **Pricing**              |
-| Cost                     |    **Free**    |  **Free**   |   **Free**    |      Paid       |      Paid      |      Paid      |   Archived   |
+| Feature     | Paparats | Vexify | SeaGOAT | Augment | Sourcegraph | Greptile | Bloop |
+| :---------- | :------: | :----: | :-----: | :-----: | :---------: | :------: | :---: |
+| Open source |  ✅ MIT  | ✅ MIT | ✅ MIT  |   ❌    | ⚠️ Partial  |    ❌    | ⚠️ ¹  |
+| Fully local |    ✅    |   ✅   |   ✅    |  ❌ ²   |     ❌      |    ❌    |  ✅   |
 
-</div>
+#### Search Quality
 
-**Notes:**
+| Feature         | Paparats  | Vexify | SeaGOAT  | Augment | Sourcegraph | Greptile | Bloop  |
+| :-------------- | :-------: | :----: | :------: | :-----: | :---------: | :------: | :----: |
+| Code embeddings | ✅ Jina ³ |  ⚠️ ⁴  |   ❌ ⁵   |   ⚠️    |     ⚠️      |    ⚠️    |   ✅   |
+| Vector database |  Qdrant   | SQLite | ChromaDB | Propri. |   Propri.   | pgvector | Qdrant |
+| AST chunking    |    ✅     |   ❌   |    ❌    |   ⚠️    |     ⚠️      |    ⚠️    |   ✅   |
+| Query expansion |   ✅ ⁶    |   ❌   |    ❌    |   ⚠️    |     ⚠️      |    ⚠️    |   ❌   |
+
+#### Developer Experience
+
+| Feature            | Paparats  | Vexify | SeaGOAT | Augment  | Sourcegraph | Greptile | Bloop |
+| :----------------- | :-------: | :----: | :-----: | :------: | :---------: | :------: | :---: |
+| Real-time watching |  ✅ Auto  |   ❌   |   ❌    | ✅ CI/CD |     ✅      |    ⚠️    |  ⚠️   |
+| Embedding cache    | ✅ SQLite |   ⚠️   |   ❌    |    ⚠️    |     ⚠️      |    ⚠️    |  ❌   |
+| Multi-project      | ✅ Groups |   ✅   |   ❌    |    ✅    |     ✅      |    ✅    |  ✅   |
+| One-cmd install    |    ✅     |   ⚠️   | ⚠️ pip  |    ❌    |     ❌      |    ❌    |  ❌   |
+
+#### AI Integration
+
+| Feature           | Paparats | Vexify | SeaGOAT | Augment | Sourcegraph | Greptile | Bloop |
+| :---------------- | :------: | :----: | :-----: | :-----: | :---------: | :------: | :---: |
+| MCP native        |    ✅    |   ✅   |   ❌    |   ✅    |     ❌      |  ⚠️ API  |  ❌   |
+| LSP integration   | ✅ CCLSP |   ❌   |   ❌    |   ❌    |     ⚠️      |    ❌    |  ❌   |
+| Token metrics     |    ✅    |   ❌   |   ❌    |   ⚠️    |     ❌      |    ❌    |  ❌   |
+| Git history       |    ✅    |   ❌   |   ❌    |   ❌    |     ⚠️      |    ❌    |  ❌   |
+| Ticket extraction |    ✅    |   ❌   |   ❌    |   ❌    |     ❌      |    ❌    |  ❌   |
+
+#### Pricing
+
+|      | Paparats |  Vexify  | SeaGOAT  | Augment | Sourcegraph | Greptile |  Bloop   |
+| :--- | :------: | :------: | :------: | :-----: | :---------: | :------: | :------: |
+| Cost | **Free** | **Free** | **Free** |  Paid   |    Paid     |   Paid   | Archived |
+
+<details>
+<summary>Notes</summary>
 
 1. Bloop archived January 2, 2025
 2. Augment Context Engine indexes locally but stores vectors in cloud
@@ -176,6 +255,8 @@ Skip with `--skip-cclsp` if not needed.
 4. Vexify supports Ollama models but limited to specific embeddings (jina-embeddings-2-base-code, nomic-embed-text)
 5. SeaGOAT locked to all-MiniLM-L6-v2 (384 dims, general-purpose)
 6. Abbreviations, case variants, plurals, filler word removal
+
+</details>
 
 ---
 
@@ -195,11 +276,7 @@ Skip with `--skip-cclsp` if not needed.
 
 **💰 Free forever** — No usage limits, credits, or per-seat fees.
 
-**📊 Transparent metrics** — Every search shows tokens returned vs full-file tokens, savings %, confidence tier. Helps AI decide next steps.
-
----
-
-</div>
+**📊 Transparent metrics** — Every search shows tokens returned vs full-file tokens, savings %, confidence score. Helps AI decide next steps.
 
 ---
 
@@ -309,28 +386,55 @@ Git metadata extraction is non-fatal — if a project is not a git repository or
 
 ## MCP Tools
 
-Paparats exposes 8 tools via the Model Context Protocol:
+Paparats exposes 10 tools via the Model Context Protocol on **two separate endpoints**, each with its own tool set and system instructions:
 
-| Tool                  | Description                                                                                                                                                              |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `search_code`         | Semantic code search across all indexed projects. Returns relevant chunks ranked by cosine similarity. Supports query expansion (abbreviations, case variants, plurals). |
-| `get_chunk`           | Retrieve a specific chunk by its `chunk_id`. Optionally expand context with `radius_lines` (0-200) to include adjacent chunks from the same file.                        |
-| `get_chunk_meta`      | Get git metadata for a chunk: recent commits with authors and dates, plus ticket references. Use after `search_code` to understand change history.                       |
-| `search_changes`      | Search for recently changed code. Combines semantic search with a date filter on the last commit time. Use to find what changed since a date.                            |
-| `find_usages`         | Find all chunks that define or use a given symbol name. Powered by AST-based symbol extraction and Qdrant keyword indices.                                               |
-| `list_related_chunks` | List chunks related to a given chunk via symbol graph edges (calls, called_by, references, referenced_by).                                                               |
-| `health_check`        | Check indexing status: number of indexed chunks per group and running reindex jobs.                                                                                      |
-| `reindex`             | Trigger full reindex of a group or all groups. Runs in the background; track with `health_check`.                                                                        |
+### Coding endpoint (`/mcp`)
+
+For developers using Claude Code, Cursor, etc. Focus: search code, read chunks, trace symbol dependencies, manage indexing.
+
+| Tool           | Description                                                                                                     |
+| :------------- | :-------------------------------------------------------------------------------------------------------------- |
+| `search_code`  | Semantic search across indexed projects. Returns code chunks with symbol definitions/uses and confidence scores |
+| `get_chunk`    | Retrieve a chunk by ID with optional surrounding context. Returns code with symbol info                         |
+| `find_usages`  | Find symbol relationships: incoming (callers), outgoing (dependencies), or both directions                      |
+| `health_check` | Indexing status: chunks per group, running jobs                                                                 |
+| `reindex`      | Trigger full reindex; track progress with `health_check`                                                        |
+
+### Support endpoint (`/support/mcp`)
+
+For support teams and bots without direct code access. Focus: feature explanations, change history, impact analysis — all in plain language.
+
+| Tool              | Description                                                                                                                   |
+| :---------------- | :---------------------------------------------------------------------------------------------------------------------------- |
+| `search_code`     | Semantic search across indexed projects                                                                                       |
+| `get_chunk`       | Retrieve a chunk by ID with optional surrounding context                                                                      |
+| `find_usages`     | Find symbol relationships: callers, dependencies, or both                                                                     |
+| `health_check`    | Indexing status: chunks per group, running jobs                                                                               |
+| `get_chunk_meta`  | Git history and ticket references for a chunk: commits, authors, dates, linked tickets. No code                               |
+| `search_changes`  | Semantic search filtered by last commit date. Each result shows when it was last changed                                      |
+| `explain_feature` | Comprehensive feature analysis: code locations + recent changes + related modules for a question                              |
+| `recent_changes`  | Timeline of changes matching a query, grouped by date with commits, tickets, and affected files. Supports `since` date filter |
+| `impact_analysis` | Dependency impact subgraph: seed chunks + impact grouped by service/context + dependency edges. 1-2 hop graph traversal       |
 
 ### Typical Workflow
 
+**Drill-down workflow** — start broad, zoom in:
+
 ```
-1. search_code "authentication middleware"     → find relevant chunks
+1. search_code "authentication middleware"     → find relevant chunks with symbols
 2. get_chunk <chunk_id> --radius_lines 50      → expand context around a result
-3. get_chunk_meta <chunk_id>                   → see who modified it, when, linked tickets
-4. find_usages "AuthMiddleware"                → find all chunks that define or use a symbol
-5. list_related_chunks <chunk_id>              → see call/reference relationships
-6. search_changes "auth" --since 2024-01-01    → find recent auth changes
+3. find_usages <chunk_id> --direction both     → see callers and dependencies
+4. get_chunk_meta <chunk_id>                   → see who modified it, when, linked tickets
+5. search_changes "auth" --since 2024-01-01    → find recent auth changes
+```
+
+**Single-call workflow** — get the full picture in one round-trip:
+
+```
+1. explain_feature "How does authentication work?"  → code locations + changes + related modules
+2. recent_changes "auth" --since 2024-01-01         → timeline of auth changes with tickets
+3. impact_analysis "rate limiting"                   → blast radius: seed chunks + service graph + edges
+4. get_chunk <chunk_id>                              → drill into any specific chunk for code
 ```
 
 ---
@@ -354,12 +458,29 @@ Create or edit `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
 }
 ```
 
+For support use case (feature explanations, change history, impact analysis):
+
+```json
+{
+  "mcpServers": {
+    "paparats-support": {
+      "type": "http",
+      "url": "http://localhost:9876/support/mcp"
+    }
+  }
+}
+```
+
 Restart Cursor after changing config.
 
 ### Claude Code
 
 ```bash
+# Coding endpoint (default)
 claude mcp add --transport http paparats http://localhost:9876/mcp
+
+# Support endpoint (for support bots/agents)
+claude mcp add --transport http paparats-support http://localhost:9876/support/mcp
 ```
 
 Or add to `.mcp.json` in project root:
@@ -378,8 +499,113 @@ Or add to `.mcp.json` in project root:
 ### Verify
 
 - `paparats status` — check server is running
-- In your IDE, look for MCP tools: `search_code`, `get_chunk`, `get_chunk_meta`, `search_changes`, `health_check`, `reindex`
+- **Coding endpoint** (`/mcp`): tools — `search_code`, `get_chunk`, `find_usages`, `health_check`, `reindex`
+- **Support endpoint** (`/support/mcp`): tools — `search_code`, `get_chunk`, `find_usages`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`
 - Ask the AI: _"Search for authentication logic in the codebase"_
+
+---
+
+## Integration Examples
+
+### Support Chatbot
+
+Use paparats as the knowledge backend for a product support bot. Connect the bot to the **support endpoint** (`/support/mcp`) for access to `explain_feature`, `recent_changes`, `impact_analysis`, and other support-oriented tools:
+
+```
+User: "How do I configure rate limiting?"
+
+Bot workflow (via /support/mcp):
+1. explain_feature("rate limiting", group="my-app")
+   → returns code locations + recent changes + related modules
+2. get_chunk_meta(<chunk_id>)
+   → returns who last modified it, when, linked tickets
+3. Bot synthesizes response in plain language with ticket references
+```
+
+### CI/CD (GitHub Actions)
+
+Re-index on every push to keep the search index fresh:
+
+```yaml
+name: Reindex Paparats
+on:
+  push:
+    branches: [main]
+
+jobs:
+  reindex:
+    runs-on: ubuntu-latest
+    services:
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports: ['6333:6333']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jcarpenter/setup-ollama@v1
+      - run: npm install -g @paparats/cli
+      - run: paparats install --skip-docker
+      - run: paparats index --server http://localhost:9876
+```
+
+### Code Review Assistant
+
+Combine multiple tools to analyze the impact of a pull request:
+
+```
+1. explain_feature("the feature being changed")
+   → understand what the code does and how it connects
+2. impact_analysis("the changed function or module")
+   → blast radius: which services and modules are affected
+3. search_changes("related area", since="2024-01-01")
+   → recent changes that might conflict or overlap
+```
+
+---
+
+## Monitoring
+
+Paparats exposes Prometheus metrics for operational visibility. Opt in with an environment variable:
+
+```bash
+PAPARATS_METRICS=true paparats install  # or set in docker-compose.yml
+```
+
+### Metrics endpoint
+
+```bash
+curl http://localhost:9876/metrics
+```
+
+### Key metrics
+
+| Metric                              | Type      | Description                         |
+| ----------------------------------- | --------- | ----------------------------------- |
+| `paparats_search_total`             | Counter   | Search requests by group and method |
+| `paparats_search_duration_seconds`  | Histogram | Search latency                      |
+| `paparats_index_files_total`        | Counter   | Files indexed                       |
+| `paparats_index_chunks_total`       | Counter   | Chunks indexed                      |
+| `paparats_query_cache_hit_rate`     | Gauge     | Query result cache hit rate         |
+| `paparats_embedding_cache_hit_rate` | Gauge     | Embedding cache hit rate            |
+| `paparats_watcher_events_total`     | Counter   | File watcher events                 |
+
+### Prometheus scrape config
+
+```yaml
+scrape_configs:
+  - job_name: paparats
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['localhost:9876']
+```
+
+### Query cache
+
+Search results are cached in-memory (LRU, default 1000 entries, 5-minute TTL). The cache is automatically invalidated when files change. Configure via environment variables:
+
+- `QUERY_CACHE_MAX_ENTRIES` — max cached queries (default: 1000)
+- `QUERY_CACHE_TTL_MS` — TTL in milliseconds (default: 300000)
+
+Cache stats are included in `GET /api/stats` under the `queryCache` field.
 
 ---
 
@@ -524,9 +750,11 @@ paparats-mcp/
 │   │   │   ├── index.ts              # HTTP server + MCP handler
 │   │   │   ├── app.ts                # Express app + HTTP API routes
 │   │   │   ├── indexer.ts            # Group-aware indexing, single-parse chunkFile()
-│   │   │   ├── searcher.ts           # Search with query expansion + filter support
+│   │   │   ├── searcher.ts           # Search with query expansion, cache, metrics
 │   │   │   ├── query-expansion.ts    # Abbreviation, case, plural expansion
 │   │   │   ├── task-prefixes.ts      # Jina task prefix detection
+│   │   │   ├── query-cache.ts        # In-memory LRU search result cache
+│   │   │   ├── metrics.ts            # Prometheus metrics (opt-in)
 │   │   │   ├── ast-chunker.ts        # AST-based code chunking (tree-sitter, primary strategy)
 │   │   │   ├── chunker.ts            # Regex-based code chunking (fallback for unsupported languages)
 │   │   │   ├── ast-symbol-extractor.ts # AST-based symbol extraction (tree-sitter, 10 languages)
@@ -539,7 +767,7 @@ paparats-mcp/
 │   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets
 │   │   │   ├── git-metadata.ts       # Git history extraction + chunk mapping
 │   │   │   ├── ticket-extractor.ts   # Jira/GitHub/custom ticket parsing
-│   │   │   ├── mcp-handler.ts        # MCP protocol (SSE + Streamable HTTP)
+│   │   │   ├── mcp-handler.ts        # MCP protocol — dual-mode (coding /mcp + support /support/mcp)
 │   │   │   ├── watcher.ts            # File watcher (chokidar)
 │   │   │   └── types.ts              # Shared types
 │   │   └── Dockerfile
@@ -549,9 +777,10 @@ paparats-mcp/
 │   │       └── commands/       # init, install, update, index, etc.
 │   └── shared/          # Shared utilities
 │       └── src/
-│           ├── path-validator.ts   # Path validation
-│           ├── gitignore-filter.ts # Gitignore parsing
-│           └── exclude-patterns.ts # Language-specific excludes
+│           ├── path-validation.ts    # Path validation
+│           ├── gitignore.ts          # Gitignore parsing
+│           ├── exclude-patterns.ts   # Glob exclude normalization
+│           └── language-excludes.ts  # Language-specific exclude defaults
 └── examples/
     └── paparats.yml.*   # Config examples per language
 ```
@@ -563,7 +792,7 @@ paparats-mcp/
 - **Qdrant** — vector database (1 collection per group, cosine similarity, payload filtering)
 - **Ollama** — local embeddings via Jina Code Embeddings 1.5B with task-specific prefixes
 - **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata store (`~/.paparats/metadata.db`)
-- **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code)
+- **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
 - **TypeScript** monorepo with Yarn workspaces
 
 ---
@@ -727,7 +956,7 @@ Contributions welcome! Areas of interest:
 - Performance optimizations (chunking strategies, cache eviction)
 - Agent use cases (support bots, QA automation, code analytics)
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Open an issue or pull request to get started.
 
 ---
 

@@ -43,6 +43,7 @@ export class ProjectWatcher {
   private inFlight = new Set<string>();
   private failedFiles = new Map<string, PendingEvent & { attempts: number; lastError: string }>();
   private retryInterval: ReturnType<typeof setInterval> | null = null;
+  private ignoreCache = new Map<string, boolean>();
   private stats = { eventsProcessed: 0, errorCount: 0 };
 
   constructor(options: ProjectWatcherOptions) {
@@ -76,6 +77,7 @@ export class ProjectWatcher {
     this.watcher.on('unlink', (fp) => this.handleFileEvent('unlink', fp));
 
     this.retryInterval = setInterval(() => this.retryFailedFiles(), RETRY_INTERVAL_MS);
+    this.retryInterval.unref(); // Don't hold event loop open
 
     console.log(
       `[watcher] Watching ${this.project.group}/${this.project.name} at ${this.project.path}`
@@ -93,6 +95,7 @@ export class ProjectWatcher {
     this.timers.clear();
     this.failedFiles.clear();
     this.inFlight.clear();
+    this.ignoreCache.clear();
 
     if (this.watcher) {
       await this.watcher.close();
@@ -112,11 +115,19 @@ export class ProjectWatcher {
   }
 
   private shouldIgnore(absPath: string): boolean {
+    const cached = this.ignoreCache.get(absPath);
+    if (cached !== undefined) return cached;
+
     const rel = path.relative(this.project.path, absPath);
-    if (rel.startsWith('..')) return true;
+    if (rel.startsWith('..')) {
+      this.ignoreCache.set(absPath, true);
+      return true;
+    }
     const matchesPattern = this.includeMatchers.some((m) => m.match(rel));
     const matchesExclude = this.excludeMatchers.some((m) => m.match(rel));
-    return !matchesPattern || matchesExclude;
+    const result = !matchesPattern || matchesExclude;
+    this.ignoreCache.set(absPath, result);
+    return result;
   }
 
   private handleFileEvent(event: 'change' | 'add' | 'unlink', fp: string): void {

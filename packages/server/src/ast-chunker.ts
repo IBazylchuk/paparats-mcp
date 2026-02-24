@@ -272,15 +272,9 @@ export function chunkByAst(
       }
     }
 
-    // Initialize group start if this is the first node
-    if (groupEndLine < groupStartLine) {
-      // groupStartLine is already set (either 0 or after a flush)
-      groupEndLine = nodeEnd;
-      groupSize = textForRange(contentLines, groupStartLine, groupEndLine).length;
-    } else {
-      groupEndLine = nodeEnd;
-      groupSize = textForRange(contentLines, groupStartLine, groupEndLine).length;
-    }
+    // Extend group to include this node
+    groupEndLine = nodeEnd;
+    groupSize = textForRange(contentLines, groupStartLine, groupEndLine).length;
   }
 
   // Flush remaining group + any trailing content after last node

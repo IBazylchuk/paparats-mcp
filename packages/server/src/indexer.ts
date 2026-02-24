@@ -7,7 +7,7 @@ import { v7 as uuidv7 } from 'uuid';
 import PQueue from 'p-queue';
 import { Chunker } from './chunker.js';
 import { resolveTags } from './metadata.js';
-import { collectIndexedChunks, extractGitMetadata } from './git-metadata.js';
+import { extractGitMetadata } from './git-metadata.js';
 import type { MetadataStore } from './metadata-db.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
@@ -149,24 +149,34 @@ export class Indexer {
     relPath: string
   ): Promise<Set<string>> {
     try {
-      const result = await this.qdrant.scroll(groupName, {
-        filter: {
-          must: [
-            { key: 'project', match: { value: projectName } },
-            { key: 'file', match: { value: relPath } },
-          ],
-        },
-        with_payload: { include: ['hash'] },
-        with_vector: false,
-        limit: 1000,
-      });
       const hashes = new Set<string>();
-      for (const point of result.points) {
-        const hash = (point.payload as Record<string, unknown> | null)?.['hash'];
-        if (typeof hash === 'string') {
-          hashes.add(hash);
+      let offset: string | number | undefined = undefined;
+
+      for (;;) {
+        const result = await this.qdrant.scroll(groupName, {
+          filter: {
+            must: [
+              { key: 'project', match: { value: projectName } },
+              { key: 'file', match: { value: relPath } },
+            ],
+          },
+          with_payload: { include: ['hash'] },
+          with_vector: false,
+          limit: 1000,
+          ...(offset !== undefined ? { offset } : {}),
+        });
+
+        for (const point of result.points) {
+          const hash = (point.payload as Record<string, unknown> | null)?.['hash'];
+          if (typeof hash === 'string') {
+            hashes.add(hash);
+          }
         }
+
+        if (!result.next_page_offset) break;
+        offset = result.next_page_offset as string | number;
       }
+
       return hashes;
     } catch (err) {
       console.warn(
@@ -203,35 +213,33 @@ export class Indexer {
               chunkSize: project.indexing.chunkSize,
               maxChunkSize: project.indexing.chunkSize * 3,
             };
-            const chunks = chunkByAst(parsed.tree, content, astConfig);
+            let chunks = chunkByAst(parsed.tree, content, astConfig);
 
-            if (chunks.length > 0) {
-              // Extract symbols from the same tree (no re-parse)
-              const symbolResults = extractSymbolsForChunks(
-                parsed.tree,
-                parsed.language,
-                chunks.map((c) => ({ startLine: c.startLine, endLine: c.endLine })),
-                language
-              );
-              parsed.tree.delete();
-              return { chunks, symbolResults };
+            if (chunks.length === 0) {
+              // AST chunking produced 0 chunks — fall back to regex
+              const chunker = this.getChunker(project);
+              chunks = chunker.chunk(content, language);
             }
+
+            // Extract symbols from the same tree (no re-parse)
+            const symbolResults = extractSymbolsForChunks(
+              parsed.tree,
+              parsed.language,
+              chunks.map((c) => ({ startLine: c.startLine, endLine: c.endLine })),
+              language
+            );
+            return { chunks, symbolResults };
           } catch (err) {
             console.warn(
-              `[indexer] AST chunking failed, falling back to regex: ${(err as Error).message}`
+              `[indexer] AST chunking/symbol extraction failed, falling back to regex: ${(err as Error).message}`
             );
+            // Fall back to regex chunker, no symbols (tree may be in bad state)
+            const chunker = this.getChunker(project);
+            const chunks = chunker.chunk(content, language);
+            return { chunks, symbolResults: null };
+          } finally {
+            parsed.tree.delete();
           }
-          // AST chunking produced 0 chunks or threw — fall back to regex + separate symbol extraction
-          const chunker = this.getChunker(project);
-          const chunks = chunker.chunk(content, language);
-          const symbolResults = extractSymbolsForChunks(
-            parsed.tree,
-            parsed.language,
-            chunks.map((c) => ({ startLine: c.startLine, endLine: c.endLine })),
-            language
-          );
-          parsed.tree.delete();
-          return { chunks, symbolResults };
         }
       } catch (err) {
         console.warn(`[indexer] Tree-sitter parse failed (non-fatal): ${(err as Error).message}`);
@@ -518,47 +526,62 @@ export class Indexer {
       console.log(`  [indexer] Skipped ${this.stats.skipped}/${files.length} files (unchanged)`);
     }
 
-    // Post-indexing: extract git metadata if enabled
-    if (this.metadataStore && project.metadata.git.enabled && totalChunks > 0) {
-      try {
-        const chunksByFile = await collectIndexedChunks(this.qdrant, groupName, project.name);
-        const result = await extractGitMetadata({
-          projectPath: project.path,
-          group: groupName,
-          project: project.name,
-          maxCommitsPerFile: project.metadata.git.maxCommitsPerFile,
-          ticketPatterns: project.metadata.git.ticketPatterns,
-          metadataStore: this.metadataStore,
-          qdrantClient: this.qdrant,
-          chunksByFile,
-        });
-        console.log(
-          `  [indexer] Git metadata: ${result.filesProcessed} files, ${result.commitsStored} commits, ${result.ticketsStored} tickets`
-        );
-      } catch (err) {
-        console.warn(
-          `  [indexer] Git metadata extraction failed (non-fatal): ${(err as Error).message}`
-        );
-      }
-    }
+    // Post-indexing: git metadata + symbol graph (single Qdrant scan for both)
+    const needsGit = this.metadataStore && project.metadata.git.enabled && totalChunks > 0;
+    const needsSymbols = this.metadataStore && this.treeSitter && totalChunks > 0;
 
-    // Post-indexing: build symbol edges if tree-sitter is available
-    if (this.metadataStore && this.treeSitter && totalChunks > 0) {
+    if (needsGit || needsSymbols) {
       try {
-        const chunkSymbols = await this.collectProjectChunkSymbols(groupName, project.name);
-        if (chunkSymbols.length > 0) {
-          const edges = buildSymbolEdges(chunkSymbols);
-          this.metadataStore.deleteEdgesByProject(groupName, project.name);
-          if (edges.length > 0) {
-            this.metadataStore.upsertSymbolEdges(edges);
+        const { chunksByFile, chunkSymbols } = await this.collectProjectChunksForPostIndex(
+          groupName,
+          project.name,
+          !!needsGit,
+          !!needsSymbols
+        );
+
+        // Git metadata extraction
+        if (needsGit && chunksByFile.size > 0) {
+          try {
+            const result = await extractGitMetadata({
+              projectPath: project.path,
+              group: groupName,
+              project: project.name,
+              maxCommitsPerFile: project.metadata.git.maxCommitsPerFile,
+              ticketPatterns: project.metadata.git.ticketPatterns,
+              metadataStore: this.metadataStore!,
+              qdrantClient: this.qdrant,
+              chunksByFile,
+            });
+            console.log(
+              `  [indexer] Git metadata: ${result.filesProcessed} files, ${result.commitsStored} commits, ${result.ticketsStored} tickets`
+            );
+          } catch (err) {
+            console.warn(
+              `  [indexer] Git metadata extraction failed (non-fatal): ${(err as Error).message}`
+            );
           }
-          console.log(
-            `  [indexer] Symbol graph: ${chunkSymbols.length} chunks, ${edges.length} edges`
-          );
+        }
+
+        // Symbol graph building
+        if (needsSymbols && chunkSymbols.length > 0) {
+          try {
+            const edges = buildSymbolEdges(chunkSymbols);
+            this.metadataStore!.deleteEdgesByProject(groupName, project.name);
+            if (edges.length > 0) {
+              this.metadataStore!.upsertSymbolEdges(edges);
+            }
+            console.log(
+              `  [indexer] Symbol graph: ${chunkSymbols.length} chunks, ${edges.length} edges`
+            );
+          } catch (err) {
+            console.warn(
+              `  [indexer] Symbol graph building failed (non-fatal): ${(err as Error).message}`
+            );
+          }
         }
       } catch (err) {
         console.warn(
-          `  [indexer] Symbol graph building failed (non-fatal): ${(err as Error).message}`
+          `  [indexer] Post-index data collection failed (non-fatal): ${(err as Error).message}`
         );
       }
     }
@@ -566,13 +589,34 @@ export class Indexer {
     return totalChunks;
   }
 
-  /** Collect chunk symbols (defines_symbols/uses_symbols) for a project from Qdrant */
-  private async collectProjectChunkSymbols(
+  /**
+   * Single Qdrant scan for post-index data (git metadata + symbol graph).
+   * Collects all needed fields in one pass instead of two separate scans.
+   */
+  private async collectProjectChunksForPostIndex(
     groupName: string,
-    projectName: string
-  ): Promise<Array<{ chunk_id: string; defines_symbols: string[]; uses_symbols: string[] }>> {
-    const result: Array<{ chunk_id: string; defines_symbols: string[]; uses_symbols: string[] }> =
-      [];
+    projectName: string,
+    needsGit: boolean,
+    needsSymbols: boolean
+  ): Promise<{
+    chunksByFile: Map<string, Array<{ chunk_id: string; startLine: number; endLine: number }>>;
+    chunkSymbols: Array<{ chunk_id: string; defines_symbols: string[]; uses_symbols: string[] }>;
+  }> {
+    const chunksByFile = new Map<
+      string,
+      Array<{ chunk_id: string; startLine: number; endLine: number }>
+    >();
+    const chunkSymbols: Array<{
+      chunk_id: string;
+      defines_symbols: string[];
+      uses_symbols: string[];
+    }> = [];
+
+    // Request all fields needed by both consumers
+    const fields: string[] = ['chunk_id'];
+    if (needsGit) fields.push('file', 'startLine', 'endLine');
+    if (needsSymbols) fields.push('defines_symbols', 'uses_symbols');
+
     let offset: string | number | undefined = undefined;
 
     for (;;) {
@@ -581,7 +625,7 @@ export class Indexer {
           filter: {
             must: [{ key: 'project', match: { value: projectName } }],
           },
-          with_payload: { include: ['chunk_id', 'defines_symbols', 'uses_symbols'] },
+          with_payload: { include: fields },
           with_vector: false,
           limit: 100,
           ...(offset !== undefined ? { offset } : {}),
@@ -592,22 +636,37 @@ export class Indexer {
         const payload = point.payload as Record<string, unknown> | null;
         if (!payload) continue;
         const chunkId = payload['chunk_id'];
-        const defs = payload['defines_symbols'];
-        const uses = payload['uses_symbols'];
         if (typeof chunkId !== 'string') continue;
 
-        result.push({
-          chunk_id: chunkId,
-          defines_symbols: Array.isArray(defs) ? (defs as string[]) : [],
-          uses_symbols: Array.isArray(uses) ? (uses as string[]) : [],
-        });
+        // Populate git metadata map
+        if (needsGit) {
+          const file = payload['file'] as string | undefined;
+          const startLine = payload['startLine'] as number | undefined;
+          const endLine = payload['endLine'] as number | undefined;
+          if (file && startLine !== undefined && endLine !== undefined) {
+            const chunks = chunksByFile.get(file) ?? [];
+            chunks.push({ chunk_id: chunkId, startLine, endLine });
+            chunksByFile.set(file, chunks);
+          }
+        }
+
+        // Populate symbol data
+        if (needsSymbols) {
+          const defs = payload['defines_symbols'];
+          const uses = payload['uses_symbols'];
+          chunkSymbols.push({
+            chunk_id: chunkId,
+            defines_symbols: Array.isArray(defs) ? (defs as string[]) : [],
+            uses_symbols: Array.isArray(uses) ? (uses as string[]) : [],
+          });
+        }
       }
 
       if (!page.next_page_offset) break;
       offset = page.next_page_offset as string | number;
     }
 
-    return result;
+    return { chunksByFile, chunkSymbols };
   }
 
   /** Index multiple projects (all in the same or different groups) */
@@ -958,6 +1017,8 @@ export class Indexer {
               must: [
                 { key: 'project', match: { value: project } },
                 { key: 'file', match: { value: file } },
+                { key: 'startLine', range: { lte: maxLine } },
+                { key: 'endLine', range: { gte: minLine } },
               ],
             },
             with_payload: true,
@@ -975,14 +1036,7 @@ export class Indexer {
         offset = result.next_page_offset as string | number;
       }
 
-      return allPoints
-        .filter((p) => {
-          const sl = p['startLine'] as number;
-          const el = p['endLine'] as number;
-          // Include chunks that overlap with the expanded range
-          return sl <= maxLine && el >= minLine;
-        })
-        .sort((a, b) => (a['startLine'] as number) - (b['startLine'] as number));
+      return allPoints.sort((a, b) => (a['startLine'] as number) - (b['startLine'] as number));
     } catch (err) {
       console.error(
         `[indexer] Failed to get adjacent chunks for ${groupName}/${project}/${file}:`,

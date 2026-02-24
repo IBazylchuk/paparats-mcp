@@ -107,6 +107,9 @@ describe('Searcher', () => {
       service: null,
       bounded_context: null,
       tags: [],
+      last_commit_at: null,
+      defines_symbols: [],
+      uses_symbols: [],
     });
     expect(response.total).toBe(1);
     expect(response.metrics.tokensReturned).toBeGreaterThan(0);
@@ -805,6 +808,9 @@ describe('Searcher', () => {
           service: null,
           bounded_context: null,
           tags: [],
+          last_commit_at: null,
+          defines_symbols: [],
+          uses_symbols: [],
         },
       ],
       total: 1,

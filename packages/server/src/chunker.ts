@@ -22,8 +22,6 @@ const PATTERNS = {
     arrowOrAssign: /=\s*(async\s*)?\(/,
     stripComments: /\/\*[\s\S]*?\*\/|\/\/.*$/g,
     stripStrings: /'[^']*'|"[^"]*"|`[^`]*`/g,
-    openBrace: /{/g,
-    closeBrace: /}/g,
   },
   python: {
     topLevel: /^(def |class |async def )/,
@@ -82,6 +80,7 @@ export class Chunker {
     const chunks: ChunkResult[] = [];
     let buffer: string[] = [];
     let bufferSize = 0;
+    let bufferHasContent = false;
     let blockStartIndent = -1;
     let inBlock = false;
 
@@ -90,6 +89,7 @@ export class Chunker {
       this.flushBuffer(buffer, bufferSize, endLine, chunks);
       buffer = [];
       bufferSize = 0;
+      bufferHasContent = false;
     };
 
     for (let i = 0; i < lines.length; i++) {
@@ -97,11 +97,12 @@ export class Chunker {
       const indent = this.getIndent(line);
 
       if (startPattern.test(line) && !inBlock) {
-        if (buffer.length > 0 && buffer.some((l) => l.trim())) {
+        if (buffer.length > 0 && bufferHasContent) {
           flush(i - 1);
         } else {
           buffer = [];
           bufferSize = 0;
+          bufferHasContent = false;
         }
         inBlock = true;
         blockStartIndent = indent;
@@ -109,6 +110,7 @@ export class Chunker {
 
       buffer.push(line);
       bufferSize += line.length + 1;
+      if (!bufferHasContent && line.trim()) bufferHasContent = true;
 
       if (inBlock && endPattern.test(line)) {
         if (indent <= blockStartIndent) {
@@ -135,6 +137,7 @@ export class Chunker {
     const chunks: ChunkResult[] = [];
     let buffer: string[] = [];
     let bufferSize = 0;
+    let bufferHasContent = false;
     let braceDepth = 0;
     let inBlock = false;
 
@@ -143,6 +146,7 @@ export class Chunker {
       this.flushBuffer(buffer, bufferSize, endLine, chunks);
       buffer = [];
       bufferSize = 0;
+      bufferHasContent = false;
     };
 
     for (let i = 0; i < lines.length; i++) {
@@ -152,25 +156,31 @@ export class Chunker {
         braceDepth === 0 &&
         (PATTERNS.brace.topLevel.test(line) || PATTERNS.brace.arrowOrAssign.test(line))
       ) {
-        if (buffer.length > 0 && buffer.some((l) => l.trim())) {
+        if (buffer.length > 0 && bufferHasContent) {
           flush(i - 1);
         } else {
           buffer = [];
           bufferSize = 0;
+          bufferHasContent = false;
         }
         inBlock = true;
       }
 
       buffer.push(line);
       bufferSize += line.length + 1;
+      if (!bufferHasContent && line.trim()) bufferHasContent = true;
 
       // Track braces (skip strings/comments — simplified)
       const stripped = line
         .replace(PATTERNS.brace.stripComments, '')
         .replace(PATTERNS.brace.stripStrings, '');
 
-      braceDepth += (stripped.match(PATTERNS.brace.openBrace) || []).length;
-      braceDepth -= (stripped.match(PATTERNS.brace.closeBrace) || []).length;
+      // Count braces with a loop instead of regex match + array allocation
+      for (let c = 0; c < stripped.length; c++) {
+        const ch = stripped[c];
+        if (ch === '{') braceDepth++;
+        else if (ch === '}') braceDepth--;
+      }
       if (braceDepth < 0) braceDepth = 0;
 
       if (inBlock && braceDepth === 0 && stripped.includes('}')) {
@@ -195,28 +205,32 @@ export class Chunker {
     const chunks: ChunkResult[] = [];
     let buffer: string[] = [];
     let bufferSize = 0;
+    let bufferHasContent = false;
 
     const flush = (endLine: number): void => {
       if (buffer.length === 0) return;
       this.flushBuffer(buffer, bufferSize, endLine, chunks);
       buffer = [];
       bufferSize = 0;
+      bufferHasContent = false;
     };
 
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]!;
 
       if (PATTERNS.python.topLevel.test(line)) {
-        if (buffer.length > 0 && buffer.some((l) => l.trim())) {
+        if (buffer.length > 0 && bufferHasContent) {
           flush(i - 1);
         } else {
           buffer = [];
           bufferSize = 0;
+          bufferHasContent = false;
         }
       }
 
       buffer.push(line);
       bufferSize += line.length + 1;
+      if (!bufferHasContent && line.trim()) bufferHasContent = true;
 
       if (bufferSize > this.chunkSize * 2) {
         flush(i);
