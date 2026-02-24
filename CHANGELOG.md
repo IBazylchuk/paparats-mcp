@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-24
+
 ### Added
 
 #### Stable Chunk IDs
@@ -78,6 +80,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Fixes broken chunking for Go (`func`), Rust (`fn`), Java (`public class`), C/C++/C# which previously fell through to fixed-size splitting
 - Added TSX support in regex chunker fallback (`chunkByBraces`)
 
+#### Dual MCP Endpoints, Query Cache, Prometheus Metrics
+
+- Coding endpoint (`/mcp`) and Support endpoint (`/support/mcp`) with isolated tool sets
+- In-memory LRU query cache with TTL and group-level invalidation
+- Prometheus metrics (opt-in via `PAPARATS_METRICS=true`)
+- Support-mode orchestration tools: `explain_feature`, `recent_changes`, `impact_analysis`
+
+#### Docker-Only Deployment (Infrastructure Overhaul)
+
+- **Ollama in Docker** (`packages/ollama/Dockerfile`) — custom `ibaz/paparats-ollama` image with pre-baked Jina Code Embeddings model (~3 GB). Container starts with model immediately ready — no runtime downloads
+- **Docker Compose generator** (`packages/cli/src/docker-compose-generator.ts`) — programmatic YAML generation replaces static template copy. `generateDockerCompose()` for developer mode, `generateServerCompose()` for server mode
+- **Install modes** — `paparats install --mode <developer|server|support>`:
+  - `developer` (default): Docker + choosable Ollama mode (local/docker) + IDE config
+  - `server`: Full Docker stack (qdrant + ollama + paparats + indexer), `--repos`, `--github-token`, `--cron` flags, creates `.env` file
+  - `support`: Client-only setup, verifies server reachable, configures Cursor + Claude Code with `/support/mcp` endpoint
+- **Ollama mode flag** — `--ollama-mode docker|local` for developer mode (default: local for backward compat)
+- **GPU support** — `--gpu` flag adds NVIDIA GPU reservation to Docker Ollama (Linux only)
+
+#### Indexer Container (`packages/indexer`)
+
+- New package `@paparats/indexer` — separate Docker image (`ibaz/paparats-indexer`) that clones repos and indexes them on a schedule
+- `repo-manager.ts` — `parseReposEnv()` parses comma-separated repos, `cloneOrPull()` clones or pulls repos using simple-git
+- `scheduler.ts` — node-cron wrapper for scheduled index cycles
+- HTTP endpoints: `POST /trigger` (immediate reindex, optional repo filter), `GET /health` (status per repo, last run, next scheduled)
+- Auto-detects language and uses sensible defaults when `.paparats.yml` is missing
+- Concurrent index cycle guard — skips if already running
+- Uses `Indexer` class from `@paparats/server` as a library (no code duplication)
+
+#### Server Library Extraction
+
+- New `packages/server/src/lib.ts` — extracted all re-exports from `index.ts` into a dedicated library entry point
+- Server `package.json` `exports` map points to `lib.js` — importing `@paparats/server` no longer executes the server bootstrap
+- `index.ts` re-exports from `lib.ts` so existing consumers still work
+
+#### Release Tooling
+
+- `scripts/release-docker.sh` — builds and optionally pushes all three Docker images (server, indexer, ollama) with version tags
+- `scripts/sync-version.js` now syncs to `packages/indexer/package.json`
+- `scripts/release.js` now stages `packages/indexer/package.json` in version bump commits
+
+#### Documentation
+
+- README restructured with Table of Contents and three deployment guides (Developer, Server, Support)
+- New "Docker & Ollama" section covering Local Ollama, Docker Ollama, and GPU Setup
+- Updated CLI reference with all new flags (`--mode`, `--ollama-mode`, `--gpu`, `--repos`, `--github-token`, `--cron`, `--server`)
+- Architecture diagram updated with indexer, ollama, and docker-compose-generator
+- CLAUDE.md updated with indexer, ollama, and lib.ts modules
+
 ### Changed
 
 - Indexer uses single-parse flow: `chunkFile()` parses once with tree-sitter, uses tree for both AST chunking and symbol extraction, then deletes tree
@@ -88,6 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Removed dead `ChunkKind` values (`route`, `resource`, `block`) — never produced by AST system
 - Standardized chunk line numbers to 0-indexed throughout (chunker, AST chunker, symbol extractor)
 - Chunker no longer enriches chunks with symbol metadata (delegated to indexer)
+- `paparats install` now generates docker-compose.yml programmatically instead of copying a template
+- `docker-compose.template.yml` is now a reference file only (stale comment updated)
+- Root `package.json` build/test/typecheck scripts include `@paparats/indexer` workspace
 
 ### Fixed
 
@@ -97,6 +150,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `get_chunk_meta` payload access uses safe `typeof` checks instead of unsafe `as` casts
 - `getChunkById` and `getAdjacentChunks` catch blocks now log errors instead of silently swallowing
 - `parseChunkId` import in `app.ts` changed from dynamic to static
+- `PAPARATS_METRICS=true` usage in README corrected (set in server environment, not CLI command)
+- Install tests updated to use generator-based flow instead of stale `findTemplatePath` deps
+- Added tests for server mode and support mode install paths
 
 ### Notes
 
