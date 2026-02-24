@@ -195,65 +195,67 @@ export function extractSymbolsForChunks(
   let useQuery: Parser.Query | null = null;
 
   try {
-    defQuery = language.query(querySet.definitions);
-  } catch {
-    // Query compilation failed — skip definitions
-  }
+    try {
+      defQuery = language.query(querySet.definitions);
+    } catch {
+      // Query compilation failed — skip definitions
+    }
 
-  try {
-    useQuery = language.query(querySet.usages);
-  } catch {
-    // Query compilation failed — skip usages
-  }
+    try {
+      useQuery = language.query(querySet.usages);
+    } catch {
+      // Query compilation failed — skip usages
+    }
 
-  // Collect all captures once (faster than per-chunk queries)
-  const defCaptures = defQuery ? defQuery.captures(tree.rootNode) : [];
-  const useCaptures = useQuery ? useQuery.captures(tree.rootNode) : [];
+    // Collect all captures once (faster than per-chunk queries)
+    const defCaptures = defQuery ? defQuery.captures(tree.rootNode) : [];
+    const useCaptures = useQuery ? useQuery.captures(tree.rootNode) : [];
 
-  const results = chunks.map((chunk) => {
-    const defines = new Map<string, ChunkKind>();
-    const uses = new Set<string>();
+    return chunks.map((chunk) => {
+      const defines = new Map<string, ChunkKind>();
+      const uses = new Set<string>();
 
-    for (const capture of defCaptures) {
-      const row = capture.node.startPosition.row;
-      if (row >= chunk.startLine && row <= chunk.endLine) {
-        const text = capture.node.text;
-        if (!isNoise(text) && !defines.has(text)) {
-          defines.set(text, resolveKind(capture.node));
+      for (const capture of defCaptures) {
+        const row = capture.node.startPosition.row;
+        if (row >= chunk.startLine && row <= chunk.endLine) {
+          const text = capture.node.text;
+          if (!isNoise(text) && !defines.has(text)) {
+            defines.set(text, resolveKind(capture.node));
+          }
         }
       }
-    }
 
-    for (const capture of useCaptures) {
-      const row = capture.node.startPosition.row;
-      if (row >= chunk.startLine && row <= chunk.endLine) {
-        const text = capture.node.text;
-        if (!isNoise(text)) {
-          uses.add(text);
+      for (const capture of useCaptures) {
+        const row = capture.node.startPosition.row;
+        if (row >= chunk.startLine && row <= chunk.endLine) {
+          const text = capture.node.text;
+          if (!isNoise(text)) {
+            uses.add(text);
+          }
         }
       }
-    }
 
-    // Remove self-references: if a symbol is both defined and used in the same chunk,
-    // remove it from uses (it's likely a recursive call or type annotation on its own definition)
-    for (const sym of defines.keys()) {
-      uses.delete(sym);
-    }
+      // Remove self-references: if a symbol is both defined and used in the same chunk,
+      // remove it from uses (it's likely a recursive call or type annotation on its own definition)
+      for (const sym of defines.keys()) {
+        uses.delete(sym);
+      }
 
-    const defined_symbols: DefinedSymbol[] = Array.from(defines.entries()).map(([name, kind]) => ({
-      name,
-      kind,
-    }));
+      const defined_symbols: DefinedSymbol[] = Array.from(defines.entries()).map(
+        ([name, kind]) => ({
+          name,
+          kind,
+        })
+      );
 
-    return {
-      defines_symbols: defined_symbols.map((d) => d.name),
-      uses_symbols: Array.from(uses),
-      defined_symbols,
-    };
-  });
-
-  defQuery?.delete();
-  useQuery?.delete();
-
-  return results;
+      return {
+        defines_symbols: defined_symbols.map((d) => d.name),
+        uses_symbols: Array.from(uses),
+        defined_symbols,
+      };
+    });
+  } finally {
+    defQuery?.delete();
+    useQuery?.delete();
+  }
 }

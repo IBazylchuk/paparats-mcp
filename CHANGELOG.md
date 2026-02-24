@@ -84,7 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Symbol extraction moved from regex (chunker) to tree-sitter AST (indexer) — single source of truth
 - Removed `symbol-extractor.ts` (regex-based) — replaced by `ast-symbol-extractor.ts`
 - Renamed `ts-queries.ts` → `ast-queries.ts`, `ts-symbol-extractor.ts` → `ast-symbol-extractor.ts`
-- Removed dead `ChunkResult` fields (`symbol_name`, `kind`, `defines_symbols`, `uses_symbols`) — indexer populates these directly in Qdrant payload
+- Removed `symbol_name` and `kind` from `ChunkResult` — indexer now populates these and new symbol fields (`defines_symbols`, `uses_symbols`) directly in the Qdrant payload
 - Removed dead `ChunkKind` values (`route`, `resource`, `block`) — never produced by AST system
 - Standardized chunk line numbers to 0-indexed throughout (chunker, AST chunker, symbol extractor)
 - Chunker no longer enriches chunks with symbol metadata (delegated to indexer)
