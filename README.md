@@ -23,6 +23,8 @@ AI coding assistants are smart, but they can only see files you open. They don't
 - **🏢 Multi-project workspaces** — search across backend, frontend, infra repos in one query
 - **🔒 100% local & private** — Qdrant vector database + Ollama embeddings. Nothing leaves your laptop
 - **🎯 Language-aware chunking** — code split by functions/classes, not arbitrary character counts (Ruby, TypeScript, Python, Go, Rust, Java, C/C++, C#, Terraform)
+- **🏷️ Rich metadata** — each chunk knows its symbol name, service, domain context, and tags from directory structure
+- **📜 Git history per chunk** — see who last modified a chunk, when, and which tickets (Jira, GitHub) are linked to it
 
 ### Who benefits
 
@@ -84,10 +86,11 @@ Your projects                   Paparats                       AI assistant
                            └──────────────────────┘
 ```
 
-1. **Indexing**: Code is chunked at function/class boundaries, embedded via [Jina Code Embeddings 1.5B](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF), stored in Qdrant
-2. **Searching**: AI assistant queries via MCP → server expands query (handles abbreviations, plurals, case variants) → Qdrant returns top matches → only relevant chunks sent back
-3. **Token savings**: Return only relevant chunks instead of loading full files
-4. **Watching**: File changes trigger re-indexing of affected files only (unchanged code never re-embedded thanks to content-hash cache)
+1. **Indexing**: Code is chunked at function/class boundaries, embedded via [Jina Code Embeddings 1.5B](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF), stored in Qdrant. Each chunk is enriched with symbol name, metadata tags, and service context
+2. **Git enrichment**: After indexing, git history is extracted per file — commits are mapped to chunks by line-range overlap, ticket references (Jira, GitHub) are extracted from commit messages, and results are stored in a local SQLite database
+3. **Searching**: AI assistant queries via MCP → server expands query (handles abbreviations, plurals, case variants) → Qdrant returns top matches → only relevant chunks sent back
+4. **Token savings**: Return only relevant chunks instead of loading full files
+5. **Watching**: File changes trigger re-indexing of affected files only (unchanged code never re-embedded thanks to content-hash cache)
 
 ---
 
@@ -157,6 +160,8 @@ Skip with `--skip-cclsp` if not needed.
 | MCP native               |       ✅        |     ✅      |      ❌       |       ✅        |       ❌       |     ⚠️ API     |      ❌      |
 | LSP integration          |    ✅ CCLSP     |     ❌      |      ❌       |       ❌        |   ⚠️ Partial   |       ❌       |      ❌      |
 | Token savings metrics    |  ✅ Per-query   |     ❌      |      ❌       |   ⚠️ Unknown    |       ❌       |       ❌       |      ❌      |
+| Git history per chunk    |       ✅        |     ❌      |      ❌       |       ❌        |   ⚠️ Partial   |       ❌       |      ❌      |
+| Ticket extraction        |     ✅ Auto     |     ❌      |      ❌       |       ❌        |       ❌       |       ❌       |      ❌      |
 | **Pricing**              |
 | Cost                     |    **Free**     |  **Free**   |   **Free**    |      Paid       |      Paid      |      Paid      |   Archived   |
 
@@ -221,6 +226,20 @@ embeddings:
   provider: 'ollama' # embedding provider (default: "ollama")
   model: 'jina-code-embeddings' # Ollama alias (see below)
   dimensions: 1536 # vector dimensions (default: 1536)
+
+metadata:
+  service: 'my-service' # service name (default: project directory name)
+  bounded_context: 'identity' # domain context (default: null)
+  tags: ['api', 'auth'] # global tags applied to all chunks
+  directory_tags: # tags applied to chunks from specific directories
+    src/controllers: ['controller']
+    src/models: ['model']
+  git:
+    enabled: true # extract git history per chunk (default: true)
+    maxCommitsPerFile: 50 # max commits to analyze per file (1-500, default: 50)
+    ticketPatterns: # custom regex patterns for ticket extraction
+      - 'TASK_\d+'
+      - 'ISSUE-\d+'
 ```
 
 ### Groups
@@ -244,6 +263,70 @@ indexing:
 ```
 
 Now searching `"authentication flow"` finds code in **both** backend and frontend.
+
+### Metadata
+
+The `metadata` section enriches each indexed chunk with contextual information that improves search filtering and helps AI assistants understand code ownership.
+
+| Field             | Description                                      | Default                |
+| ----------------- | ------------------------------------------------ | ---------------------- |
+| `service`         | Service name (e.g., `payment-service`)           | Project directory name |
+| `bounded_context` | Domain context (e.g., `billing`, `identity`)     | `null`                 |
+| `tags`            | Global tags applied to all chunks                | `[]`                   |
+| `directory_tags`  | Tags applied to chunks from specific directories | `{}`                   |
+
+Tags from `directory_tags` are matched by path prefix. Additionally, tags are auto-detected from directory structure (e.g., `src/controllers/user.ts` gets a `controllers` tag).
+
+### Git History
+
+When `metadata.git.enabled` is `true` (the default), the server extracts git history after indexing:
+
+1. For each indexed file, runs `git log` to get commit history
+2. Parses diff hunks to determine which commits affected which line ranges
+3. Maps commits to chunks by line-range overlap
+4. Extracts ticket references from commit messages
+5. Stores results in a local SQLite database (`~/.paparats/metadata.db`)
+6. Enriches Qdrant payloads with `last_commit_at`, `last_author_email`, `ticket_keys`
+
+**Built-in ticket patterns:**
+
+- Jira: `PROJ-123`, `TEAM-456`
+- GitHub issues: `#42`
+- GitHub cross-repo: `org/repo#99`
+
+**Custom patterns** can be added via `metadata.git.ticketPatterns` — each entry is a regex string. Use a capture group to extract the ticket key, or the full match is used.
+
+| Config                  | Description                                 | Default             |
+| ----------------------- | ------------------------------------------- | ------------------- |
+| `git.enabled`           | Enable git history extraction               | `true`              |
+| `git.maxCommitsPerFile` | Max commits to analyze per file             | `50` (range: 1-500) |
+| `git.ticketPatterns`    | Custom regex patterns for ticket extraction | `[]`                |
+
+Git metadata extraction is non-fatal — if a project is not a git repository or git is unavailable, indexing continues normally without git enrichment.
+
+---
+
+## MCP Tools
+
+Paparats exposes 6 tools via the Model Context Protocol:
+
+| Tool             | Description                                                                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `search_code`    | Semantic code search across all indexed projects. Returns relevant chunks ranked by cosine similarity. Supports query expansion (abbreviations, case variants, plurals). |
+| `get_chunk`      | Retrieve a specific chunk by its `chunk_id`. Optionally expand context with `radius_lines` (0-200) to include adjacent chunks from the same file.                        |
+| `get_chunk_meta` | Get git metadata for a chunk: recent commits with authors and dates, plus ticket references. Use after `search_code` to understand change history.                       |
+| `search_changes` | Search for recently changed code. Combines semantic search with a date filter on the last commit time. Use to find what changed since a date.                            |
+| `health_check`   | Check indexing status: number of indexed chunks per group and running reindex jobs.                                                                                      |
+| `reindex`        | Trigger full reindex of a group or all groups. Runs in the background; track with `health_check`.                                                                        |
+
+### Typical Workflow
+
+```
+1. search_code "authentication middleware"     → find relevant chunks
+2. get_chunk <chunk_id> --radius_lines 50      → expand context around a result
+3. get_chunk_meta <chunk_id>                   → see who modified it, when, linked tickets
+4. search_changes "auth" --since 2024-01-01    → find recent auth changes
+```
 
 ---
 
@@ -290,7 +373,7 @@ Or add to `.mcp.json` in project root:
 ### Verify
 
 - `paparats status` — check server is running
-- In your IDE, look for MCP tools: `search_code` and `health_check`
+- In your IDE, look for MCP tools: `search_code`, `get_chunk`, `get_chunk_meta`, `search_changes`, `health_check`, `reindex`
 - Ask the AI: _"Search for authentication logic in the codebase"_
 
 ---
@@ -433,17 +516,23 @@ paparats-mcp/
 ├── packages/
 │   ├── server/          # MCP server (Docker image)
 │   │   ├── src/
-│   │   │   ├── index.ts           # HTTP server + MCP handler
-│   │   │   ├── indexer.ts         # Group-aware indexing
-│   │   │   ├── searcher.ts        # Search with query expansion + metrics
-│   │   │   ├── query-expansion.ts # Abbreviation, case, plural expansion
-│   │   │   ├── task-prefixes.ts   # Jina task prefix detection
-│   │   │   ├── chunker.ts         # Language-aware code chunking
-│   │   │   ├── embeddings.ts      # Ollama provider + SQLite cache
-│   │   │   ├── config.ts          # .paparats.yml reader
-│   │   │   ├── mcp-handler.ts     # MCP protocol (SSE + HTTP)
-│   │   │   ├── watcher.ts         # File watcher (chokidar)
-│   │   │   └── types.ts           # Shared types
+│   │   │   ├── index.ts              # HTTP server + MCP handler
+│   │   │   ├── app.ts                # Express app + HTTP API routes
+│   │   │   ├── indexer.ts            # Group-aware indexing + chunk ID management
+│   │   │   ├── searcher.ts           # Search with query expansion + filter support
+│   │   │   ├── query-expansion.ts    # Abbreviation, case, plural expansion
+│   │   │   ├── task-prefixes.ts      # Jina task prefix detection
+│   │   │   ├── chunker.ts            # Language-aware code chunking
+│   │   │   ├── symbol-extractor.ts   # Regex-based symbol extraction (11 languages)
+│   │   │   ├── embeddings.ts         # Ollama provider + SQLite cache
+│   │   │   ├── config.ts             # .paparats.yml reader + validation
+│   │   │   ├── metadata.ts           # Tag resolution + auto-detection
+│   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets
+│   │   │   ├── git-metadata.ts       # Git history extraction + chunk mapping
+│   │   │   ├── ticket-extractor.ts   # Jira/GitHub/custom ticket parsing
+│   │   │   ├── mcp-handler.ts        # MCP protocol (SSE + Streamable HTTP)
+│   │   │   ├── watcher.ts            # File watcher (chokidar)
+│   │   │   └── types.ts              # Shared types
 │   │   └── Dockerfile
 │   ├── cli/             # CLI tool (npm package)
 │   │   └── src/
@@ -464,6 +553,7 @@ paparats-mcp/
 
 - **Qdrant** — vector database (1 collection per group, cosine similarity, payload filtering)
 - **Ollama** — local embeddings via Jina Code Embeddings 1.5B with task-specific prefixes
+- **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata store (`~/.paparats/metadata.db`)
 - **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code)
 - **TypeScript** monorepo with Yarn workspaces
 

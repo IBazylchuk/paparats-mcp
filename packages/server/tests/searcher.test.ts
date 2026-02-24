@@ -671,6 +671,116 @@ describe('Searcher', () => {
     expect(response.results[2]!.score).toBe(0.8);
   });
 
+  it('searchWithFilter applies additional filter conditions', async () => {
+    mockQdrant.client.search.mockResolvedValue([
+      {
+        id: '1',
+        score: 0.9,
+        payload: {
+          project: 'p',
+          file: 'src/auth.ts',
+          language: 'typescript',
+          startLine: 1,
+          endLine: 10,
+          content: 'const x = 1;',
+          hash: 'h1',
+        },
+      },
+    ]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const response = await searcher.searchWithFilter(
+      'test-group',
+      'auth code',
+      {
+        must: [
+          {
+            key: 'last_commit_at',
+            range: { gte: '2024-01-01T00:00:00Z' },
+          },
+        ],
+      },
+      { limit: 5 }
+    );
+
+    expect(response.results).toHaveLength(1);
+    expect(response.results[0]!.file).toBe('src/auth.ts');
+
+    // Verify filter includes the additional condition
+    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      'test-group',
+      expect.objectContaining({
+        filter: {
+          must: expect.arrayContaining([
+            {
+              key: 'last_commit_at',
+              range: { gte: '2024-01-01T00:00:00Z' },
+            },
+          ]),
+        },
+      })
+    );
+  });
+
+  it('searchWithFilter merges project filter with additional filter', async () => {
+    mockQdrant.client.search.mockResolvedValue([]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    await searcher.searchWithFilter(
+      'test-group',
+      'query',
+      { must: [{ key: 'ticket_keys', match: { value: 'PROJ-123' } }] },
+      { project: 'my-project', limit: 3 }
+    );
+
+    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      'test-group',
+      expect.objectContaining({
+        limit: 3,
+        filter: {
+          must: expect.arrayContaining([
+            { key: 'ticket_keys', match: { value: 'PROJ-123' } },
+            { key: 'project', match: { value: 'my-project' } },
+          ]),
+        },
+      })
+    );
+  });
+
+  it('searchWithFilter validates empty groupName', async () => {
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    await expect(searcher.searchWithFilter('', 'query', { must: [] })).rejects.toThrow(
+      'Group name is required'
+    );
+  });
+
+  it('searchWithFilter validates empty query', async () => {
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    await expect(searcher.searchWithFilter('group', '', { must: [] })).rejects.toThrow(
+      'Query string is required'
+    );
+  });
+
   it('formatResults formats results as markdown', () => {
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',

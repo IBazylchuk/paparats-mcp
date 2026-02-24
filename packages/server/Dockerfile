@@ -43,7 +43,7 @@ WORKDIR /app
 # Create non-root user and install su-exec for privilege drop
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S nodejs -u 1001 -h /home/nodejs && \
-    apk add --no-cache su-exec
+    apk add --no-cache su-exec git
 
 # Entrypoint: fix volume permissions before switching to nodejs
 COPY packages/server/entrypoint.sh /entrypoint.sh
@@ -68,7 +68,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 9876) + '/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"
 
 LABEL org.opencontainers.image.title="paparats-mcp"
-LABEL org.opencontainers.image.description="Semantic code search MCP server"
+LABEL org.opencontainers.image.description="Semantic code search MCP server with git history and ticket tracking"
 LABEL org.opencontainers.image.source="https://github.com/bkbhub/paparats-mcp"
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -45,6 +45,7 @@ function createProjectConfig(overrides?: Partial<ProjectConfig>): ProjectConfig 
       bounded_context: null,
       tags: [],
       directory_tags: {},
+      git: { enabled: true, maxCommitsPerFile: 50, ticketPatterns: [] },
     },
     ...overrides,
   };

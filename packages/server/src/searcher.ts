@@ -30,6 +30,11 @@ interface QdrantPayload {
   service?: string | null;
   bounded_context?: string | null;
   tags?: string[];
+  // Phase 2 additions (git metadata)
+  last_commit_hash?: string;
+  last_commit_at?: string;
+  last_author_email?: string;
+  ticket_keys?: string[];
 }
 
 export class Searcher {
@@ -132,6 +137,79 @@ export class Searcher {
       total: merged.length,
       metrics,
     };
+  }
+
+  /** Search with additional Qdrant filter conditions (e.g. date range on last_commit_at) */
+  async searchWithFilter(
+    groupName: string,
+    query: string,
+    additionalFilter: { must: Array<Record<string, unknown>> },
+    options?: { project?: string; limit?: number }
+  ): Promise<SearchResponse> {
+    if (!groupName?.trim()) {
+      throw new Error('Group name is required');
+    }
+    if (!query?.trim()) {
+      throw new Error('Query string is required');
+    }
+    const limit = Math.max(1, Math.min(options?.limit ?? 5, 100));
+    const project = options?.project ?? 'all';
+
+    const queryVector = await this.provider.embedQuery(query);
+
+    const must: Array<Record<string, unknown>> = [...additionalFilter.must];
+    if (project !== 'all') {
+      must.push({ key: 'project', match: { value: project } });
+    }
+
+    let results: SearchResult[];
+    try {
+      const hits = await this.retryQdrant(() =>
+        this.qdrant.search(groupName, {
+          vector: queryVector,
+          limit,
+          with_payload: true,
+          filter: { must },
+        })
+      );
+
+      results = hits
+        .filter((h): h is typeof h & { payload: QdrantPayload } => this.validatePayload(h.payload))
+        .map((h) => {
+          const p = h.payload;
+          return {
+            project: p.project,
+            file: p.file,
+            language: p.language,
+            startLine: p.startLine,
+            endLine: p.endLine,
+            content: p.content,
+            score: h.score,
+            hash: p.hash,
+            chunk_id: p.chunk_id ?? null,
+            symbol_name: (p.symbol_name as string | null) ?? null,
+            kind: (p.kind as ChunkKind | null) ?? null,
+            service: (p.service as string | null) ?? null,
+            bounded_context: (p.bounded_context as string | null) ?? null,
+            tags: p.tags ?? [],
+          };
+        });
+    } catch (err) {
+      const errorMsg = (err as Error).message.toLowerCase();
+      if (errorMsg.includes('not found') || errorMsg.includes('does not exist')) {
+        results = [];
+      } else {
+        throw new Error(`Search failed in group "${groupName}": ${(err as Error).message}`, {
+          cause: err,
+        });
+      }
+    }
+
+    const metrics = this.computeMetrics(results);
+    this.searchCount++;
+    this.totalTokensSaved += metrics.tokensSaved;
+
+    return { results, total: results.length, metrics };
   }
 
   /** Core search logic without counter updates */

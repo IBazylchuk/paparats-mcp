@@ -156,6 +156,7 @@ function createProjectConfig(
       bounded_context: null,
       tags: [],
       directory_tags: {},
+      git: { enabled: true, maxCommitsPerFile: 50, ticketPatterns: [] },
     },
     ...overrides,
   };
