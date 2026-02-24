@@ -39,6 +39,7 @@ describe('resolveTags', () => {
       bounded_context: null,
       tags: ['api', 'auth'],
       directory_tags: {},
+      git: { enabled: true, maxCommitsPerFile: 50, ticketPatterns: [] },
     };
     const tags = resolveTags(metadata, 'README.md');
     expect(tags).toContain('api');
@@ -53,6 +54,7 @@ describe('resolveTags', () => {
       directory_tags: {
         'src/controllers': ['controller', 'api'],
       },
+      git: { enabled: true, maxCommitsPerFile: 50, ticketPatterns: [] },
     };
     const tags = resolveTags(metadata, 'src/controllers/user.ts');
     expect(tags).toContain('controller');
@@ -67,6 +69,7 @@ describe('resolveTags', () => {
       directory_tags: {
         'src/controllers': ['controller'],
       },
+      git: { enabled: true, maxCommitsPerFile: 50, ticketPatterns: [] },
     };
     const tags = resolveTags(metadata, 'src/models/user.ts');
     expect(tags).not.toContain('controller');
@@ -80,6 +83,7 @@ describe('resolveTags', () => {
       directory_tags: {
         'src/controllers': ['controller'],
       },
+      git: { enabled: true, maxCommitsPerFile: 50, ticketPatterns: [] },
     };
     const tags = resolveTags(metadata, 'src/controllers/login.ts');
     expect(tags).toContain('auth');
@@ -95,6 +99,7 @@ describe('resolveTags', () => {
       directory_tags: {
         'src/controllers': ['controllers'],
       },
+      git: { enabled: true, maxCommitsPerFile: 50, ticketPatterns: [] },
     };
     const tags = resolveTags(metadata, 'src/controllers/user.ts');
     const controllersCount = tags.filter((t) => t === 'controllers').length;
