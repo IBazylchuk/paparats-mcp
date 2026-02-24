@@ -15,6 +15,12 @@
     },
     "get_chunk": {
       "description": "Retrieve a specific code chunk by its chunk_id. Use this to fetch exact code locations from search results.\n\nThe chunk_id is returned by search_code in each result. Optionally expand context with radius_lines to include adjacent chunks from the same file.\n\nReturns: metadata header + code block with line numbers."
+    },
+    "get_chunk_meta": {
+      "description": "Get git metadata for a code chunk: recent commits, authors, and ticket references.\n\nUse after search_code to understand who last modified a chunk, when, and what tickets are associated with it.\n\nReturns: metadata header + code block + recent commits table + ticket references."
+    },
+    "search_changes": {
+      "description": "Search for recently changed code. Combines semantic search with a date filter on the last commit time.\n\nUse to find code that was modified after a specific date. Useful for understanding recent changes, reviewing what changed in a sprint, or finding code related to a recent incident.\n\nExamples: \"auth changes since last week\", \"API modifications in the last month\""
     }
   },
   "resources": {

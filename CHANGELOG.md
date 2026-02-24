@@ -66,11 +66,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Updated existing tests in `searcher.test.ts`, `indexer.test.ts`, `server.test.ts`, `mcp-handler.test.ts`, `watcher.test.ts` for new type requirements
 - Total: 266 server tests (up from 190)
 
+#### Git History Extraction
+
+- New `git-metadata.ts` module — extracts commit history per file via `git log`, maps commits to chunks by diff hunk line-range overlap
+- New `metadata-db.ts` module — SQLite store at `~/.paparats/metadata.db` with `chunk_commits` and `chunk_tickets` tables
+- New `ticket-extractor.ts` module — extracts ticket references from commit messages (Jira `PROJ-123`, GitHub `#42` and `org/repo#42`, custom regex patterns)
+- Post-indexing hook in `indexer.ts`: after chunking, automatically extracts git metadata and enriches Qdrant payloads
+- Git metadata extraction is non-fatal — errors are logged but don't block indexing
+
+#### Git Metadata Configuration
+
+- New `metadata.git` section in `.paparats.yml` with `enabled` (default: `true`), `maxCommitsPerFile` (default: `50`, range 1–500), and `ticketPatterns` (custom regex strings)
+- Config validation for `maxCommitsPerFile` bounds and `ticketPatterns` regex validity
+- New types: `GitMetadataConfig`, `ChunkCommit`, `ChunkTicket`
+
+#### New MCP Tool: `get_chunk_meta`
+
+- Retrieve chunk metadata including recent git commits and ticket references via `get_chunk_meta(chunk_id, commit_limit?)`
+- Returns formatted metadata header + code block + recent commits table with ticket links
+
+#### New MCP Tool: `search_changes`
+
+- Search for recently changed code via `search_changes(query, since?, group?, project?, limit?)`
+- Uses Qdrant `last_commit_at` range filter to narrow results to a time window
+- Searches across all groups when `group` is omitted
+
+#### New HTTP Endpoint: Chunk Metadata
+
+- `GET /api/chunk/:chunkId/meta` with optional `commit_limit` query parameter (default: 10, max: 50)
+- Returns chunk payload enriched with `commits`, `tickets`, and `latest_commit` from the metadata store
+
+#### Extended Qdrant Payload (Phase 2)
+
+- New optional payload fields per chunk: `last_commit_hash`, `last_commit_at`, `last_author_email`, `ticket_keys`
+- Qdrant keyword indices on `last_commit_at` and `ticket_keys` for filtered queries
+
+#### Searcher: Filtered Search
+
+- New `searchWithFilter()` method on `Searcher` — accepts additional Qdrant filter conditions merged with the standard project filter
+
+#### Tests (Phase 2)
+
+- `metadata-db.test.ts` — 11 tests for SQLite metadata store operations
+- `git-metadata.test.ts` — 5 integration tests with real git repos
+- `ticket-extractor.test.ts` — 12 tests for ticket extraction patterns
+- `config.test.ts` — 8 new tests for git metadata config validation
+- `searcher.test.ts` — 4 new tests for `searchWithFilter`
+- Updated existing tests in `server.test.ts`, `mcp-handler.test.ts` for new endpoints and tools
+- Total: 310 server tests (up from 266)
+
+### Fixed
+
+- `/api/chunk/:chunkId` error responses no longer leak internal error messages
+- `getAdjacentChunks` now paginates Qdrant scroll results instead of hardcoding `limit: 100`
+- Markdown injection prevention: language fields in code fences are sanitized via `sanitizeLang()`
+- `get_chunk_meta` payload access uses safe `typeof` checks instead of unsafe `as` casts
+- `getChunkById` and `getAdjacentChunks` catch blocks now log errors instead of silently swallowing
+- `parseChunkId` import in `app.ts` changed from dynamic to static
+
 ### Notes
 
-- New payload fields are backward compatible — old indexed data returns `null`/`[]` for new fields
-- A `reindex` call regenerates all metadata (reindex is the migration path)
-- No version bump yet — this is Phase 1 of the Support Q&A Roadmap
+- All new payload fields and modules are backward compatible — old indexed data is unaffected
+- A `reindex` call regenerates all metadata including git history (reindex is the migration path)
+- No version bump yet — this covers Phase 1 + Phase 2 of the Support Q&A Roadmap
 
 ## [0.1.10] - 2025-05-22
 

@@ -17,11 +17,18 @@ export type ChunkKind =
 
 // ── Config types (from .paparats.yml) ──────────────────────────────────────
 
+export interface GitMetadataConfig {
+  enabled?: boolean;
+  maxCommitsPerFile?: number;
+  ticketPatterns?: string[];
+}
+
 export interface MetadataConfig {
   service?: string;
   bounded_context?: string;
   tags?: string[];
   directory_tags?: Record<string, string[]>;
+  git?: GitMetadataConfig;
 }
 
 export interface ResolvedMetadataConfig {
@@ -29,6 +36,7 @@ export interface ResolvedMetadataConfig {
   bounded_context: string | null;
   tags: string[];
   directory_tags: Record<string, string[]>;
+  git: Required<GitMetadataConfig>;
 }
 
 export interface PaparatsConfig {
@@ -167,4 +175,20 @@ export interface IndexerStats {
   cached: number;
   errors: number;
   skipped: number;
+}
+
+// ── Git metadata types ──────────────────────────────────────────────────
+
+export interface ChunkCommit {
+  chunk_id: string;
+  commit_hash: string;
+  committed_at: string;
+  author_email: string;
+  message_summary: string;
+}
+
+export interface ChunkTicket {
+  chunk_id: string;
+  ticket_key: string;
+  source: 'jira' | 'github' | 'custom';
 }

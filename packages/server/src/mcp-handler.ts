@@ -7,11 +7,18 @@ import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { Searcher } from './searcher.js';
 import type { Indexer } from './indexer.js';
 import { parseChunkId } from './indexer.js';
+import type { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
 import { prompts, buildProjectOverviewSections } from './prompts/index.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
+
+/** Sanitize a language identifier for use in markdown code fences */
+function sanitizeLang(lang: string): string {
+  // Only allow alphanumeric, hyphens, underscores, dots, plus signs
+  return lang.replace(/[^a-zA-Z0-9_.+-]/g, '');
+}
 
 function confidenceTier(score: number): string {
   if (score >= HIGH_CONFIDENCE_THRESHOLD) return 'high confidence';
@@ -26,6 +33,8 @@ export interface McpHandlerConfig {
   getProjects: () => Map<string, ProjectConfig[]>;
   /** Callback to get all known group names */
   getGroupNames: () => string[];
+  /** Optional metadata store for git history tools */
+  metadataStore?: MetadataStore;
 }
 
 type TransportEntry = {
@@ -47,6 +56,7 @@ export class McpHandler {
   private indexer: Indexer;
   private getProjects: () => Map<string, ProjectConfig[]>;
   private getGroupNames: () => string[];
+  private metadataStore: MetadataStore | null;
   private transports: Record<string, TransportEntry> = {};
   private servers = new Map<string, McpServer>();
   private reindexJobs = new Map<string, ReindexJob>();
@@ -61,6 +71,7 @@ export class McpHandler {
     this.indexer = config.indexer;
     this.getProjects = config.getProjects;
     this.getGroupNames = config.getGroupNames;
+    this.metadataStore = config.metadataStore ?? null;
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000); // Every 5 min
   }
@@ -254,7 +265,7 @@ export class McpHandler {
               const tier = confidenceTier(r.score);
               const symbolInfo = r.symbol_name ? ` — ${r.kind ?? 'unknown'}: ${r.symbol_name}` : '';
               const chunkRef = r.chunk_id ? `\n_chunk: ${r.chunk_id}_` : '';
-              return `**[${r.project}] ${r.file}:${r.startLine}** (${score}% — ${tier}${symbolInfo})${chunkRef}\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
+              return `**[${r.project}] ${r.file}:${r.startLine}** (${score}% — ${tier}${symbolInfo})${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
             })
             .join('\n\n---\n\n');
 
@@ -387,7 +398,7 @@ export class McpHandler {
                   const c = chunk['content'] as string;
                   const isTarget = sl === startLine && el === endLine;
                   const marker = isTarget ? ' ← target' : '';
-                  text += `**Lines ${sl}-${el}${marker}**\n\`\`\`${language}\n${c}\n\`\`\`\n\n`;
+                  text += `**Lines ${sl}-${el}${marker}**\n\`\`\`${sanitizeLang(language)}\n${c}\n\`\`\`\n\n`;
                 }
 
                 return { content: [{ type: 'text' as const, text }] };
@@ -396,7 +407,7 @@ export class McpHandler {
           }
 
           // Single chunk (no radius or no adjacent chunks found)
-          text += `\`\`\`${language}\n${content}\n\`\`\``;
+          text += `\`\`\`${sanitizeLang(language)}\n${content}\n\`\`\``;
 
           return { content: [{ type: 'text' as const, text }] };
         } catch (err) {
@@ -405,6 +416,221 @@ export class McpHandler {
               {
                 type: 'text' as const,
                 text: `Failed to retrieve chunk: ${(err as Error).message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    // ── Tool: get_chunk_meta ────────────────────────────────────────────────
+    server.tool(
+      'get_chunk_meta',
+      prompts.tools.get_chunk_meta.description,
+      {
+        chunk_id: z.string().describe('Chunk ID from search_code results'),
+        commit_limit: z
+          .number()
+          .min(1)
+          .max(50)
+          .default(10)
+          .describe('Max number of recent commits to return'),
+      },
+      async ({ chunk_id, commit_limit }) => {
+        try {
+          const payload = await this.indexer.getChunkById(chunk_id);
+
+          if (!payload) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Chunk not found: ${chunk_id}\n\nThe chunk may have been removed during reindexing. Try searching again.`,
+                },
+              ],
+            };
+          }
+
+          if (!this.metadataStore) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Git metadata is not available. The metadata store is not configured.`,
+                },
+              ],
+            };
+          }
+
+          const project = typeof payload['project'] === 'string' ? payload['project'] : 'unknown';
+          const file = typeof payload['file'] === 'string' ? payload['file'] : 'unknown';
+          const language = typeof payload['language'] === 'string' ? payload['language'] : 'text';
+          const startLine = typeof payload['startLine'] === 'number' ? payload['startLine'] : 0;
+          const endLine = typeof payload['endLine'] === 'number' ? payload['endLine'] : 0;
+          const content = typeof payload['content'] === 'string' ? payload['content'] : '';
+          const symbolName =
+            typeof payload['symbol_name'] === 'string' ? payload['symbol_name'] : null;
+          const kind = typeof payload['kind'] === 'string' ? payload['kind'] : null;
+          const service = typeof payload['service'] === 'string' ? payload['service'] : null;
+          const boundedContext =
+            typeof payload['bounded_context'] === 'string' ? payload['bounded_context'] : null;
+          const tags = Array.isArray(payload['tags']) ? (payload['tags'] as string[]) : [];
+
+          let text = '';
+
+          // Metadata header
+          text += `**[${project}] ${file}:${startLine}-${endLine}**\n`;
+          if (symbolName) text += `Symbol: \`${symbolName}\` (${kind ?? 'unknown'})\n`;
+          if (service) text += `Service: ${service}\n`;
+          if (boundedContext) text += `Context: ${boundedContext}\n`;
+          if (tags.length > 0) text += `Tags: ${tags.join(', ')}\n`;
+          text += '\n';
+
+          // Code block
+          text += `\`\`\`${sanitizeLang(language)}\n${content}\n\`\`\`\n\n`;
+
+          // Commits table
+          const commits = this.metadataStore.getCommits(chunk_id, commit_limit);
+          if (commits.length > 0) {
+            text += `### Recent Commits (${commits.length})\n\n`;
+            text += '| Date | Author | Message | Hash |\n';
+            text += '|------|--------|---------|------|\n';
+            for (const c of commits) {
+              const date = c.committed_at.split('T')[0] ?? c.committed_at;
+              const shortHash = c.commit_hash.slice(0, 7);
+              text += `| ${date} | ${c.author_email} | ${c.message_summary} | ${shortHash} |\n`;
+            }
+          } else {
+            text += '_No git history available for this chunk._\n';
+          }
+
+          // Tickets
+          const tickets = this.metadataStore.getTickets(chunk_id);
+          if (tickets.length > 0) {
+            text += `\n### Tickets\n`;
+            for (const t of tickets) {
+              text += `- ${t.ticket_key} (${t.source})\n`;
+            }
+          }
+
+          return { content: [{ type: 'text' as const, text }] };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Failed to retrieve chunk metadata: ${(err as Error).message}`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
+    );
+
+    // ── Tool: search_changes ─────────────────────────────────────────────────
+    server.tool(
+      'search_changes',
+      prompts.tools.search_changes.description,
+      {
+        query: z.string().describe('Semantic search query'),
+        since: z
+          .string()
+          .optional()
+          .describe(
+            'ISO 8601 date string (e.g. "2024-01-01") — only return chunks modified after this date'
+          ),
+        group: z.string().optional().describe('Specific group or omit for all'),
+        project: z.string().default('all').describe('Project name or "all"'),
+        limit: z.number().min(1).max(20).default(5).describe('Max results'),
+      },
+      async ({ query, since, group, project, limit }) => {
+        try {
+          const groupNames = group ? [group] : this.getGroupNames();
+
+          if (groupNames.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: 'No groups registered. Index a project first.',
+                },
+              ],
+            };
+          }
+
+          const additionalFilter: { must: Array<Record<string, unknown>> } = { must: [] };
+          if (since) {
+            additionalFilter.must.push({
+              key: 'last_commit_at',
+              range: { gte: since },
+            });
+          }
+
+          const allResults: Array<{
+            project: string;
+            file: string;
+            language: string;
+            startLine: number;
+            endLine: number;
+            content: string;
+            score: number;
+            hash: string;
+            chunk_id: string | null;
+            symbol_name: string | null;
+            kind: string | null;
+          }> = [];
+
+          for (const g of groupNames) {
+            const response = await this.searcher.searchWithFilter(g, query, additionalFilter, {
+              project,
+              limit: limit * 2,
+            });
+            allResults.push(...response.results);
+          }
+
+          const seen = new Set<string>();
+          const deduped = allResults.filter((r) => {
+            if (seen.has(r.hash)) return false;
+            seen.add(r.hash);
+            return true;
+          });
+
+          deduped.sort((a, b) => b.score - a.score);
+          const top = deduped.slice(0, limit);
+
+          if (top.length === 0) {
+            const sinceNote = since ? ` modified after ${since}` : '';
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No results found for "${query}"${sinceNote}. Make sure the project is indexed and has git metadata.`,
+                },
+              ],
+            };
+          }
+
+          const formatted = top
+            .map((r) => {
+              const score = (r.score * 100).toFixed(1);
+              const tier = confidenceTier(r.score);
+              const symbolInfo = r.symbol_name ? ` — ${r.kind ?? 'unknown'}: ${r.symbol_name}` : '';
+              const chunkRef = r.chunk_id ? `\n_chunk: ${r.chunk_id}_` : '';
+              return `**[${r.project}] ${r.file}:${r.startLine}** (${score}% — ${tier}${symbolInfo})${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
+            })
+            .join('\n\n---\n\n');
+
+          const sinceNote = since ? `\n_Filtered to changes after ${since}_\n\n` : '';
+
+          return { content: [{ type: 'text' as const, text: sinceNote + formatted }] };
+        } catch (err) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Search changes failed: ${(err as Error).message}`,
               },
             ],
             isError: true,

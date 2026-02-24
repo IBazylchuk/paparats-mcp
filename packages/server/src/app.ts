@@ -1,10 +1,11 @@
 import express, { type Express } from 'express';
 import cors from 'cors';
 import { buildProjectConfigFromContent } from './config.js';
-import { Indexer } from './indexer.js';
+import { Indexer, parseChunkId } from './indexer.js';
 import { Searcher } from './searcher.js';
 import { McpHandler } from './mcp-handler.js';
 import { WatcherManager } from './watcher.js';
+import type { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 
@@ -47,6 +48,8 @@ export interface CreateAppOptions {
   embeddingProvider: CachedEmbeddingProvider;
   /** Projects map - mutated by registerProject */
   projectsByGroup: Map<string, ProjectConfig[]>;
+  /** Optional metadata store for git history */
+  metadataStore?: MetadataStore;
 }
 
 export interface CreateAppResult {
@@ -59,7 +62,8 @@ export interface CreateAppResult {
 }
 
 export function createApp(options: CreateAppOptions): CreateAppResult {
-  const { searcher, indexer, watcherManager, embeddingProvider, projectsByGroup } = options;
+  const { searcher, indexer, watcherManager, embeddingProvider, projectsByGroup, metadataStore } =
+    options;
 
   function getGroupNames(): string[] {
     return Array.from(projectsByGroup.keys());
@@ -257,6 +261,13 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         Math.max(0, parseInt(String(req.query.radius_lines ?? '0'), 10) || 0)
       );
 
+      // Validate group from chunkId is among registered groups
+      const parsed = parseChunkId(chunkId);
+      if (parsed && !projectsByGroup.has(parsed.group)) {
+        res.status(403).json({ error: 'Access denied: unknown group' });
+        return;
+      }
+
       const payload = await indexer.getChunkById(chunkId);
       if (!payload) {
         res.status(404).json({ error: 'Chunk not found' });
@@ -265,26 +276,71 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
       const result: Record<string, unknown> = { ...payload };
 
-      if (radiusLines > 0) {
-        const { parseChunkId } = await import('./indexer.js');
-        const parsed = parseChunkId(chunkId);
-        if (parsed) {
-          const adjacent = await indexer.getAdjacentChunks(
-            parsed.group,
-            parsed.project,
-            parsed.file,
-            payload['startLine'] as number,
-            payload['endLine'] as number,
-            radiusLines
-          );
-          result.adjacent_chunks = adjacent;
-        }
+      if (radiusLines > 0 && parsed) {
+        const adjacent = await indexer.getAdjacentChunks(
+          parsed.group,
+          parsed.project,
+          parsed.file,
+          payload['startLine'] as number,
+          payload['endLine'] as number,
+          radiusLines
+        );
+        result.adjacent_chunks = adjacent;
       }
 
       res.json(result);
     } catch (err) {
       console.error('[api] Chunk retrieval error:', err);
-      res.status(500).json({ error: (err as Error).message });
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  // ── GET /api/chunk/:chunkId/meta ───────────────────────────────────────────
+
+  app.get('/api/chunk/:chunkId/meta', async (req, res) => {
+    try {
+      const chunkId = req.params.chunkId;
+      if (!chunkId) {
+        res.status(400).json({ error: 'chunkId parameter is required' });
+        return;
+      }
+
+      if (!metadataStore) {
+        res.status(501).json({ error: 'Metadata store is not configured' });
+        return;
+      }
+
+      // Validate group from chunkId is among registered groups
+      const parsed = parseChunkId(chunkId);
+      if (parsed && !projectsByGroup.has(parsed.group)) {
+        res.status(403).json({ error: 'Access denied: unknown group' });
+        return;
+      }
+
+      const commitLimit = Math.min(
+        50,
+        Math.max(1, parseInt(String(req.query.commit_limit ?? '10'), 10) || 10)
+      );
+
+      const payload = await indexer.getChunkById(chunkId);
+      if (!payload) {
+        res.status(404).json({ error: 'Chunk not found' });
+        return;
+      }
+
+      const commits = metadataStore.getCommits(chunkId, commitLimit);
+      const tickets = metadataStore.getTickets(chunkId);
+      const latestCommit = metadataStore.getLatestCommit(chunkId);
+
+      res.json({
+        ...payload,
+        commits,
+        tickets,
+        latest_commit: latestCommit,
+      });
+    } catch (err) {
+      console.error('[api] Chunk meta retrieval error:', err);
+      res.status(500).json({ error: 'Internal server error' });
     }
   });
 
@@ -343,6 +399,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     indexer,
     getProjects,
     getGroupNames,
+    metadataStore,
   });
   mcpHandler.mount(app);
 

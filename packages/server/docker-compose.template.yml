@@ -49,7 +49,7 @@ services:
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:
-      - paparats_cache:/home/nodejs/.paparats/cache
+      - paparats_data:/home/nodejs/.paparats
     depends_on:
       qdrant:
         condition: service_healthy
@@ -82,7 +82,7 @@ services:
 
 volumes:
   qdrant_data:
-  paparats_cache:
+  paparats_data:
 
 networks:
   paparats-net:

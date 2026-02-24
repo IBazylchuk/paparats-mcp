@@ -6,12 +6,14 @@ import {
   normalizeExcludePatterns,
   LANGUAGE_EXCLUDE_DEFAULTS,
 } from '@paparats/shared';
+import { validateTicketPatterns } from './ticket-extractor.js';
 import type {
   PaparatsConfig,
   ProjectConfig,
   LanguageProfile,
   ResolvedIndexingConfig,
   ResolvedMetadataConfig,
+  GitMetadataConfig,
   WatcherConfig,
   EmbeddingsConfig,
 } from './types.js';
@@ -126,15 +128,45 @@ const DEFAULT_EMBEDDINGS: Required<EmbeddingsConfig> = {
   dimensions: 1536,
 };
 
+const DEFAULT_GIT_METADATA: Required<GitMetadataConfig> = {
+  enabled: true,
+  maxCommitsPerFile: 50,
+  ticketPatterns: [],
+};
+
+function validateGitConfig(git: GitMetadataConfig | undefined): void {
+  if (!git) return;
+  if (git.maxCommitsPerFile !== undefined) {
+    if (
+      !Number.isInteger(git.maxCommitsPerFile) ||
+      git.maxCommitsPerFile < 1 ||
+      git.maxCommitsPerFile > 500
+    ) {
+      throw new Error(
+        `metadata.git.maxCommitsPerFile must be between 1 and 500, got ${git.maxCommitsPerFile}`
+      );
+    }
+  }
+  if (git.ticketPatterns !== undefined) {
+    validateTicketPatterns(git.ticketPatterns);
+  }
+}
+
 function resolveMetadata(
   raw: PaparatsConfig['metadata'],
   projectName: string
 ): ResolvedMetadataConfig {
+  validateGitConfig(raw?.git);
   return {
     service: raw?.service ?? projectName,
     bounded_context: raw?.bounded_context ?? null,
     tags: raw?.tags ?? [],
     directory_tags: raw?.directory_tags ?? {},
+    git: {
+      enabled: raw?.git?.enabled ?? DEFAULT_GIT_METADATA.enabled,
+      maxCommitsPerFile: raw?.git?.maxCommitsPerFile ?? DEFAULT_GIT_METADATA.maxCommitsPerFile,
+      ticketPatterns: raw?.git?.ticketPatterns ?? DEFAULT_GIT_METADATA.ticketPatterns,
+    },
   };
 }
 

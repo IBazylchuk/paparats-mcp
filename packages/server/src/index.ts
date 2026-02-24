@@ -2,6 +2,7 @@ import { createEmbeddingProvider } from './embeddings.js';
 import { Indexer } from './indexer.js';
 import { Searcher } from './searcher.js';
 import { WatcherManager } from './watcher.js';
+import { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
 import { createApp } from './app.js';
 
@@ -26,10 +27,13 @@ if (OLLAMA_URL !== 'http://127.0.0.1:11434') {
   process.env.OLLAMA_URL = OLLAMA_URL;
 }
 
+const metadataStore = new MetadataStore();
+
 const indexer = new Indexer({
   qdrantUrl: QDRANT_URL,
   embeddingProvider,
   dimensions: embeddingProvider.dimensions,
+  metadataStore,
 });
 
 const searcher = new Searcher({
@@ -54,6 +58,7 @@ const { app, mcpHandler, setShuttingDown, getShuttingDown } = createApp({
   watcherManager,
   embeddingProvider,
   projectsByGroup,
+  metadataStore,
 });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
@@ -109,6 +114,7 @@ async function shutdown(): Promise<void> {
   mcpHandler.destroy();
   await watcherManager.stopAll();
   embeddingProvider.close();
+  metadataStore.close();
 
   process.exit(0);
 }
@@ -163,6 +169,12 @@ export type { QueryType, TaskPrefixConfig } from './task-prefixes.js';
 export { McpHandler } from './mcp-handler.js';
 export type { McpHandlerConfig } from './mcp-handler.js';
 
+export { MetadataStore } from './metadata-db.js';
+export { extractTickets, validateTicketPatterns } from './ticket-extractor.js';
+export type { ExtractedTicket } from './ticket-extractor.js';
+export { extractGitMetadata, collectIndexedChunks } from './git-metadata.js';
+export type { ExtractGitMetadataOptions, ExtractGitMetadataResult } from './git-metadata.js';
+
 export { ProjectWatcher, WatcherManager } from './watcher.js';
 export type { WatcherCallbacks, ProjectWatcherOptions, WatcherStats } from './watcher.js';
 
@@ -171,12 +183,15 @@ export type { CreateAppOptions, CreateAppResult } from './app.js';
 
 export type {
   ChunkKind,
+  GitMetadataConfig,
   MetadataConfig,
   ResolvedMetadataConfig,
   PaparatsConfig,
   ProjectConfig,
   GroupInfo,
   ChunkResult,
+  ChunkCommit,
+  ChunkTicket,
   SearchResult,
   SearchMetrics,
   SearchResponse,

@@ -366,6 +366,107 @@ injection: !!js/function >
     });
   });
 
+  describe('git metadata config', () => {
+    const projectDir = path.resolve('/some/project');
+
+    it('resolves default git config when none provided', () => {
+      const raw = { group: 'g', language: 'ruby' };
+      const config = resolveProject(projectDir, raw);
+      expect(config.metadata.git).toBeDefined();
+      expect(config.metadata.git.enabled).toBe(true);
+      expect(config.metadata.git.maxCommitsPerFile).toBe(50);
+      expect(config.metadata.git.ticketPatterns).toEqual([]);
+    });
+
+    it('resolves partial git config with defaults', () => {
+      const raw = {
+        group: 'g',
+        language: 'ruby',
+        metadata: { git: { maxCommitsPerFile: 100 } },
+      };
+      const config = resolveProject(projectDir, raw);
+      expect(config.metadata.git.enabled).toBe(true);
+      expect(config.metadata.git.maxCommitsPerFile).toBe(100);
+      expect(config.metadata.git.ticketPatterns).toEqual([]);
+    });
+
+    it('resolves git.enabled = false', () => {
+      const raw = {
+        group: 'g',
+        language: 'ruby',
+        metadata: { git: { enabled: false } },
+      };
+      const config = resolveProject(projectDir, raw);
+      expect(config.metadata.git.enabled).toBe(false);
+    });
+
+    it('rejects maxCommitsPerFile below 1', () => {
+      const raw = {
+        group: 'g',
+        language: 'ruby',
+        metadata: { git: { maxCommitsPerFile: 0 } },
+      };
+      expect(() => resolveProject(projectDir, raw)).toThrow(
+        'metadata.git.maxCommitsPerFile must be between 1 and 500'
+      );
+    });
+
+    it('rejects maxCommitsPerFile above 500', () => {
+      const raw = {
+        group: 'g',
+        language: 'ruby',
+        metadata: { git: { maxCommitsPerFile: 501 } },
+      };
+      expect(() => resolveProject(projectDir, raw)).toThrow(
+        'metadata.git.maxCommitsPerFile must be between 1 and 500'
+      );
+    });
+
+    it('rejects invalid ticket patterns', () => {
+      const raw = {
+        group: 'g',
+        language: 'ruby',
+        metadata: { git: { ticketPatterns: ['[invalid'] } },
+      };
+      expect(() => resolveProject(projectDir, raw)).toThrow('Invalid ticket pattern');
+    });
+
+    it('accepts valid ticket patterns', () => {
+      const raw = {
+        group: 'g',
+        language: 'ruby',
+        metadata: { git: { ticketPatterns: ['TASK_\\d+', 'BUG-\\d+'] } },
+      };
+      const config = resolveProject(projectDir, raw);
+      expect(config.metadata.git.ticketPatterns).toEqual(['TASK_\\d+', 'BUG-\\d+']);
+    });
+
+    it('parses git metadata from YAML file', () => {
+      const tmpDir = createTempDir();
+      try {
+        writeConfig(
+          tmpDir,
+          `
+group: my-group
+language: ruby
+metadata:
+  git:
+    enabled: true
+    maxCommitsPerFile: 100
+    ticketPatterns:
+      - 'TASK_\\d+'
+`
+        );
+        const config = loadProject(tmpDir);
+        expect(config.metadata.git.enabled).toBe(true);
+        expect(config.metadata.git.maxCommitsPerFile).toBe(100);
+        expect(config.metadata.git.ticketPatterns).toEqual(['TASK_\\d+']);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('metadata config', () => {
     const projectDir = path.resolve('/some/project');
 

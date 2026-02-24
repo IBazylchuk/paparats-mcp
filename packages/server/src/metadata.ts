@@ -18,7 +18,7 @@ export function resolveTags(metadata: ResolvedMetadataConfig, filePath: string):
     }
   }
 
-  // Auto-detect tags from path if no directory_tags matched anything extra
+  // Auto-detect additional tags from the file path
   const autoTags = autoDetectTags(filePath);
   for (const tag of autoTags) {
     tags.add(tag);

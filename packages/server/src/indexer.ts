@@ -7,6 +7,8 @@ import { v7 as uuidv7 } from 'uuid';
 import PQueue from 'p-queue';
 import { Chunker } from './chunker.js';
 import { resolveTags } from './metadata.js';
+import { collectIndexedChunks, extractGitMetadata } from './git-metadata.js';
+import type { MetadataStore } from './metadata-db.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { ProjectConfig, IndexerStats } from './types.js';
 
@@ -64,6 +66,8 @@ export interface IndexerConfig {
   timeout?: number;
   /** Optional Qdrant client for testing (skips creating from qdrantUrl) */
   qdrantClient?: QdrantClient;
+  /** Optional metadata store for git history enrichment */
+  metadataStore?: MetadataStore;
 }
 
 /** Qdrant timeout in milliseconds (default: 30s) */
@@ -75,6 +79,7 @@ export class Indexer {
   private chunkers = new Map<string, Chunker>();
   private provider: CachedEmbeddingProvider;
   private dimensions: number;
+  private metadataStore: MetadataStore | null;
   stats: IndexerStats;
 
   constructor(config: IndexerConfig) {
@@ -86,7 +91,13 @@ export class Indexer {
       });
     this.provider = config.embeddingProvider;
     this.dimensions = config.dimensions;
+    this.metadataStore = config.metadataStore ?? null;
     this.stats = { files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 };
+  }
+
+  /** Expose Qdrant client for git-metadata enrichment */
+  get qdrantClient(): QdrantClient {
+    return this.qdrant;
   }
 
   private getChunker(project: ProjectConfig): Chunker {
@@ -213,6 +224,20 @@ export class Indexer {
       await this.retryQdrant(() =>
         this.qdrant.createPayloadIndex(groupName, {
           field_name: 'tags',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(groupName, {
+          field_name: 'last_commit_at',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(groupName, {
+          field_name: 'ticket_keys',
           field_schema: 'keyword',
           wait: true,
         })
@@ -380,6 +405,30 @@ export class Indexer {
 
     if (this.stats.skipped > 0) {
       console.log(`  [indexer] Skipped ${this.stats.skipped}/${files.length} files (unchanged)`);
+    }
+
+    // Post-indexing: extract git metadata if enabled
+    if (this.metadataStore && project.metadata.git.enabled && totalChunks > 0) {
+      try {
+        const chunksByFile = await collectIndexedChunks(this.qdrant, groupName, project.name);
+        const result = await extractGitMetadata({
+          projectPath: project.path,
+          group: groupName,
+          project: project.name,
+          maxCommitsPerFile: project.metadata.git.maxCommitsPerFile,
+          ticketPatterns: project.metadata.git.ticketPatterns,
+          metadataStore: this.metadataStore,
+          qdrantClient: this.qdrant,
+          chunksByFile,
+        });
+        console.log(
+          `  [indexer] Git metadata: ${result.filesProcessed} files, ${result.commitsStored} commits, ${result.ticketsStored} tickets`
+        );
+      } catch (err) {
+        console.warn(
+          `  [indexer] Git metadata extraction failed (non-fatal): ${(err as Error).message}`
+        );
+      }
     }
 
     return totalChunks;
@@ -734,7 +783,8 @@ export class Indexer {
       const point = result.points[0];
       if (!point) return null;
       return point.payload as Record<string, unknown>;
-    } catch {
+    } catch (err) {
+      console.error(`[indexer] Failed to get chunk by ID ${chunkId}:`, err);
       return null;
     }
   }
@@ -752,22 +802,34 @@ export class Indexer {
     const maxLine = endLine + radiusLines;
 
     try {
-      const result = await this.retryQdrant(() =>
-        this.qdrant.scroll(groupName, {
-          filter: {
-            must: [
-              { key: 'project', match: { value: project } },
-              { key: 'file', match: { value: file } },
-            ],
-          },
-          with_payload: true,
-          with_vector: false,
-          limit: 100,
-        })
-      );
+      const allPoints: Array<Record<string, unknown>> = [];
+      let offset: string | number | undefined = undefined;
 
-      return result.points
-        .map((p) => p.payload as Record<string, unknown>)
+      for (;;) {
+        const result = await this.retryQdrant(() =>
+          this.qdrant.scroll(groupName, {
+            filter: {
+              must: [
+                { key: 'project', match: { value: project } },
+                { key: 'file', match: { value: file } },
+              ],
+            },
+            with_payload: true,
+            with_vector: false,
+            limit: 100,
+            ...(offset !== undefined ? { offset } : {}),
+          })
+        );
+
+        for (const p of result.points) {
+          allPoints.push(p.payload as Record<string, unknown>);
+        }
+
+        if (!result.next_page_offset) break;
+        offset = result.next_page_offset as string | number;
+      }
+
+      return allPoints
         .filter((p) => {
           const sl = p['startLine'] as number;
           const el = p['endLine'] as number;
@@ -775,7 +837,11 @@ export class Indexer {
           return sl <= maxLine && el >= minLine;
         })
         .sort((a, b) => (a['startLine'] as number) - (b['startLine'] as number));
-    } catch {
+    } catch (err) {
+      console.error(
+        `[indexer] Failed to get adjacent chunks for ${groupName}/${project}/${file}:`,
+        err
+      );
       return [];
     }
   }
