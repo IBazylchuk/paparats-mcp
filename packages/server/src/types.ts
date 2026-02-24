@@ -140,6 +140,9 @@ export interface SearchResult {
   service: string | null;
   bounded_context: string | null;
   tags: string[];
+  last_commit_at: string | null;
+  defines_symbols: string[];
+  uses_symbols: string[];
 }
 
 export interface SearchMetrics {

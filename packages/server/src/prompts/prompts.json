@@ -1,11 +1,13 @@
 {
-  "serverInstructions": "Semantic code search across workspace projects.\n\nMANDATORY: You MUST call search_code BEFORE answering ANY question about the codebase. This includes questions containing: \"how does X work\", \"where is X\", \"find X\", \"what does X do\", \"how many X\", \"list X\", \"count X\", \"which files\", \"show me X\", \"is there a X\", implementation details, patterns, flows, or any reference to project code.\n\nDo NOT answer from memory or guess. search_code returns relevant code chunks ranked by cosine similarity.\n\nScore interpretation (included with each result):\n- 60%+ = high confidence — trust these results\n- 40-59% = partial match — use these as hints, supplement with grep or file reading\n- <40% = low confidence — do not rely on these; fall back to grep, file reading, or ask the user\n\nWorkflow: search_code first → evaluate result scores → supplement with grep/file reading if scores are low → answer with citations.",
+  "codingInstructions": "Semantic code search and knowledge base across workspace projects.\n\nAlways call search_code before answering code questions. Do not guess or answer from memory.\n\nWorkflow: search_code → evaluate scores → get_chunk for details → find_usages for dependencies → answer with citations.\n\nScore interpretation (included with each result):\n- 60%+ = high confidence — trust these results\n- 40-59% = partial match — supplement with grep or file reading\n- <40% = low confidence — fall back to grep, file reading, or ask the user\n\nUse reindex when files are added/changed and search results seem stale. Use health_check to verify indexing status.",
+  "supportInstructions": "Semantic code search and knowledge base across workspace projects.\n\nThis tool is used by support team members who have no direct code access.\nAlways explain results in plain language, not just code snippets.\nAlways include: which service, last changed (date + author), linked tickets.\nNever tell the user to 'check the file' or 'run grep' — they cannot.\n\nDecision tree — pick the right tool for the question:\n- 'How does X work?' → explain_feature(X)\n- 'When was X changed / who changed it?' → recent_changes(X)\n- 'What breaks if I change X?' / 'What else is affected?' → impact_analysis(X)\n- 'Show me the code for X' → search_code(X) → get_chunk(chunk_id)\n- 'Where is X used?' / 'What calls X?' → search_code(X) → find_usages(chunk_id)\n- 'Find recent changes to X' → search_changes(query, since)\nAlways call search_code before answering code questions UNLESS a high-level tool (explain_feature, recent_changes, impact_analysis) is more appropriate.\n\nScore interpretation (included with each result):\n- 60%+ = high confidence — trust these results\n- 40-59% = partial match — try rephrasing or narrowing the query\n- <40% = low confidence — ask the user for more specific terms\n\nWhen answering, always include:\n1. What the feature does (1-2 sentences, plain language)\n2. Which service/file owns it (from payload: service, file_path)\n3. Last changed: date, author, ticket (from get_chunk_meta or recent_changes)\n4. Where it's used (from find_usages, if relevant)\nFormat ticket keys as references: [JR-1234], [GH-567].\n\nIf search returns no results or all scores are below 40%, respond: 'I could not find relevant code for this question. Try rephrasing or provide more specific terms (service name, function name, ticket number).'",
   "common": {
-    "searchFirst": "MANDATORY: Always call search_code BEFORE answering any code question. Never guess or answer from memory."
+    "searchFirst": "Always call search_code before answering any code question.",
+    "noResults": "If search returns no results or all scores are below 40%: try grep or file reading if available. Otherwise respond: 'I could not find relevant code for this question. Try rephrasing or provide more specific terms (service name, function name, ticket number).'"
   },
   "tools": {
     "search_code": {
-      "description": "REQUIRED — call this FIRST for ANY code question.\n\nSemantic code search across all indexed projects. Returns relevant code chunks ranked by cosine similarity score.\n\nTriggers (call this when the user asks about): code location, implementation, \"how X works\", \"how many X\", \"what versions of X\", \"count X\", \"list X\", patterns, flows, error handling, auth, API usage, or ANY reference to project code.\n\nScore interpretation:\n- 60%+ = high confidence — trust these results\n- 40-59% = partial match — supplement with grep or file reading\n- <40% = low confidence — fall back to grep/file reading\n\nWHY: Returns only relevant chunks (50-90% fewer tokens vs full files). Searches by meaning, not just keywords.\n\nWORKFLOW: Search first → evaluate scores → load specific files only if scores are low or more context is needed.\n\nExamples: \"auth flow\", \"how many versions of authentication\", \"GraphQL mutations for user\", \"error handling patterns\""
+      "description": "Semantic code search. Returns ranked code chunks with symbols and confidence scores. Use first for any code question."
     },
     "health_check": {
       "description": "Check indexing status: number of indexed chunks per group and any running reindex jobs.\n\nUse to verify projects are indexed before searching or debugging empty results."
@@ -14,33 +16,39 @@
       "description": "Trigger full reindex of a group or all groups. Runs in background.\n\nReturns job ID to track progress via health_check. Use after adding new files or changing project config."
     },
     "get_chunk": {
-      "description": "Retrieve a specific code chunk by its chunk_id. Use this to fetch exact code locations from search results.\n\nThe chunk_id is returned by search_code in each result. Optionally expand context with radius_lines to include adjacent chunks from the same file.\n\nReturns: metadata header + code block with line numbers."
+      "description": "Get a code chunk by ID with optional surrounding context. Returns code with symbol definitions and usage info. Use to expand on search results."
     },
     "get_chunk_meta": {
-      "description": "Get git metadata for a code chunk: recent commits, authors, and ticket references.\n\nUse after search_code to understand who last modified a chunk, when, and what tickets are associated with it.\n\nReturns: metadata header + code block + recent commits table + ticket references."
+      "description": "Get git history and ticket references for a code chunk. Returns commits, authors, dates, and linked tickets. No code — use get_chunk for code."
     },
     "search_changes": {
-      "description": "Search for recently changed code. Combines semantic search with a date filter on the last commit time.\n\nUse to find code that was modified after a specific date. Useful for understanding recent changes, reviewing what changed in a sprint, or finding code related to a recent incident.\n\nExamples: \"auth changes since last week\", \"API modifications in the last month\""
+      "description": "Search code modified after a date. Same as search_code but filtered by last commit time. Each result shows when it was last changed. The since parameter accepts ISO 8601 date (e.g. '2026-01-01') or relative strings like '7 days ago', '1 month ago'."
     },
     "find_usages": {
-      "description": "Find all code chunks that use symbols defined in the given chunk. Shows cross-file references and callers.\n\nUse after search_code or get_chunk to understand who calls a function, uses a class, or references a type.\n\nRequires chunk_id from search results. Optionally filter by relation type (calls, references).\n\nReturns: list of chunks that reference symbols defined in the target chunk, grouped by symbol."
+      "description": "Find symbol relationships: what calls this code, and what this code calls. Supports incoming (callers), outgoing (dependencies), or both directions. Use after search_code or get_chunk when the user asks 'where is this used?', 'what calls this?', or 'what does this depend on?'. Pass chunk_id from search results."
     },
-    "list_related_chunks": {
-      "description": "List all chunks related to the given chunk: both callers/users (who uses this chunk's symbols) and callees/dependencies (symbols this chunk uses that are defined elsewhere).\n\nUse to understand a chunk's role in the codebase — what it depends on and what depends on it.\n\nReturns: two sections — 'Callers / Users' and 'Callees / Dependencies' with chunk details."
+    "explain_feature": {
+      "description": "Comprehensive feature analysis in one call. Returns code locations, recent changes, and related modules for a question — no code content. Use as the first tool when the user asks 'how does X work?'. Use get_chunk to drill into specific chunks afterward."
+    },
+    "recent_changes": {
+      "description": "Timeline of recent changes matching a query. Returns commits grouped by date with affected files and tickets — no code content. Supports date filtering via since parameter (ISO 8601 or relative like '7 days ago'). Use as the first tool when the user asks 'when was X changed?' or 'who changed X?'."
+    },
+    "impact_analysis": {
+      "description": "Shows what other services and modules depend on a given feature. Use when the user asks 'what else could be affected?', 'which teams own related code?', or 'what breaks if I change X?'. Returns dependency graph grouped by service — no code content."
     }
   },
   "resources": {
     "projectOverview": {
       "searchCapabilitiesTitle": "## Search Capabilities",
-      "searchCapabilitiesBody": "MANDATORY: Use search_code tool FIRST for ANY code question. This is MORE EFFICIENT than loading full files (50-90% fewer tokens). Do not guess or answer from memory — always search first.",
+      "searchCapabilitiesBody": "Use search_code tool first for any code question. Returns only relevant chunks (50-90% fewer tokens vs full files). Searches by meaning, not just keywords.",
       "exampleQueries": [
         "\"authentication flow\"",
-        "\"how many versions of auth\"",
         "\"GraphQL mutations for user\"",
+        "\"error handling patterns\"",
         "\"AWS infrastructure setup\""
       ],
-      "scoreInterpretation": "Each search result includes a confidence score. 60%+ means high confidence (trust the result). 40-59% means partial match (supplement with grep or file reading). Below 40% means low confidence (fall back to grep, file reading, or ask the user).",
-      "searchFirstNote": "MANDATORY: Always call search_code BEFORE answering any code question. Never guess or answer from memory."
+      "scoreInterpretation": "Each search result includes a confidence score. 60%+ means high confidence (trust the result). 40-59% means partial match (supplement with grep or file reading if available, or try rephrasing). Below 40% means low confidence (fall back to grep/file reading, rephrase, or ask the user for more specific terms).",
+      "searchFirstNote": "Always call search_code before answering any code question."
     }
   }
 }

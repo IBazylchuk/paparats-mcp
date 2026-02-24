@@ -22,6 +22,7 @@ export class EmbeddingCache {
   hitCount = 0;
   private readonly maxCacheSize: number;
   private closed = false;
+  private approximateSize: number;
 
   constructor(dbPath?: string, maxCacheSize = DEFAULT_MAX_CACHE_SIZE) {
     const p = dbPath ?? CACHE_DB_PATH;
@@ -63,6 +64,9 @@ export class EmbeddingCache {
         SELECT rowid FROM embeddings ORDER BY created_at ASC LIMIT ?
       )
     `);
+
+    // Initialize approximate size once at startup to avoid COUNT(*) on every write
+    this.approximateSize = (this.countStmt.get() as { cnt: number }).cnt;
   }
 
   get(hash: string, model: string): number[] | null {
@@ -78,10 +82,16 @@ export class EmbeddingCache {
     const buf = Buffer.from(new Float32Array(vector).buffer);
     this.setStmt.run(hash, model, buf);
 
-    const { cnt } = this.countStmt.get() as { cnt: number };
-    if (cnt > this.maxCacheSize) {
-      const toDelete = cnt - this.maxCacheSize;
-      this.cleanupStmt.run(toDelete);
+    // Track approximate size to avoid COUNT(*) on every write
+    this.approximateSize++;
+    if (this.approximateSize > this.maxCacheSize) {
+      const { cnt } = this.countStmt.get() as { cnt: number };
+      this.approximateSize = cnt;
+      if (cnt > this.maxCacheSize) {
+        const toDelete = cnt - this.maxCacheSize;
+        this.cleanupStmt.run(toDelete);
+        this.approximateSize = this.maxCacheSize;
+      }
     }
   }
 

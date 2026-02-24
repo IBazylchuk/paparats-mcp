@@ -207,31 +207,51 @@ export function extractSymbolsForChunks(
       // Query compilation failed — skip usages
     }
 
-    // Collect all captures once (faster than per-chunk queries)
+    // Collect all captures once, sorted by row (tree-sitter returns them in order)
     const defCaptures = defQuery ? defQuery.captures(tree.rootNode) : [];
     const useCaptures = useQuery ? useQuery.captures(tree.rootNode) : [];
 
-    return chunks.map((chunk) => {
+    // Two-pointer approach: captures and chunks are both sorted by line number,
+    // so we advance pointers instead of scanning all captures for every chunk.
+    const results: SymbolExtractionResult[] = [];
+    let defIdx = 0;
+    let useIdx = 0;
+
+    for (const chunk of chunks) {
       const defines = new Map<string, ChunkKind>();
       const uses = new Set<string>();
 
-      for (const capture of defCaptures) {
-        const row = capture.node.startPosition.row;
-        if (row >= chunk.startLine && row <= chunk.endLine) {
-          const text = capture.node.text;
-          if (!isNoise(text) && !defines.has(text)) {
-            defines.set(text, resolveKind(capture.node));
-          }
+      // Advance defIdx past captures before this chunk
+      while (
+        defIdx < defCaptures.length &&
+        defCaptures[defIdx]!.node.startPosition.row < chunk.startLine
+      ) {
+        defIdx++;
+      }
+      // Collect def captures within this chunk
+      for (let d = defIdx; d < defCaptures.length; d++) {
+        const row = defCaptures[d]!.node.startPosition.row;
+        if (row > chunk.endLine) break;
+        const text = defCaptures[d]!.node.text;
+        if (!isNoise(text) && !defines.has(text)) {
+          defines.set(text, resolveKind(defCaptures[d]!.node));
         }
       }
 
-      for (const capture of useCaptures) {
-        const row = capture.node.startPosition.row;
-        if (row >= chunk.startLine && row <= chunk.endLine) {
-          const text = capture.node.text;
-          if (!isNoise(text)) {
-            uses.add(text);
-          }
+      // Advance useIdx past captures before this chunk
+      while (
+        useIdx < useCaptures.length &&
+        useCaptures[useIdx]!.node.startPosition.row < chunk.startLine
+      ) {
+        useIdx++;
+      }
+      // Collect use captures within this chunk
+      for (let u = useIdx; u < useCaptures.length; u++) {
+        const row = useCaptures[u]!.node.startPosition.row;
+        if (row > chunk.endLine) break;
+        const text = useCaptures[u]!.node.text;
+        if (!isNoise(text)) {
+          uses.add(text);
         }
       }
 
@@ -248,12 +268,14 @@ export function extractSymbolsForChunks(
         })
       );
 
-      return {
+      results.push({
         defines_symbols: defined_symbols.map((d) => d.name),
         uses_symbols: Array.from(uses),
         defined_symbols,
-      };
-    });
+      });
+    }
+
+    return results;
   } finally {
     defQuery?.delete();
     useQuery?.delete();

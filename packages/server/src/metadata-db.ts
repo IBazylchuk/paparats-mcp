@@ -27,6 +27,9 @@ export class MetadataStore {
   private getEdgesFromStmt: Database.Statement;
   private getEdgesToStmt: Database.Statement;
   private deleteChunkEdgesStmt: Database.Statement;
+  private deleteProjectCommitsStmt: Database.Statement;
+  private deleteProjectTicketsStmt: Database.Statement;
+  private deleteProjectEdgesStmt: Database.Statement;
 
   constructor(dbPath?: string) {
     const p = dbPath ?? DEFAULT_DB_PATH;
@@ -108,6 +111,15 @@ export class MetadataStore {
     this.deleteChunkEdgesStmt = this.db.prepare(
       'DELETE FROM symbol_edges WHERE from_chunk_id = ? OR to_chunk_id = ?'
     );
+    this.deleteProjectCommitsStmt = this.db.prepare(
+      'DELETE FROM chunk_commits WHERE chunk_id LIKE ?'
+    );
+    this.deleteProjectTicketsStmt = this.db.prepare(
+      'DELETE FROM chunk_tickets WHERE chunk_id LIKE ?'
+    );
+    this.deleteProjectEdgesStmt = this.db.prepare(
+      'DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? OR to_chunk_id LIKE ?'
+    );
   }
 
   upsertCommits(chunkId: string, commits: Omit<ChunkCommit, 'chunk_id'>[]): void {
@@ -164,11 +176,13 @@ export class MetadataStore {
 
   deleteByProject(group: string, project: string): void {
     const prefix = `${group}//${project}//`;
-    this.db.prepare('DELETE FROM chunk_commits WHERE chunk_id LIKE ?').run(`${prefix}%`);
-    this.db.prepare('DELETE FROM chunk_tickets WHERE chunk_id LIKE ?').run(`${prefix}%`);
-    this.db
-      .prepare('DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? OR to_chunk_id LIKE ?')
-      .run(`${prefix}%`, `${prefix}%`);
+    const pattern = `${prefix}%`;
+    const tx = this.db.transaction(() => {
+      this.deleteProjectCommitsStmt.run(pattern);
+      this.deleteProjectTicketsStmt.run(pattern);
+      this.deleteProjectEdgesStmt.run(pattern, pattern);
+    });
+    tx();
   }
 
   // ── Symbol edge methods ─────────────────────────────────────────────────
@@ -196,9 +210,8 @@ export class MetadataStore {
 
   deleteEdgesByProject(group: string, project: string): void {
     const prefix = `${group}//${project}//`;
-    this.db
-      .prepare('DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? OR to_chunk_id LIKE ?')
-      .run(`${prefix}%`, `${prefix}%`);
+    const pattern = `${prefix}%`;
+    this.deleteProjectEdgesStmt.run(pattern, pattern);
   }
 
   close(): void {

@@ -240,6 +240,9 @@ export async function extractGitMetadata(
     if (commits.length === 0) continue;
     filesProcessed++;
 
+    // Collect Qdrant payload updates for this file, then batch them
+    const pendingUpdates: Array<{ chunkId: string; payload: Record<string, unknown> }> = [];
+
     for (const chunk of chunks) {
       // Find which commits affected this chunk
       const affectingCommits = commits.filter((commit) => {
@@ -278,7 +281,7 @@ export async function extractGitMetadata(
         ticketsStored += allTickets.size;
       }
 
-      // Enrich Qdrant payload with latest commit info and ticket keys
+      // Build Qdrant payload update
       const latest = metadataStore.getLatestCommit(chunk.chunk_id);
       const tickets = metadataStore.getTickets(chunk.chunk_id);
 
@@ -293,16 +296,27 @@ export async function extractGitMetadata(
       }
 
       if (Object.keys(payloadUpdate).length > 0) {
-        try {
-          await qdrantClient.setPayload(group, {
-            payload: payloadUpdate,
+        pendingUpdates.push({ chunkId: chunk.chunk_id, payload: payloadUpdate });
+      }
+    }
+
+    // Batch Qdrant payload updates for all chunks in this file
+    if (pendingUpdates.length > 0) {
+      const results = await Promise.allSettled(
+        pendingUpdates.map((update) =>
+          qdrantClient.setPayload(group, {
+            payload: update.payload,
             filter: {
-              must: [{ key: 'chunk_id', match: { value: chunk.chunk_id } }],
+              must: [{ key: 'chunk_id', match: { value: update.chunkId } }],
             },
-          });
-        } catch (err) {
+          })
+        )
+      );
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i]!;
+        if (result.status === 'rejected') {
           console.warn(
-            `[git-metadata] Failed to update Qdrant payload for ${chunk.chunk_id}: ${(err as Error).message}`
+            `[git-metadata] Failed to update Qdrant payload for ${pendingUpdates[i]!.chunkId}: ${result.reason}`
           );
         }
       }
