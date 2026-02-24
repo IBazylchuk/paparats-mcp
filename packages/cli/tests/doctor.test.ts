@@ -207,13 +207,8 @@ describe('doctor', () => {
       });
 
       it('reads model from config when available', async () => {
-        const ollamaServer = await createTestServer((req, res) => {
-          res.writeHead(200);
-          res.end(JSON.stringify({ models: [{ name: 'custom-model' }] }));
-        });
-        const ollamaPort = getPort(ollamaServer);
-
-        process.env.OLLAMA_URL = `http://127.0.0.1:${ollamaPort}`;
+        const customOllamaUrl = 'http://127.0.0.1:19999';
+        process.env.OLLAMA_URL = customOllamaUrl;
         mockedExecSync.mockReturnValue(Buffer.from(''));
         mockedFindConfigDir.mockReturnValue('/tmp/proj');
         mockedReadConfig.mockReturnValue({
@@ -225,39 +220,50 @@ describe('doctor', () => {
           projectDir: '/tmp/proj',
         });
 
+        const mockFetch = vi.fn((url: string | URL) => {
+          const urlStr = typeof url === 'string' ? url : url.href;
+          if (urlStr.startsWith(customOllamaUrl)) {
+            return Promise.resolve({
+              ok: true,
+              json: () =>
+                Promise.resolve({
+                  models: [{ name: 'custom-model' }],
+                }),
+            } as Response);
+          }
+          return Promise.resolve({ ok: false, status: 503 } as Response);
+        });
+        globalThis.fetch = mockFetch;
+
         const results = await runChecks('http://localhost:9876');
 
         const ollamaCheck = results.find((r) => r.name === 'Ollama');
         expect(ollamaCheck?.ok).toBe(true);
         expect(ollamaCheck?.message).toContain('custom-model');
-
-        await new Promise<void>((resolve, reject) => {
-          ollamaServer.close((err) => (err ? reject(err) : resolve()));
-        });
       });
     });
 
     describe('Qdrant check', () => {
       it('uses QDRANT_URL from env', async () => {
-        const qdrantServer = await createTestServer((_req, res) => {
-          res.writeHead(200);
-          res.end('ok');
-        });
-        const qdrantPort = getPort(qdrantServer);
-
-        process.env.QDRANT_URL = `http://127.0.0.1:${qdrantPort}`;
+        const customQdrantUrl = 'http://127.0.0.1:16333';
+        process.env.QDRANT_URL = customQdrantUrl;
         mockedExecSync.mockReturnValue(Buffer.from(''));
         mockedFindConfigDir.mockReturnValue(null);
+
+        const mockFetch = vi.fn((url: string | URL) => {
+          const urlStr = typeof url === 'string' ? url : url.href;
+          if (urlStr.startsWith(customQdrantUrl)) {
+            return Promise.resolve({ ok: true, status: 200 } as Response);
+          }
+          return Promise.resolve({ ok: false, status: 503 } as Response);
+        });
+        globalThis.fetch = mockFetch;
 
         const results = await runChecks('http://localhost:9876');
 
         const qdrantCheck = results.find((r) => r.name === 'Qdrant');
         expect(qdrantCheck?.ok).toBe(true);
-        expect(qdrantCheck?.message).toContain(`127.0.0.1:${qdrantPort}`);
-
-        await new Promise<void>((resolve, reject) => {
-          qdrantServer.close((err) => (err ? reject(err) : resolve()));
-        });
+        expect(qdrantCheck?.message).toContain('127.0.0.1:16333');
       });
     });
 
