@@ -126,7 +126,10 @@ async function getFileCommits(
         };
       })
       .filter((c): c is CommitInfo => c !== null);
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[git-metadata] Failed to get commits for ${filePath} in ${projectPath}: ${(err as Error).message}`
+    );
     return [];
   }
 }
@@ -176,7 +179,10 @@ async function getFileDiffHunks(
     }
 
     return hunks;
-  } catch {
+  } catch (err) {
+    console.warn(
+      `[git-metadata] Failed to get diff hunks for ${filePath} in ${projectPath}: ${(err as Error).message}`
+    );
     return [];
   }
 }

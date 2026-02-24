@@ -261,6 +261,13 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         Math.max(0, parseInt(String(req.query.radius_lines ?? '0'), 10) || 0)
       );
 
+      // Validate group from chunkId is among registered groups
+      const parsed = parseChunkId(chunkId);
+      if (parsed && !projectsByGroup.has(parsed.group)) {
+        res.status(403).json({ error: 'Access denied: unknown group' });
+        return;
+      }
+
       const payload = await indexer.getChunkById(chunkId);
       if (!payload) {
         res.status(404).json({ error: 'Chunk not found' });
@@ -269,19 +276,16 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
       const result: Record<string, unknown> = { ...payload };
 
-      if (radiusLines > 0) {
-        const parsed = parseChunkId(chunkId);
-        if (parsed) {
-          const adjacent = await indexer.getAdjacentChunks(
-            parsed.group,
-            parsed.project,
-            parsed.file,
-            payload['startLine'] as number,
-            payload['endLine'] as number,
-            radiusLines
-          );
-          result.adjacent_chunks = adjacent;
-        }
+      if (radiusLines > 0 && parsed) {
+        const adjacent = await indexer.getAdjacentChunks(
+          parsed.group,
+          parsed.project,
+          parsed.file,
+          payload['startLine'] as number,
+          payload['endLine'] as number,
+          radiusLines
+        );
+        result.adjacent_chunks = adjacent;
       }
 
       res.json(result);
@@ -303,6 +307,13 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
       if (!metadataStore) {
         res.status(501).json({ error: 'Metadata store is not configured' });
+        return;
+      }
+
+      // Validate group from chunkId is among registered groups
+      const parsed = parseChunkId(chunkId);
+      if (parsed && !projectsByGroup.has(parsed.group)) {
+        res.status(403).json({ error: 'Access denied: unknown group' });
         return;
       }
 
