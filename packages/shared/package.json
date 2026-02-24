@@ -2,7 +2,7 @@
   "name": "@paparats/shared",
   "version": "0.2.2",
   "type": "module",
-  "description": "Shared utilities for Paparats MCP (path validation, gitignore filtering, exclude patterns)",
+  "description": "Shared utilities for Paparats MCP - path validation, gitignore filtering, language-aware exclude patterns",
   "license": "MIT",
   "author": "Ilya Bazylchuk",
   "homepage": "https://github.com/IBazylchuk/paparats-mcp#readme",
@@ -12,7 +12,10 @@
     "gitignore",
     "path-validation",
     "exclude-patterns",
-    "file-filtering"
+    "file-filtering",
+    "language-excludes",
+    "code-indexing",
+    "paparats"
   ],
   "repository": {
     "type": "git",
