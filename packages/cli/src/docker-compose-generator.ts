@@ -5,7 +5,6 @@ export type InstallMode = 'developer' | 'server' | 'support';
 
 export interface DockerComposeConfig {
   ollamaMode: OllamaMode;
-  gpu: boolean;
   ports?: {
     qdrant?: number;
     paparats?: number;
@@ -104,14 +103,14 @@ function paparatsService(port: number, ollamaUrl: string): ComposeService {
   };
 }
 
-function ollamaService(port: number, gpu: boolean): ComposeService {
-  const svc: ComposeService = {
+function ollamaService(port: number): ComposeService {
+  return {
     image: 'ibaz/paparats-ollama:latest',
     container_name: 'paparats-ollama',
     ports: [`\${OLLAMA_PORT:-${port}}:11434`],
     volumes: ['ollama_data:/root/.ollama'],
     healthcheck: {
-      test: ['CMD', 'curl', '-f', 'http://localhost:11434/api/tags'],
+      test: ['CMD', 'wget', '-q', '-O', '/dev/null', 'http://localhost:11434/api/tags'],
       interval: '10s',
       timeout: '3s',
       retries: 5,
@@ -121,18 +120,6 @@ function ollamaService(port: number, gpu: boolean): ComposeService {
     restart: 'unless-stopped',
     networks: ['paparats-net'],
   };
-
-  if (gpu) {
-    svc.deploy = {
-      resources: {
-        reservations: {
-          devices: [{ driver: 'nvidia', count: 'all', capabilities: ['gpu'] }],
-        },
-      },
-    };
-  }
-
-  return svc;
 }
 
 function indexerService(config: ServerComposeConfig): ComposeService {
@@ -192,7 +179,7 @@ export function generateDockerCompose(config: DockerComposeConfig): string {
   };
 
   if (config.ollamaMode === 'docker') {
-    compose.services['ollama'] = ollamaService(ollamaPort, config.gpu);
+    compose.services['ollama'] = ollamaService(ollamaPort);
     compose.services['paparats']!.depends_on!['ollama'] = { condition: 'service_healthy' };
     compose.volumes['ollama_data'] = null;
   }
@@ -214,7 +201,7 @@ export function generateServerCompose(config: ServerComposeConfig): string {
   const compose: ComposeFile = {
     services: {
       qdrant: qdrantService(qdrantPort),
-      ollama: ollamaService(ollamaPort, config.gpu),
+      ollama: ollamaService(ollamaPort),
       paparats: paparatsService(paparatsPort, 'http://ollama:11434'),
       'paparats-indexer': indexerService(config),
     },
