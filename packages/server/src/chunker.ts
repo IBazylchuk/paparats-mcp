@@ -1,6 +1,5 @@
 import crypto from 'crypto';
 import type { ChunkResult } from './types.js';
-import { extractSymbol } from './symbol-extractor.js';
 
 export interface ChunkerConfig {
   chunkSize: number;
@@ -52,6 +51,7 @@ export class Chunker {
         break;
       case 'typescript':
       case 'javascript':
+      case 'tsx':
         chunks = this.chunkByBraces(content);
         break;
       case 'terraform':
@@ -71,15 +71,6 @@ export class Chunker {
       default:
         chunks = this.chunkFixed(content);
         break;
-    }
-
-    // Post-process: enrich chunks with symbol metadata
-    for (const chunk of chunks) {
-      const symbol = extractSymbol(chunk.content, language);
-      if (symbol) {
-        chunk.symbol_name = symbol.name;
-        chunk.kind = symbol.kind;
-      }
     }
 
     return chunks;

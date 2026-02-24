@@ -31,20 +31,31 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 
 **packages/server/src/**
 
-| Module           | Responsibility                                                                 |
-| ---------------- | ------------------------------------------------------------------------------ |
-| `types.ts`       | Shared interfaces — all type definitions live here                             |
-| `config.ts`      | `.paparats.yml` reader, 11 built-in language profiles, `loadProject()`         |
-| `chunker.ts`     | Language-aware code splitting — 4 strategies (blocks, braces, indent, fixed)   |
-| `embeddings.ts`  | `OllamaProvider`, `EmbeddingCache` (SQLite), `CachedEmbeddingProvider`         |
-| `indexer.ts`     | Group-aware Qdrant indexing, file CRUD, retry logic                            |
-| `searcher.ts`    | Vector search with project filtering, token savings metrics                    |
-| `mcp-handler.ts` | MCP protocol — SSE (Cursor) + Streamable HTTP (Claude Code), tools + resources |
-| `watcher.ts`     | `ProjectWatcher` (chokidar) + `WatcherManager` for file change detection       |
-| `index.ts`       | Express HTTP server entry point, wires everything together                     |
+| Module                    | Responsibility                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------ |
+| `types.ts`                | Shared interfaces — all type definitions live here                                               |
+| `config.ts`               | `.paparats.yml` reader, 11 built-in language profiles, `loadProject()`                           |
+| `ast-chunker.ts`          | AST-based code chunking via tree-sitter — groups small nodes, splits large ones recursively      |
+| `chunker.ts`              | Regex-based code splitting (fallback) — 4 strategies (blocks, braces, indent, fixed)             |
+| `ast-symbol-extractor.ts` | AST-based symbol extraction — `extractSymbolsForChunks()` (defines/uses per chunk, 10 languages) |
+| `ast-queries.ts`          | Tree-sitter S-expression query patterns per language                                             |
+| `tree-sitter-parser.ts`   | WASM tree-sitter manager — `createTreeSitterManager()`, lazy grammar loading                     |
+| `symbol-graph.ts`         | Cross-chunk symbol edges (`calls`, `called_by`, `references`, `referenced_by`)                   |
+| `embeddings.ts`           | `OllamaProvider`, `EmbeddingCache` (SQLite), `CachedEmbeddingProvider`                           |
+| `indexer.ts`              | Group-aware Qdrant indexing — single-parse `chunkFile()` (AST chunking + symbols), file CRUD     |
+| `searcher.ts`             | Vector search with project filtering, query expansion, token savings metrics                     |
+| `metadata.ts`             | Tag resolution (`resolveTags()`) + auto-detection from directory structure                       |
+| `metadata-db.ts`          | SQLite store for git commits, tickets, and symbol edges                                          |
+| `git-metadata.ts`         | Git history extraction — commit mapping to chunks by diff hunk overlap                           |
+| `ticket-extractor.ts`     | Jira/GitHub/custom ticket reference parsing from commit messages                                 |
+| `mcp-handler.ts`          | MCP protocol — SSE (Cursor) + Streamable HTTP (Claude Code), tools + resources                   |
+| `watcher.ts`              | `ProjectWatcher` (chokidar) + `WatcherManager` for file change detection                         |
+| `index.ts`                | Express HTTP server entry point, wires everything together                                       |
 
 ## Key patterns
 
+- **AST-first chunking**: `indexer.chunkFile()` parses once with tree-sitter, uses the AST for both chunking (`chunkByAst`) and symbol extraction (`extractSymbolsForChunks`), then deletes the tree. Falls back to regex `Chunker` for unsupported languages (Terraform, etc.)
+- **Chunk line numbers are 0-indexed** throughout (chunker, AST chunker, symbol extractor, Qdrant payload)
 - Qdrant operations use `retryQdrant()` with exponential backoff (3 retries)
 - Embedding cache: SQLite at `~/.paparats/cache/embeddings.db`, Float32 vectors, LRU cleanup at 100k entries
 - `CachedEmbeddingProvider` wraps any `EmbeddingProvider` — all embedding calls go through cache

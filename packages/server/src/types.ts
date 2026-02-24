@@ -10,9 +10,6 @@ export type ChunkKind =
   | 'constant'
   | 'variable'
   | 'module'
-  | 'route'
-  | 'resource'
-  | 'block'
   | 'unknown';
 
 // ── Config types (from .paparats.yml) ──────────────────────────────────────
@@ -113,8 +110,17 @@ export interface ChunkResult {
   startLine: number;
   endLine: number;
   hash: string;
-  symbol_name?: string;
-  kind?: ChunkKind;
+}
+
+// ── Symbol graph types ────────────────────────────────────────────────────
+
+export type RelationType = 'calls' | 'called_by' | 'references' | 'referenced_by';
+
+export interface SymbolEdge {
+  from_chunk_id: string;
+  to_chunk_id: string;
+  relation_type: RelationType;
+  symbol_name: string;
 }
 
 // ── Search types ───────────────────────────────────────────────────────────

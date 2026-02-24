@@ -21,6 +21,12 @@
     },
     "search_changes": {
       "description": "Search for recently changed code. Combines semantic search with a date filter on the last commit time.\n\nUse to find code that was modified after a specific date. Useful for understanding recent changes, reviewing what changed in a sprint, or finding code related to a recent incident.\n\nExamples: \"auth changes since last week\", \"API modifications in the last month\""
+    },
+    "find_usages": {
+      "description": "Find all code chunks that use symbols defined in the given chunk. Shows cross-file references and callers.\n\nUse after search_code or get_chunk to understand who calls a function, uses a class, or references a type.\n\nRequires chunk_id from search results. Optionally filter by relation type (calls, references).\n\nReturns: list of chunks that reference symbols defined in the target chunk, grouped by symbol."
+    },
+    "list_related_chunks": {
+      "description": "List all chunks related to the given chunk: both callers/users (who uses this chunk's symbols) and callees/dependencies (symbols this chunk uses that are defined elsewhere).\n\nUse to understand a chunk's role in the codebase — what it depends on and what depends on it.\n\nReturns: two sections — 'Callers / Users' and 'Callees / Dependencies' with chunk details."
     }
   },
   "resources": {

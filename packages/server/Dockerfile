@@ -68,7 +68,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
   CMD node -e "require('http').get('http://localhost:' + (process.env.PORT || 9876) + '/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1));"
 
 LABEL org.opencontainers.image.title="paparats-mcp"
-LABEL org.opencontainers.image.description="Semantic code search MCP server with git history and ticket tracking"
+LABEL org.opencontainers.image.description="Semantic code search MCP server with AST symbol analysis, git history, and ticket tracking"
 LABEL org.opencontainers.image.source="https://github.com/bkbhub/paparats-mcp"
 
 ENTRYPOINT ["/entrypoint.sh"]

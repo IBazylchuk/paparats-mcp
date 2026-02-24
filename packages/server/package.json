@@ -23,7 +23,9 @@
     "js-yaml": "^4.1.0",
     "minimatch": "^10.1.2",
     "p-queue": "^8.0.1",
+    "tree-sitter-wasms": "^0.1.11",
     "uuid": "^13.0.0",
+    "web-tree-sitter": "^0.24.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {

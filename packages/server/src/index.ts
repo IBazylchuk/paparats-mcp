@@ -3,6 +3,8 @@ import { Indexer } from './indexer.js';
 import { Searcher } from './searcher.js';
 import { WatcherManager } from './watcher.js';
 import { MetadataStore } from './metadata-db.js';
+import { createTreeSitterManager } from './tree-sitter-parser.js';
+import type { TreeSitterManager } from './tree-sitter-parser.js';
 import type { ProjectConfig } from './types.js';
 import { createApp } from './app.js';
 
@@ -29,11 +31,22 @@ if (OLLAMA_URL !== 'http://127.0.0.1:11434') {
 
 const metadataStore = new MetadataStore();
 
+let treeSitter: TreeSitterManager | undefined;
+try {
+  treeSitter = await createTreeSitterManager();
+  console.log('[startup] Tree-sitter WASM initialized');
+} catch (err) {
+  console.warn(
+    `[startup] Tree-sitter initialization failed (non-fatal): ${(err as Error).message}`
+  );
+}
+
 const indexer = new Indexer({
   qdrantUrl: QDRANT_URL,
   embeddingProvider,
   dimensions: embeddingProvider.dimensions,
   metadataStore,
+  treeSitter,
 });
 
 const searcher = new Searcher({
@@ -115,6 +128,7 @@ async function shutdown(): Promise<void> {
   await watcherManager.stopAll();
   embeddingProvider.close();
   metadataStore.close();
+  treeSitter?.close();
 
   process.exit(0);
 }
@@ -126,6 +140,9 @@ process.on('SIGTERM', shutdown);
 
 export { Chunker } from './chunker.js';
 export type { ChunkerConfig } from './chunker.js';
+
+export { chunkByAst } from './ast-chunker.js';
+export type { AstChunkerConfig } from './ast-chunker.js';
 
 export {
   readConfig,
@@ -147,9 +164,6 @@ export type { CacheStats } from './embeddings.js';
 export { Indexer, buildChunkId, parseChunkId } from './indexer.js';
 export type { IndexerConfig } from './indexer.js';
 
-export { extractSymbol } from './symbol-extractor.js';
-export type { ExtractedSymbol } from './symbol-extractor.js';
-
 export { resolveTags, autoDetectTags } from './metadata.js';
 
 export { Searcher } from './searcher.js';
@@ -170,6 +184,13 @@ export { McpHandler } from './mcp-handler.js';
 export type { McpHandlerConfig } from './mcp-handler.js';
 
 export { MetadataStore } from './metadata-db.js';
+export { createTreeSitterManager } from './tree-sitter-parser.js';
+export type { TreeSitterManager, ParsedFile } from './tree-sitter-parser.js';
+export { extractSymbolsForChunks } from './ast-symbol-extractor.js';
+export type { SymbolExtractionResult, DefinedSymbol } from './ast-symbol-extractor.js';
+export { buildSymbolEdges } from './symbol-graph.js';
+export { LANGUAGE_QUERIES } from './ast-queries.js';
+export type { LanguageQuerySet } from './ast-queries.js';
 export { extractTickets, validateTicketPatterns } from './ticket-extractor.js';
 export type { ExtractedTicket } from './ticket-extractor.js';
 export { extractGitMetadata, collectIndexedChunks } from './git-metadata.js';
@@ -202,4 +223,6 @@ export type {
   WatcherConfig,
   EmbeddingsConfig,
   ResolvedIndexingConfig,
+  RelationType,
+  SymbolEdge,
 } from './types.js';
