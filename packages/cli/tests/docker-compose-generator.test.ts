@@ -14,7 +14,7 @@ function parseCompose(output: string): ComposeFile {
 
 describe('generateDockerCompose', () => {
   it('generates local mode with qdrant + paparats only', () => {
-    const output = generateDockerCompose({ ollamaMode: 'local', gpu: false });
+    const output = generateDockerCompose({ ollamaMode: 'local' });
     const compose = parseCompose(output);
 
     expect(compose.services['qdrant']).toBeDefined();
@@ -27,7 +27,7 @@ describe('generateDockerCompose', () => {
   });
 
   it('generates docker mode with qdrant + paparats + ollama', () => {
-    const output = generateDockerCompose({ ollamaMode: 'docker', gpu: false });
+    const output = generateDockerCompose({ ollamaMode: 'docker' });
     const compose = parseCompose(output);
 
     expect(compose.services['qdrant']).toBeDefined();
@@ -46,31 +46,9 @@ describe('generateDockerCompose', () => {
     expect(compose.volumes['ollama_data']).toBeDefined();
   });
 
-  it('includes GPU config when gpu=true in docker mode', () => {
-    const output = generateDockerCompose({ ollamaMode: 'docker', gpu: true });
-    const compose = parseCompose(output);
-
-    const ollama = compose.services['ollama']!;
-    const deploy = ollama['deploy'] as Record<string, unknown>;
-    expect(deploy).toBeDefined();
-    expect(JSON.stringify(deploy)).toContain('nvidia');
-  });
-
-  it('does not include GPU config when gpu=false', () => {
-    const output = generateDockerCompose({ ollamaMode: 'docker', gpu: false });
-    const compose = parseCompose(output);
-
-    const ollama = compose.services['ollama']!;
-    const deploy = ollama['deploy'] as Record<string, unknown> | undefined;
-    if (deploy) {
-      expect(JSON.stringify(deploy)).not.toContain('nvidia');
-    }
-  });
-
   it('uses custom ports', () => {
     const output = generateDockerCompose({
       ollamaMode: 'docker',
-      gpu: false,
       ports: { qdrant: 7333, paparats: 8876, ollama: 12434 },
     });
     const compose = parseCompose(output);
@@ -86,13 +64,13 @@ describe('generateDockerCompose', () => {
   });
 
   it('uses ibaz/paparats-ollama image', () => {
-    const output = generateDockerCompose({ ollamaMode: 'docker', gpu: false });
+    const output = generateDockerCompose({ ollamaMode: 'docker' });
     const compose = parseCompose(output);
     expect(compose.services['ollama']!['image']).toBe('ibaz/paparats-ollama:latest');
   });
 
   it('output is valid YAML with header comment', () => {
-    const output = generateDockerCompose({ ollamaMode: 'local', gpu: false });
+    const output = generateDockerCompose({ ollamaMode: 'local' });
     expect(output).toContain('# paparats-mcp');
     // Should parse without errors
     const compose = parseCompose(output);
@@ -102,7 +80,7 @@ describe('generateDockerCompose', () => {
 
 describe('generateServerCompose', () => {
   it('generates all four services', () => {
-    const output = generateServerCompose({ ollamaMode: 'docker', gpu: false });
+    const output = generateServerCompose({ ollamaMode: 'docker' });
     const compose = parseCompose(output);
 
     expect(compose.services['qdrant']).toBeDefined();
@@ -112,7 +90,7 @@ describe('generateServerCompose', () => {
   });
 
   it('indexer depends on qdrant and ollama', () => {
-    const output = generateServerCompose({ ollamaMode: 'docker', gpu: false });
+    const output = generateServerCompose({ ollamaMode: 'docker' });
     const compose = parseCompose(output);
 
     const deps = compose.services['paparats-indexer']!['depends_on'] as Record<string, unknown>;
@@ -121,14 +99,14 @@ describe('generateServerCompose', () => {
   });
 
   it('includes indexer_repos volume', () => {
-    const output = generateServerCompose({ ollamaMode: 'docker', gpu: false });
+    const output = generateServerCompose({ ollamaMode: 'docker' });
     const compose = parseCompose(output);
 
     expect(compose.volumes['indexer_repos']).toBeDefined();
   });
 
   it('indexer uses ibaz/paparats-indexer image', () => {
-    const output = generateServerCompose({ ollamaMode: 'docker', gpu: false });
+    const output = generateServerCompose({ ollamaMode: 'docker' });
     const compose = parseCompose(output);
 
     expect(compose.services['paparats-indexer']!['image']).toBe('ibaz/paparats-indexer:latest');
@@ -137,7 +115,6 @@ describe('generateServerCompose', () => {
   it('uses custom cron in indexer environment', () => {
     const output = generateServerCompose({
       ollamaMode: 'docker',
-      gpu: false,
       cron: '0 */2 * * *',
     });
     const compose = parseCompose(output);
@@ -147,7 +124,7 @@ describe('generateServerCompose', () => {
   });
 
   it('paparats depends on both qdrant and ollama', () => {
-    const output = generateServerCompose({ ollamaMode: 'docker', gpu: false });
+    const output = generateServerCompose({ ollamaMode: 'docker' });
     const compose = parseCompose(output);
 
     const deps = compose.services['paparats']!['depends_on'] as Record<string, unknown>;

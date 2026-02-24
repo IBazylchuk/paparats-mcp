@@ -192,7 +192,6 @@ export function upsertMcpServer(
 export interface InstallOptions {
   mode?: InstallMode;
   ollamaMode?: OllamaMode;
-  gpu?: boolean;
   skipDocker?: boolean;
   skipOllama?: boolean;
   verbose?: boolean;
@@ -247,7 +246,6 @@ async function runDeveloperInstall(
   > & { signal?: AbortSignal }
 ): Promise<void> {
   const ollamaMode = opts.ollamaMode ?? 'local';
-  const gpu = opts.gpu ?? false;
 
   const cleanupTasks: Array<() => void> = [];
   if (deps.signal) {
@@ -288,7 +286,7 @@ async function runDeveloperInstall(
 
     deps.mkdirSync(PAPARATS_HOME);
 
-    const composeContent = deps.generateDockerCompose({ ollamaMode, gpu });
+    const composeContent = deps.generateDockerCompose({ ollamaMode });
     const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
     deps.writeFileSync(composeDest, composeContent);
 
@@ -399,14 +397,11 @@ async function runServerInstall(
   }
   console.log(chalk.green('\u2713 Prerequisites found (Docker)\n'));
 
-  const gpu = opts.gpu ?? false;
-
   deps.mkdirSync(PAPARATS_HOME);
 
   // Generate docker-compose with all services
   const composeContent = deps.generateServerCompose({
     ollamaMode: 'docker',
-    gpu,
     repos: opts.repos,
     githubToken: opts.githubToken,
     cron: opts.cron,
@@ -609,7 +604,6 @@ export const installCommand = new Command('install')
   .description('Set up Paparats — Docker containers, Ollama model, and MCP configuration')
   .option('--mode <mode>', 'Install mode: developer, server, or support', 'developer')
   .option('--ollama-mode <mode>', 'Ollama deployment: docker or local (developer mode)', 'local')
-  .option('--gpu', 'Enable GPU support for Docker Ollama (Linux NVIDIA only)')
   .option('--skip-docker', 'Skip Docker setup (developer mode)')
   .option('--skip-ollama', 'Skip Ollama model setup (developer mode)')
   .option('--repos <repos>', 'Comma-separated repos to index (server mode)')

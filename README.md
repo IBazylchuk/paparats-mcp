@@ -32,7 +32,6 @@ Everything runs locally. No cloud. No API keys. Your code never leaves your mach
 - [Docker & Ollama](#docker--ollama)
   - [Local Ollama](#local-ollama)
   - [Docker Ollama](#docker-ollama)
-  - [GPU Setup](#gpu-setup)
 - [Monitoring](#monitoring)
 - [Architecture](#architecture)
 - [Embedding Model Setup](#embedding-model-setup)
@@ -153,8 +152,6 @@ paparats install --mode server \
   --repos org/repo \
   --cron "0 */2 * * *"
 
-# With GPU support (Linux NVIDIA only)
-paparats install --mode server --repos org/repo --gpu
 ```
 
 **What happens:**
@@ -628,7 +625,6 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 
 - `--mode <mode>` — Install mode: `developer` (default), `server`, or `support`
 - `--ollama-mode <mode>` — Ollama deployment: `docker` or `local` (default, developer mode)
-- `--gpu` — Enable GPU support for Docker Ollama (Linux NVIDIA only)
 - `--skip-docker` — Skip Docker setup (developer mode)
 - `--skip-ollama` — Skip Ollama model (developer mode)
 - `--repos <repos>` — Comma-separated repos to index (server mode)
@@ -697,38 +693,8 @@ paparats install --ollama-mode docker       # Docker Ollama
 
 **Trade-offs:**
 
-- ~3 GB Docker image (one-time pull)
-- CPU-only on macOS (Docker Desktop has no GPU passthrough)
-- Slightly slower inference than host-native Ollama with GPU
-
-### GPU Setup
-
-GPU acceleration is available when running Ollama in Docker on **Linux with NVIDIA GPUs** only.
-
-```bash
-paparats install --ollama-mode docker --gpu
-```
-
-This adds the following to the docker-compose:
-
-```yaml
-ollama:
-  deploy:
-    resources:
-      reservations:
-        devices:
-          - driver: nvidia
-            count: all
-            capabilities: [gpu]
-```
-
-**Requirements:**
-
-- Linux host with NVIDIA GPU
-- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) installed
-- Docker 19.03+ with NVIDIA runtime
-
-**macOS:** Docker Desktop for Mac has no GPU passthrough. `--gpu` flag is ignored on Mac; Ollama runs on CPU. For best Mac performance, use `--ollama-mode local` with host-native Ollama (which uses Metal/CPU natively).
+- ~1.7 GB Docker image (one-time pull)
+- CPU-only (sufficient for embedding generation)
 
 ---
 

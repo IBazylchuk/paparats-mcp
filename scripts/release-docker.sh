@@ -1,15 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build and push all Docker images for the current version.
+# Build and optionally push the paparats-ollama Docker image.
+# Server and indexer images are built by CI (docker-publish.yml).
+#
 # Usage: ./scripts/release-docker.sh [--push]
 #
-# Without --push: builds images locally (for testing)
+# Without --push: builds image locally (for testing)
 # With --push: builds and pushes to Docker Hub (requires `docker login`)
-#
-# Prerequisites:
-#   - Docker with buildx
-#   - Logged in to Docker Hub (for --push)
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -24,30 +22,10 @@ for arg in "$@"; do
   esac
 done
 
-echo "Building Docker images for v${VERSION}..."
+echo "Building paparats-ollama for v${VERSION}..."
+echo "  (downloads ~1.6 GB GGUF model — may take a while)"
 echo ""
 
-# ── Server ────────────────────────────────────────────────────────────────
-echo "==> Building ibaz/paparats-server:${VERSION}"
-docker build \
-  -f "$ROOT_DIR/packages/server/Dockerfile" \
-  -t "ibaz/paparats-server:${VERSION}" \
-  -t "ibaz/paparats-server:latest" \
-  "$ROOT_DIR"
-
-# ── Indexer ───────────────────────────────────────────────────────────────
-echo ""
-echo "==> Building ibaz/paparats-indexer:${VERSION}"
-docker build \
-  -f "$ROOT_DIR/packages/indexer/Dockerfile" \
-  -t "ibaz/paparats-indexer:${VERSION}" \
-  -t "ibaz/paparats-indexer:latest" \
-  "$ROOT_DIR"
-
-# ── Ollama ────────────────────────────────────────────────────────────────
-echo ""
-echo "==> Building ibaz/paparats-ollama:${VERSION}"
-echo "    (this downloads ~1.6 GB GGUF model — may take a while)"
 docker build \
   -f "$ROOT_DIR/packages/ollama/Dockerfile" \
   -t "ibaz/paparats-ollama:${VERSION}" \
@@ -55,26 +33,17 @@ docker build \
   "$ROOT_DIR/packages/ollama"
 
 echo ""
-echo "All images built:"
-echo "  ibaz/paparats-server:${VERSION}"
-echo "  ibaz/paparats-indexer:${VERSION}"
-echo "  ibaz/paparats-ollama:${VERSION}"
+echo "Built: ibaz/paparats-ollama:${VERSION}"
 
 if [ "$PUSH" = true ]; then
   echo ""
   echo "Pushing to Docker Hub..."
 
-  docker push "ibaz/paparats-server:${VERSION}"
-  docker push "ibaz/paparats-server:latest"
-
-  docker push "ibaz/paparats-indexer:${VERSION}"
-  docker push "ibaz/paparats-indexer:latest"
-
   docker push "ibaz/paparats-ollama:${VERSION}"
   docker push "ibaz/paparats-ollama:latest"
 
   echo ""
-  echo "All images pushed to Docker Hub."
+  echo "Pushed ibaz/paparats-ollama:${VERSION} and :latest"
 else
   echo ""
   echo "To push: ./scripts/release-docker.sh --push"

@@ -96,7 +96,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `server`: Full Docker stack (qdrant + ollama + paparats + indexer), `--repos`, `--github-token`, `--cron` flags, creates `.env` file
   - `support`: Client-only setup, verifies server reachable, configures Cursor + Claude Code with `/support/mcp` endpoint
 - **Ollama mode flag** — `--ollama-mode docker|local` for developer mode (default: local for backward compat)
-- **GPU support** — `--gpu` flag adds NVIDIA GPU reservation to Docker Ollama (Linux only)
+- **Lightweight Ollama image** — multi-stage build uses `alpine/ollama` (~70 MB, CPU-only) as final base instead of `ollama/ollama` (~4.8 GB). Final image ~1.7 GB
 
 #### Indexer Container (`packages/indexer`)
 
@@ -116,15 +116,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Release Tooling
 
-- `scripts/release-docker.sh` — builds and optionally pushes all three Docker images (server, indexer, ollama) with version tags
+- `scripts/release-docker.sh` — builds and optionally pushes the Ollama Docker image (server and indexer are built by CI)
 - `scripts/sync-version.js` now syncs to `packages/indexer/package.json`
 - `scripts/release.js` now stages `packages/indexer/package.json` in version bump commits
 
 #### Documentation
 
 - README restructured with Table of Contents and three deployment guides (Developer, Server, Support)
-- New "Docker & Ollama" section covering Local Ollama, Docker Ollama, and GPU Setup
-- Updated CLI reference with all new flags (`--mode`, `--ollama-mode`, `--gpu`, `--repos`, `--github-token`, `--cron`, `--server`)
+- New "Docker & Ollama" section covering Local Ollama and Docker Ollama
+- Updated CLI reference with all new flags (`--mode`, `--ollama-mode`, `--repos`, `--github-token`, `--cron`, `--server`)
 - Architecture diagram updated with indexer, ollama, and docker-compose-generator
 - CLAUDE.md updated with indexer, ollama, and lib.ts modules
 
