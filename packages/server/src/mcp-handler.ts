@@ -200,9 +200,13 @@ export class McpHandler {
   }
 
   private createMcpServer(mode: McpMode): McpServer {
-    const instructions =
-      mode === 'coding' ? prompts.codingInstructions : prompts.supportInstructions;
+    let instructions = mode === 'coding' ? prompts.codingInstructions : prompts.supportInstructions;
     const tools = mode === 'coding' ? CODING_TOOLS : SUPPORT_TOOLS;
+
+    const scope = this.searcher.getProjectScope();
+    if (scope) {
+      instructions += `\n\nThis server is scoped to projects: ${scope.join(', ')}. All searches are automatically filtered.`;
+    }
 
     const server = new McpServer({ name: 'paparats-mcp', version: '0.1.2' }, { instructions });
 

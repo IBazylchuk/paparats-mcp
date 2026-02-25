@@ -7,10 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-02-25
+
 ### Added
 
+- **Multi-project search filtering** — `PAPARATS_PROJECTS` env var scopes all searches to a comma-separated list of projects. Set per MCP server instance in the client's MCP config. Uses Qdrant `match.any` for multi-project filtering. Explicit `project` param intersects with allowed set
+- **`getProjectScope()` on Searcher** — returns the active project scope (or `null` for global). Exposed in `GET /health` and `GET /api/stats` as `projectScope`
+- **MCP scope notification** — when `PAPARATS_PROJECTS` is set, MCP server instructions include the active project scope so the AI assistant is aware of filtering
+- **Startup warning for org/repo-style project names** — logs a warning if `PAPARATS_PROJECTS` contains `/` characters, since project names are directory basenames (e.g. `"billing"` not `"org/billing"`)
+- **`PAPARATS_PROJECTS` guidance in install output** — all three install modes (developer, server, support) now mention how to configure project scoping
 - **External Qdrant support** — `paparats install --qdrant-url <url>` skips the Qdrant Docker container and connects to an external instance (e.g. Qdrant Cloud, a shared cluster). Works in both developer and server modes
 - **Interactive Qdrant prompt** — `paparats install` now asks "Use an external Qdrant instance?" during setup. Skipped when `--qdrant-url` is passed as a flag or `--skip-docker` is set
+
+### Fixed
+
+- **Orphaned chunks from deleted files** — `indexProject()` and `indexFilesContent()` now detect and remove Qdrant chunks for files that no longer exist on disk. Compares current file set against Qdrant's indexed files after each index run
+- **Stale metadata after chunk deletion** — `deleteByFile()` method added to `MetadataStore`. Called during orphan cleanup to remove commits, tickets, and symbol edges for deleted files
+
+### Changed
+
+- **MCP instructions document project naming** — both coding and support instructions now explain that project names are directory basenames, not org/repo format
 
 ## [0.2.2] - 2026-02-24
 

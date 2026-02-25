@@ -42,6 +42,7 @@ function createMockSearcher(): Searcher {
       totalTokensSaved: 0,
       avgTokensSavedPerSearch: 0,
     }),
+    getProjectScope: vi.fn().mockReturnValue(null),
   } as unknown as Searcher;
 }
 
