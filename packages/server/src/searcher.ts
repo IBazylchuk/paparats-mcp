@@ -1,10 +1,10 @@
-import { QdrantClient } from '@qdrant/js-client-rest';
+import type { QdrantClient } from '@qdrant/js-client-rest';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { SearchResult, SearchMetrics, SearchResponse, ChunkKind } from './types.js';
 import { expandQuery } from './query-expansion.js';
 import type { QueryCache } from './query-cache.js';
 import type { MetricsRegistry } from './metrics.js';
-import { toCollectionName } from './indexer.js';
+import { toCollectionName, createQdrantClient } from './indexer.js';
 
 export interface SearcherConfig {
   qdrantUrl: string;
@@ -60,7 +60,7 @@ export class Searcher {
   constructor(config: SearcherConfig) {
     this.qdrant =
       config.qdrantClient ??
-      new QdrantClient({
+      createQdrantClient({
         url: config.qdrantUrl,
         apiKey: config.qdrantApiKey,
         timeout: config.timeout ?? QDRANT_TIMEOUT_MS,

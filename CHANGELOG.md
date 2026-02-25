@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.7] - 2026-02-25
+
+### Added
+
+- **`createQdrantClient()` helper** — centralized Qdrant client factory with correct HTTPS port handling. Exported from `@paparats/server` for use by indexer and other consumers. Resolves port from URL protocol (HTTPS → 443, HTTP → 6333) and disables version compatibility check
+
+### Fixed
+
+- **Qdrant Cloud HTTPS connectivity** — `@qdrant/js-client-rest` defaults to port 6333 when no port is in the URL, breaking Qdrant Cloud (HTTPS on port 443). All `QdrantClient` instantiation sites now use `createQdrantClient()` which resolves the correct port from the URL protocol
+- **Ollama Docker healthcheck** — `alpine/ollama` does not ship `wget` or `curl`, causing the health check to fail immediately and marking the container as unhealthy. Changed health check from `wget` to `ollama list` in both the Dockerfile and docker-compose generator. Increased `start_period` from 5s/10s to 60s for slow startup environments
+
 ## [0.2.5] - 2026-02-25
 
 ### Added

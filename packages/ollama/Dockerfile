@@ -28,8 +28,8 @@ COPY --from=builder /root/.ollama /root/.ollama
 
 EXPOSE 11434
 
-HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -q -O /dev/null http://localhost:11434/api/tags || exit 1
+HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
+  CMD ollama list >/dev/null 2>&1 || exit 1
 
 LABEL org.opencontainers.image.title="paparats-ollama"
 LABEL org.opencontainers.image.description="Ollama with pre-baked Jina Code Embeddings 1.5B for Paparats MCP"

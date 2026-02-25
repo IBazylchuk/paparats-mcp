@@ -1,6 +1,5 @@
-import { QdrantClient } from '@qdrant/js-client-rest';
 import { createEmbeddingProvider } from './embeddings.js';
-import { Indexer } from './indexer.js';
+import { Indexer, createQdrantClient } from './indexer.js';
 import { Searcher } from './searcher.js';
 import { WatcherManager } from './watcher.js';
 import { MetadataStore } from './metadata-db.js';
@@ -50,7 +49,7 @@ try {
   );
 }
 
-const qdrantClient = new QdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY, timeout: 30_000 });
+const qdrantClient = createQdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY });
 const queryCache = new QueryCache();
 const metrics = await createMetrics();
 

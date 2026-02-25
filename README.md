@@ -160,7 +160,7 @@ paparats install --mode server \
 # With external Qdrant (e.g. Qdrant Cloud)
 paparats install --mode server \
   --repos org/repo \
-  --qdrant-url https://qdrant.example.com:6333 \
+  --qdrant-url https://qdrant.example.com \
   --qdrant-api-key your-api-key
 
 # All repos in one shared collection
@@ -730,7 +730,7 @@ By default, `paparats install` runs Qdrant as a Docker container. If you already
 paparats install --qdrant-url http://your-qdrant:6333
 
 # With API key authentication (e.g. Qdrant Cloud)
-paparats install --qdrant-url https://xxx.cloud.qdrant.io:6333 --qdrant-api-key your-api-key
+paparats install --qdrant-url https://xxx.cloud.qdrant.io --qdrant-api-key your-api-key
 
 # Or answer the interactive prompt during install
 paparats install

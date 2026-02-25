@@ -31,6 +31,7 @@ export {
   parseChunkId,
   toCollectionName,
   fromCollectionName,
+  createQdrantClient,
 } from './indexer.js';
 export type { IndexerConfig } from './indexer.js';
 
