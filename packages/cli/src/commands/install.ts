@@ -313,10 +313,7 @@ async function runDeveloperInstall(
       throw err;
     }
 
-    const qdrantHealthUrl = opts.qdrantUrl
-      ? `${opts.qdrantUrl.replace(/\/$/, '')}/healthz`
-      : 'http://localhost:6333/healthz';
-    const qdrantReady = await deps.waitForHealth(qdrantHealthUrl, 'Qdrant');
+    const qdrantReady = await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
     if (!qdrantReady) throw new Error('Qdrant failed to start');
 
     const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
@@ -447,10 +444,7 @@ async function runServerInstall(
     throw err;
   }
 
-  const qdrantHealthUrl = opts.qdrantUrl
-    ? `${opts.qdrantUrl.replace(/\/$/, '')}/healthz`
-    : 'http://localhost:6333/healthz';
-  const qdrantReady = await deps.waitForHealth(qdrantHealthUrl, 'Qdrant');
+  const qdrantReady = await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
   if (!qdrantReady) throw new Error('Qdrant failed to start');
 
   const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
@@ -529,6 +523,10 @@ async function runSupportInstall(
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+function qdrantHealthUrl(qdrantUrl?: string): string {
+  return qdrantUrl ? `${qdrantUrl.replace(/\/$/, '')}/healthz` : 'http://localhost:6333/healthz';
+}
 
 function configureCursorMcp(
   mcpUrl: string,
