@@ -359,19 +359,29 @@ describe('install', () => {
   });
 
   describe('runInstall (server mode)', () => {
+    // Shared deps for server mode tests (docker ollama mode — no local ollama needed)
+    const serverDeps = {
+      commandExists: () => true,
+      getDockerComposeCommand: () => 'docker compose',
+      ollamaModelExists: () => false,
+      isOllamaRunning: () => Promise.resolve(false),
+      downloadFile: () => Promise.resolve(),
+      waitForHealth: () => Promise.resolve(true),
+      generateServerCompose,
+      mkdirSync: () => {},
+      writeFileSync: () => {},
+      existsSync: () => false,
+      unlinkSync: () => {},
+      promptUseExternalQdrant: () => Promise.resolve(false),
+    };
+
     it('throws when docker not found', async () => {
       await expect(
         runInstall(
           { mode: 'server' },
           {
+            ...serverDeps,
             commandExists: () => false,
-            getDockerComposeCommand: () => 'docker compose',
-            waitForHealth: () => Promise.resolve(true),
-            generateServerCompose,
-            mkdirSync: () => {},
-            writeFileSync: () => {},
-            existsSync: () => false,
-            promptUseExternalQdrant: () => Promise.resolve(false),
           }
         )
       ).rejects.toThrow(/Docker not found/);
@@ -385,14 +395,8 @@ describe('install', () => {
       await runInstall(
         { mode: 'server', repos: 'org/repo1,org/repo2' },
         {
-          commandExists: () => true,
-          getDockerComposeCommand: () => 'docker compose',
-          waitForHealth: () => Promise.resolve(true),
-          generateServerCompose,
-          mkdirSync: () => {},
+          ...serverDeps,
           writeFileSync: (p, d) => files.set(p, d),
-          existsSync: () => false,
-          promptUseExternalQdrant: () => Promise.resolve(false),
         }
       );
 
@@ -411,19 +415,7 @@ describe('install', () => {
     it('does not configure IDE MCP', async () => {
       mockedExecSync.mockImplementation(() => undefined as never);
 
-      await runInstall(
-        { mode: 'server' },
-        {
-          commandExists: () => true,
-          getDockerComposeCommand: () => 'docker compose',
-          waitForHealth: () => Promise.resolve(true),
-          generateServerCompose,
-          mkdirSync: () => {},
-          writeFileSync: () => {},
-          promptUseExternalQdrant: () => Promise.resolve(false),
-          existsSync: () => false,
-        }
-      );
+      await runInstall({ mode: 'server' }, serverDeps);
 
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Server installation complete'));
       // Should not mention Cursor
@@ -431,6 +423,72 @@ describe('install', () => {
         (c) => typeof c[0] === 'string' && c[0].includes('Cursor')
       );
       expect(cursorLogs).toHaveLength(0);
+    });
+
+    it('checks ollama and sets up model in local mode', async () => {
+      const ollamaModelMock = vi.fn().mockReturnValue(false);
+      const ollamaRunningMock = vi.fn().mockResolvedValue(true);
+      const downloadMock = vi.fn().mockResolvedValue(undefined);
+      const files = new Map<string, string>();
+
+      mockedExecSync.mockImplementation(() => undefined as never);
+
+      await runInstall(
+        { mode: 'server', ollamaMode: 'local' },
+        {
+          ...serverDeps,
+          ollamaModelExists: ollamaModelMock,
+          isOllamaRunning: ollamaRunningMock,
+          downloadFile: downloadMock,
+          writeFileSync: (p, d) => files.set(p, d),
+          existsSync: () => false,
+          promptUseExternalQdrant: () => Promise.resolve(false),
+        }
+      );
+
+      // Should have checked model and downloaded GGUF
+      expect(ollamaModelMock).toHaveBeenCalledWith('jina-code-embeddings');
+      expect(ollamaRunningMock).toHaveBeenCalled();
+      expect(downloadMock).toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Server installation complete'));
+    });
+
+    it('throws when ollama not found in local mode', async () => {
+      await expect(
+        runInstall(
+          { mode: 'server', ollamaMode: 'local' },
+          {
+            ...serverDeps,
+            commandExists: (c) => c === 'docker', // ollama missing
+          }
+        )
+      ).rejects.toThrow(/Ollama not found/);
+    });
+
+    it('skips ollama check in local mode when ollamaUrl is set', async () => {
+      const files = new Map<string, string>();
+      const ollamaModelMock = vi.fn();
+
+      mockedExecSync.mockImplementation(() => undefined as never);
+
+      await runInstall(
+        { mode: 'server', ollamaMode: 'local', ollamaUrl: 'http://fargate:11434' },
+        {
+          ...serverDeps,
+          commandExists: (c) => c === 'docker', // ollama missing — should be fine
+          ollamaModelExists: ollamaModelMock,
+          writeFileSync: (p, d) => files.set(p, d),
+        }
+      );
+
+      expect(ollamaModelMock).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Server installation complete'));
+
+      // Compose should use external URL and no ollama service
+      const composePath = path.join(os.homedir(), '.paparats', 'docker-compose.yml');
+      const content = files.get(composePath)!;
+      expect(content).toContain('http://fargate:11434');
+      expect(content).not.toContain('paparats-ollama');
     });
   });
 
