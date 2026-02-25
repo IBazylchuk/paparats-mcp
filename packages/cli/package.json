@@ -1,6 +1,6 @@
 {
   "name": "@paparats/cli",
-  "version": "0.2.10",
+  "version": "0.2.11",
   "mcpName": "io.github.IBazylchuk/paparats-mcp",
   "type": "module",
   "description": "CLI for Paparats MCP - semantic code search with AST chunking, symbol graph, and vector search for AI coding assistants",
