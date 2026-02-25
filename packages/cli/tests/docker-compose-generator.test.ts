@@ -76,6 +76,40 @@ describe('generateDockerCompose', () => {
     const compose = parseCompose(output);
     expect(compose.services).toBeDefined();
   });
+
+  it('omits qdrant service when qdrantUrl is set', () => {
+    const output = generateDockerCompose({
+      ollamaMode: 'local',
+      qdrantUrl: 'http://my-qdrant:6333',
+    });
+    const compose = parseCompose(output);
+
+    expect(compose.services['qdrant']).toBeUndefined();
+    expect(compose.services['paparats']).toBeDefined();
+    expect(compose.volumes['qdrant_data']).toBeUndefined();
+
+    const env = compose.services['paparats']!['environment'] as Record<string, string>;
+    expect(env['QDRANT_URL']).toBe('http://my-qdrant:6333');
+
+    const deps = compose.services['paparats']!['depends_on'] as Record<string, unknown>;
+    expect(deps['qdrant']).toBeUndefined();
+  });
+
+  it('still includes ollama when qdrantUrl is set with docker ollama', () => {
+    const output = generateDockerCompose({
+      ollamaMode: 'docker',
+      qdrantUrl: 'http://my-qdrant:6333',
+    });
+    const compose = parseCompose(output);
+
+    expect(compose.services['qdrant']).toBeUndefined();
+    expect(compose.services['ollama']).toBeDefined();
+    expect(compose.services['paparats']).toBeDefined();
+
+    const deps = compose.services['paparats']!['depends_on'] as Record<string, unknown>;
+    expect(deps['qdrant']).toBeUndefined();
+    expect(deps['ollama']).toBeDefined();
+  });
 });
 
 describe('generateServerCompose', () => {
@@ -130,5 +164,39 @@ describe('generateServerCompose', () => {
     const deps = compose.services['paparats']!['depends_on'] as Record<string, unknown>;
     expect(deps['qdrant']).toBeDefined();
     expect(deps['ollama']).toBeDefined();
+  });
+
+  it('omits qdrant service when qdrantUrl is set', () => {
+    const output = generateServerCompose({
+      ollamaMode: 'docker',
+      qdrantUrl: 'http://external-qdrant:6333',
+    });
+    const compose = parseCompose(output);
+
+    expect(compose.services['qdrant']).toBeUndefined();
+    expect(compose.services['ollama']).toBeDefined();
+    expect(compose.services['paparats']).toBeDefined();
+    expect(compose.services['paparats-indexer']).toBeDefined();
+    expect(compose.volumes['qdrant_data']).toBeUndefined();
+
+    // paparats uses external URL and depends only on ollama
+    const paparatsEnv = compose.services['paparats']!['environment'] as Record<string, string>;
+    expect(paparatsEnv['QDRANT_URL']).toBe('http://external-qdrant:6333');
+    const paparatsDeps = compose.services['paparats']!['depends_on'] as Record<string, unknown>;
+    expect(paparatsDeps['qdrant']).toBeUndefined();
+    expect(paparatsDeps['ollama']).toBeDefined();
+
+    // indexer uses external URL and depends only on ollama
+    const indexerEnv = compose.services['paparats-indexer']!['environment'] as Record<
+      string,
+      string
+    >;
+    expect(indexerEnv['QDRANT_URL']).toBe('http://external-qdrant:6333');
+    const indexerDeps = compose.services['paparats-indexer']!['depends_on'] as Record<
+      string,
+      unknown
+    >;
+    expect(indexerDeps['qdrant']).toBeUndefined();
+    expect(indexerDeps['ollama']).toBeDefined();
   });
 });

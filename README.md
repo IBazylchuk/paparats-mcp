@@ -32,6 +32,7 @@ Everything runs locally. No cloud. No API keys. Your code never leaves your mach
 - [Docker & Ollama](#docker--ollama)
   - [Local Ollama](#local-ollama)
   - [Docker Ollama](#docker-ollama)
+  - [External Qdrant](#external-qdrant)
 - [Monitoring](#monitoring)
 - [Architecture](#architecture)
 - [Embedding Model Setup](#embedding-model-setup)
@@ -120,6 +121,9 @@ paparats install --mode developer
 # Or with Docker Ollama (no host Ollama needed)
 paparats install --mode developer --ollama-mode docker
 
+# Or with an external Qdrant instance (e.g. Qdrant Cloud)
+paparats install --mode developer --qdrant-url http://your-qdrant:6333
+
 # Then, in each project:
 cd your-project
 paparats init   # creates .paparats.yml
@@ -130,9 +134,10 @@ paparats watch  # auto-reindex on file changes
 **What happens:**
 
 1. Checks Docker (and Ollama if local mode)
-2. Generates docker-compose with qdrant + paparats server (+ ollama if docker mode)
-3. Downloads and registers the embedding model (local mode) or uses pre-baked Docker image (docker mode)
-4. Auto-configures Cursor MCP if `~/.cursor/` exists
+2. Asks whether to use an external Qdrant instance (or pass `--qdrant-url` to skip the prompt)
+3. Generates docker-compose with qdrant + paparats server (+ ollama if docker mode). When using external Qdrant, the Qdrant container is omitted
+4. Downloads and registers the embedding model (local mode) or uses pre-baked Docker image (docker mode)
+5. Auto-configures Cursor MCP if `~/.cursor/` exists
 
 ### Server / Production Setup
 
@@ -152,15 +157,20 @@ paparats install --mode server \
   --repos org/repo \
   --cron "0 */2 * * *"
 
+# With external Qdrant (e.g. Qdrant Cloud)
+paparats install --mode server \
+  --repos org/repo \
+  --qdrant-url https://qdrant.example.com:6333
 ```
 
 **What happens:**
 
 1. Checks Docker only (no Ollama check — runs in Docker)
-2. Generates docker-compose with all services: qdrant + ollama + paparats + indexer
-3. Creates `~/.paparats/.env` with `REPOS`, `GITHUB_TOKEN`, `CRON`
-4. Starts all containers
-5. Indexer clones repos and indexes them on the configured schedule
+2. Asks whether to use an external Qdrant instance (or pass `--qdrant-url` to skip the prompt)
+3. Generates docker-compose with all services: qdrant + ollama + paparats + indexer. When using external Qdrant, the Qdrant container is omitted
+4. Creates `~/.paparats/.env` with `REPOS`, `GITHUB_TOKEN`, `CRON`
+5. Starts all containers
+6. Indexer clones repos and indexes them on the configured schedule
 
 **After setup:**
 
@@ -627,6 +637,7 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 - `--ollama-mode <mode>` — Ollama deployment: `docker` or `local` (default, developer mode)
 - `--skip-docker` — Skip Docker setup (developer mode)
 - `--skip-ollama` — Skip Ollama model (developer mode)
+- `--qdrant-url <url>` — External Qdrant URL — skip Qdrant Docker container (developer/server mode)
 - `--repos <repos>` — Comma-separated repos to index (server mode)
 - `--github-token <token>` — GitHub token for private repos (server mode)
 - `--cron <expression>` — Cron schedule for indexing (server mode, default: `0 */6 * * *`)
@@ -695,6 +706,28 @@ paparats install --ollama-mode docker       # Docker Ollama
 
 - ~1.7 GB Docker image (one-time pull)
 - CPU-only (sufficient for embedding generation)
+
+### External Qdrant
+
+By default, `paparats install` runs Qdrant as a Docker container. If you already have a Qdrant instance (e.g. [Qdrant Cloud](https://cloud.qdrant.io/), a shared cluster, or a host-level install), you can skip the Qdrant container entirely:
+
+```bash
+# Via CLI flag
+paparats install --qdrant-url http://your-qdrant:6333
+
+# Or answer the interactive prompt during install
+paparats install
+# ? Use an external Qdrant instance? (skip Qdrant Docker container) Yes
+# ? Qdrant URL: http://your-qdrant:6333
+```
+
+When `--qdrant-url` is set:
+
+- The Qdrant Docker service is **omitted** from the generated `docker-compose.yml`
+- The `QDRANT_URL` environment variable in the paparats server (and indexer in server mode) points to your external instance
+- Health check during install verifies the external Qdrant is reachable
+
+This works with both `--mode developer` and `--mode server`.
 
 ---
 

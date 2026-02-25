@@ -5,6 +5,7 @@ import os from 'os';
 import { execSync, spawn } from 'child_process';
 import chalk from 'chalk';
 import ora from 'ora';
+import { confirm, input } from '@inquirer/prompts';
 import { createTimeoutSignal } from '../abort.js';
 import { generateDockerCompose, generateServerCompose } from '../docker-compose-generator.js';
 import type { OllamaMode, InstallMode } from '../docker-compose-generator.js';
@@ -195,6 +196,8 @@ export interface InstallOptions {
   skipDocker?: boolean;
   skipOllama?: boolean;
   verbose?: boolean;
+  /** External Qdrant URL — skip Qdrant Docker container */
+  qdrantUrl?: string;
   /** Server mode: comma-separated repos */
   repos?: string;
   /** Server mode: GitHub token for private repos */
@@ -221,6 +224,8 @@ export interface InstallDeps {
   writeFileSync?: (path: string, data: string) => void;
   existsSync?: (path: string) => boolean;
   unlinkSync?: (path: string) => void;
+  promptUseExternalQdrant?: () => Promise<boolean>;
+  promptQdrantUrl?: () => Promise<string>;
 }
 
 // ── Developer mode ──────────────────────────────────────────────────────────
@@ -286,7 +291,10 @@ async function runDeveloperInstall(
 
     deps.mkdirSync(PAPARATS_HOME);
 
-    const composeContent = deps.generateDockerCompose({ ollamaMode });
+    const composeContent = deps.generateDockerCompose({
+      ollamaMode,
+      qdrantUrl: opts.qdrantUrl,
+    });
     const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
     deps.writeFileSync(composeDest, composeContent);
 
@@ -305,7 +313,7 @@ async function runDeveloperInstall(
       throw err;
     }
 
-    const qdrantReady = await deps.waitForHealth('http://localhost:6333/healthz', 'Qdrant');
+    const qdrantReady = await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
     if (!qdrantReady) throw new Error('Qdrant failed to start');
 
     const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
@@ -402,6 +410,7 @@ async function runServerInstall(
   // Generate docker-compose with all services
   const composeContent = deps.generateServerCompose({
     ollamaMode: 'docker',
+    qdrantUrl: opts.qdrantUrl,
     repos: opts.repos,
     githubToken: opts.githubToken,
     cron: opts.cron,
@@ -435,7 +444,7 @@ async function runServerInstall(
     throw err;
   }
 
-  const qdrantReady = await deps.waitForHealth('http://localhost:6333/healthz', 'Qdrant');
+  const qdrantReady = await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
   if (!qdrantReady) throw new Error('Qdrant failed to start');
 
   const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
@@ -515,6 +524,10 @@ async function runSupportInstall(
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+function qdrantHealthUrl(qdrantUrl?: string): string {
+  return qdrantUrl ? `${qdrantUrl.replace(/\/$/, '')}/healthz` : 'http://localhost:6333/healthz';
+}
+
 function configureCursorMcp(
   mcpUrl: string,
   deps: Pick<InstallDeps, 'existsSync' | 'readFileSync' | 'writeFileSync' | 'mkdirSync'>,
@@ -568,6 +581,39 @@ export async function runInstall(
   const mode = opts.mode ?? 'developer';
   console.log(chalk.bold(`\npaparats install --mode ${mode}\n`));
 
+  // Interactive Qdrant prompt (developer & server modes, when not already provided via CLI flag)
+  if ((mode === 'developer' || mode === 'server') && !opts.qdrantUrl && !opts.skipDocker) {
+    const promptExternal =
+      deps?.promptUseExternalQdrant ??
+      (() =>
+        confirm({
+          message: 'Use an external Qdrant instance? (skip Qdrant Docker container)',
+          default: false,
+        }));
+
+    const useExternal = await promptExternal();
+
+    if (useExternal) {
+      const promptUrl =
+        deps?.promptQdrantUrl ??
+        (() =>
+          input({
+            message: 'Qdrant URL:',
+            default: 'http://localhost:6333',
+            validate: (value: string) => {
+              try {
+                new URL(value);
+                return true;
+              } catch {
+                return 'Please enter a valid URL (e.g. http://localhost:6333)';
+              }
+            },
+          }));
+
+      opts.qdrantUrl = await promptUrl();
+    }
+  }
+
   const resolvedDeps = {
     commandExists: cmdExists,
     getDockerComposeCommand: getCompose,
@@ -606,6 +652,7 @@ export const installCommand = new Command('install')
   .option('--ollama-mode <mode>', 'Ollama deployment: docker or local (developer mode)', 'local')
   .option('--skip-docker', 'Skip Docker setup (developer mode)')
   .option('--skip-ollama', 'Skip Ollama model setup (developer mode)')
+  .option('--qdrant-url <url>', 'External Qdrant URL (skip Qdrant Docker container)')
   .option('--repos <repos>', 'Comma-separated repos to index (server mode)')
   .option('--github-token <token>', 'GitHub token for private repos (server mode)')
   .option('--cron <expression>', 'Cron schedule for indexing (server mode)')
