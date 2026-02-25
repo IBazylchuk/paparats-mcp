@@ -21,6 +21,11 @@ const projectsByGroup = new Map<string, ProjectConfig[]>();
 const PORT = parseInt(process.env.PORT ?? '9876', 10);
 const QDRANT_URL = process.env.QDRANT_URL ?? 'http://localhost:6333';
 const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
+const PAPARATS_PROJECTS = process.env.PAPARATS_PROJECTS
+  ? process.env.PAPARATS_PROJECTS.split(',')
+      .map((p) => p.trim())
+      .filter(Boolean)
+  : undefined;
 
 const embeddingProvider = createEmbeddingProvider({
   provider: 'ollama',
@@ -63,6 +68,7 @@ const searcher = new Searcher({
   qdrantClient,
   cache: queryCache,
   metrics,
+  allowedProjects: PAPARATS_PROJECTS,
 });
 
 const watcherManager = new WatcherManager({
@@ -101,6 +107,17 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`  Ollama:                   ${OLLAMA_URL}`);
   if (metrics.enabled) {
     console.log(`  Metrics:                  http://localhost:${PORT}/metrics`);
+  }
+  if (PAPARATS_PROJECTS?.length) {
+    console.log(`  Project scope:            ${PAPARATS_PROJECTS.join(', ')}`);
+    const slashProjects = PAPARATS_PROJECTS.filter((p) => p.includes('/'));
+    if (slashProjects.length > 0) {
+      console.warn(
+        `  ⚠ PAPARATS_PROJECTS contains org/repo-style names: ${slashProjects.join(', ')}`
+      );
+      console.warn(`    Project names are directory basenames (e.g. "billing" not "org/billing").`);
+      console.warn(`    Check your PAPARATS_PROJECTS values match actual indexed project names.`);
+    }
   }
 
   // Restore groups from Qdrant so search works without re-indexing

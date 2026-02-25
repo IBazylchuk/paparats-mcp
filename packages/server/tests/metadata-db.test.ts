@@ -362,6 +362,47 @@ describe('MetadataStore', () => {
     expect(store.getEdgesFrom('g//p2//c.ts//1-5//h3')).toHaveLength(1);
   });
 
+  it('deleteByFile removes commits, tickets, and edges for a specific file', () => {
+    // Two files in same project
+    store.upsertCommits('g//proj//src/keep.ts//1-5//h1', [
+      {
+        commit_hash: 'c1',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'keep commit',
+      },
+    ]);
+    store.upsertCommits('g//proj//src/remove.ts//1-5//h2', [
+      {
+        commit_hash: 'c2',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'remove commit',
+      },
+    ]);
+    store.upsertTickets('g//proj//src/remove.ts//1-5//h2', [
+      { ticket_key: 'PROJ-123', source: 'jira' },
+    ]);
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//proj//src/remove.ts//1-5//h2',
+        to_chunk_id: 'g//proj//src/keep.ts//1-5//h1',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+      },
+    ]);
+
+    store.deleteByFile('g', 'proj', 'src/remove.ts');
+
+    // remove.ts data should be gone
+    expect(store.getCommits('g//proj//src/remove.ts//1-5//h2')).toHaveLength(0);
+    expect(store.getTickets('g//proj//src/remove.ts//1-5//h2')).toHaveLength(0);
+    expect(store.getEdgesFrom('g//proj//src/remove.ts//1-5//h2')).toHaveLength(0);
+
+    // keep.ts data should remain
+    expect(store.getCommits('g//proj//src/keep.ts//1-5//h1')).toHaveLength(1);
+  });
+
   it('upsertSymbolEdges handles empty array', () => {
     expect(() => store.upsertSymbolEdges([])).not.toThrow();
   });

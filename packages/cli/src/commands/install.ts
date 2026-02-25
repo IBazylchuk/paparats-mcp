@@ -379,7 +379,13 @@ async function runDeveloperInstall(
   console.log(chalk.dim('  1. cd <your-project>'));
   console.log(chalk.dim('  2. paparats init'));
   console.log(chalk.dim('  3. paparats index'));
-  console.log(chalk.dim('  4. Connect your IDE (see README)\n'));
+  console.log(chalk.dim('  4. Connect your IDE (see README)'));
+  console.log('');
+  console.log(chalk.dim('To scope searches to specific projects, set PAPARATS_PROJECTS in your'));
+  console.log(
+    chalk.dim('MCP client config (e.g. "billing,tracking"). Project names are directory')
+  );
+  console.log(chalk.dim('basenames, not org/repo format.\n'));
 }
 
 // ── Server mode ─────────────────────────────────────────────────────────────
@@ -463,6 +469,9 @@ async function runServerInstall(
     console.log(chalk.dim('  Status:      curl http://localhost:9877/health'));
   }
   console.log('');
+  console.log(chalk.dim('To scope searches to specific projects, set PAPARATS_PROJECTS env var'));
+  console.log(chalk.dim('on the MCP server (e.g. PAPARATS_PROJECTS=billing,tracking). Project'));
+  console.log(chalk.dim('names are directory basenames, not org/repo format.\n'));
 }
 
 // ── Support mode ────────────────────────────────────────────────────────────
@@ -517,8 +526,13 @@ async function runSupportInstall(
   console.log('Configured endpoint:');
   console.log(chalk.dim(`  Support MCP: ${mcpUrl}\n`));
   console.log('Available tools: search_code, get_chunk, find_usages, health_check,');
+  console.log('  get_chunk_meta, search_changes, explain_feature, recent_changes, impact_analysis');
+  console.log('');
   console.log(
-    '  get_chunk_meta, search_changes, explain_feature, recent_changes, impact_analysis\n'
+    chalk.dim('Note: If the server uses PAPARATS_PROJECTS, searches are automatically scoped.')
+  );
+  console.log(
+    chalk.dim('Project names are directory basenames (e.g. "billing" not "org/billing").\n')
   );
 }
 

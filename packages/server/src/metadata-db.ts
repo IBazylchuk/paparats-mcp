@@ -208,6 +208,18 @@ export class MetadataStore {
     this.deleteChunkEdgesStmt.run(chunkId, chunkId);
   }
 
+  /** Delete all metadata (commits, tickets, edges) for a specific file within a project */
+  deleteByFile(group: string, project: string, file: string): void {
+    const prefix = `${group}//${project}//${file}//`;
+    const pattern = `${prefix}%`;
+    const tx = this.db.transaction(() => {
+      this.deleteProjectCommitsStmt.run(pattern);
+      this.deleteProjectTicketsStmt.run(pattern);
+      this.deleteProjectEdgesStmt.run(pattern, pattern);
+    });
+    tx();
+  }
+
   deleteEdgesByProject(group: string, project: string): void {
     const prefix = `${group}//${project}//`;
     const pattern = `${prefix}%`;

@@ -542,6 +542,146 @@ describe('Indexer', () => {
     expect(indexer.stats.skipped).toBe(1);
   });
 
+  it('indexProject removes orphaned chunks for deleted files', async () => {
+    const srcDir = path.join(projectDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'keep.ts'), 'export const keep = true;\n');
+    fs.writeFileSync(path.join(srcDir, 'remove.ts'), 'export const remove = true;\n');
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir, {
+      patterns: ['**/*.ts'],
+      exclude: [],
+    });
+
+    // First index: both files
+    const first = await indexer.indexProject(project);
+    expect(first).toBeGreaterThan(0);
+
+    const allFiles = mockQdrant.upsertedPoints.flatMap((u) =>
+      (u.points as { payload?: { file?: string } }[]).map((p) => p.payload?.file ?? '')
+    );
+    expect(allFiles).toContain('src/keep.ts');
+    expect(allFiles).toContain('src/remove.ts');
+
+    // Delete one file from disk
+    fs.unlinkSync(path.join(srcDir, 'remove.ts'));
+
+    // Reset stats for clean count
+    mockQdrant.client.delete.mockClear();
+
+    // Second index: only keep.ts exists
+    await indexer.indexProject(project);
+
+    // Verify delete was called for the orphaned file
+    const deleteCalls = mockQdrant.client.delete.mock.calls as Array<
+      [string, { filter: { must: Array<{ key: string; match: { value: string } }> } }]
+    >;
+    const orphanDelete = deleteCalls.find((call) => {
+      const must = call[1]?.filter?.must;
+      return must?.some((m) => m.key === 'file' && m.match.value === 'src/remove.ts');
+    });
+    expect(orphanDelete).toBeDefined();
+
+    // Verify keep.ts chunks still exist
+    const collection = mockQdrant.collections.get('test-group')!;
+    const remainingFiles = new Set<string>();
+    for (const point of collection.values()) {
+      const payload = (point as { payload?: { file?: string } }).payload;
+      if (payload?.file) remainingFiles.add(payload.file);
+    }
+    expect(remainingFiles.has('src/keep.ts')).toBe(true);
+    expect(remainingFiles.has('src/remove.ts')).toBe(false);
+  });
+
+  it('indexFilesContent removes orphaned chunks for files no longer in list', async () => {
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir);
+
+    // First index: two files
+    const firstFiles = [
+      { path: 'src/keep.ts', content: 'export const keep = true;\n' },
+      { path: 'src/remove.ts', content: 'export const remove = true;\n' },
+    ];
+    const first = await indexer.indexFilesContent(project, firstFiles);
+    expect(first).toBeGreaterThan(0);
+
+    // Verify both files indexed
+    const allFiles = mockQdrant.upsertedPoints.flatMap((u) =>
+      (u.points as { payload?: { file?: string } }[]).map((p) => p.payload?.file ?? '')
+    );
+    expect(allFiles).toContain('src/keep.ts');
+    expect(allFiles).toContain('src/remove.ts');
+
+    mockQdrant.client.delete.mockClear();
+
+    // Second index: only keep.ts (remove.ts no longer in list)
+    const secondFiles = [{ path: 'src/keep.ts', content: 'export const keep = true;\n' }];
+    await indexer.indexFilesContent(project, secondFiles);
+
+    // Verify delete was called for the orphaned file
+    const deleteCalls = mockQdrant.client.delete.mock.calls as Array<
+      [string, { filter: { must: Array<{ key: string; match: { value: string } }> } }]
+    >;
+    const orphanDelete = deleteCalls.find((call) => {
+      const must = call[1]?.filter?.must;
+      return must?.some((m) => m.key === 'file' && m.match.value === 'src/remove.ts');
+    });
+    expect(orphanDelete).toBeDefined();
+
+    // Verify keep.ts chunks still exist
+    const collection = mockQdrant.collections.get('test-group')!;
+    const remainingFiles = new Set<string>();
+    for (const point of collection.values()) {
+      const payload = (point as { payload?: { file?: string } }).payload;
+      if (payload?.file) remainingFiles.add(payload.file);
+    }
+    expect(remainingFiles.has('src/keep.ts')).toBe(true);
+    expect(remainingFiles.has('src/remove.ts')).toBe(false);
+  });
+
+  it('indexProject does not delete when no orphaned files exist', async () => {
+    const srcDir = path.join(projectDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'stable.ts'), 'export const stable = true;\n');
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir, {
+      patterns: ['**/*.ts'],
+      exclude: [],
+    });
+
+    // First index
+    await indexer.indexProject(project);
+
+    // Reset delete mock
+    mockQdrant.client.delete.mockClear();
+
+    // Second index: same files
+    await indexer.indexProject(project);
+
+    // delete should not be called (no orphans, and file unchanged so skip logic applies)
+    expect(mockQdrant.client.delete).not.toHaveBeenCalled();
+  });
+
   it('listGroups returns groups with point counts', async () => {
     mockQdrant.collections.set('g1', new Map());
     mockQdrant.collections.set('g2', new Map());

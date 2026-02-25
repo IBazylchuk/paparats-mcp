@@ -71,6 +71,7 @@ function createMockSearcher(): Searcher {
     }),
     getQueryCacheStats: vi.fn().mockReturnValue(null),
     invalidateGroupCache: vi.fn(),
+    getProjectScope: vi.fn().mockReturnValue(null),
   } as unknown as Searcher;
 }
 

@@ -366,6 +366,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
       res.json({
         status,
         groups,
+        projectScope: searcher.getProjectScope(),
         uptime: process.uptime(),
         memory: {
           heapUsed: Math.round(mem.heapUsed / 1024 / 1024) + 'MB',
@@ -403,6 +404,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
       res.json({
         groups,
+        projectScope: searcher.getProjectScope(),
         registeredProjects: Object.fromEntries(
           Array.from(projectsByGroup.entries()).map(([g, ps]) => [g, ps.map((p) => p.name)])
         ),
