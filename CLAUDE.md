@@ -8,7 +8,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 
 ## Architecture
 
-- **Group** = Qdrant collection. Projects in the same group share a collection. `project` field in payload filters within a group.
+- **Group** = Qdrant collection with `paparats_` prefix (e.g. group `my-app` → collection `paparats_my-app`). `toCollectionName()`/`fromCollectionName()` helpers in `indexer.ts` handle the prefix. Projects in the same group share a collection. `project` field in payload filters within a group.
 - **`.paparats.yml`** = per-project config. Server reads it on demand via `readConfig()` / `resolveProject()`.
 - **Server is stateless** — no hardcoded project list. Projects register via `POST /api/index`.
 - **Embedding model**: `jina-code-embeddings` is a local Ollama alias for `jinaai/jina-code-embeddings-1.5b-GGUF`, registered via Modelfile. Not in Ollama registry.
@@ -32,32 +32,32 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 
 **packages/server/src/**
 
-| Module                    | Responsibility                                                                                                            |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `types.ts`                | Shared interfaces — all type definitions live here                                                                        |
-| `lib.ts`                  | Public library entry point — all re-exports for programmatic use (imported by `index.ts`, used by `@paparats/indexer`)    |
-| `config.ts`               | `.paparats.yml` reader, 11 built-in language profiles, `loadProject()`                                                    |
-| `app.ts`                  | Express app factory (`createApp()`), HTTP API routes, `withTimeout()`, `sanitizeForLog()`                                 |
-| `index.ts`                | Server bootstrap — starts HTTP server, wires components, graceful shutdown                                                |
-| `ast-chunker.ts`          | AST-based code chunking via tree-sitter — groups small nodes, splits large ones recursively                               |
-| `chunker.ts`              | Regex-based code splitting (fallback) — 4 strategies (blocks, braces, indent, fixed)                                      |
-| `ast-symbol-extractor.ts` | AST-based symbol extraction — `extractSymbolsForChunks()` (defines/uses per chunk, 10 languages)                          |
-| `ast-queries.ts`          | Tree-sitter S-expression query patterns per language                                                                      |
-| `tree-sitter-parser.ts`   | WASM tree-sitter manager — `createTreeSitterManager()`, lazy grammar loading                                              |
-| `symbol-graph.ts`         | Cross-chunk symbol edges (`calls`, `called_by`, `references`, `referenced_by`)                                            |
-| `embeddings.ts`           | `OllamaProvider`, `EmbeddingCache` (SQLite), `CachedEmbeddingProvider`                                                    |
-| `indexer.ts`              | Group-aware Qdrant indexing — single-parse `chunkFile()` (AST chunking + symbols), file CRUD                              |
-| `searcher.ts`             | Vector search with project filtering, query expansion, query cache, metrics instrumentation                               |
-| `query-expansion.ts`      | Abbreviation, case variant, plural, filler word expansion for search queries                                              |
-| `task-prefixes.ts`        | Jina task prefix detection (nl2code / code2code / techqa) based on query content                                          |
-| `query-cache.ts`          | In-memory LRU cache with TTL and group-level invalidation for search results                                              |
-| `metrics.ts`              | Prometheus metrics (`prom-client`) with `NoOpMetrics` fallback. Opt-in via `PAPARATS_METRICS=true`                        |
-| `metadata.ts`             | Tag resolution (`resolveTags()`) + auto-detection from directory structure                                                |
-| `metadata-db.ts`          | SQLite store for git commits, tickets, and symbol edges                                                                   |
-| `git-metadata.ts`         | Git history extraction — commit mapping to chunks by diff hunk overlap                                                    |
-| `ticket-extractor.ts`     | Jira/GitHub/custom ticket reference parsing from commit messages                                                          |
-| `mcp-handler.ts`          | MCP protocol — dual-mode endpoints: coding (`/mcp`) and support (`/support/mcp`) with isolated tool sets and instructions |
-| `watcher.ts`              | `ProjectWatcher` (chokidar) + `WatcherManager` for file change detection                                                  |
+| Module                    | Responsibility                                                                                                                                           |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`                | Shared interfaces — all type definitions live here                                                                                                       |
+| `lib.ts`                  | Public library entry point — all re-exports for programmatic use (imported by `index.ts`, used by `@paparats/indexer`)                                   |
+| `config.ts`               | `.paparats.yml` reader, 11 built-in language profiles, `loadProject()`                                                                                   |
+| `app.ts`                  | Express app factory (`createApp()`), HTTP API routes, `withTimeout()`, `sanitizeForLog()`                                                                |
+| `index.ts`                | Server bootstrap — starts HTTP server, wires components, graceful shutdown                                                                               |
+| `ast-chunker.ts`          | AST-based code chunking via tree-sitter — groups small nodes, splits large ones recursively                                                              |
+| `chunker.ts`              | Regex-based code splitting (fallback) — 4 strategies (blocks, braces, indent, fixed)                                                                     |
+| `ast-symbol-extractor.ts` | AST-based symbol extraction — `extractSymbolsForChunks()` (defines/uses per chunk, 10 languages)                                                         |
+| `ast-queries.ts`          | Tree-sitter S-expression query patterns per language                                                                                                     |
+| `tree-sitter-parser.ts`   | WASM tree-sitter manager — `createTreeSitterManager()`, lazy grammar loading                                                                             |
+| `symbol-graph.ts`         | Cross-chunk symbol edges (`calls`, `called_by`, `references`, `referenced_by`)                                                                           |
+| `embeddings.ts`           | `OllamaProvider`, `EmbeddingCache` (SQLite), `CachedEmbeddingProvider`                                                                                   |
+| `indexer.ts`              | Group-aware Qdrant indexing — `toCollectionName()`/`fromCollectionName()` prefix helpers, single-parse `chunkFile()` (AST chunking + symbols), file CRUD |
+| `searcher.ts`             | Vector search with project filtering, query expansion, query cache, metrics instrumentation                                                              |
+| `query-expansion.ts`      | Abbreviation, case variant, plural, filler word expansion for search queries                                                                             |
+| `task-prefixes.ts`        | Jina task prefix detection (nl2code / code2code / techqa) based on query content                                                                         |
+| `query-cache.ts`          | In-memory LRU cache with TTL and group-level invalidation for search results                                                                             |
+| `metrics.ts`              | Prometheus metrics (`prom-client`) with `NoOpMetrics` fallback. Opt-in via `PAPARATS_METRICS=true`                                                       |
+| `metadata.ts`             | Tag resolution (`resolveTags()`) + auto-detection from directory structure                                                                               |
+| `metadata-db.ts`          | SQLite store for git commits, tickets, and symbol edges                                                                                                  |
+| `git-metadata.ts`         | Git history extraction — commit mapping to chunks by diff hunk overlap                                                                                   |
+| `ticket-extractor.ts`     | Jira/GitHub/custom ticket reference parsing from commit messages                                                                                         |
+| `mcp-handler.ts`          | MCP protocol — dual-mode endpoints: coding (`/mcp`) and support (`/support/mcp`) with isolated tool sets and instructions                                |
+| `watcher.ts`              | `ProjectWatcher` (chokidar) + `WatcherManager` for file change detection                                                                                 |
 
 **packages/indexer/src/**
 

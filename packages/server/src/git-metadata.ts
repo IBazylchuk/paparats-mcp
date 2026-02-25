@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import type { QdrantClient } from '@qdrant/js-client-rest';
 import type { MetadataStore } from './metadata-db.js';
 import { extractTickets } from './ticket-extractor.js';
+import { toCollectionName } from './indexer.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -56,7 +57,7 @@ export async function collectIndexedChunks(
 
   // Scroll through all project chunks
   for (;;) {
-    const result = await qdrantClient.scroll(group, {
+    const result = await qdrantClient.scroll(toCollectionName(group), {
       filter: {
         must: [{ key: 'project', match: { value: project } }],
       },
@@ -304,7 +305,7 @@ export async function extractGitMetadata(
     if (pendingUpdates.length > 0) {
       const results = await Promise.allSettled(
         pendingUpdates.map((update) =>
-          qdrantClient.setPayload(group, {
+          qdrantClient.setPayload(toCollectionName(group), {
             payload: update.payload,
             filter: {
               must: [{ key: 'chunk_id', match: { value: update.chunkId } }],

@@ -4,6 +4,7 @@ import type { SearchResult, SearchMetrics, SearchResponse, ChunkKind } from './t
 import { expandQuery } from './query-expansion.js';
 import type { QueryCache } from './query-cache.js';
 import type { MetricsRegistry } from './metrics.js';
+import { toCollectionName } from './indexer.js';
 
 export interface SearcherConfig {
   qdrantUrl: string;
@@ -284,7 +285,7 @@ export class Searcher {
     let results: SearchResult[];
     try {
       const hits = await this.retryQdrant(() =>
-        this.qdrant.search(groupName, {
+        this.qdrant.search(toCollectionName(groupName), {
           vector: queryVector,
           limit,
           with_payload: true,
@@ -358,7 +359,7 @@ export class Searcher {
     let results: SearchResult[];
     try {
       const hits = await this.retryQdrant(() =>
-        this.qdrant.search(groupName, {
+        this.qdrant.search(toCollectionName(groupName), {
           vector: queryVector,
           limit,
           with_payload: true,

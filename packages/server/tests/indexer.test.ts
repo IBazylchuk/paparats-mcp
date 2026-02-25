@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { Indexer } from '../src/indexer.js';
+import { Indexer, toCollectionName } from '../src/indexer.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { EmbeddingProvider, ProjectConfig } from '../src/types.js';
 
@@ -203,7 +203,7 @@ describe('Indexer', () => {
   });
 
   it('getGroupStats returns points for existing collection', async () => {
-    mockQdrant.collections.set('my-group', new Map());
+    mockQdrant.collections.set(toCollectionName('my-group'), new Map());
     mockQdrant.client.getCollection.mockResolvedValueOnce({ points_count: 42, status: 'green' });
 
     const indexer = new Indexer({
@@ -227,19 +227,25 @@ describe('Indexer', () => {
 
     await indexer.ensureCollection('new-group');
 
-    expect(mockQdrant.client.createCollection).toHaveBeenCalledWith('new-group', {
+    expect(mockQdrant.client.createCollection).toHaveBeenCalledWith(toCollectionName('new-group'), {
       vectors: { size: 4, distance: 'Cosine' },
     });
-    expect(mockQdrant.client.createPayloadIndex).toHaveBeenCalledWith('new-group', {
-      field_name: 'project',
-      field_schema: 'keyword',
-      wait: true,
-    });
-    expect(mockQdrant.client.createPayloadIndex).toHaveBeenCalledWith('new-group', {
-      field_name: 'file',
-      field_schema: 'keyword',
-      wait: true,
-    });
+    expect(mockQdrant.client.createPayloadIndex).toHaveBeenCalledWith(
+      toCollectionName('new-group'),
+      {
+        field_name: 'project',
+        field_schema: 'keyword',
+        wait: true,
+      }
+    );
+    expect(mockQdrant.client.createPayloadIndex).toHaveBeenCalledWith(
+      toCollectionName('new-group'),
+      {
+        field_name: 'file',
+        field_schema: 'keyword',
+        wait: true,
+      }
+    );
   });
 
   it('indexFile skips binary files', async () => {
@@ -352,7 +358,7 @@ describe('Indexer', () => {
 
     await indexer.deleteFile('test-group', project, filePath);
 
-    expect(mockQdrant.client.delete).toHaveBeenCalledWith('test-group', {
+    expect(mockQdrant.client.delete).toHaveBeenCalledWith(toCollectionName('test-group'), {
       filter: {
         must: [
           { key: 'project', match: { value: 'test-project' } },
@@ -590,7 +596,7 @@ describe('Indexer', () => {
     expect(orphanDelete).toBeDefined();
 
     // Verify keep.ts chunks still exist
-    const collection = mockQdrant.collections.get('test-group')!;
+    const collection = mockQdrant.collections.get(toCollectionName('test-group'))!;
     const remainingFiles = new Set<string>();
     for (const point of collection.values()) {
       const payload = (point as { payload?: { file?: string } }).payload;
@@ -642,7 +648,7 @@ describe('Indexer', () => {
     expect(orphanDelete).toBeDefined();
 
     // Verify keep.ts chunks still exist
-    const collection = mockQdrant.collections.get('test-group')!;
+    const collection = mockQdrant.collections.get(toCollectionName('test-group'))!;
     const remainingFiles = new Set<string>();
     for (const point of collection.values()) {
       const payload = (point as { payload?: { file?: string } }).payload;
@@ -683,10 +689,10 @@ describe('Indexer', () => {
   });
 
   it('listGroups returns groups with point counts', async () => {
-    mockQdrant.collections.set('g1', new Map());
-    mockQdrant.collections.set('g2', new Map());
+    mockQdrant.collections.set(toCollectionName('g1'), new Map());
+    mockQdrant.collections.set(toCollectionName('g2'), new Map());
     mockQdrant.client.getCollections.mockResolvedValue({
-      collections: [{ name: 'g1' }, { name: 'g2' }],
+      collections: [{ name: toCollectionName('g1') }, { name: toCollectionName('g2') }],
     });
     mockQdrant.client.getCollection
       .mockResolvedValueOnce({ points_count: 10, status: 'green' })

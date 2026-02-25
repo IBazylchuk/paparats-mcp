@@ -17,6 +17,22 @@ import { buildSymbolEdges } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
 import type { ChunkResult, ProjectConfig, IndexerStats } from './types.js';
 
+// ── Collection name helpers ──────────────────────────────────────────────────
+
+const COLLECTION_PREFIX = 'paparats_';
+
+/** Map a logical group name to a Qdrant collection name */
+export function toCollectionName(group: string): string {
+  return `${COLLECTION_PREFIX}${group}`;
+}
+
+/** Map a Qdrant collection name back to a logical group name */
+export function fromCollectionName(collection: string): string {
+  return collection.startsWith(COLLECTION_PREFIX)
+    ? collection.slice(COLLECTION_PREFIX.length)
+    : collection;
+}
+
 // ── Chunk ID helpers ────────────────────────────────────────────────────────
 
 /**
@@ -109,6 +125,11 @@ export class Indexer {
     return this.qdrant;
   }
 
+  /** Map logical group name to Qdrant collection name (paparats_ prefix) */
+  col(group: string): string {
+    return toCollectionName(group);
+  }
+
   private getChunker(project: ProjectConfig): Chunker {
     const key = `${project.indexing.chunkSize}:${project.indexing.overlap}`;
     if (!this.chunkers.has(key)) {
@@ -153,7 +174,7 @@ export class Indexer {
       let offset: string | number | undefined = undefined;
 
       for (;;) {
-        const result = await this.qdrant.scroll(groupName, {
+        const result = await this.qdrant.scroll(this.col(groupName), {
           filter: {
             must: [
               { key: 'project', match: { value: projectName } },
@@ -193,7 +214,7 @@ export class Indexer {
 
     try {
       for (;;) {
-        const result = await this.qdrant.scroll(groupName, {
+        const result = await this.qdrant.scroll(this.col(groupName), {
           filter: {
             must: [{ key: 'project', match: { value: projectName } }],
           },
@@ -235,7 +256,7 @@ export class Indexer {
       if (orphaned.length > 0) {
         for (const relPath of orphaned) {
           await this.retryQdrant(() =>
-            this.qdrant.delete(groupName, {
+            this.qdrant.delete(this.col(groupName), {
               filter: {
                 must: [
                   { key: 'project', match: { value: projectName } },
@@ -368,7 +389,7 @@ export class Indexer {
   /** Ensure group collection exists in Qdrant */
   async ensureCollection(groupName: string): Promise<void> {
     try {
-      await this.qdrant.getCollection(groupName);
+      await this.qdrant.getCollection(this.col(groupName));
       return;
     } catch {
       // Collection doesn't exist, try to create
@@ -376,7 +397,7 @@ export class Indexer {
 
     try {
       await this.retryQdrant(() =>
-        this.qdrant.createCollection(groupName, {
+        this.qdrant.createCollection(this.col(groupName), {
           vectors: {
             size: this.dimensions,
             distance: 'Cosine',
@@ -384,63 +405,63 @@ export class Indexer {
         })
       );
       await this.retryQdrant(() =>
-        this.qdrant.createPayloadIndex(groupName, {
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'project',
           field_schema: 'keyword',
           wait: true,
         })
       );
       await this.retryQdrant(() =>
-        this.qdrant.createPayloadIndex(groupName, {
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'file',
           field_schema: 'keyword',
           wait: true,
         })
       );
       await this.retryQdrant(() =>
-        this.qdrant.createPayloadIndex(groupName, {
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'chunk_id',
           field_schema: 'keyword',
           wait: true,
         })
       );
       await this.retryQdrant(() =>
-        this.qdrant.createPayloadIndex(groupName, {
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'kind',
           field_schema: 'keyword',
           wait: true,
         })
       );
       await this.retryQdrant(() =>
-        this.qdrant.createPayloadIndex(groupName, {
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'tags',
           field_schema: 'keyword',
           wait: true,
         })
       );
       await this.retryQdrant(() =>
-        this.qdrant.createPayloadIndex(groupName, {
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'last_commit_at',
           field_schema: 'keyword',
           wait: true,
         })
       );
       await this.retryQdrant(() =>
-        this.qdrant.createPayloadIndex(groupName, {
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'ticket_keys',
           field_schema: 'keyword',
           wait: true,
         })
       );
       await this.retryQdrant(() =>
-        this.qdrant.createPayloadIndex(groupName, {
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'defines_symbols',
           field_schema: 'keyword',
           wait: true,
         })
       );
       await this.retryQdrant(() =>
-        this.qdrant.createPayloadIndex(groupName, {
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'uses_symbols',
           field_schema: 'keyword',
           wait: true,
@@ -449,7 +470,7 @@ export class Indexer {
     } catch (err) {
       // If creation failed, check if another process created it
       try {
-        await this.qdrant.getCollection(groupName);
+        await this.qdrant.getCollection(this.col(groupName));
         // Collection exists now, that's OK
       } catch {
         throw err;
@@ -489,7 +510,7 @@ export class Indexer {
     // Delete old chunks if file was previously indexed
     if (existingHashes.size > 0) {
       await this.retryQdrant(() =>
-        this.qdrant.delete(groupName, {
+        this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
               { key: 'project', match: { value: project.name } },
@@ -528,7 +549,9 @@ export class Indexer {
     const batchSize = project.indexing.batchSize;
     for (let i = 0; i < points.length; i += batchSize) {
       const batch = points.slice(i, i + batchSize);
-      await this.retryQdrant(() => this.qdrant.upsert(groupName, { points: batch, wait: true }));
+      await this.retryQdrant(() =>
+        this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
+      );
     }
 
     return points.length;
@@ -695,7 +718,7 @@ export class Indexer {
 
     for (;;) {
       const page = await this.retryQdrant(() =>
-        this.qdrant.scroll(groupName, {
+        this.qdrant.scroll(this.col(groupName), {
           filter: {
             must: [{ key: 'project', match: { value: projectName } }],
           },
@@ -772,7 +795,7 @@ export class Indexer {
 
     try {
       await this.retryQdrant(() =>
-        this.qdrant.delete(groupName, {
+        this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
               { key: 'project', match: { value: project.name } },
@@ -802,7 +825,7 @@ export class Indexer {
 
     try {
       await this.retryQdrant(() =>
-        this.qdrant.delete(groupName, {
+        this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
               { key: 'project', match: { value: project.name } },
@@ -851,7 +874,7 @@ export class Indexer {
         // Delete old chunks if file was previously indexed
         if (existingHashes.size > 0) {
           await this.retryQdrant(() =>
-            this.qdrant.delete(groupName, {
+            this.qdrant.delete(this.col(groupName), {
               filter: {
                 must: [
                   { key: 'project', match: { value: project.name } },
@@ -891,7 +914,7 @@ export class Indexer {
         for (let i = 0; i < points.length; i += batchSize) {
           const batch = points.slice(i, i + batchSize);
           await this.retryQdrant(() =>
-            this.qdrant.upsert(groupName, { points: batch, wait: true })
+            this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
           );
         }
 
@@ -922,7 +945,7 @@ export class Indexer {
   ): Promise<number> {
     try {
       await this.retryQdrant(() =>
-        this.qdrant.delete(groupName, {
+        this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
               { key: 'project', match: { value: projectName } },
@@ -976,7 +999,9 @@ export class Indexer {
     const batchSize = project.indexing.batchSize;
     for (let i = 0; i < points.length; i += batchSize) {
       const batch = points.slice(i, i + batchSize);
-      await this.retryQdrant(() => this.qdrant.upsert(groupName, { points: batch, wait: true }));
+      await this.retryQdrant(() =>
+        this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
+      );
     }
 
     console.log(
@@ -989,7 +1014,7 @@ export class Indexer {
   async deleteProjectChunks(groupName: string, projectName: string): Promise<void> {
     try {
       await this.retryQdrant(() =>
-        this.qdrant.delete(groupName, {
+        this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [{ key: 'project', match: { value: projectName } }],
           },
@@ -1006,7 +1031,7 @@ export class Indexer {
   async deleteFileByPath(groupName: string, projectName: string, relPath: string): Promise<void> {
     try {
       await this.retryQdrant(() =>
-        this.qdrant.delete(groupName, {
+        this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
               { key: 'project', match: { value: projectName } },
@@ -1025,7 +1050,7 @@ export class Indexer {
   /** Delete entire group collection and re-index all its projects */
   async reindexGroup(groupName: string, projects: ProjectConfig[]): Promise<number> {
     try {
-      await this.qdrant.deleteCollection(groupName);
+      await this.qdrant.deleteCollection(this.col(groupName));
     } catch {
       // may not exist
     }
@@ -1040,7 +1065,7 @@ export class Indexer {
   /** Get collection stats for a group */
   async getGroupStats(groupName: string): Promise<{ points: number; status: string }> {
     try {
-      const info = await this.qdrant.getCollection(groupName);
+      const info = await this.qdrant.getCollection(this.col(groupName));
       return { points: info.points_count ?? 0, status: String(info.status) };
     } catch {
       return { points: 0, status: 'not_indexed' };
@@ -1054,7 +1079,7 @@ export class Indexer {
 
     try {
       const result = await this.retryQdrant(() =>
-        this.qdrant.scroll(parsed.group, {
+        this.qdrant.scroll(this.col(parsed.group), {
           filter: {
             must: [{ key: 'chunk_id', match: { value: chunkId } }],
           },
@@ -1091,7 +1116,7 @@ export class Indexer {
 
       for (;;) {
         const result = await this.retryQdrant(() =>
-          this.qdrant.scroll(groupName, {
+          this.qdrant.scroll(this.col(groupName), {
             filter: {
               must: [
                 { key: 'project', match: { value: project } },
@@ -1125,15 +1150,18 @@ export class Indexer {
     }
   }
 
-  /** List all collections (groups) */
+  /** List all paparats collections (groups), returning logical group names */
   async listGroups(): Promise<Record<string, number>> {
     const collections = await this.qdrant.getCollections();
+    const paparatsCollections = collections.collections.filter((col) =>
+      col.name.startsWith(COLLECTION_PREFIX)
+    );
     const infos = await Promise.all(
-      collections.collections.map((col) => this.qdrant.getCollection(col.name))
+      paparatsCollections.map((col) => this.qdrant.getCollection(col.name))
     );
     const result: Record<string, number> = {};
-    collections.collections.forEach((col, i) => {
-      result[col.name] = infos[i]!.points_count ?? 0;
+    paparatsCollections.forEach((col, i) => {
+      result[fromCollectionName(col.name)] = infos[i]!.points_count ?? 0;
     });
     return result;
   }

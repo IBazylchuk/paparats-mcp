@@ -25,7 +25,13 @@ export {
 } from './embeddings.js';
 export type { CacheStats } from './embeddings.js';
 
-export { Indexer, buildChunkId, parseChunkId } from './indexer.js';
+export {
+  Indexer,
+  buildChunkId,
+  parseChunkId,
+  toCollectionName,
+  fromCollectionName,
+} from './indexer.js';
 export type { IndexerConfig } from './indexer.js';
 
 export { resolveTags, autoDetectTags } from './metadata.js';
