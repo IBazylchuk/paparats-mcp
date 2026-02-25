@@ -8,6 +8,7 @@ import {
   MetadataStore,
   createTreeSitterManager,
   loadProject,
+  autoProjectConfig,
 } from '@paparats/server';
 import type { TreeSitterManager, ProjectConfig } from '@paparats/server';
 import { parseReposEnv, cloneOrPull, repoPath } from './repo-manager.js';
@@ -79,37 +80,12 @@ const indexer = new Indexer({
 // ── Index cycle ─────────────────────────────────────────────────────────────
 
 function buildDefaultProject(repo: RepoConfig, localPath: string): ProjectConfig {
-  return {
-    name: repo.name,
-    path: localPath,
+  const project = autoProjectConfig(localPath, {
     group: PAPARATS_GROUP ?? repo.name,
-    languages: ['generic'],
-    patterns: ['**/*'],
-    exclude: [],
-    indexing: {
-      paths: ['./'],
-      exclude: [],
-      respectGitignore: true,
-      extensions: [],
-      chunkSize: 1024,
-      overlap: 0,
-      concurrency: 2,
-      batchSize: 50,
-    },
-    watcher: { enabled: false, debounce: 1000, stabilityThreshold: 1000 },
-    embeddings: {
-      provider: 'ollama',
-      model: 'jina-code-embeddings',
-      dimensions: 1536,
-    },
-    metadata: {
-      service: repo.name,
-      bounded_context: null,
-      tags: [],
-      directory_tags: {},
-      git: { enabled: true, maxCommitsPerFile: 50, ticketPatterns: [] },
-    },
-  };
+  });
+  // Disable watcher in indexer (indexer uses cron, not filesystem events)
+  project.watcher.enabled = false;
+  return project;
 }
 
 async function indexRepo(repo: RepoConfig): Promise<number> {
@@ -128,8 +104,10 @@ async function indexRepo(repo: RepoConfig): Promise<number> {
         project = { ...project, group: PAPARATS_GROUP };
       }
     } else {
-      console.log(`[indexer] No .paparats.yml in ${repo.fullName}, using defaults`);
       project = buildDefaultProject(repo, localPath);
+      console.log(
+        `[indexer] No .paparats.yml in ${repo.fullName}, auto-detected: ${project.languages.join(', ')} (${project.exclude.length} exclude patterns)`
+      );
     }
 
     const chunks = await indexer.indexProject(project);

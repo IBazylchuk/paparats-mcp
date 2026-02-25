@@ -37,7 +37,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `types.ts`                | Shared interfaces — all type definitions live here                                                                                                                               |
 | `lib.ts`                  | Public library entry point — all re-exports for programmatic use (imported by `index.ts`, used by `@paparats/indexer`)                                                           |
-| `config.ts`               | `.paparats.yml` reader, 11 built-in language profiles, `loadProject()`                                                                                                           |
+| `config.ts`               | `.paparats.yml` reader, 11 built-in language profiles, `loadProject()`, `detectLanguages()`, `autoProjectConfig()`                                                               |
 | `app.ts`                  | Express app factory (`createApp()`), HTTP API routes, `withTimeout()`, `sanitizeForLog()`                                                                                        |
 | `index.ts`                | Server bootstrap — starts HTTP server, wires components, graceful shutdown                                                                                                       |
 | `ast-chunker.ts`          | AST-based code chunking via tree-sitter — groups small nodes, splits large ones recursively                                                                                      |
