@@ -208,6 +208,8 @@ export interface InstallOptions {
   qdrantApiKey?: string;
   /** Server mode: shared Qdrant group (all repos → one collection) */
   group?: string;
+  /** External Ollama URL — use instead of Docker/local Ollama */
+  ollamaUrl?: string;
   /** Support mode: server URL */
   server?: string;
 }
@@ -299,6 +301,7 @@ async function runDeveloperInstall(
       ollamaMode,
       qdrantUrl: opts.qdrantUrl,
       qdrantApiKey: opts.qdrantApiKey,
+      ollamaUrl: opts.ollamaUrl,
     });
     const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
     deps.writeFileSync(composeDest, composeContent);
@@ -427,10 +430,12 @@ async function runServerInstall(
   deps.mkdirSync(PAPARATS_HOME);
 
   // Generate docker-compose with all services
+  const ollamaMode = opts.ollamaMode ?? 'docker';
   const composeContent = deps.generateServerCompose({
-    ollamaMode: 'docker',
+    ollamaMode,
     qdrantUrl: opts.qdrantUrl,
     qdrantApiKey: opts.qdrantApiKey,
+    ollamaUrl: opts.ollamaUrl,
     repos: opts.repos,
     githubToken: opts.githubToken,
     cron: opts.cron,
@@ -680,7 +685,8 @@ export async function runInstall(
 export const installCommand = new Command('install')
   .description('Set up Paparats — Docker containers, Ollama model, and MCP configuration')
   .option('--mode <mode>', 'Install mode: developer, server, or support', 'developer')
-  .option('--ollama-mode <mode>', 'Ollama deployment: docker or local (developer mode)', 'local')
+  .option('--ollama-mode <mode>', 'Ollama deployment: docker or local (developer/server mode)')
+  .option('--ollama-url <url>', 'External Ollama URL (e.g. http://192.168.1.10:11434)')
   .option('--skip-docker', 'Skip Docker setup (developer mode)')
   .option('--skip-ollama', 'Skip Ollama model setup (developer mode)')
   .option('--qdrant-url <url>', 'External Qdrant URL (skip Qdrant Docker container)')
@@ -699,7 +705,8 @@ export const installCommand = new Command('install')
       await runInstall(
         {
           ...opts,
-          ollamaMode: (opts.ollamaMode as OllamaMode) ?? 'local',
+          // --ollama-url implies local mode (no Docker Ollama)
+          ollamaMode: opts.ollamaUrl ? 'local' : ((opts.ollamaMode as OllamaMode) ?? 'local'),
         },
         { signal: controller.signal }
       );

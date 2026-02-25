@@ -9,6 +9,8 @@ export interface DockerComposeConfig {
   qdrantUrl?: string;
   /** Qdrant API key for authenticated access (e.g. Qdrant Cloud) */
   qdrantApiKey?: string;
+  /** External Ollama URL — when set with ollamaMode 'local', overrides host.docker.internal default */
+  ollamaUrl?: string;
   ports?: {
     qdrant?: number;
     paparats?: number;
@@ -142,12 +144,18 @@ function ollamaService(port: number): ComposeService {
   };
 }
 
-function indexerService(config: ServerComposeConfig, qdrantUrl: string): ComposeService {
+function indexerService(
+  config: ServerComposeConfig,
+  qdrantUrl: string,
+  ollamaUrl: string
+): ComposeService {
   const externalQdrant = !!config.qdrantUrl;
+  const dockerOllama = config.ollamaMode === 'docker';
 
-  const dependsOn: Record<string, { condition: string }> = {
-    ollama: { condition: 'service_healthy' },
-  };
+  const dependsOn: Record<string, { condition: string }> = {};
+  if (dockerOllama) {
+    dependsOn['ollama'] = { condition: 'service_healthy' };
+  }
   if (!externalQdrant) {
     dependsOn['qdrant'] = { condition: 'service_healthy' };
   }
@@ -157,7 +165,7 @@ function indexerService(config: ServerComposeConfig, qdrantUrl: string): Compose
     GITHUB_TOKEN: '${GITHUB_TOKEN:-}',
     CRON: `\${CRON:-${config.cron ?? '0 */6 * * *'}}`,
     QDRANT_URL: qdrantUrl,
-    OLLAMA_URL: 'http://ollama:11434',
+    OLLAMA_URL: ollamaUrl,
   };
   if (config.group) {
     env['PAPARATS_GROUP'] = config.group;
@@ -198,7 +206,7 @@ export function generateDockerCompose(config: DockerComposeConfig): string {
   const ollamaUrl =
     config.ollamaMode === 'docker'
       ? 'http://ollama:11434'
-      : '${OLLAMA_URL:-http://host.docker.internal:11434}';
+      : (config.ollamaUrl ?? '${OLLAMA_URL:-http://host.docker.internal:11434}');
 
   const qdrantUrl = externalQdrant ? config.qdrantUrl! : 'http://qdrant:6333';
 
@@ -243,25 +251,29 @@ export function generateServerCompose(config: ServerComposeConfig): string {
   const paparatsPort = config.ports?.paparats ?? 9876;
   const ollamaPort = config.ports?.ollama ?? 11434;
   const externalQdrant = !!config.qdrantUrl;
+  const dockerOllama = config.ollamaMode === 'docker';
 
   const qdrantUrl = externalQdrant ? config.qdrantUrl! : 'http://qdrant:6333';
+  const ollamaUrl = dockerOllama
+    ? 'http://ollama:11434'
+    : (config.ollamaUrl ?? '${OLLAMA_URL:-http://host.docker.internal:11434}');
 
   const compose: ComposeFile = {
     services: {
       ...(externalQdrant ? {} : { qdrant: qdrantService(qdrantPort) }),
-      ollama: ollamaService(ollamaPort),
+      ...(dockerOllama ? { ollama: ollamaService(ollamaPort) } : {}),
       paparats: paparatsService(
         paparatsPort,
-        'http://ollama:11434',
+        ollamaUrl,
         qdrantUrl,
         !externalQdrant,
         config.qdrantApiKey
       ),
-      'paparats-indexer': indexerService(config, qdrantUrl),
+      'paparats-indexer': indexerService(config, qdrantUrl, ollamaUrl),
     },
     volumes: {
       ...(externalQdrant ? {} : { qdrant_data: null }),
-      ollama_data: null,
+      ...(dockerOllama ? { ollama_data: null } : {}),
       paparats_data: null,
       indexer_repos: null,
     },
@@ -270,8 +282,9 @@ export function generateServerCompose(config: ServerComposeConfig): string {
     },
   };
 
-  // paparats depends on ollama in server mode
-  compose.services['paparats']!.depends_on!['ollama'] = { condition: 'service_healthy' };
+  if (dockerOllama) {
+    compose.services['paparats']!.depends_on!['ollama'] = { condition: 'service_healthy' };
+  }
 
   return (
     HEADER +
