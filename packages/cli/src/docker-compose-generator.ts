@@ -18,6 +18,8 @@ export interface ServerComposeConfig extends DockerComposeConfig {
   repos?: string;
   githubToken?: string;
   cron?: string;
+  /** When set, all repos share this single Qdrant group (collection) */
+  group?: string;
   indexerPort?: number;
 }
 
@@ -142,16 +144,21 @@ function indexerService(config: ServerComposeConfig, qdrantUrl: string): Compose
     dependsOn['qdrant'] = { condition: 'service_healthy' };
   }
 
+  const env: Record<string, string> = {
+    REPOS: '${REPOS:-}',
+    GITHUB_TOKEN: '${GITHUB_TOKEN:-}',
+    CRON: `\${CRON:-${config.cron ?? '0 */6 * * *'}}`,
+    QDRANT_URL: qdrantUrl,
+    OLLAMA_URL: 'http://ollama:11434',
+  };
+  if (config.group) {
+    env['PAPARATS_GROUP'] = config.group;
+  }
+
   const svc: ComposeService = {
     image: 'ibaz/paparats-indexer:latest',
     container_name: 'paparats-indexer',
-    environment: {
-      REPOS: '${REPOS:-}',
-      GITHUB_TOKEN: '${GITHUB_TOKEN:-}',
-      CRON: `\${CRON:-${config.cron ?? '0 */6 * * *'}}`,
-      QDRANT_URL: qdrantUrl,
-      OLLAMA_URL: 'http://ollama:11434',
-    },
+    environment: env,
     ports: [`\${INDEXER_PORT:-${config.indexerPort ?? 9877}}:9877`],
     volumes: ['indexer_repos:/data/repos', 'paparats_data:/home/nodejs/.paparats'],
     depends_on: dependsOn,

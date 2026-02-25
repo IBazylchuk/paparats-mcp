@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { Searcher } from '../src/searcher.js';
+import { toCollectionName } from '../src/indexer.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { EmbeddingProvider } from '../src/types.js';
 
@@ -115,7 +116,7 @@ describe('Searcher', () => {
     expect(response.metrics.tokensReturned).toBeGreaterThan(0);
     expect(response.metrics.tokensSaved).toBeGreaterThanOrEqual(0);
 
-    expect(mockQdrant.client.search).toHaveBeenCalledWith('test-group', {
+    expect(mockQdrant.client.search).toHaveBeenCalledWith(toCollectionName('test-group'), {
       vector: expect.any(Array),
       limit: 5,
       with_payload: true,
@@ -135,7 +136,7 @@ describe('Searcher', () => {
     await searcher.search('test-group', 'query', { project: 'my-project' });
 
     expect(mockQdrant.client.search).toHaveBeenCalledWith(
-      'test-group',
+      toCollectionName('test-group'),
       expect.objectContaining({
         filter: {
           must: [{ key: 'project', match: { value: 'my-project' } }],
@@ -156,7 +157,7 @@ describe('Searcher', () => {
     await searcher.search('test-group', 'query', { limit: 10 });
 
     expect(mockQdrant.client.search).toHaveBeenCalledWith(
-      'test-group',
+      toCollectionName('test-group'),
       expect.objectContaining({
         limit: 10,
       })
@@ -273,13 +274,13 @@ describe('Searcher', () => {
 
     await searcher.search('test-group', 'query', { limit: 0 });
     expect(mockQdrant.client.search).toHaveBeenLastCalledWith(
-      'test-group',
+      toCollectionName('test-group'),
       expect.objectContaining({ limit: 1 })
     );
 
     await searcher.search('test-group', 'query', { limit: 500 });
     expect(mockQdrant.client.search).toHaveBeenLastCalledWith(
-      'test-group',
+      toCollectionName('test-group'),
       expect.objectContaining({ limit: 100 })
     );
   });
@@ -716,7 +717,7 @@ describe('Searcher', () => {
 
     // Verify filter includes the additional condition
     expect(mockQdrant.client.search).toHaveBeenCalledWith(
-      'test-group',
+      toCollectionName('test-group'),
       expect.objectContaining({
         filter: {
           must: expect.arrayContaining([
@@ -747,7 +748,7 @@ describe('Searcher', () => {
     );
 
     expect(mockQdrant.client.search).toHaveBeenCalledWith(
-      'test-group',
+      toCollectionName('test-group'),
       expect.objectContaining({
         limit: 3,
         filter: {
@@ -841,7 +842,7 @@ describe('Searcher', () => {
       await searcher.search('test-group', 'query');
 
       expect(mockQdrant.client.search).toHaveBeenCalledWith(
-        'test-group',
+        toCollectionName('test-group'),
         expect.objectContaining({
           filter: undefined,
         })
@@ -861,7 +862,7 @@ describe('Searcher', () => {
       await searcher.search('test-group', 'query');
 
       expect(mockQdrant.client.search).toHaveBeenCalledWith(
-        'test-group',
+        toCollectionName('test-group'),
         expect.objectContaining({
           filter: {
             must: [{ key: 'project', match: { value: 'org/billing' } }],
@@ -883,7 +884,7 @@ describe('Searcher', () => {
       await searcher.search('test-group', 'query');
 
       expect(mockQdrant.client.search).toHaveBeenCalledWith(
-        'test-group',
+        toCollectionName('test-group'),
         expect.objectContaining({
           filter: {
             must: [{ key: 'project', match: { any: ['org/core', 'org/tracking', 'org/events'] } }],
@@ -905,7 +906,7 @@ describe('Searcher', () => {
       await searcher.search('test-group', 'query', { project: 'org/tracking' });
 
       expect(mockQdrant.client.search).toHaveBeenCalledWith(
-        'test-group',
+        toCollectionName('test-group'),
         expect.objectContaining({
           filter: {
             must: [{ key: 'project', match: { value: 'org/tracking' } }],
@@ -1001,7 +1002,7 @@ describe('Searcher', () => {
       );
 
       expect(mockQdrant.client.search).toHaveBeenCalledWith(
-        'test-group',
+        toCollectionName('test-group'),
         expect.objectContaining({
           filter: {
             must: expect.arrayContaining([

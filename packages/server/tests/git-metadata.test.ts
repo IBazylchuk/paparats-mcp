@@ -5,6 +5,7 @@ import os from 'os';
 import { execSync } from 'child_process';
 import { MetadataStore } from '../src/metadata-db.js';
 import { extractGitMetadata } from '../src/git-metadata.js';
+import { toCollectionName } from '../src/indexer.js';
 
 function createTempDir(): string {
   const tmpDir = path.join(
@@ -106,7 +107,7 @@ describe('extractGitMetadata', () => {
     // Verify Qdrant payload updated
     expect(mockQdrantClient.setPayload).toHaveBeenCalled();
     const payloadCall = mockQdrantClient.setPayload.mock.calls[0];
-    expect(payloadCall![0]).toBe('g');
+    expect(payloadCall![0]).toBe(toCollectionName('g'));
     const payloadArg = payloadCall![1] as { payload: Record<string, unknown> };
     expect(payloadArg.payload).toHaveProperty('last_commit_hash');
     expect(payloadArg.payload).toHaveProperty('last_commit_at');

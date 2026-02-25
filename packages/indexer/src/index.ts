@@ -23,6 +23,8 @@ const QDRANT_URL = process.env['QDRANT_URL'] ?? 'http://localhost:6333';
 const OLLAMA_URL = process.env['OLLAMA_URL'] ?? 'http://127.0.0.1:11434';
 const REPOS_DIR = process.env['REPOS_DIR'] ?? '/data/repos';
 const PORT = parseInt(process.env['PORT'] ?? '9877', 10);
+/** When set, all repos share this single Qdrant collection (group) */
+const PAPARATS_GROUP = process.env['PAPARATS_GROUP']?.trim() || undefined;
 
 if (OLLAMA_URL !== 'http://127.0.0.1:11434') {
   process.env['OLLAMA_URL'] = OLLAMA_URL;
@@ -79,7 +81,7 @@ function buildDefaultProject(repo: RepoConfig, localPath: string): ProjectConfig
   return {
     name: repo.name,
     path: localPath,
-    group: repo.name,
+    group: PAPARATS_GROUP ?? repo.name,
     languages: ['generic'],
     patterns: ['**/*'],
     exclude: [],
@@ -121,6 +123,9 @@ async function indexRepo(repo: RepoConfig): Promise<number> {
     const configPath = path.join(localPath, '.paparats.yml');
     if (fs.existsSync(configPath)) {
       project = loadProject(localPath);
+      if (PAPARATS_GROUP) {
+        project = { ...project, group: PAPARATS_GROUP };
+      }
     } else {
       console.log(`[indexer] No .paparats.yml in ${repo.fullName}, using defaults`);
       project = buildDefaultProject(repo, localPath);
@@ -213,6 +218,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[indexer] Cron: ${CRON}`);
   console.log(`[indexer] Qdrant: ${QDRANT_URL}`);
   console.log(`[indexer] Ollama: ${OLLAMA_URL}`);
+  if (PAPARATS_GROUP) {
+    console.log(`[indexer] Shared group: ${PAPARATS_GROUP} (all repos → one collection)`);
+  }
 });
 
 // Start cron scheduler

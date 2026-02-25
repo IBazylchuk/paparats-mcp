@@ -5,7 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.5] - 2026-02-25
+
+### Added
+
+- **Qdrant collection prefix** — all Qdrant collections now use a `paparats_` prefix (e.g. group `my-app` → collection `paparats_my-app`). Prevents namespace collisions when sharing a Qdrant instance with other applications. `toCollectionName()` and `fromCollectionName()` helpers exported from `@paparats/server`
+- **`PAPARATS_GROUP` env var for indexer** — when set, all repos in the indexer container share a single Qdrant collection. Overrides per-repo defaults and `.paparats.yml` group field
+- **`--group` flag for server mode install** — `paparats install --mode server --group shared` passes `PAPARATS_GROUP` to the generated docker-compose and `.env` file
+- **`listGroups()` filters by prefix** — only returns collections owned by paparats (those with `paparats_` prefix), strips the prefix in output
+
+### Fixed
+
+- **LIKE wildcard injection in metadata-db** — `deleteByProject()`, `deleteByFile()`, and `deleteEdgesByProject()` now escape `%`, `_`, `\` characters via `escapeLike()` with `ESCAPE '\'` clause
+- **Duplicated orphan cleanup code** — extracted `cleanupOrphanedChunks()` private method in `Indexer`, replacing identical code blocks in `indexProject()` and `indexFilesContent()`
 
 ## [0.2.4] - 2026-02-25
 

@@ -204,6 +204,8 @@ export interface InstallOptions {
   githubToken?: string;
   /** Server mode: cron expression */
   cron?: string;
+  /** Server mode: shared Qdrant group (all repos → one collection) */
+  group?: string;
   /** Support mode: server URL */
   server?: string;
 }
@@ -420,6 +422,7 @@ async function runServerInstall(
     repos: opts.repos,
     githubToken: opts.githubToken,
     cron: opts.cron,
+    group: opts.group,
   });
   const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
   deps.writeFileSync(composeDest, composeContent);
@@ -429,6 +432,7 @@ async function runServerInstall(
   if (opts.repos) envLines.push(`REPOS=${opts.repos}`);
   if (opts.githubToken) envLines.push(`GITHUB_TOKEN=${opts.githubToken}`);
   if (opts.cron) envLines.push(`CRON=${opts.cron}`);
+  if (opts.group) envLines.push(`PAPARATS_GROUP=${opts.group}`);
   if (envLines.length > 0) {
     const envPath = path.join(PAPARATS_HOME, '.env');
     deps.writeFileSync(envPath, envLines.join('\n') + '\n');
@@ -670,6 +674,7 @@ export const installCommand = new Command('install')
   .option('--repos <repos>', 'Comma-separated repos to index (server mode)')
   .option('--github-token <token>', 'GitHub token for private repos (server mode)')
   .option('--cron <expression>', 'Cron schedule for indexing (server mode)')
+  .option('--group <name>', 'Shared Qdrant group — all repos in one collection (server mode)')
   .option('--server <url>', 'Server URL to connect to (support mode)', 'http://localhost:9876')
   .option('-v, --verbose', 'Show detailed output')
   .action(async (opts: InstallOptions & { ollamaMode?: string }) => {

@@ -161,6 +161,11 @@ paparats install --mode server \
 paparats install --mode server \
   --repos org/repo \
   --qdrant-url https://qdrant.example.com:6333
+
+# All repos in one shared collection
+paparats install --mode server \
+  --repos org/repo1,org/repo2 \
+  --group shared-index
 ```
 
 **What happens:**
@@ -168,7 +173,7 @@ paparats install --mode server \
 1. Checks Docker only (no Ollama check — runs in Docker)
 2. Asks whether to use an external Qdrant instance (or pass `--qdrant-url` to skip the prompt)
 3. Generates docker-compose with all services: qdrant + ollama + paparats + indexer. When using external Qdrant, the Qdrant container is omitted
-4. Creates `~/.paparats/.env` with `REPOS`, `GITHUB_TOKEN`, `CRON`
+4. Creates `~/.paparats/.env` with `REPOS`, `GITHUB_TOKEN`, `CRON`, `PAPARATS_GROUP` (if `--group` set)
 5. Starts all containers
 6. Indexer clones repos and indexes them on the configured schedule
 
@@ -385,7 +390,7 @@ Bot workflow (via /support/mcp):
 `.paparats.yml` in your project root:
 
 ```yaml
-group: 'my-project-group' # required — Qdrant collection name
+group: 'my-project-group' # required — maps to Qdrant collection "paparats_my-project-group"
 language: ruby # required — or array: [ruby, typescript]
 
 indexing:
@@ -422,7 +427,7 @@ metadata:
 
 ### Groups
 
-Projects with the same `group` name share a search scope. All indexed together in one Qdrant collection.
+Projects with the same `group` name share a search scope. All indexed together in one Qdrant collection. The `group` name maps to a Qdrant collection with a `paparats_` prefix (e.g. group `my-fullstack` → collection `paparats_my-fullstack`). This prevents namespace collisions when sharing a Qdrant instance with other applications.
 
 ```yaml
 # backend/.paparats.yml
@@ -441,6 +446,12 @@ indexing:
 ```
 
 Now searching `"authentication flow"` finds code in **both** backend and frontend.
+
+**Server mode shared group:** When using the indexer container with multiple repos, set `PAPARATS_GROUP` (or `--group` during install) to index all repos into a single collection:
+
+```bash
+paparats install --mode server --repos org/repo1,org/repo2 --group shared-index
+```
 
 ### Metadata
 
@@ -641,6 +652,7 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 - `--repos <repos>` — Comma-separated repos to index (server mode)
 - `--github-token <token>` — GitHub token for private repos (server mode)
 - `--cron <expression>` — Cron schedule for indexing (server mode, default: `0 */6 * * *`)
+- `--group <name>` — Shared Qdrant group — all repos in one collection (server mode). Sets `PAPARATS_GROUP` env var
 - `--server <url>` — Server URL to connect to (support mode)
 - `-v, --verbose` — Show detailed output
 
@@ -840,7 +852,7 @@ paparats-mcp/
 
 ## Stack
 
-- **Qdrant** — vector database (1 collection per group, cosine similarity, payload filtering)
+- **Qdrant** — vector database (1 collection per group with `paparats_` prefix, cosine similarity, payload filtering)
 - **Ollama** — local embeddings via Jina Code Embeddings 1.5B with task-specific prefixes
 - **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata store (`~/.paparats/metadata.db`)
 - **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
