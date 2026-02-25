@@ -420,6 +420,13 @@
   resolved "https://registry.yarnpkg.com/@opentelemetry/api/-/api-1.9.0.tgz#d03eba68273dc0f7509e2a3d5cba21eae10379fe"
   integrity sha512-3giAOQvZiH5F9bMlMiv8+GSPMeqg0dbaeo58/0SlA9sxSqZhnUtxzX9/2FzyhS9sWQf5S0GJE0AKBrFqjpeYcg==
 
+"@paparats/shared@^0.1.2":
+  version "0.1.10"
+  resolved "https://registry.yarnpkg.com/@paparats/shared/-/shared-0.1.10.tgz#6bfaeb97882e94d462f09baca9df57389434cb08"
+  integrity sha512-Xm6aMUBuR0eriic4Hu6cNo63kE52f/pmGSxNUu/YsrRi6FaoQDZ55XwjiGceAgvrac3prjkJKlaN2WT3xDpuAA==
+  dependencies:
+    ignore "^5.3.2"
+
 "@qdrant/js-client-rest@^1.16.0":
   version "1.16.2"
   resolved "https://registry.yarnpkg.com/@qdrant/js-client-rest/-/js-client-rest-1.16.2.tgz#cde87aa44288a46048076153b38ee1dcaf742385"
@@ -1718,9 +1725,9 @@ hasown@^2.0.2:
     function-bind "^1.1.2"
 
 hono@^4.11.4:
-  version "4.12.0"
-  resolved "https://registry.yarnpkg.com/hono/-/hono-4.12.0.tgz#18f96a2962274398efc57a1a79e22b3daad2ca1c"
-  integrity sha512-NekXntS5M94pUfiVZ8oXXK/kkri+5WpX2/Ik+LVsl+uvw+soj4roXIsPqO+XsWrAw20mOzaXOZf3Q7PfB9A/IA==
+  version "4.12.2"
+  resolved "https://registry.yarnpkg.com/hono/-/hono-4.12.2.tgz#05c311c271b06685a0f229c484e3a2637d7d5f2a"
+  integrity sha512-gJnaDHXKDayjt8ue0n8Gs0A007yKXj4Xzb8+cNjZeYsSzzwKc0Lr+OZgYwVfB0pHfUs17EPoLvrOsEaJ9mj+Tg==
 
 http-errors@^2.0.0, http-errors@^2.0.1, http-errors@~2.0.0, http-errors@~2.0.1:
   version "2.0.1"
