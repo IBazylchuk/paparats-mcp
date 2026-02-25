@@ -234,6 +234,78 @@ export interface InstallDeps {
   promptQdrantUrl?: () => Promise<string>;
 }
 
+// ── Shared Ollama setup ─────────────────────────────────────────────────────
+
+interface OllamaSetupDeps {
+  commandExists: (cmd: string) => boolean;
+  ollamaModelExists: (modelName: string) => boolean;
+  isOllamaRunning: () => Promise<boolean>;
+  downloadFile: (url: string, dest: string, signal?: AbortSignal) => Promise<void>;
+  mkdirSync: (dir: string) => void;
+  writeFileSync: (path: string, data: string) => void;
+  existsSync: (path: string) => boolean;
+  unlinkSync: (path: string) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * Ensure local Ollama is running and the embedding model is registered.
+ * Shared by developer and server install modes when ollamaMode is 'local'.
+ */
+async function ensureLocalOllama(
+  deps: OllamaSetupDeps,
+  cleanupTasks: Array<() => void>
+): Promise<void> {
+  if (deps.ollamaModelExists(OLLAMA_MODEL_NAME)) {
+    console.log(chalk.green(`\u2713 Ollama model ${OLLAMA_MODEL_NAME} already exists\n`));
+    return;
+  }
+
+  if (!(await deps.isOllamaRunning())) {
+    console.log(chalk.dim('Starting Ollama...'));
+    spawn('ollama', ['serve'], { stdio: 'ignore', detached: true }).unref();
+    await new Promise((r) => setTimeout(r, 3000));
+    if (!(await deps.isOllamaRunning())) {
+      throw new Error('Failed to start Ollama. Please start it manually: ollama serve');
+    }
+  }
+
+  if (deps.existsSync(GGUF_FILE)) {
+    console.log(chalk.dim(`GGUF already downloaded at ${GGUF_FILE}`));
+  } else {
+    if (!deps.commandExists('curl')) {
+      console.log(
+        chalk.yellow(
+          'Note: curl not found. Using Node fetch (slower for large files). Install curl for better download performance.'
+        )
+      );
+    }
+    console.log(chalk.bold('Downloading jina-code-embeddings (~1.65 GB)...'));
+    deps.mkdirSync(MODELS_DIR);
+    cleanupTasks.push(() => {
+      if (deps.existsSync(GGUF_FILE)) deps.unlinkSync(GGUF_FILE);
+    });
+    await deps.downloadFile(GGUF_URL, GGUF_FILE, deps.signal);
+    cleanupTasks.pop();
+    console.log(chalk.green('\u2713 Download complete'));
+  }
+
+  const modelfilePath = path.join(MODELS_DIR, 'Modelfile');
+  deps.writeFileSync(modelfilePath, `FROM ${GGUF_FILE}\n`);
+
+  const spinner = ora('Registering model in Ollama...').start();
+  try {
+    execSync(`ollama create ${OLLAMA_MODEL_NAME} -f "${modelfilePath}"`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 60_000,
+    });
+    spinner.succeed(`Ollama model ${OLLAMA_MODEL_NAME} registered`);
+  } catch (err) {
+    spinner.fail('Failed to register model');
+    throw err;
+  }
+}
+
 // ── Developer mode ──────────────────────────────────────────────────────────
 
 async function runDeveloperInstall(
@@ -338,53 +410,7 @@ async function runDeveloperInstall(
 
   // Ollama setup (local mode only, skip when external URL is provided)
   if (!opts.skipOllama && ollamaMode === 'local' && !opts.ollamaUrl) {
-    if (deps.ollamaModelExists(OLLAMA_MODEL_NAME)) {
-      console.log(chalk.green(`\u2713 Ollama model ${OLLAMA_MODEL_NAME} already exists\n`));
-    } else {
-      if (!(await deps.isOllamaRunning())) {
-        console.log(chalk.dim('Starting Ollama...'));
-        spawn('ollama', ['serve'], { stdio: 'ignore', detached: true }).unref();
-        await new Promise((r) => setTimeout(r, 3000));
-        if (!(await deps.isOllamaRunning())) {
-          throw new Error('Failed to start Ollama. Please start it manually: ollama serve');
-        }
-      }
-
-      if (deps.existsSync(GGUF_FILE)) {
-        console.log(chalk.dim(`GGUF already downloaded at ${GGUF_FILE}`));
-      } else {
-        if (!deps.commandExists('curl')) {
-          console.log(
-            chalk.yellow(
-              'Note: curl not found. Using Node fetch (slower for large files). Install curl for better download performance.'
-            )
-          );
-        }
-        console.log(chalk.bold('Downloading jina-code-embeddings (~1.65 GB)...'));
-        deps.mkdirSync(MODELS_DIR);
-        cleanupTasks.push(() => {
-          if (deps.existsSync(GGUF_FILE)) deps.unlinkSync(GGUF_FILE);
-        });
-        await deps.downloadFile(GGUF_URL, GGUF_FILE, deps.signal);
-        cleanupTasks.pop();
-        console.log(chalk.green('\u2713 Download complete'));
-      }
-
-      const modelfilePath = path.join(MODELS_DIR, 'Modelfile');
-      deps.writeFileSync(modelfilePath, `FROM ${GGUF_FILE}\n`);
-
-      const spinner = ora('Registering model in Ollama...').start();
-      try {
-        execSync(`ollama create ${OLLAMA_MODEL_NAME} -f "${modelfilePath}"`, {
-          stdio: ['pipe', 'pipe', 'pipe'],
-          timeout: 60_000,
-        });
-        spinner.succeed(`Ollama model ${OLLAMA_MODEL_NAME} registered`);
-      } catch (err) {
-        spinner.fail('Failed to register model');
-        throw err;
-      }
-    }
+    await ensureLocalOllama(deps, cleanupTasks);
   }
 
   // Auto-configure Cursor MCP
@@ -413,24 +439,41 @@ async function runServerInstall(
       InstallDeps,
       | 'commandExists'
       | 'getDockerComposeCommand'
+      | 'ollamaModelExists'
+      | 'isOllamaRunning'
+      | 'downloadFile'
       | 'generateServerCompose'
       | 'waitForHealth'
       | 'mkdirSync'
       | 'writeFileSync'
       | 'existsSync'
+      | 'unlinkSync'
     >
-  >
+  > & { signal?: AbortSignal }
 ): Promise<void> {
-  // Check Docker only
-  if (!deps.commandExists('docker')) {
-    throw new Error('Docker not found. Install from https://docker.com');
+  const ollamaMode = opts.ollamaMode ?? 'docker';
+  const needsLocalOllama = ollamaMode === 'local' && !opts.ollamaUrl;
+
+  // Check prerequisites
+  const checks: Array<{ cmd: string; name: string; install: string }> = [
+    { cmd: 'docker', name: 'Docker', install: 'https://docker.com' },
+  ];
+  if (needsLocalOllama) {
+    checks.push({ cmd: 'ollama', name: 'Ollama', install: 'https://ollama.com' });
   }
-  console.log(chalk.green('\u2713 Prerequisites found (Docker)\n'));
+
+  for (const check of checks) {
+    if (!deps.commandExists(check.cmd)) {
+      throw new Error(`${check.name} not found. Install from ${check.install}`);
+    }
+  }
+
+  const prereqNames = checks.map((c) => c.name).join(', ');
+  console.log(chalk.green(`\u2713 Prerequisites found (${prereqNames})\n`));
 
   deps.mkdirSync(PAPARATS_HOME);
 
   // Generate docker-compose with all services
-  const ollamaMode = opts.ollamaMode ?? 'docker';
   const composeContent = deps.generateServerCompose({
     ollamaMode,
     qdrantUrl: opts.qdrantUrl,
@@ -477,6 +520,11 @@ async function runServerInstall(
 
   const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
   if (!mcpReady) throw new Error('MCP server failed to start');
+
+  // Ollama setup (local mode only, skip when external URL or Docker Ollama)
+  if (needsLocalOllama) {
+    await ensureLocalOllama(deps, []);
+  }
 
   console.log(chalk.bold.green('\n\u2713 Server installation complete!\n'));
   console.log('MCP endpoints:');
