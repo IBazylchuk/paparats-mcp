@@ -20,6 +20,7 @@ const REPOS = process.env['REPOS'] ?? '';
 const GITHUB_TOKEN = process.env['GITHUB_TOKEN'];
 const CRON = process.env['CRON'] ?? '0 */6 * * *';
 const QDRANT_URL = process.env['QDRANT_URL'] ?? 'http://localhost:6333';
+const QDRANT_API_KEY = process.env['QDRANT_API_KEY'] || undefined;
 const OLLAMA_URL = process.env['OLLAMA_URL'] ?? 'http://127.0.0.1:11434';
 const REPOS_DIR = process.env['REPOS_DIR'] ?? '/data/repos';
 const PORT = parseInt(process.env['PORT'] ?? '9877', 10);
@@ -54,7 +55,7 @@ const embeddingProvider = createEmbeddingProvider({
 });
 
 const metadataStore = new MetadataStore();
-const qdrantClient = new QdrantClient({ url: QDRANT_URL, timeout: 30_000 });
+const qdrantClient = new QdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY, timeout: 30_000 });
 
 let treeSitter: TreeSitterManager | undefined;
 try {
@@ -216,7 +217,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[indexer] Listening on http://0.0.0.0:${PORT}`);
   console.log(`[indexer] Repos: ${repos.map((r) => r.fullName).join(', ') || '(none)'}`);
   console.log(`[indexer] Cron: ${CRON}`);
-  console.log(`[indexer] Qdrant: ${QDRANT_URL}`);
+  console.log(`[indexer] Qdrant: ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`);
   console.log(`[indexer] Ollama: ${OLLAMA_URL}`);
   if (PAPARATS_GROUP) {
     console.log(`[indexer] Shared group: ${PAPARATS_GROUP} (all repos → one collection)`);

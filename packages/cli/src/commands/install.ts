@@ -204,6 +204,8 @@ export interface InstallOptions {
   githubToken?: string;
   /** Server mode: cron expression */
   cron?: string;
+  /** Qdrant API key for authenticated access (e.g. Qdrant Cloud) */
+  qdrantApiKey?: string;
   /** Server mode: shared Qdrant group (all repos → one collection) */
   group?: string;
   /** Support mode: server URL */
@@ -296,9 +298,18 @@ async function runDeveloperInstall(
     const composeContent = deps.generateDockerCompose({
       ollamaMode,
       qdrantUrl: opts.qdrantUrl,
+      qdrantApiKey: opts.qdrantApiKey,
     });
     const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
     deps.writeFileSync(composeDest, composeContent);
+
+    // Write .env for docker-compose variable substitution (API key, etc.)
+    if (opts.qdrantApiKey) {
+      const envPath = path.join(PAPARATS_HOME, '.env');
+      const envLines: string[] = [];
+      envLines.push(`QDRANT_API_KEY=${opts.qdrantApiKey}`);
+      deps.writeFileSync(envPath, envLines.join('\n') + '\n');
+    }
 
     spinner.text = 'Starting Docker containers...';
 
@@ -419,6 +430,7 @@ async function runServerInstall(
   const composeContent = deps.generateServerCompose({
     ollamaMode: 'docker',
     qdrantUrl: opts.qdrantUrl,
+    qdrantApiKey: opts.qdrantApiKey,
     repos: opts.repos,
     githubToken: opts.githubToken,
     cron: opts.cron,
@@ -433,6 +445,7 @@ async function runServerInstall(
   if (opts.githubToken) envLines.push(`GITHUB_TOKEN=${opts.githubToken}`);
   if (opts.cron) envLines.push(`CRON=${opts.cron}`);
   if (opts.group) envLines.push(`PAPARATS_GROUP=${opts.group}`);
+  if (opts.qdrantApiKey) envLines.push(`QDRANT_API_KEY=${opts.qdrantApiKey}`);
   if (envLines.length > 0) {
     const envPath = path.join(PAPARATS_HOME, '.env');
     deps.writeFileSync(envPath, envLines.join('\n') + '\n');
@@ -671,6 +684,7 @@ export const installCommand = new Command('install')
   .option('--skip-docker', 'Skip Docker setup (developer mode)')
   .option('--skip-ollama', 'Skip Ollama model setup (developer mode)')
   .option('--qdrant-url <url>', 'External Qdrant URL (skip Qdrant Docker container)')
+  .option('--qdrant-api-key <key>', 'Qdrant API key for authenticated access')
   .option('--repos <repos>', 'Comma-separated repos to index (server mode)')
   .option('--github-token <token>', 'GitHub token for private repos (server mode)')
   .option('--cron <expression>', 'Cron schedule for indexing (server mode)')

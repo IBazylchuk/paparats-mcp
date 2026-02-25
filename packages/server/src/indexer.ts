@@ -81,6 +81,8 @@ export function parseChunkId(chunkId: string): {
 
 export interface IndexerConfig {
   qdrantUrl: string;
+  /** Qdrant API key for authenticated access (e.g. Qdrant Cloud) */
+  qdrantApiKey?: string;
   embeddingProvider: CachedEmbeddingProvider;
   dimensions: number;
   /** Qdrant request timeout in milliseconds (default: 30000) */
@@ -111,6 +113,7 @@ export class Indexer {
       config.qdrantClient ??
       new QdrantClient({
         url: config.qdrantUrl,
+        apiKey: config.qdrantApiKey,
         timeout: config.timeout ?? QDRANT_TIMEOUT_MS,
       });
     this.provider = config.embeddingProvider;
