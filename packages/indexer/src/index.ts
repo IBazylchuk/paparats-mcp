@@ -1,10 +1,10 @@
-import { QdrantClient } from '@qdrant/js-client-rest';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import {
   createEmbeddingProvider,
   Indexer,
+  createQdrantClient,
   MetadataStore,
   createTreeSitterManager,
   loadProject,
@@ -55,7 +55,7 @@ const embeddingProvider = createEmbeddingProvider({
 });
 
 const metadataStore = new MetadataStore();
-const qdrantClient = new QdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY, timeout: 30_000 });
+const qdrantClient = createQdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY });
 
 let treeSitter: TreeSitterManager | undefined;
 try {

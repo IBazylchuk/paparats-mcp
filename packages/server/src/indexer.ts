@@ -33,6 +33,27 @@ export function fromCollectionName(collection: string): string {
     : collection;
 }
 
+/**
+ * Create a QdrantClient with correct port handling for HTTPS URLs.
+ * The JS client defaults to port 6333 when no port is in the URL,
+ * which breaks Qdrant Cloud (HTTPS on port 443).
+ */
+export function createQdrantClient(opts: {
+  url: string;
+  apiKey?: string;
+  timeout?: number;
+}): QdrantClient {
+  const parsed = new URL(opts.url);
+  const port = parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 6333;
+  return new QdrantClient({
+    url: opts.url,
+    apiKey: opts.apiKey,
+    port,
+    checkCompatibility: false,
+    timeout: opts.timeout ?? 30_000,
+  });
+}
+
 // ── Chunk ID helpers ────────────────────────────────────────────────────────
 
 /**
@@ -111,7 +132,7 @@ export class Indexer {
   constructor(config: IndexerConfig) {
     this.qdrant =
       config.qdrantClient ??
-      new QdrantClient({
+      createQdrantClient({
         url: config.qdrantUrl,
         apiKey: config.qdrantApiKey,
         timeout: config.timeout ?? QDRANT_TIMEOUT_MS,
