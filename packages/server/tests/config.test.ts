@@ -9,6 +9,8 @@ import {
   loadProject,
   getLanguageProfile,
   getSupportedLanguages,
+  detectLanguages,
+  autoProjectConfig,
   CONFIG_FILE,
 } from '../src/config.js';
 
@@ -540,6 +542,108 @@ metadata:
           'src/controllers': ['controller'],
           'src/models': ['model'],
         });
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  describe('detectLanguages', () => {
+    it('detects typescript from tsconfig.json', () => {
+      const tmpDir = createTempDir();
+      try {
+        fs.writeFileSync(path.join(tmpDir, 'tsconfig.json'), '{}');
+        expect(detectLanguages(tmpDir)).toEqual(['typescript']);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('detects python from requirements.txt', () => {
+      const tmpDir = createTempDir();
+      try {
+        fs.writeFileSync(path.join(tmpDir, 'requirements.txt'), '');
+        expect(detectLanguages(tmpDir)).toEqual(['python']);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('detects multiple languages', () => {
+      const tmpDir = createTempDir();
+      try {
+        fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+        fs.writeFileSync(path.join(tmpDir, 'go.mod'), '');
+        expect(detectLanguages(tmpDir)).toEqual(['typescript', 'go']);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns generic for empty directory', () => {
+      const tmpDir = createTempDir();
+      try {
+        expect(detectLanguages(tmpDir)).toEqual(['generic']);
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('returns generic for non-existent directory', () => {
+      expect(detectLanguages('/nonexistent-path-xyz')).toEqual(['generic']);
+    });
+  });
+
+  describe('autoProjectConfig', () => {
+    it('resolves correct patterns and excludes for detected language', () => {
+      const tmpDir = createTempDir();
+      try {
+        fs.writeFileSync(path.join(tmpDir, 'package.json'), '{}');
+        const config = autoProjectConfig(tmpDir);
+
+        expect(config.languages).toEqual(['typescript']);
+        expect(config.patterns).toEqual(
+          expect.arrayContaining(['**/*.ts', '**/*.tsx', '**/*.js', '**/*.jsx'])
+        );
+        expect(config.exclude.length).toBeGreaterThan(0);
+        expect(config.exclude).toEqual(
+          expect.arrayContaining([expect.stringContaining('node_modules')])
+        );
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('uses provided group name', () => {
+      const tmpDir = createTempDir();
+      try {
+        const config = autoProjectConfig(tmpDir, { group: 'my-group' });
+        expect(config.group).toBe('my-group');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('defaults group to directory basename', () => {
+      const tmpDir = createTempDir();
+      try {
+        const config = autoProjectConfig(tmpDir);
+        expect(config.group).toBe(path.basename(tmpDir));
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('includes generic excludes even for generic language', () => {
+      const tmpDir = createTempDir();
+      try {
+        const config = autoProjectConfig(tmpDir);
+        expect(config.languages).toEqual(['generic']);
+        expect(config.exclude.length).toBeGreaterThan(0);
+        expect(config.exclude).toEqual(
+          expect.arrayContaining([expect.stringContaining('node_modules')])
+        );
+        expect(config.exclude).toEqual(expect.arrayContaining([expect.stringContaining('.git')]));
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }

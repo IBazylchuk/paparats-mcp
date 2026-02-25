@@ -7,10 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.9] - 2026-02-25
 
+### Added
+
+- **Language auto-detection in indexer** — when a repo has no `.paparats.yml`, the indexer now detects the language from marker files (`package.json` → typescript, `go.mod` → go, `Gemfile` → ruby, etc.) and applies the correct language profile (patterns, exclude, extensions). Previously defaulted to `generic` with `**/*` pattern and no excludes, causing it to index everything including `node_modules`, `dist`, `.git`, etc.
+- **`detectLanguages()` and `autoProjectConfig()`** — new helpers exported from `@paparats/server`. `detectLanguages()` scans for marker files, `autoProjectConfig()` builds a fully-resolved `ProjectConfig` with correct language profiles
+
 ### Fixed
 
 - **Server mode `--ollama-mode local` missing Ollama setup** — `paparats install --mode server --ollama-mode local` now checks that Ollama is installed, starts it if needed, downloads the embedding model GGUF, and registers the model. Previously it only generated the docker-compose without verifying Ollama was ready
 - **`--ollama-url` skips local Ollama setup** — when `--ollama-url` is provided, `paparats install` no longer requires the `ollama` binary on the host and skips GGUF download + model registration. Enables fully external Ollama (e.g. AWS Fargate, a remote server)
+- **Indexer default config indexed everything** — `buildDefaultProject()` used `languages: ['generic']` with empty `exclude: []`, ignoring even the generic exclude list. Now uses `autoProjectConfig()` which goes through the standard `resolveProject()` pipeline
 
 ## [0.2.8] - 2026-02-25
 

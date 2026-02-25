@@ -381,6 +381,78 @@ export function loadProject(projectDir: string): ProjectConfig {
   return resolveProject(projectDir, raw);
 }
 
+// ── Language auto-detection ──────────────────────────────────────────────
+
+/** Marker files → language, ordered by specificity */
+const DETECT_PRIORITY: Array<[string, string]> = [
+  ['tsconfig.json', 'typescript'],
+  ['package.json', 'typescript'],
+  ['Cargo.toml', 'rust'],
+  ['go.mod', 'go'],
+  ['pyproject.toml', 'python'],
+  ['requirements.txt', 'python'],
+  ['setup.py', 'python'],
+  ['pom.xml', 'java'],
+  ['build.gradle', 'java'],
+  ['Gemfile', 'ruby'],
+  ['Rakefile', 'ruby'],
+  ['main.tf', 'terraform'],
+  ['CMakeLists.txt', 'cpp'],
+  ['Makefile', 'c'],
+];
+
+/**
+ * Detect languages in a project directory by looking for marker files.
+ * Returns detected languages in priority order, or `['generic']` if none found.
+ */
+export function detectLanguages(projectDir: string): string[] {
+  const detected: string[] = [];
+  const seen = new Set<string>();
+
+  try {
+    if (!fs.existsSync(projectDir)) return ['generic'];
+
+    for (const [file, lang] of DETECT_PRIORITY) {
+      if (fs.existsSync(path.join(projectDir, file)) && !seen.has(lang)) {
+        detected.push(lang);
+        seen.add(lang);
+      }
+    }
+
+    // Check for C# projects
+    try {
+      const files = fs.readdirSync(projectDir);
+      if (files.some((f) => f.endsWith('.csproj') || f.endsWith('.sln')) && !seen.has('csharp')) {
+        detected.push('csharp');
+      }
+    } catch {
+      // ignore
+    }
+  } catch {
+    return ['generic'];
+  }
+
+  return detected.length > 0 ? detected : ['generic'];
+}
+
+/**
+ * Build a fully-resolved ProjectConfig for a directory without `.paparats.yml`.
+ * Auto-detects language, applies correct patterns/exclude/extensions from language profiles.
+ */
+export function autoProjectConfig(projectDir: string, opts?: { group?: string }): ProjectConfig {
+  const languages = detectLanguages(projectDir);
+  const projectName = path.basename(projectDir);
+  const group = opts?.group ?? projectName;
+
+  // Build a synthetic PaparatsConfig and resolve through the standard pipeline
+  const synthetic: PaparatsConfig = {
+    group,
+    language: languages,
+  };
+
+  return resolveProject(projectDir, synthetic);
+}
+
 /** Build minimal ProjectConfig from content-based API request (no filesystem) */
 export interface ContentIndexConfig {
   chunkSize?: number;

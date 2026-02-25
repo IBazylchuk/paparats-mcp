@@ -14,6 +14,8 @@ export {
   loadProject,
   getLanguageProfile,
   getSupportedLanguages,
+  detectLanguages,
+  autoProjectConfig,
   CONFIG_FILE,
 } from './config.js';
 
