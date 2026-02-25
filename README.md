@@ -646,7 +646,8 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 **`paparats install`**
 
 - `--mode <mode>` — Install mode: `developer` (default), `server`, or `support`
-- `--ollama-mode <mode>` — Ollama deployment: `docker` or `local` (default, developer mode)
+- `--ollama-mode <mode>` — Ollama deployment: `docker` or `local` (default, developer/server mode)
+- `--ollama-url <url>` — External Ollama URL (e.g. `http://192.168.1.10:11434`). Implies `--ollama-mode local`. Skips local Ollama binary check and model setup
 - `--skip-docker` — Skip Docker setup (developer mode)
 - `--skip-ollama` — Skip Ollama model (developer mode)
 - `--qdrant-url <url>` — External Qdrant URL — skip Qdrant Docker container (developer/server mode)
@@ -719,7 +720,27 @@ paparats install --ollama-mode docker       # Docker Ollama
 **Trade-offs:**
 
 - ~1.7 GB Docker image (one-time pull)
-- CPU-only (sufficient for embedding generation)
+- CPU-only — no GPU/Metal acceleration (sufficient for embedding generation, but slower than native Ollama on Mac)
+
+### External Ollama
+
+If you run Ollama on a separate machine (e.g. AWS Fargate, a GPU server, or another host on your network), use `--ollama-url` to point the install at it:
+
+```bash
+paparats install --ollama-url http://192.168.1.10:11434
+
+# Server mode with external Ollama
+paparats install --mode server --ollama-url http://ollama.internal:11434 --repos org/repo1
+```
+
+When `--ollama-url` is set:
+
+- The Ollama Docker container is **omitted** from the generated `docker-compose.yml`
+- No local `ollama` binary is required — GGUF download and model registration are skipped
+- The `OLLAMA_URL` environment variable in the paparats server (and indexer in server mode) points to your external instance
+- Implies `--ollama-mode local` (no Docker Ollama)
+
+This is useful when Docker Ollama is too slow (e.g. CPU-only on Mac, where native Ollama can use Metal GPU acceleration) or when you want to share a single Ollama instance across multiple machines.
 
 ### External Qdrant
 

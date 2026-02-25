@@ -96,7 +96,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - **Server lib extraction**: `packages/server/src/lib.ts` is the public library entry point (all re-exports). `index.ts` re-exports from `lib.ts`. Server's `package.json` `exports` map points to `lib.js` so importing `@paparats/server` doesn't execute the server bootstrap
 - **Docker Ollama**: `ibaz/paparats-ollama` — multi-stage build: official `ollama/ollama` registers model, then copies into `alpine/ollama` (~70 MB, CPU-only). Final image ~1.7 GB. Model immediately ready on container start
 - **Docker Compose generator**: `packages/cli/src/docker-compose-generator.ts` builds YAML programmatically. `generateDockerCompose()` for developer mode, `generateServerCompose()` for server mode (adds indexer service)
-- **Install modes**: `paparats install --mode <developer|server|support>`. Developer = current flow + Ollama mode choice. Server = full Docker stack with auto-indexer. Support = client-only MCP config (no Docker)
+- **Install modes**: `paparats install --mode <developer|server|support>`. Developer = current flow + Ollama mode choice. Server = full Docker stack with auto-indexer. Support = client-only MCP config (no Docker). `--ollama-url` skips local Ollama entirely (no binary check, no GGUF download)
 - **Indexer container**: `packages/indexer` — separate Docker image that clones repos and indexes on a schedule. Uses `Indexer` class from `@paparats/server` as a library. HTTP trigger at `POST /trigger`, health at `GET /health`
 
 ## Testing
@@ -122,4 +122,4 @@ yarn typecheck         # tsc --noEmit
 - `packages/server/docker-compose.template.yml` — reference template (install uses generator now)
 - `packages/cli/src/docker-compose-generator.ts` — generates docker-compose.yml at install time
 - Qdrant at `:6333`, MCP server at `:9876`, Indexer at `:9877`
-- Ollama: local mode via `host.docker.internal:11434`, Docker mode via `http://ollama:11434`
+- Ollama: local mode via `host.docker.internal:11434`, Docker mode via `http://ollama:11434`, external via `--ollama-url`

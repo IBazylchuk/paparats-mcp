@@ -278,7 +278,7 @@ async function runDeveloperInstall(
     { cmd: 'docker', name: 'Docker', install: 'https://docker.com' },
   ];
 
-  if (ollamaMode === 'local') {
+  if (ollamaMode === 'local' && !opts.ollamaUrl) {
     checks.push({ cmd: 'ollama', name: 'Ollama', install: 'https://ollama.com' });
   }
 
@@ -336,8 +336,8 @@ async function runDeveloperInstall(
     if (!mcpReady) throw new Error('MCP server failed to start');
   }
 
-  // Ollama setup (local mode only)
-  if (!opts.skipOllama && ollamaMode === 'local') {
+  // Ollama setup (local mode only, skip when external URL is provided)
+  if (!opts.skipOllama && ollamaMode === 'local' && !opts.ollamaUrl) {
     if (deps.ollamaModelExists(OLLAMA_MODEL_NAME)) {
       console.log(chalk.green(`\u2713 Ollama model ${OLLAMA_MODEL_NAME} already exists\n`));
     } else {
