@@ -7,6 +7,8 @@ export interface DockerComposeConfig {
   ollamaMode: OllamaMode;
   /** External Qdrant URL — when set, skip the Qdrant Docker service */
   qdrantUrl?: string;
+  /** Qdrant API key for authenticated access (e.g. Qdrant Cloud) */
+  qdrantApiKey?: string;
   ports?: {
     qdrant?: number;
     paparats?: number;
@@ -73,21 +75,27 @@ function paparatsService(
   port: number,
   ollamaUrl: string,
   qdrantUrl: string,
-  includeQdrantDep: boolean
+  includeQdrantDep: boolean,
+  qdrantApiKey?: string
 ): ComposeService {
   const dependsOn: Record<string, { condition: string }> = {};
   if (includeQdrantDep) {
     dependsOn['qdrant'] = { condition: 'service_healthy' };
   }
 
+  const env: Record<string, string> = {
+    QDRANT_URL: qdrantUrl,
+    OLLAMA_URL: ollamaUrl,
+  };
+  if (qdrantApiKey) {
+    env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
+  }
+
   return {
     image: 'ibaz/paparats-server:latest',
     container_name: 'paparats-mcp',
     ports: [`\${PAPARATS_PORT:-${port}}:9876`],
-    environment: {
-      QDRANT_URL: qdrantUrl,
-      OLLAMA_URL: ollamaUrl,
-    },
+    environment: env,
     extra_hosts: ['host.docker.internal:host-gateway'],
     volumes: ['paparats_data:/home/nodejs/.paparats'],
     depends_on: dependsOn,
@@ -154,6 +162,9 @@ function indexerService(config: ServerComposeConfig, qdrantUrl: string): Compose
   if (config.group) {
     env['PAPARATS_GROUP'] = config.group;
   }
+  if (config.qdrantApiKey) {
+    env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
+  }
 
   const svc: ComposeService = {
     image: 'ibaz/paparats-indexer:latest',
@@ -194,7 +205,13 @@ export function generateDockerCompose(config: DockerComposeConfig): string {
   const compose: ComposeFile = {
     services: {
       ...(externalQdrant ? {} : { qdrant: qdrantService(qdrantPort) }),
-      paparats: paparatsService(paparatsPort, ollamaUrl, qdrantUrl, !externalQdrant),
+      paparats: paparatsService(
+        paparatsPort,
+        ollamaUrl,
+        qdrantUrl,
+        !externalQdrant,
+        config.qdrantApiKey
+      ),
     },
     volumes: {
       ...(externalQdrant ? {} : { qdrant_data: null }),
@@ -233,7 +250,13 @@ export function generateServerCompose(config: ServerComposeConfig): string {
     services: {
       ...(externalQdrant ? {} : { qdrant: qdrantService(qdrantPort) }),
       ollama: ollamaService(ollamaPort),
-      paparats: paparatsService(paparatsPort, 'http://ollama:11434', qdrantUrl, !externalQdrant),
+      paparats: paparatsService(
+        paparatsPort,
+        'http://ollama:11434',
+        qdrantUrl,
+        !externalQdrant,
+        config.qdrantApiKey
+      ),
       'paparats-indexer': indexerService(config, qdrantUrl),
     },
     volumes: {

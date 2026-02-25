@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`PAPARATS_GROUP` env var for indexer** — when set, all repos in the indexer container share a single Qdrant collection. Overrides per-repo defaults and `.paparats.yml` group field
 - **`--group` flag for server mode install** — `paparats install --mode server --group shared` passes `PAPARATS_GROUP` to the generated docker-compose and `.env` file
 - **`listGroups()` filters by prefix** — only returns collections owned by paparats (those with `paparats_` prefix), strips the prefix in output
+- **Qdrant API key support** — `QDRANT_API_KEY` env var enables authenticated access to Qdrant (e.g. Qdrant Cloud). Supported in server, indexer, and docker-compose generator. CLI: `paparats install --qdrant-api-key <key>`
 
 ### Fixed
 

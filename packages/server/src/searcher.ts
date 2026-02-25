@@ -8,6 +8,8 @@ import { toCollectionName } from './indexer.js';
 
 export interface SearcherConfig {
   qdrantUrl: string;
+  /** Qdrant API key for authenticated access (e.g. Qdrant Cloud) */
+  qdrantApiKey?: string;
   embeddingProvider: CachedEmbeddingProvider;
   /** Optional Qdrant client for testing */
   qdrantClient?: QdrantClient;
@@ -60,6 +62,7 @@ export class Searcher {
       config.qdrantClient ??
       new QdrantClient({
         url: config.qdrantUrl,
+        apiKey: config.qdrantApiKey,
         timeout: config.timeout ?? QDRANT_TIMEOUT_MS,
       });
     this.provider = config.embeddingProvider;

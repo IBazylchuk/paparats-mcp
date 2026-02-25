@@ -649,6 +649,7 @@ Most commands support `--server <url>` (default: `http://localhost:9876`) and `-
 - `--skip-docker` — Skip Docker setup (developer mode)
 - `--skip-ollama` — Skip Ollama model (developer mode)
 - `--qdrant-url <url>` — External Qdrant URL — skip Qdrant Docker container (developer/server mode)
+- `--qdrant-api-key <key>` — Qdrant API key for authenticated access (e.g. Qdrant Cloud)
 - `--repos <repos>` — Comma-separated repos to index (server mode)
 - `--github-token <token>` — GitHub token for private repos (server mode)
 - `--cron <expression>` — Cron schedule for indexing (server mode, default: `0 */6 * * *`)
@@ -727,6 +728,9 @@ By default, `paparats install` runs Qdrant as a Docker container. If you already
 # Via CLI flag
 paparats install --qdrant-url http://your-qdrant:6333
 
+# With API key authentication (e.g. Qdrant Cloud)
+paparats install --qdrant-url https://xxx.cloud.qdrant.io:6333 --qdrant-api-key your-api-key
+
 # Or answer the interactive prompt during install
 paparats install
 # ? Use an external Qdrant instance? (skip Qdrant Docker container) Yes
@@ -738,6 +742,11 @@ When `--qdrant-url` is set:
 - The Qdrant Docker service is **omitted** from the generated `docker-compose.yml`
 - The `QDRANT_URL` environment variable in the paparats server (and indexer in server mode) points to your external instance
 - Health check during install verifies the external Qdrant is reachable
+
+When `--qdrant-api-key` is set:
+
+- `QDRANT_API_KEY` is passed to all containers (server + indexer) via `docker-compose.yml` and `~/.paparats/.env`
+- Can also be set directly as an environment variable: `QDRANT_API_KEY=your-key` on the server or indexer process
 
 This works with both `--mode developer` and `--mode server`.
 

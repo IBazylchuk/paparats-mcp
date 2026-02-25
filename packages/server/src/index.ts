@@ -20,6 +20,7 @@ const projectsByGroup = new Map<string, ProjectConfig[]>();
 
 const PORT = parseInt(process.env.PORT ?? '9876', 10);
 const QDRANT_URL = process.env.QDRANT_URL ?? 'http://localhost:6333';
+const QDRANT_API_KEY = process.env.QDRANT_API_KEY || undefined;
 const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
 const PAPARATS_PROJECTS = process.env.PAPARATS_PROJECTS
   ? process.env.PAPARATS_PROJECTS.split(',')
@@ -49,7 +50,7 @@ try {
   );
 }
 
-const qdrantClient = new QdrantClient({ url: QDRANT_URL, timeout: 30_000 });
+const qdrantClient = new QdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY, timeout: 30_000 });
 const queryCache = new QueryCache();
 const metrics = await createMetrics();
 
@@ -103,7 +104,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`  MCP SSE (legacy):         http://localhost:${PORT}/sse`);
   console.log(`  Health:                   http://localhost:${PORT}/health`);
   console.log(`  Stats:                    http://localhost:${PORT}/api/stats`);
-  console.log(`  Qdrant:                   ${QDRANT_URL}`);
+  console.log(
+    `  Qdrant:                   ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`
+  );
   console.log(`  Ollama:                   ${OLLAMA_URL}`);
   if (metrics.enabled) {
     console.log(`  Metrics:                  http://localhost:${PORT}/metrics`);
