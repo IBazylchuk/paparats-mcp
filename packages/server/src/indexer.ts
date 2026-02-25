@@ -222,6 +222,40 @@ export class Indexer {
     return files;
   }
 
+  /** Remove Qdrant chunks and metadata for files that are no longer present */
+  private async cleanupOrphanedChunks(
+    groupName: string,
+    projectName: string,
+    currentFilePaths: Set<string>
+  ): Promise<void> {
+    try {
+      const indexedPaths = await this.getIndexedFilePaths(groupName, projectName);
+      const orphaned = Array.from(indexedPaths).filter((p) => !currentFilePaths.has(p));
+
+      if (orphaned.length > 0) {
+        for (const relPath of orphaned) {
+          await this.retryQdrant(() =>
+            this.qdrant.delete(groupName, {
+              filter: {
+                must: [
+                  { key: 'project', match: { value: projectName } },
+                  { key: 'file', match: { value: relPath } },
+                ],
+              },
+              wait: true,
+            })
+          );
+          this.metadataStore?.deleteByFile(groupName, projectName, relPath);
+        }
+        console.log(
+          `  [indexer] Removed ${orphaned.length} orphaned file(s): ${orphaned.join(', ')}`
+        );
+      }
+    } catch (err) {
+      console.warn(`  [indexer] Orphan cleanup failed (non-fatal): ${(err as Error).message}`);
+    }
+  }
+
   private hashSetsEqual(a: Set<string>, b: Set<string>): boolean {
     if (a.size !== b.size) return false;
     for (const h of a) {
@@ -563,33 +597,8 @@ export class Indexer {
     }
 
     // Clean up orphaned chunks (files deleted from disk but still in Qdrant)
-    try {
-      const currentRelPaths = new Set(files.map((f) => path.relative(project.path, f)));
-      const indexedPaths = await this.getIndexedFilePaths(groupName, project.name);
-      const orphaned = Array.from(indexedPaths).filter((p) => !currentRelPaths.has(p));
-
-      if (orphaned.length > 0) {
-        for (const relPath of orphaned) {
-          await this.retryQdrant(() =>
-            this.qdrant.delete(groupName, {
-              filter: {
-                must: [
-                  { key: 'project', match: { value: project.name } },
-                  { key: 'file', match: { value: relPath } },
-                ],
-              },
-              wait: true,
-            })
-          );
-          this.metadataStore?.deleteByFile(groupName, project.name, relPath);
-        }
-        console.log(
-          `  [indexer] Removed ${orphaned.length} orphaned file(s): ${orphaned.join(', ')}`
-        );
-      }
-    } catch (err) {
-      console.warn(`  [indexer] Orphan cleanup failed (non-fatal): ${(err as Error).message}`);
-    }
+    const currentRelPaths = new Set(files.map((f) => path.relative(project.path, f)));
+    await this.cleanupOrphanedChunks(groupName, project.name, currentRelPaths);
 
     // Post-indexing: git metadata + symbol graph (single Qdrant scan for both)
     const needsGit = this.metadataStore && project.metadata.git.enabled && totalChunks > 0;
@@ -896,33 +905,8 @@ export class Indexer {
     this.stats.cached = this.provider.cacheHits;
 
     // Clean up orphaned chunks (files no longer in the provided list but still in Qdrant)
-    try {
-      const currentRelPaths = new Set(files.map((f) => f.path));
-      const indexedPaths = await this.getIndexedFilePaths(groupName, project.name);
-      const orphaned = Array.from(indexedPaths).filter((p) => !currentRelPaths.has(p));
-
-      if (orphaned.length > 0) {
-        for (const relPath of orphaned) {
-          await this.retryQdrant(() =>
-            this.qdrant.delete(groupName, {
-              filter: {
-                must: [
-                  { key: 'project', match: { value: project.name } },
-                  { key: 'file', match: { value: relPath } },
-                ],
-              },
-              wait: true,
-            })
-          );
-          this.metadataStore?.deleteByFile(groupName, project.name, relPath);
-        }
-        console.log(
-          `  [indexer] Removed ${orphaned.length} orphaned file(s): ${orphaned.join(', ')}`
-        );
-      }
-    } catch (err) {
-      console.warn(`  [indexer] Orphan cleanup failed (non-fatal): ${(err as Error).message}`);
-    }
+    const currentRelPaths = new Set(files.map((f) => f.path));
+    await this.cleanupOrphanedChunks(groupName, project.name, currentRelPaths);
 
     return totalChunks;
   }

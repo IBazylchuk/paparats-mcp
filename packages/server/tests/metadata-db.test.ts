@@ -403,6 +403,34 @@ describe('MetadataStore', () => {
     expect(store.getCommits('g//proj//src/keep.ts//1-5//h1')).toHaveLength(1);
   });
 
+  it('deleteByFile escapes LIKE wildcards in file paths', () => {
+    // File with SQL LIKE wildcards in the name
+    store.upsertCommits('g//proj//src/file_100%.ts//1-5//h1', [
+      {
+        commit_hash: 'c1',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'wildcard file',
+      },
+    ]);
+    // A different file that would match an unescaped "file_100%" LIKE pattern
+    store.upsertCommits('g//proj//src/file_1009.ts//1-5//h2', [
+      {
+        commit_hash: 'c2',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'should survive',
+      },
+    ]);
+
+    store.deleteByFile('g', 'proj', 'src/file_100%.ts');
+
+    // Wildcard file data should be gone
+    expect(store.getCommits('g//proj//src/file_100%.ts//1-5//h1')).toHaveLength(0);
+    // Other file should survive (would be deleted without proper escaping)
+    expect(store.getCommits('g//proj//src/file_1009.ts//1-5//h2')).toHaveLength(1);
+  });
+
   it('upsertSymbolEdges handles empty array', () => {
     expect(() => store.upsertSymbolEdges([])).not.toThrow();
   });
