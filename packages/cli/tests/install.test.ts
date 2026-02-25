@@ -234,6 +234,36 @@ describe('install', () => {
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Cursor MCP configured'));
     });
 
+    it('skips local ollama check and setup when ollamaUrl is set', async () => {
+      const files = new Map<string, string>();
+
+      mockedExecSync.mockImplementation(() => undefined as never);
+
+      // commandExists returns false for 'ollama' — should NOT throw because ollamaUrl is set
+      await runInstall(
+        { mode: 'developer', ollamaMode: 'local', ollamaUrl: 'http://fargate-ollama:11434' },
+        {
+          commandExists: (c) => c === 'docker', // ollama not found locally
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          generateDockerCompose,
+          mkdirSync: () => {},
+          writeFileSync: (p, d) => files.set(p, d),
+          existsSync: () => false,
+          unlinkSync: () => {},
+          promptUseExternalQdrant: () => Promise.resolve(false),
+        }
+      );
+
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Installation complete'));
+
+      // Compose should use the external URL
+      const composePath = path.join(os.homedir(), '.paparats', 'docker-compose.yml');
+      const content = files.get(composePath)!;
+      expect(content).toContain('http://fargate-ollama:11434');
+      expect(content).not.toContain('paparats-ollama');
+    });
+
     it('skips Cursor config when ~/.cursor/ does not exist', async () => {
       await runInstall(
         { mode: 'developer', skipDocker: true, skipOllama: true },
