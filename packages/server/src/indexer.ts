@@ -186,6 +186,76 @@ export class Indexer {
     }
   }
 
+  /** Get all unique file paths currently indexed for a project in Qdrant */
+  private async getIndexedFilePaths(groupName: string, projectName: string): Promise<Set<string>> {
+    const files = new Set<string>();
+    let offset: string | number | undefined = undefined;
+
+    try {
+      for (;;) {
+        const result = await this.qdrant.scroll(groupName, {
+          filter: {
+            must: [{ key: 'project', match: { value: projectName } }],
+          },
+          with_payload: { include: ['file'] },
+          with_vector: false,
+          limit: 1000,
+          ...(offset !== undefined ? { offset } : {}),
+        });
+
+        for (const point of result.points) {
+          const file = (point.payload as Record<string, unknown> | null)?.['file'];
+          if (typeof file === 'string') {
+            files.add(file);
+          }
+        }
+
+        if (!result.next_page_offset) break;
+        offset = result.next_page_offset as string | number;
+      }
+    } catch (err) {
+      console.warn(
+        `[indexer] Failed to get indexed file paths for ${projectName}: ${(err as Error).message}`
+      );
+    }
+
+    return files;
+  }
+
+  /** Remove Qdrant chunks and metadata for files that are no longer present */
+  private async cleanupOrphanedChunks(
+    groupName: string,
+    projectName: string,
+    currentFilePaths: Set<string>
+  ): Promise<void> {
+    try {
+      const indexedPaths = await this.getIndexedFilePaths(groupName, projectName);
+      const orphaned = Array.from(indexedPaths).filter((p) => !currentFilePaths.has(p));
+
+      if (orphaned.length > 0) {
+        for (const relPath of orphaned) {
+          await this.retryQdrant(() =>
+            this.qdrant.delete(groupName, {
+              filter: {
+                must: [
+                  { key: 'project', match: { value: projectName } },
+                  { key: 'file', match: { value: relPath } },
+                ],
+              },
+              wait: true,
+            })
+          );
+          this.metadataStore?.deleteByFile(groupName, projectName, relPath);
+        }
+        console.log(
+          `  [indexer] Removed ${orphaned.length} orphaned file(s): ${orphaned.join(', ')}`
+        );
+      }
+    } catch (err) {
+      console.warn(`  [indexer] Orphan cleanup failed (non-fatal): ${(err as Error).message}`);
+    }
+  }
+
   private hashSetsEqual(a: Set<string>, b: Set<string>): boolean {
     if (a.size !== b.size) return false;
     for (const h of a) {
@@ -526,6 +596,10 @@ export class Indexer {
       console.log(`  [indexer] Skipped ${this.stats.skipped}/${files.length} files (unchanged)`);
     }
 
+    // Clean up orphaned chunks (files deleted from disk but still in Qdrant)
+    const currentRelPaths = new Set(files.map((f) => path.relative(project.path, f)));
+    await this.cleanupOrphanedChunks(groupName, project.name, currentRelPaths);
+
     // Post-indexing: git metadata + symbol graph (single Qdrant scan for both)
     const needsGit = this.metadataStore && project.metadata.git.enabled && totalChunks > 0;
     const needsSymbols = this.metadataStore && this.treeSitter && totalChunks > 0;
@@ -829,6 +903,11 @@ export class Indexer {
 
     await Promise.all(tasks);
     this.stats.cached = this.provider.cacheHits;
+
+    // Clean up orphaned chunks (files no longer in the provided list but still in Qdrant)
+    const currentRelPaths = new Set(files.map((f) => f.path));
+    await this.cleanupOrphanedChunks(groupName, project.name, currentRelPaths);
+
     return totalChunks;
   }
 

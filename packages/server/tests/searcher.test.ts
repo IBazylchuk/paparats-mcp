@@ -827,4 +827,190 @@ describe('Searcher', () => {
     expect(formatted).toContain('```typescript');
     expect(formatted).toContain('const x = 1;');
   });
+
+  describe('allowedProjects', () => {
+    it('no allowedProjects: no project filter applied (existing behavior)', async () => {
+      mockQdrant.client.search.mockResolvedValue([]);
+
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+      });
+
+      await searcher.search('test-group', 'query');
+
+      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+        'test-group',
+        expect.objectContaining({
+          filter: undefined,
+        })
+      );
+    });
+
+    it('single allowedProject: filters via match.value', async () => {
+      mockQdrant.client.search.mockResolvedValue([]);
+
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+        allowedProjects: ['org/billing'],
+      });
+
+      await searcher.search('test-group', 'query');
+
+      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+        'test-group',
+        expect.objectContaining({
+          filter: {
+            must: [{ key: 'project', match: { value: 'org/billing' } }],
+          },
+        })
+      );
+    });
+
+    it('multiple allowedProjects: filters via match.any', async () => {
+      mockQdrant.client.search.mockResolvedValue([]);
+
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+        allowedProjects: ['org/core', 'org/tracking', 'org/events'],
+      });
+
+      await searcher.search('test-group', 'query');
+
+      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+        'test-group',
+        expect.objectContaining({
+          filter: {
+            must: [{ key: 'project', match: { any: ['org/core', 'org/tracking', 'org/events'] } }],
+          },
+        })
+      );
+    });
+
+    it('explicit project within allowed set: narrows to that single project', async () => {
+      mockQdrant.client.search.mockResolvedValue([]);
+
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+        allowedProjects: ['org/core', 'org/tracking'],
+      });
+
+      await searcher.search('test-group', 'query', { project: 'org/tracking' });
+
+      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+        'test-group',
+        expect.objectContaining({
+          filter: {
+            must: [{ key: 'project', match: { value: 'org/tracking' } }],
+          },
+        })
+      );
+    });
+
+    it('explicit project NOT in allowed set: returns empty, Qdrant not called', async () => {
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+        allowedProjects: ['org/core', 'org/tracking'],
+      });
+
+      const response = await searcher.search('test-group', 'query', {
+        project: 'org/forbidden',
+      });
+
+      expect(response.results).toEqual([]);
+      expect(response.total).toBe(0);
+      expect(mockQdrant.client.search).not.toHaveBeenCalled();
+    });
+
+    it('getProjectScope returns scope when set', () => {
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+        allowedProjects: ['org/core', 'org/tracking'],
+      });
+
+      expect(searcher.getProjectScope()).toEqual(['org/core', 'org/tracking']);
+    });
+
+    it('getProjectScope returns null when not set', () => {
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+      });
+
+      expect(searcher.getProjectScope()).toBeNull();
+    });
+
+    it('getProjectScope returns null for empty allowedProjects', () => {
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+        allowedProjects: [],
+      });
+
+      expect(searcher.getProjectScope()).toBeNull();
+    });
+
+    it('searchWithFilter: forbidden project returns empty without calling Qdrant', async () => {
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+        allowedProjects: ['org/core'],
+      });
+
+      const response = await searcher.searchWithFilter(
+        'test-group',
+        'query',
+        { must: [{ key: 'last_commit_at', range: { gte: '2024-01-01' } }] },
+        { project: 'org/forbidden' }
+      );
+
+      expect(response.results).toEqual([]);
+      expect(response.total).toBe(0);
+      expect(mockQdrant.client.search).not.toHaveBeenCalled();
+    });
+
+    it('searchWithFilter: allowedProjects merged with additional filter', async () => {
+      mockQdrant.client.search.mockResolvedValue([]);
+
+      const searcher = new Searcher({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        qdrantClient: mockQdrant.client as never,
+        allowedProjects: ['org/core', 'org/tracking'],
+      });
+
+      await searcher.searchWithFilter(
+        'test-group',
+        'query',
+        { must: [{ key: 'last_commit_at', range: { gte: '2024-01-01' } }] },
+        { limit: 5 }
+      );
+
+      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+        'test-group',
+        expect.objectContaining({
+          filter: {
+            must: expect.arrayContaining([
+              { key: 'last_commit_at', range: { gte: '2024-01-01' } },
+              { key: 'project', match: { any: ['org/core', 'org/tracking'] } },
+            ]),
+          },
+        })
+      );
+    });
+  });
 });

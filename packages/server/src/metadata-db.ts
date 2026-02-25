@@ -7,6 +7,11 @@ import type { ChunkCommit, ChunkTicket, SymbolEdge } from './types.js';
 const PAPARATS_DIR = path.join(os.homedir(), '.paparats');
 const DEFAULT_DB_PATH = path.join(PAPARATS_DIR, 'metadata.db');
 
+/** Escape SQLite LIKE wildcards (% and _) so they match literally */
+function escapeLike(value: string): string {
+  return value.replace(/[%_\\]/g, '\\$&');
+}
+
 export class MetadataStore {
   private db: Database.Database;
   private closed = false;
@@ -112,13 +117,13 @@ export class MetadataStore {
       'DELETE FROM symbol_edges WHERE from_chunk_id = ? OR to_chunk_id = ?'
     );
     this.deleteProjectCommitsStmt = this.db.prepare(
-      'DELETE FROM chunk_commits WHERE chunk_id LIKE ?'
+      "DELETE FROM chunk_commits WHERE chunk_id LIKE ? ESCAPE '\\'"
     );
     this.deleteProjectTicketsStmt = this.db.prepare(
-      'DELETE FROM chunk_tickets WHERE chunk_id LIKE ?'
+      "DELETE FROM chunk_tickets WHERE chunk_id LIKE ? ESCAPE '\\'"
     );
     this.deleteProjectEdgesStmt = this.db.prepare(
-      'DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? OR to_chunk_id LIKE ?'
+      "DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? ESCAPE '\\' OR to_chunk_id LIKE ? ESCAPE '\\'"
     );
   }
 
@@ -175,7 +180,7 @@ export class MetadataStore {
   }
 
   deleteByProject(group: string, project: string): void {
-    const prefix = `${group}//${project}//`;
+    const prefix = `${escapeLike(group)}//${escapeLike(project)}//`;
     const pattern = `${prefix}%`;
     const tx = this.db.transaction(() => {
       this.deleteProjectCommitsStmt.run(pattern);
@@ -208,8 +213,20 @@ export class MetadataStore {
     this.deleteChunkEdgesStmt.run(chunkId, chunkId);
   }
 
+  /** Delete all metadata (commits, tickets, edges) for a specific file within a project */
+  deleteByFile(group: string, project: string, file: string): void {
+    const prefix = `${escapeLike(group)}//${escapeLike(project)}//${escapeLike(file)}//`;
+    const pattern = `${prefix}%`;
+    const tx = this.db.transaction(() => {
+      this.deleteProjectCommitsStmt.run(pattern);
+      this.deleteProjectTicketsStmt.run(pattern);
+      this.deleteProjectEdgesStmt.run(pattern, pattern);
+    });
+    tx();
+  }
+
   deleteEdgesByProject(group: string, project: string): void {
-    const prefix = `${group}//${project}//`;
+    const prefix = `${escapeLike(group)}//${escapeLike(project)}//`;
     const pattern = `${prefix}%`;
     this.deleteProjectEdgesStmt.run(pattern, pattern);
   }

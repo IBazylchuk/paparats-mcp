@@ -16,6 +16,8 @@ export interface SearcherConfig {
   cache?: QueryCache;
   /** Optional metrics registry */
   metrics?: MetricsRegistry;
+  /** Optional list of allowed project names (from PAPARATS_PROJECTS env var) */
+  allowedProjects?: string[];
 }
 
 const QDRANT_TIMEOUT_MS = 30_000;
@@ -50,6 +52,7 @@ export class Searcher {
   private totalTokensSaved = 0;
   private cache?: QueryCache;
   private metrics?: MetricsRegistry;
+  private readonly allowedProjects: string[] | null;
 
   constructor(config: SearcherConfig) {
     this.qdrant =
@@ -61,6 +64,8 @@ export class Searcher {
     this.provider = config.embeddingProvider;
     this.cache = config.cache;
     this.metrics = config.metrics;
+    this.allowedProjects =
+      config.allowedProjects && config.allowedProjects.length > 0 ? config.allowedProjects : null;
   }
 
   /** Search within a group collection, optionally filtering by project */
@@ -251,11 +256,29 @@ export class Searcher {
     const limit = Math.max(1, Math.min(options?.limit ?? 5, 100));
     const project = options?.project ?? 'all';
 
+    const { projects: effectiveProjects, forbidden } = this.resolveEffectiveProjects(project);
+    if (forbidden) {
+      const metrics = this.computeMetrics([]);
+      this.searchCount++;
+      const response: SearchResponse = { results: [], total: 0, metrics };
+      if (this.cache) {
+        const cacheKey = this.cache.buildKey(groupName, query, options, additionalFilter);
+        this.cache.set(cacheKey, groupName, response);
+      }
+      this.metrics?.incSearchTotal(groupName, 'searchWithFilter');
+      this.metrics?.observeSearchDuration(
+        groupName,
+        'searchWithFilter',
+        (performance.now() - startTime) / 1000
+      );
+      return response;
+    }
+
     const queryVector = await this.provider.embedQuery(query);
 
     const must: Array<Record<string, unknown>> = [...additionalFilter.must];
-    if (project !== 'all') {
-      must.push({ key: 'project', match: { value: project } });
+    if (effectiveProjects) {
+      must.push(this.buildProjectCondition(effectiveProjects));
     }
 
     let results: SearchResult[];
@@ -321,12 +344,16 @@ export class Searcher {
     const limit = Math.max(1, Math.min(options?.limit ?? 5, 100));
     const project = options?.project ?? 'all';
 
+    const { projects: effectiveProjects, forbidden } = this.resolveEffectiveProjects(project);
+    if (forbidden) {
+      return { results: [], total: 0, metrics: this.computeMetrics([]) };
+    }
+
     const queryVector = await this.provider.embedQuery(query);
 
-    const filter =
-      project !== 'all'
-        ? { must: [{ key: 'project' as const, match: { value: project } }] }
-        : undefined;
+    const filter = effectiveProjects
+      ? { must: [this.buildProjectCondition(effectiveProjects)] }
+      : undefined;
 
     let results: SearchResult[];
     try {
@@ -362,6 +389,43 @@ export class Searcher {
       total: results.length,
       metrics,
     };
+  }
+
+  /**
+   * Resolve effective project list from allowedProjects + explicit project param.
+   * Returns `forbidden: true` if the explicit project is not in the allowed set.
+   */
+  private resolveEffectiveProjects(explicitProject: string): {
+    projects: string[] | null;
+    forbidden: boolean;
+  } {
+    if (this.allowedProjects) {
+      if (explicitProject === 'all') {
+        return { projects: this.allowedProjects, forbidden: false };
+      }
+      if (this.allowedProjects.includes(explicitProject)) {
+        return { projects: [explicitProject], forbidden: false };
+      }
+      return { projects: null, forbidden: true };
+    }
+    // No allowedProjects restriction
+    if (explicitProject === 'all') {
+      return { projects: null, forbidden: false };
+    }
+    return { projects: [explicitProject], forbidden: false };
+  }
+
+  /** Build a single Qdrant condition from a project list */
+  private buildProjectCondition(projects: string[]): Record<string, unknown> {
+    if (projects.length === 1) {
+      return { key: 'project', match: { value: projects[0] } };
+    }
+    return { key: 'project', match: { any: projects } };
+  }
+
+  /** Get the configured project scope, or null if unrestricted */
+  getProjectScope(): string[] | null {
+    return this.allowedProjects;
   }
 
   private mapPayload(p: QdrantPayload, score: number): SearchResult {
