@@ -11,6 +11,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - **Group** = Qdrant collection with `paparats_` prefix (e.g. group `my-app` → collection `paparats_my-app`). `toCollectionName()`/`fromCollectionName()` helpers in `indexer.ts` handle the prefix. Projects in the same group share a collection. `project` field in payload filters within a group.
 - **`.paparats.yml`** = per-project config. Server reads it on demand via `readConfig()` / `resolveProject()`.
 - **Server is stateless** — no hardcoded project list. Projects register via `POST /api/index`.
+- **Qdrant authentication**: `QDRANT_API_KEY` env var → passed as `apiKey` to all `QdrantClient` instances (server, searcher, indexer). CLI: `--qdrant-api-key`. Docker Compose generator passes it via `${QDRANT_API_KEY}` env var substitution.
 - **Embedding model**: `jina-code-embeddings` is a local Ollama alias for `jinaai/jina-code-embeddings-1.5b-GGUF`, registered via Modelfile. Not in Ollama registry.
 
 ## TypeScript conventions

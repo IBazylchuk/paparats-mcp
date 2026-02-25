@@ -160,7 +160,8 @@ paparats install --mode server \
 # With external Qdrant (e.g. Qdrant Cloud)
 paparats install --mode server \
   --repos org/repo \
-  --qdrant-url https://qdrant.example.com:6333
+  --qdrant-url https://qdrant.example.com:6333 \
+  --qdrant-api-key your-api-key
 
 # All repos in one shared collection
 paparats install --mode server \
@@ -173,7 +174,7 @@ paparats install --mode server \
 1. Checks Docker only (no Ollama check — runs in Docker)
 2. Asks whether to use an external Qdrant instance (or pass `--qdrant-url` to skip the prompt)
 3. Generates docker-compose with all services: qdrant + ollama + paparats + indexer. When using external Qdrant, the Qdrant container is omitted
-4. Creates `~/.paparats/.env` with `REPOS`, `GITHUB_TOKEN`, `CRON`, `PAPARATS_GROUP` (if `--group` set)
+4. Creates `~/.paparats/.env` with `REPOS`, `GITHUB_TOKEN`, `CRON`, `PAPARATS_GROUP`, `QDRANT_API_KEY` (as applicable)
 5. Starts all containers
 6. Indexer clones repos and indexes them on the configured schedule
 
