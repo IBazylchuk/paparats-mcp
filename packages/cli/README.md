@@ -45,6 +45,9 @@ paparats watch
 # Developer mode (default) - Docker stack + local project indexing
 paparats install --mode developer
 
+# With external Qdrant (skip Qdrant Docker container)
+paparats install --qdrant-url http://your-qdrant:6333
+
 # Server mode - full Docker stack with auto-indexer for multiple repos
 paparats install --mode server --repos owner/repo1,owner/repo2
 

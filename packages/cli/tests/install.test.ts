@@ -107,6 +107,7 @@ describe('install', () => {
             existsSync: () => false,
             writeFileSync: () => {},
             unlinkSync: () => {},
+            promptUseExternalQdrant: () => Promise.resolve(false),
           }
         )
       ).rejects.toThrow(/Docker not found/);
@@ -190,6 +191,7 @@ describe('install', () => {
           writeFileSync: (p, d) => files.set(p, d),
           existsSync: () => false,
           unlinkSync: () => {},
+          promptUseExternalQdrant: () => Promise.resolve(false),
         }
       );
 
@@ -246,6 +248,84 @@ describe('install', () => {
 
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Cursor not detected'));
     });
+
+    it('passes qdrantUrl to docker-compose generator', async () => {
+      const files = new Map<string, string>();
+
+      mockedExecSync.mockImplementation(() => undefined as never);
+
+      await runInstall(
+        { mode: 'developer', skipOllama: true, qdrantUrl: 'http://my-qdrant:6333' },
+        {
+          commandExists: () => true,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          generateDockerCompose,
+          mkdirSync: () => {},
+          writeFileSync: (p, d) => files.set(p, d),
+          existsSync: () => false,
+          unlinkSync: () => {},
+        }
+      );
+
+      const composePath = path.join(os.homedir(), '.paparats', 'docker-compose.yml');
+      const content = files.get(composePath)!;
+      expect(content).not.toContain('qdrant/qdrant');
+      expect(content).toContain('http://my-qdrant:6333');
+    });
+
+    it('prompts for external qdrant interactively', async () => {
+      const files = new Map<string, string>();
+
+      mockedExecSync.mockImplementation(() => undefined as never);
+
+      await runInstall(
+        { mode: 'developer', skipOllama: true },
+        {
+          commandExists: () => true,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          generateDockerCompose,
+          mkdirSync: () => {},
+          writeFileSync: (p, d) => files.set(p, d),
+          existsSync: () => false,
+          unlinkSync: () => {},
+          promptUseExternalQdrant: () => Promise.resolve(true),
+          promptQdrantUrl: () => Promise.resolve('http://cloud-qdrant:6333'),
+        }
+      );
+
+      const composePath = path.join(os.homedir(), '.paparats', 'docker-compose.yml');
+      const content = files.get(composePath)!;
+      expect(content).not.toContain('qdrant/qdrant');
+      expect(content).toContain('http://cloud-qdrant:6333');
+    });
+
+    it('skips qdrant prompt when qdrantUrl already provided via flag', async () => {
+      const promptSpy = vi.fn().mockResolvedValue(false);
+      const files = new Map<string, string>();
+
+      mockedExecSync.mockImplementation(() => undefined as never);
+
+      await runInstall(
+        { mode: 'developer', skipOllama: true, qdrantUrl: 'http://flag-qdrant:6333' },
+        {
+          commandExists: () => true,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          generateDockerCompose,
+          mkdirSync: () => {},
+          writeFileSync: (p, d) => files.set(p, d),
+          existsSync: () => false,
+          unlinkSync: () => {},
+          promptUseExternalQdrant: promptSpy,
+        }
+      );
+
+      expect(promptSpy).not.toHaveBeenCalled();
+      const composePath = path.join(os.homedir(), '.paparats', 'docker-compose.yml');
+      expect(files.get(composePath)!).toContain('http://flag-qdrant:6333');
+    });
   });
 
   describe('runInstall (server mode)', () => {
@@ -261,6 +341,7 @@ describe('install', () => {
             mkdirSync: () => {},
             writeFileSync: () => {},
             existsSync: () => false,
+            promptUseExternalQdrant: () => Promise.resolve(false),
           }
         )
       ).rejects.toThrow(/Docker not found/);
@@ -281,6 +362,7 @@ describe('install', () => {
           mkdirSync: () => {},
           writeFileSync: (p, d) => files.set(p, d),
           existsSync: () => false,
+          promptUseExternalQdrant: () => Promise.resolve(false),
         }
       );
 
@@ -308,6 +390,7 @@ describe('install', () => {
           generateServerCompose,
           mkdirSync: () => {},
           writeFileSync: () => {},
+          promptUseExternalQdrant: () => Promise.resolve(false),
           existsSync: () => false,
         }
       );
