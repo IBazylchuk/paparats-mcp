@@ -230,7 +230,8 @@ describe('OllamaProvider', () => {
     const results = await provider.embedBatch(texts);
 
     expect(results).toHaveLength(150);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // 150 items / max batch size 10 = 15 fetch calls
+    expect(fetchMock).toHaveBeenCalledTimes(15);
 
     vi.unstubAllGlobals();
   });

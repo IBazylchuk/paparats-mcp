@@ -120,9 +120,9 @@ export interface OllamaProviderConfig {
   dimensions?: number;
 }
 
-const OLLAMA_TIMEOUT_MS = 30_000;
+const OLLAMA_TIMEOUT_MS = 120_000;
 const OLLAMA_MAX_RETRIES = 3;
-const OLLAMA_MAX_BATCH_SIZE = 100;
+const OLLAMA_MAX_BATCH_SIZE = 10;
 
 export class OllamaProvider implements EmbeddingProvider {
   private url: string;
@@ -183,7 +183,7 @@ export class OllamaProvider implements EmbeddingProvider {
       } catch (err) {
         lastError = err as Error;
         if (err instanceof Error && err.name === 'AbortError') {
-          lastError = new Error('Ollama request timeout after 30s');
+          lastError = new Error('Ollama request timeout after 120s');
         }
         if (attempt < OLLAMA_MAX_RETRIES - 1) {
           const delay = Math.min(1000 * 2 ** attempt, 10_000);
@@ -227,7 +227,7 @@ export class OllamaProvider implements EmbeddingProvider {
     for (let attempt = 0; attempt < OLLAMA_MAX_RETRIES; attempt++) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS * 2); // 60s for batch
+        const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS * 2); // 240s for batch
 
         const res = await fetch(`${this.url}/api/embed`, {
           method: 'POST',
@@ -267,7 +267,7 @@ export class OllamaProvider implements EmbeddingProvider {
       } catch (err) {
         lastError = err as Error;
         if (err instanceof Error && err.name === 'AbortError') {
-          lastError = new Error('Ollama batch request timeout after 60s');
+          lastError = new Error('Ollama batch request timeout after 240s');
         }
         if (attempt < OLLAMA_MAX_RETRIES - 1) {
           const delay = Math.min(1000 * 2 ** attempt, 10_000);

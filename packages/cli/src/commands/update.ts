@@ -23,6 +23,14 @@ export interface UpdateDeps {
   getDockerComposeCommand?: () => string;
   waitForHealth?: (url: string, label: string) => Promise<boolean>;
   existsSync?: (path: string) => boolean;
+  readFileSync?: (path: string, encoding: BufferEncoding) => string;
+}
+
+/** Check if a service is defined in the compose file */
+function composeHasService(composeContent: string, service: string): boolean {
+  // Simple YAML check: service name at indent level 2 under services
+  const pattern = new RegExp(`^  ${service}:`, 'm');
+  return pattern.test(composeContent);
 }
 
 export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise<void> {
@@ -30,6 +38,7 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
   const getCompose = deps?.getDockerComposeCommand ?? getDockerComposeCommand;
   const waitHealth = deps?.waitForHealth ?? waitForHealth;
   const exists = deps?.existsSync ?? fs.existsSync.bind(fs);
+  const readFile = deps?.readFileSync ?? fs.readFileSync.bind(fs);
 
   console.log(chalk.bold('\npaparats update\n'));
 
@@ -59,18 +68,20 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
       console.log(chalk.yellow(`  Docker compose not found at ${COMPOSE_FILE}`));
       console.log(chalk.dim('  Run `paparats install` first to set up Docker.'));
     } else {
+      const composeContent = readFile(COMPOSE_FILE, 'utf8');
+      const hasQdrant = composeHasService(composeContent, 'qdrant');
       const composeCmd = getCompose();
       const composeArg = `-f "${COMPOSE_FILE}"`;
 
-      const pullSpinner = ora('Pulling latest server image...').start();
+      const pullSpinner = ora('Pulling latest Docker images...').start();
       try {
         exec(`${composeCmd} ${composeArg} pull`, {
           stdio: opts.verbose ? 'inherit' : ['pipe', 'pipe', 'pipe'],
           timeout: 300_000,
         });
-        pullSpinner.succeed('Server image pulled');
+        pullSpinner.succeed('Docker images pulled');
       } catch (err) {
-        pullSpinner.fail('Failed to pull server image');
+        pullSpinner.fail('Failed to pull Docker images');
         throw err;
       }
 
@@ -86,8 +97,10 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
         throw err;
       }
 
-      const qdrantReady = await waitHealth('http://localhost:6333/healthz', 'Qdrant');
-      if (!qdrantReady) throw new Error('Qdrant failed to start');
+      if (hasQdrant) {
+        const qdrantReady = await waitHealth('http://localhost:6333/healthz', 'Qdrant');
+        if (!qdrantReady) throw new Error('Qdrant failed to start');
+      }
 
       const mcpReady = await waitHealth('http://localhost:9876/health', 'MCP server');
       if (!mcpReady) throw new Error('MCP server failed to start');

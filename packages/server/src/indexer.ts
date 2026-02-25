@@ -621,8 +621,9 @@ export class Indexer {
           this.stats.files++;
           this.stats.chunks += n;
 
-          if (processed % 20 === 0 || processed === files.length) {
-            console.log(`  [${processed}/${files.length}] ${totalChunks} chunks`);
+          if (processed % 10 === 0 || processed === files.length) {
+            const pct = Math.round((processed / files.length) * 100);
+            console.log(`  [${processed}/${files.length}] ${pct}% — ${totalChunks} chunks`);
           }
         } catch (err) {
           this.stats.errors++;
