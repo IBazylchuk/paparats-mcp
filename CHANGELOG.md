@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Smaller Ollama embedding batches** — `OLLAMA_MAX_BATCH_SIZE` reduced from 100 to 10. Large batches caused connection aborts on CPU-only Docker (Ollama couldn't finish before the client timed out)
 - **Longer Ollama timeouts** — single request timeout increased from 30s to 120s, batch timeout from 60s to 240s. Prevents timeouts during cold-start model loading on slower hardware
 - **More frequent index progress logging** — progress logged every 10 files (was 20) with percentage indicator: `[50/200] 25% — 340 chunks`
+- **`--ollama-mode` for server mode** — `paparats install --mode server --ollama-mode local` uses native Ollama instead of Docker Ollama. Skips Ollama container, connects via `host.docker.internal:11434`. Default remains `docker` for backward compatibility
+- **`--ollama-url` flag** — `paparats install --ollama-url http://192.168.1.10:11434` sets a custom Ollama URL. Implies `--ollama-mode local`. Works in both developer and server modes
 
 ### Fixed
 
