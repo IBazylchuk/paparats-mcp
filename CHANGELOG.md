@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **External Qdrant support** — `paparats install --qdrant-url <url>` skips the Qdrant Docker container and connects to an external instance (e.g. Qdrant Cloud, a shared cluster). Works in both developer and server modes
+- **Interactive Qdrant prompt** — `paparats install` now asks "Use an external Qdrant instance?" during setup. Skipped when `--qdrant-url` is passed as a flag or `--skip-docker` is set
+
 ## [0.2.2] - 2026-02-24
 
 ### Fixed
