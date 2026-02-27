@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.14] - 2026-02-27
+
+### Fixed
+
+- **Batched API indexing deleted all previously indexed files** — `indexFilesContent()` called `cleanupOrphanedChunks()` after each batch, treating the current batch as the complete file list. When the CLI or indexer sent files in batches of 50, each batch deleted everything indexed by previous batches, leaving only the last ~50 files in the index. Removed orphan cleanup from `indexFilesContent()` — orphan cleanup remains in `indexProject()` (filesystem-based) where the full file list is known
+
 ## [0.2.13] - 2026-02-27
 
 ### Added
@@ -14,10 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **MCP tool parameters accept string numbers** — all numeric tool parameters (`limit`, `radius_lines`, `commit_limit`, `max_hops`) now use `z.coerce.number()` instead of `z.number()`. LLM clients frequently send numbers as strings (e.g. `"10"` instead of `10`), which previously caused `Invalid input: expected number, received string` validation errors
-
-### Fixed
-
-- **Batched API indexing deleted all previously indexed files** — `indexFilesContent()` called `cleanupOrphanedChunks()` after each batch, treating the current batch as the complete file list. When the CLI or indexer sent files in batches of 50, each batch deleted everything indexed by previous batches, leaving only the last ~50 files in the index. Removed orphan cleanup from `indexFilesContent()` — orphan cleanup remains in `indexProject()` (filesystem-based) where the full file list is known
 
 ### Removed
 
