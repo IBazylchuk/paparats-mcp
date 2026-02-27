@@ -606,7 +606,7 @@ describe('Indexer', () => {
     expect(remainingFiles.has('src/remove.ts')).toBe(false);
   });
 
-  it('indexFilesContent removes orphaned chunks for files no longer in list', async () => {
+  it('indexFilesContent does not remove other files (supports partial batches)', async () => {
     const indexer = new Indexer({
       qdrantUrl: 'http://localhost:6333',
       embeddingProvider,
@@ -616,46 +616,27 @@ describe('Indexer', () => {
 
     const project = createProjectConfig(projectDir);
 
-    // First index: two files
+    // First batch: two files
     const firstFiles = [
-      { path: 'src/keep.ts', content: 'export const keep = true;\n' },
-      { path: 'src/remove.ts', content: 'export const remove = true;\n' },
+      { path: 'src/a.ts', content: 'export const a = true;\n' },
+      { path: 'src/b.ts', content: 'export const b = true;\n' },
     ];
-    const first = await indexer.indexFilesContent(project, firstFiles);
-    expect(first).toBeGreaterThan(0);
+    await indexer.indexFilesContent(project, firstFiles);
 
-    // Verify both files indexed
-    const allFiles = mockQdrant.upsertedPoints.flatMap((u) =>
-      (u.points as { payload?: { file?: string } }[]).map((p) => p.payload?.file ?? '')
-    );
-    expect(allFiles).toContain('src/keep.ts');
-    expect(allFiles).toContain('src/remove.ts');
-
-    mockQdrant.client.delete.mockClear();
-
-    // Second index: only keep.ts (remove.ts no longer in list)
-    const secondFiles = [{ path: 'src/keep.ts', content: 'export const keep = true;\n' }];
+    // Second batch: different file (simulating batched API calls)
+    const secondFiles = [{ path: 'src/c.ts', content: 'export const c = true;\n' }];
     await indexer.indexFilesContent(project, secondFiles);
 
-    // Verify delete was called for the orphaned file
-    const deleteCalls = mockQdrant.client.delete.mock.calls as Array<
-      [string, { filter: { must: Array<{ key: string; match: { value: string } }> } }]
-    >;
-    const orphanDelete = deleteCalls.find((call) => {
-      const must = call[1]?.filter?.must;
-      return must?.some((m) => m.key === 'file' && m.match.value === 'src/remove.ts');
-    });
-    expect(orphanDelete).toBeDefined();
-
-    // Verify keep.ts chunks still exist
+    // Verify all three files remain in Qdrant (no orphan cleanup)
     const collection = mockQdrant.collections.get(toCollectionName('test-group'))!;
     const remainingFiles = new Set<string>();
     for (const point of collection.values()) {
       const payload = (point as { payload?: { file?: string } }).payload;
       if (payload?.file) remainingFiles.add(payload.file);
     }
-    expect(remainingFiles.has('src/keep.ts')).toBe(true);
-    expect(remainingFiles.has('src/remove.ts')).toBe(false);
+    expect(remainingFiles.has('src/a.ts')).toBe(true);
+    expect(remainingFiles.has('src/b.ts')).toBe(true);
+    expect(remainingFiles.has('src/c.ts')).toBe(true);
   });
 
   it('indexProject does not delete when no orphaned files exist', async () => {
