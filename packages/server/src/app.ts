@@ -41,7 +41,11 @@ function sanitizeForLog(s: string, maxLen = 200): string {
   return cleaned.length > maxLen ? cleaned.slice(0, maxLen) + '…' : cleaned;
 }
 
+/** Default interval for polling Qdrant for new groups (ms) */
+const GROUP_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+
 /** Options for createApp - all services required for the HTTP server */
+
 export interface CreateAppOptions {
   searcher: Searcher;
   indexer: Indexer;
@@ -62,6 +66,8 @@ export interface CreateAppResult {
   setShuttingDown: (value: boolean) => void;
   /** Check if server is in shutdown state */
   getShuttingDown: () => boolean;
+  /** Stop the periodic group poll timer */
+  stopGroupPoll: () => void;
 }
 
 export function createApp(options: CreateAppOptions): CreateAppResult {
@@ -75,8 +81,57 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     metrics,
   } = options;
 
+  // ── Group discovery from Qdrant ───────────────────────────────────────────
+
+  let groupSyncInFlight = false;
+
+  /** Sync groups from Qdrant into projectsByGroup (adds missing, removes stale) */
+  async function syncGroupsFromQdrant(): Promise<void> {
+    if (groupSyncInFlight) return;
+    groupSyncInFlight = true;
+    try {
+      const qdrantGroups = await indexer.listGroups();
+      const qdrantNames = new Set(Object.keys(qdrantGroups));
+
+      // Add new groups discovered in Qdrant
+      for (const name of qdrantNames) {
+        if (!projectsByGroup.has(name)) {
+          projectsByGroup.set(name, []);
+          console.log(`[group-sync] Discovered group: ${name} (${qdrantGroups[name]} chunks)`);
+        }
+      }
+
+      // Remove groups that no longer exist in Qdrant
+      for (const name of projectsByGroup.keys()) {
+        if (!qdrantNames.has(name)) {
+          projectsByGroup.delete(name);
+          console.log(`[group-sync] Removed stale group: ${name}`);
+        }
+      }
+    } catch (err) {
+      console.warn(`[group-sync] Failed to sync groups: ${(err as Error).message}`);
+    } finally {
+      groupSyncInFlight = false;
+    }
+  }
+
+  // Periodic poll — discover groups created by external indexer
+  const groupPollTimer = setInterval(() => {
+    syncGroupsFromQdrant().catch(() => {});
+  }, GROUP_POLL_INTERVAL_MS);
+  groupPollTimer.unref();
+
+  function stopGroupPoll(): void {
+    clearInterval(groupPollTimer);
+  }
+
   function getGroupNames(): string[] {
-    return Array.from(projectsByGroup.keys());
+    const names = Array.from(projectsByGroup.keys());
+    // Lazy fallback: if empty, trigger async refresh for next call
+    if (names.length === 0) {
+      syncGroupsFromQdrant().catch(() => {});
+    }
+    return names;
   }
 
   function getProjects(): Map<string, ProjectConfig[]> {
@@ -436,5 +491,5 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   });
   mcpHandler.mount(app);
 
-  return { app, mcpHandler, setShuttingDown, getShuttingDown };
+  return { app, mcpHandler, setShuttingDown, getShuttingDown, stopGroupPoll };
 }

@@ -86,7 +86,7 @@ const watcherManager = new WatcherManager({
 
 // ── Create and start server ─────────────────────────────────────────────────
 
-const { app, mcpHandler, setShuttingDown, getShuttingDown } = createApp({
+const { app, mcpHandler, setShuttingDown, getShuttingDown, stopGroupPoll } = createApp({
   searcher,
   indexer,
   watcherManager,
@@ -121,21 +121,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
       console.warn(`    Check your PAPARATS_PROJECTS values match actual indexed project names.`);
     }
   }
-
-  // Restore groups from Qdrant so search works without re-indexing
-  indexer
-    .listGroups()
-    .then((groups) => {
-      for (const groupName of Object.keys(groups)) {
-        if (!projectsByGroup.has(groupName)) {
-          projectsByGroup.set(groupName, []);
-          console.log(`  Restored group from Qdrant: ${groupName} (${groups[groupName]} chunks)`);
-        }
-      }
-    })
-    .catch((err) => {
-      console.warn('[startup] Could not restore groups from Qdrant:', (err as Error).message);
-    });
 });
 
 server.on('error', (err: NodeJS.ErrnoException) => {
@@ -166,6 +151,7 @@ async function shutdown(): Promise<void> {
     setTimeout(resolve, 5000);
   });
 
+  stopGroupPoll();
   mcpHandler.destroy();
   await watcherManager.stopAll();
   embeddingProvider.close();

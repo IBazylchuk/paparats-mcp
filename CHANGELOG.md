@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.12] - 2026-02-27
+
+### Added
+
+- **Periodic group discovery from Qdrant** — server now polls Qdrant every 2 minutes for new groups created by external indexers. Previously groups were only discovered once at startup; now they sync continuously (add new, remove stale). Lazy fallback triggers an async refresh when `getGroupNames()` returns empty
+- **Ticket-finding guidance in support mode** — MCP support instructions now include decision tree entries for "find the ticket/RCA for this bug" and "which ticket introduced this bug" workflows (`search_code` → `get_chunk_meta`). `get_chunk_meta` tool description updated to explicitly mention bug reports, RCA, and feature request ticket discovery
+
+### Changed
+
+- **Group restore moved from startup to `app.ts`** — one-time Qdrant group restore in `index.ts` replaced by periodic `syncGroupsFromQdrant()` in `createApp()`. Cleaner separation: `index.ts` no longer reaches into Qdrant directly
+- **`CreateAppResult` exposes `stopGroupPoll()`** — graceful shutdown calls `stopGroupPoll()` to clean up the interval timer
+
 ## [0.2.11] - 2026-02-25
 
 ### Added
