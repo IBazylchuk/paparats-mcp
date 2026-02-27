@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **MCP tool parameters accept string numbers** — all numeric tool parameters (`limit`, `radius_lines`, `commit_limit`, `max_hops`) now use `z.coerce.number()` instead of `z.number()`. LLM clients frequently send numbers as strings (e.g. `"10"` instead of `10`), which previously caused `Invalid input: expected number, received string` validation errors
 
+### Fixed
+
+- **Batched API indexing deleted all previously indexed files** — `indexFilesContent()` called `cleanupOrphanedChunks()` after each batch, treating the current batch as the complete file list. When the CLI or indexer sent files in batches of 50, each batch deleted everything indexed by previous batches, leaving only the last ~50 files in the index. Removed orphan cleanup from `indexFilesContent()` — orphan cleanup remains in `indexProject()` (filesystem-based) where the full file list is known
+
 ### Removed
 
 - **Terraform language support** — removed `terraform` from `LANGUAGE_PROFILES`, auto-detection markers (`main.tf`), and default exclude patterns. The `jina-code-embeddings` model produces poor embeddings for HCL/Terraform files, causing them to dominate search results and degrade quality for actual code

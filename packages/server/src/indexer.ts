@@ -952,10 +952,6 @@ export class Indexer {
     await Promise.all(tasks);
     this.stats.cached = this.provider.cacheHits;
 
-    // Clean up orphaned chunks (files no longer in the provided list but still in Qdrant)
-    const currentRelPaths = new Set(files.map((f) => f.path));
-    await this.cleanupOrphanedChunks(groupName, project.name, currentRelPaths);
-
     return totalChunks;
   }
 
