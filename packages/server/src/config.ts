@@ -65,11 +65,6 @@ const LANGUAGE_PROFILES: Record<string, LanguageProfile> = {
     exclude: getExcludeForLanguage('java'),
     extensions: ['.java'],
   },
-  terraform: {
-    patterns: ['**/*.tf', '**/*.tfvars'],
-    exclude: getExcludeForLanguage('terraform'),
-    extensions: ['.tf', '.tfvars'],
-  },
   c: {
     patterns: ['**/*.c', '**/*.h'],
     exclude: getExcludeForLanguage('c'),
@@ -396,7 +391,6 @@ const DETECT_PRIORITY: Array<[string, string]> = [
   ['build.gradle', 'java'],
   ['Gemfile', 'ruby'],
   ['Rakefile', 'ruby'],
-  ['main.tf', 'terraform'],
   ['CMakeLists.txt', 'cpp'],
   ['Makefile', 'c'],
 ];

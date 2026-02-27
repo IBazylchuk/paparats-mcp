@@ -409,6 +409,45 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     }
   });
 
+  // ── DELETE /api/project/:group/:name ──────────────────────────────────────
+
+  app.delete('/api/project/:group/:name', async (req, res) => {
+    try {
+      const { group, name: projectName } = req.params;
+
+      if (!group || !projectName) {
+        res.status(400).json({ error: 'group and name are required' });
+        return;
+      }
+
+      // Delete chunks from Qdrant
+      await indexer.deleteProjectChunks(group, projectName);
+
+      // Delete metadata from SQLite
+      metadataStore?.deleteByProject(group, projectName);
+
+      // Invalidate query cache for the group
+      searcher.invalidateGroupCache(group);
+
+      // Remove from in-memory project registry
+      const projects = projectsByGroup.get(group);
+      if (projects) {
+        const filtered = projects.filter((p) => p.name !== projectName);
+        if (filtered.length > 0) {
+          projectsByGroup.set(group, filtered);
+        } else {
+          projectsByGroup.delete(group);
+        }
+      }
+
+      console.log(`[api] Deleted project ${sanitizeForLog(group)}/${sanitizeForLog(projectName)}`);
+      res.json({ status: 'ok', message: `Project ${group}/${projectName} deleted` });
+    } catch (err) {
+      console.error('[api] Project deletion error:', err);
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // ── GET /health ────────────────────────────────────────────────────────────
 
   app.get('/health', async (_req, res) => {

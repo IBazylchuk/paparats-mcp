@@ -75,15 +75,6 @@ export const LANGUAGE_EXCLUDE_DEFAULTS: Record<string, string[]> = {
     '*.jar',
     '*.war',
   ],
-  terraform: [
-    '.terraform',
-    '*.tfstate',
-    '*.tfstate.backup',
-    '.terraform.lock.hcl',
-    'crash.log',
-    'override.tf',
-    'override.tf.json',
-  ],
   c: ['build', 'cmake-build-*', '*.o', '*.so', '*.a', '*.exe', '*.out', 'compile_commands.json'],
   cpp: [
     'build',
