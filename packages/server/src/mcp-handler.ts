@@ -268,7 +268,7 @@ export class McpHandler {
           query: z.string().describe('Natural language query or code snippet'),
           group: z.string().optional().describe('Specific group or omit for all'),
           project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.number().min(1).max(20).default(5).describe('Max results'),
+          limit: z.coerce.number().min(1).max(20).default(5).describe('Max results'),
         },
         async ({ query, group, project, limit }) => {
           try {
@@ -409,7 +409,7 @@ export class McpHandler {
         prompts.tools.get_chunk.description,
         {
           chunk_id: z.string().describe('Chunk ID from search_code results'),
-          radius_lines: z
+          radius_lines: z.coerce
             .number()
             .min(0)
             .max(200)
@@ -504,7 +504,7 @@ export class McpHandler {
         prompts.tools.get_chunk_meta.description,
         {
           chunk_id: z.string().describe('Chunk ID from search_code results'),
-          commit_limit: z
+          commit_limit: z.coerce
             .number()
             .min(1)
             .max(50)
@@ -617,7 +617,7 @@ export class McpHandler {
             ),
           group: z.string().optional().describe('Specific group or omit for all'),
           project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.number().min(1).max(20).default(5).describe('Max results'),
+          limit: z.coerce.number().min(1).max(20).default(5).describe('Max results'),
         },
         async ({ query, since, group, project, limit }) => {
           try {
@@ -814,7 +814,7 @@ export class McpHandler {
             .array(z.enum(['calls', 'called_by', 'references', 'referenced_by']))
             .optional()
             .describe('Filter by relation types (default: all)'),
-          limit: z.number().min(1).max(50).default(20).describe('Max results per direction'),
+          limit: z.coerce.number().min(1).max(50).default(20).describe('Max results per direction'),
         },
         async ({ chunk_id, direction, relation_types, limit }) => {
           try {
@@ -982,7 +982,7 @@ export class McpHandler {
           question: z.string().describe('Natural language question about a feature'),
           group: z.string().optional().describe('Specific group or omit for all'),
           project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.number().min(1).max(10).default(5).describe('Max seed chunks'),
+          limit: z.coerce.number().min(1).max(10).default(5).describe('Max seed chunks'),
         },
         async ({ question, group, project, limit }) => {
           try {
@@ -1240,7 +1240,7 @@ export class McpHandler {
           since: z.string().optional().describe('ISO 8601 date filter (e.g. "2024-01-01")'),
           group: z.string().optional().describe('Specific group or omit for all'),
           project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.number().min(1).max(20).default(10).describe('Max seed chunks'),
+          limit: z.coerce.number().min(1).max(20).default(10).describe('Max seed chunks'),
         },
         async ({ question, since, group, project, limit }) => {
           try {
@@ -1457,8 +1457,13 @@ export class McpHandler {
           question: z.string().describe('Natural language query about code to analyze'),
           group: z.string().optional().describe('Specific group or omit for all'),
           project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.number().min(1).max(10).default(5).describe('Max seed chunks'),
-          max_hops: z.number().min(1).max(2).default(1).describe('Graph traversal depth (1-2)'),
+          limit: z.coerce.number().min(1).max(10).default(5).describe('Max seed chunks'),
+          max_hops: z.coerce
+            .number()
+            .min(1)
+            .max(2)
+            .default(1)
+            .describe('Graph traversal depth (1-2)'),
         },
         async ({ question, group, project, limit, max_hops }) => {
           try {

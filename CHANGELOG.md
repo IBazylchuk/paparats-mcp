@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.13] - 2026-02-27
+
+### Added
+
+- **`DELETE /api/project/:group/:name` endpoint** — deletes all chunks for a project from Qdrant, cleans up metadata from SQLite, invalidates query cache, and removes the project from the in-memory registry. Enables removing a project without reindexing the entire group
+
+### Changed
+
+- **MCP tool parameters accept string numbers** — all numeric tool parameters (`limit`, `radius_lines`, `commit_limit`, `max_hops`) now use `z.coerce.number()` instead of `z.number()`. LLM clients frequently send numbers as strings (e.g. `"10"` instead of `10`), which previously caused `Invalid input: expected number, received string` validation errors
+
+### Removed
+
+- **Terraform language support** — removed `terraform` from `LANGUAGE_PROFILES`, auto-detection markers (`main.tf`), and default exclude patterns. The `jina-code-embeddings` model produces poor embeddings for HCL/Terraform files, causing them to dominate search results and degrade quality for actual code
+
 ## [0.2.12] - 2026-02-27
 
 ### Added
@@ -266,7 +280,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - All new payload fields and modules are backward compatible — old indexed data is unaffected
 - A `reindex` call regenerates all metadata including git history and symbol graph (reindex is the migration path)
-- Languages without tree-sitter grammar (e.g. Terraform) gracefully fall back to `null` for `symbol_name`/`kind`
+- Languages without tree-sitter grammar gracefully fall back to `null` for `symbol_name`/`kind`
 
 ## [0.1.10] - 2025-05-22
 
