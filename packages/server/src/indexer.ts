@@ -479,6 +479,13 @@ export class Indexer {
       );
       await this.retryQdrant(() =>
         this.qdrant.createPayloadIndex(this.col(groupName), {
+          field_name: 'language',
+          field_schema: 'keyword',
+          wait: true,
+        })
+      );
+      await this.retryQdrant(() =>
+        this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'defines_symbols',
           field_schema: 'keyword',
           wait: true,
@@ -1187,20 +1194,22 @@ export class Indexer {
           const projectName = String(hit.value);
           const chunks = hit.count;
 
-          const langFacet = await this.qdrant.facet(this.col(groupName), {
-            key: 'language',
-            limit: 50, // bounded by supported language count
-            exact: true,
-            filter: {
-              must: [{ key: 'project', match: { value: projectName } }],
-            },
-          });
+          let languages: string[] = [];
+          try {
+            const langFacet = await this.qdrant.facet(this.col(groupName), {
+              key: 'language',
+              limit: 50, // bounded by supported language count
+              exact: true,
+              filter: {
+                must: [{ key: 'project', match: { value: projectName } }],
+              },
+            });
+            languages = langFacet.hits.map((h) => String(h.value));
+          } catch {
+            // language index may not exist on older collections
+          }
 
-          return {
-            name: projectName,
-            chunks,
-            languages: langFacet.hits.map((h) => String(h.value)),
-          };
+          return { name: projectName, chunks, languages };
         })
       );
 
