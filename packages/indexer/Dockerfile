@@ -61,8 +61,6 @@ COPY --from=builder --chown=nodejs:nodejs /app/packages/server/dist packages/ser
 COPY --from=builder --chown=nodejs:nodejs /app/packages/indexer/package.json packages/indexer/
 COPY --from=builder --chown=nodejs:nodejs /app/packages/indexer/dist packages/indexer/dist
 COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=nodejs:nodejs /app/packages/server/node_modules packages/server/node_modules
-COPY --from=builder --chown=nodejs:nodejs /app/packages/indexer/node_modules packages/indexer/node_modules
 
 USER nodejs
 
