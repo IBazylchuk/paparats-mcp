@@ -16,8 +16,9 @@ COPY package.json yarn.lock .yarnrc.yml ./
 COPY tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
-# packages/cli required for yarn workspaces resolution (root has "packages/*")
+# packages/cli and packages/indexer required for yarn workspaces resolution (root has "packages/*")
 COPY packages/cli/package.json packages/cli/
+COPY packages/indexer/package.json packages/indexer/
 
 # Install all dependencies (including dev)
 RUN yarn install --immutable
@@ -58,7 +59,6 @@ COPY --from=builder --chown=nodejs:nodejs /app/packages/shared/dist packages/sha
 COPY --from=builder --chown=nodejs:nodejs /app/packages/server/package.json packages/server/
 COPY --from=builder --chown=nodejs:nodejs /app/packages/server/dist packages/server/dist
 COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
-COPY --from=builder --chown=nodejs:nodejs /app/packages/server/node_modules packages/server/node_modules
 
 # Run as root initially; entrypoint chowns volume then drops to nodejs
 EXPOSE ${PORT}
