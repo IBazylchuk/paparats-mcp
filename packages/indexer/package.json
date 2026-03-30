@@ -14,7 +14,7 @@
   "dependencies": {
     "@paparats/server": "*",
     "@paparats/shared": "*",
-    "express": "^4.22.1",
+    "express": "^5.2.1",
     "node-cron": "^3.0.3",
     "simple-git": "^3.33.0",
     "uuid": "^13.0.0"
