@@ -90,6 +90,7 @@ const CODING_TOOLS = new Set([
   'find_usages',
   'health_check',
   'reindex',
+  'list_projects',
 ]);
 
 const SUPPORT_TOOLS = new Set([
@@ -97,6 +98,7 @@ const SUPPORT_TOOLS = new Set([
   'get_chunk',
   'find_usages',
   'health_check',
+  'list_projects',
   'get_chunk_meta',
   'search_changes',
   'explain_feature',
@@ -1710,6 +1712,65 @@ export class McpHandler {
                 {
                   type: 'text' as const,
                   text: `Impact analysis failed: ${(err as Error).message}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+
+    // ── Tool: list_projects ────────────────────────────────────────────────
+    if (tools.has('list_projects'))
+      server.tool(
+        'list_projects',
+        prompts.tools.list_projects.description,
+        {
+          group: z.string().optional().describe('Specific group name, or omit to list all groups'),
+        },
+        async ({ group }) => {
+          try {
+            const groupNames = group ? [group] : this.getGroupNames();
+
+            if (groupNames.length === 0) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: 'No groups indexed. Index a project first.',
+                  },
+                ],
+              };
+            }
+
+            const sections: string[] = [];
+
+            for (const g of groupNames) {
+              const projects = await this.indexer.listProjectsInGroup(g);
+              const stats = await this.indexer.getGroupStats(g);
+
+              sections.push(`## Group: ${g} (${stats.points} total chunks)\n`);
+
+              if (projects.length === 0) {
+                sections.push('_No projects found in this group._\n');
+                continue;
+              }
+
+              sections.push('| Project | Chunks | Languages |');
+              sections.push('|---------|--------|-----------|');
+              for (const p of projects) {
+                sections.push(`| ${p.name} | ${p.chunks} | ${p.languages.join(', ')} |`);
+              }
+              sections.push('');
+            }
+
+            return { content: [{ type: 'text' as const, text: sections.join('\n') }] };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Failed to list projects: ${(err as Error).message}`,
                 },
               ],
               isError: true,

@@ -20,6 +20,7 @@ export interface Prompts {
     explain_feature: { description: string };
     recent_changes: { description: string };
     impact_analysis: { description: string };
+    list_projects: { description: string };
   };
   resources: {
     projectOverview: {
@@ -68,6 +69,7 @@ function validatePrompts(data: unknown): Prompts {
     'explain_feature',
     'recent_changes',
     'impact_analysis',
+    'list_projects',
   ]) {
     const t = tools[name];
     if (!t || typeof t !== 'object') {
