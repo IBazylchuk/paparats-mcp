@@ -8,8 +8,11 @@ WORKDIR /app
 # Install build dependencies for better-sqlite3 native module
 RUN apk add --no-cache python3 make g++
 
+# Enable Corepack for Yarn 4
+RUN corepack enable
+
 # Copy dependency files first (rarely change → better layer caching)
-COPY package.json yarn.lock ./
+COPY package.json yarn.lock .yarnrc.yml ./
 COPY tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
@@ -17,8 +20,7 @@ COPY packages/server/package.json packages/server/
 COPY packages/cli/package.json packages/cli/
 
 # Install all dependencies (including dev)
-# --ignore-engines: @eslint/js requires ^22.13.0, Alpine 3.19 ships 22.12.0; devDeps pruned anyway
-RUN yarn install --frozen-lockfile --ignore-engines
+RUN yarn install --immutable
 
 # Copy source code (changes frequently)
 COPY packages/shared/src packages/shared/src
@@ -30,7 +32,7 @@ COPY packages/server/tsconfig.json packages/server/
 RUN yarn workspace @paparats/shared build && yarn workspace @paparats/server build
 
 # Prune devDependencies
-RUN yarn install --frozen-lockfile --production --ignore-engines && yarn cache clean
+RUN yarn workspaces focus --production @paparats/shared @paparats/server && yarn cache clean --all
 
 # ── Production stage ───────────────────────────────────────────────────────
 ARG NODE_VERSION=22
@@ -50,7 +52,7 @@ COPY packages/server/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Copy only built artifacts and production dependencies
-COPY --from=builder --chown=nodejs:nodejs /app/package.json /app/yarn.lock ./
+COPY --from=builder --chown=nodejs:nodejs /app/package.json ./
 COPY --from=builder --chown=nodejs:nodejs /app/packages/shared/package.json packages/shared/
 COPY --from=builder --chown=nodejs:nodejs /app/packages/shared/dist packages/shared/dist
 COPY --from=builder --chown=nodejs:nodejs /app/packages/server/package.json packages/server/
