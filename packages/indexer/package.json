@@ -16,7 +16,7 @@
     "@paparats/shared": "*",
     "express": "^4.21.0",
     "node-cron": "^3.0.3",
-    "simple-git": "^3.27.0",
+    "simple-git": "^3.32.3",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
