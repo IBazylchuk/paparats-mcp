@@ -1171,6 +1171,56 @@ export class Indexer {
     }
   }
 
+  /** List projects in a group using Qdrant facet on the `project` keyword field */
+  async listProjectsInGroup(
+    groupName: string
+  ): Promise<Array<{ name: string; chunks: number; languages: string[]; files: number }>> {
+    try {
+      const projectFacet = await this.qdrant.facet(this.col(groupName), {
+        key: 'project',
+        limit: 1000,
+        exact: true,
+      });
+
+      const projects = await Promise.all(
+        projectFacet.hits.map(async (hit) => {
+          const projectName = String(hit.value);
+          const chunks = hit.count;
+          const projectFilter = {
+            must: [{ key: 'project', match: { value: projectName } }],
+          };
+
+          const [langFacet, fileFacet] = await Promise.all([
+            this.qdrant.facet(this.col(groupName), {
+              key: 'language',
+              limit: 100,
+              exact: true,
+              filter: projectFilter,
+            }),
+            this.qdrant.facet(this.col(groupName), {
+              key: 'file',
+              limit: 100_000,
+              exact: true,
+              filter: projectFilter,
+            }),
+          ]);
+
+          return {
+            name: projectName,
+            chunks,
+            languages: langFacet.hits.map((h) => String(h.value)),
+            files: fileFacet.hits.length,
+          };
+        })
+      );
+
+      return projects;
+    } catch (err) {
+      console.error(`[indexer] Failed to list projects in group ${groupName}:`, err);
+      return [];
+    }
+  }
+
   /** List all paparats collections (groups), returning logical group names */
   async listGroups(): Promise<Record<string, number>> {
     const collections = await this.qdrant.getCollections();

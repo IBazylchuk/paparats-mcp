@@ -35,6 +35,9 @@
     },
     "impact_analysis": {
       "description": "Shows what other services and modules depend on a given feature. Use when the user asks 'what else could be affected?', 'which teams own related code?', or 'what breaks if I change X?'. Returns dependency graph grouped by service — no code content."
+    },
+    "list_projects": {
+      "description": "List all indexed projects with metadata: chunk count, file count, and languages per project, grouped by collection. Use when the user asks 'what projects are indexed?', 'which repos are available?', or 'show me all projects'. Optionally filter by group name."
     }
   },
   "resources": {
