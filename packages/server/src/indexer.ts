@@ -1174,11 +1174,11 @@ export class Indexer {
   /** List projects in a group using Qdrant facet on the `project` keyword field */
   async listProjectsInGroup(
     groupName: string
-  ): Promise<Array<{ name: string; chunks: number; languages: string[]; files: number }>> {
+  ): Promise<Array<{ name: string; chunks: number; languages: string[] }>> {
     try {
       const projectFacet = await this.qdrant.facet(this.col(groupName), {
         key: 'project',
-        limit: 1000,
+        limit: 1000, // groups rarely exceed a handful of projects
         exact: true,
       });
 
@@ -1186,30 +1186,20 @@ export class Indexer {
         projectFacet.hits.map(async (hit) => {
           const projectName = String(hit.value);
           const chunks = hit.count;
-          const projectFilter = {
-            must: [{ key: 'project', match: { value: projectName } }],
-          };
 
-          const [langFacet, fileFacet] = await Promise.all([
-            this.qdrant.facet(this.col(groupName), {
-              key: 'language',
-              limit: 100,
-              exact: true,
-              filter: projectFilter,
-            }),
-            this.qdrant.facet(this.col(groupName), {
-              key: 'file',
-              limit: 100_000,
-              exact: true,
-              filter: projectFilter,
-            }),
-          ]);
+          const langFacet = await this.qdrant.facet(this.col(groupName), {
+            key: 'language',
+            limit: 50, // bounded by supported language count
+            exact: true,
+            filter: {
+              must: [{ key: 'project', match: { value: projectName } }],
+            },
+          });
 
           return {
             name: projectName,
             chunks,
             languages: langFacet.hits.map((h) => String(h.value)),
-            files: fileFacet.hits.length,
           };
         })
       );

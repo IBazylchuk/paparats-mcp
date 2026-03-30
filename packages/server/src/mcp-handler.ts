@@ -1756,12 +1756,10 @@ export class McpHandler {
                 continue;
               }
 
-              sections.push('| Project | Chunks | Files | Languages |');
-              sections.push('|---------|--------|-------|-----------|');
+              sections.push('| Project | Chunks | Languages |');
+              sections.push('|---------|--------|-----------|');
               for (const p of projects) {
-                sections.push(
-                  `| ${p.name} | ${p.chunks} | ${p.files} | ${p.languages.join(', ')} |`
-                );
+                sections.push(`| ${p.name} | ${p.chunks} | ${p.languages.join(', ')} |`);
               }
               sections.push('');
             }
