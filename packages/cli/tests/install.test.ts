@@ -322,6 +322,7 @@ describe('install', () => {
           unlinkSync: () => {},
           promptUseExternalQdrant: () => Promise.resolve(true),
           promptQdrantUrl: () => Promise.resolve('http://cloud-qdrant:6333'),
+          promptQdrantApiKey: () => Promise.resolve(''),
         }
       );
 
@@ -369,6 +370,7 @@ describe('install', () => {
       waitForHealth: () => Promise.resolve(true),
       generateServerCompose,
       mkdirSync: () => {},
+      readFileSync: () => '',
       writeFileSync: () => {},
       existsSync: () => false,
       unlinkSync: () => {},
