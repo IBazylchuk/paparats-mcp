@@ -295,6 +295,7 @@ describe('install', () => {
           writeFileSync: (p, d) => files.set(p, d),
           existsSync: () => false,
           unlinkSync: () => {},
+          promptQdrantApiKey: () => Promise.resolve(''),
         }
       );
 
@@ -350,6 +351,7 @@ describe('install', () => {
           existsSync: () => false,
           unlinkSync: () => {},
           promptUseExternalQdrant: promptSpy,
+          promptQdrantApiKey: () => Promise.resolve(''),
         }
       );
 

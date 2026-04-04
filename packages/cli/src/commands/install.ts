@@ -381,17 +381,22 @@ async function runDeveloperInstall(
     if (deps.existsSync(composeDest)) {
       const existing = deps.readFileSync(composeDest, 'utf8');
       if (existing !== composeContent) {
-        spinner.stop();
-        const overwrite = await confirm({
-          message: `${composeDest} already exists and differs. Overwrite?`,
-          default: true,
-        });
+        const overwrite = process.stdin.isTTY
+          ? await (async () => {
+              spinner.stop();
+              const result = await confirm({
+                message: `${composeDest} already exists and differs. Overwrite?`,
+                default: true,
+              });
+              spinner.start('Starting Docker containers...');
+              return result;
+            })()
+          : true;
         if (!overwrite) {
           console.log(chalk.dim('Keeping existing docker-compose.yml'));
         } else {
           deps.writeFileSync(composeDest, composeContent);
         }
-        spinner.start('Starting Docker containers...');
       }
     } else {
       deps.writeFileSync(composeDest, composeContent);
@@ -523,10 +528,12 @@ async function runServerInstall(
   if (deps.existsSync(composeDest)) {
     const existing = deps.readFileSync(composeDest, 'utf8');
     if (existing !== composeContent) {
-      const overwrite = await confirm({
-        message: `${composeDest} already exists and differs. Overwrite?`,
-        default: true,
-      });
+      const overwrite = process.stdin.isTTY
+        ? await confirm({
+            message: `${composeDest} already exists and differs. Overwrite?`,
+            default: true,
+          })
+        : true;
       if (!overwrite) {
         console.log(chalk.dim('Keeping existing docker-compose.yml'));
       } else {
@@ -759,22 +766,22 @@ export async function runInstall(
           }));
 
       opts.qdrantUrl = await promptUrl();
+    }
+  }
 
-      // Prompt for API key if not already provided via CLI flag
-      if (!opts.qdrantApiKey) {
-        const promptApiKey =
-          deps?.promptQdrantApiKey ??
-          (() =>
-            input({
-              message: 'Qdrant API key (leave empty if none):',
-              default: '',
-            }));
+  // Prompt for API key when using external Qdrant (via prompt or --qdrant-url flag)
+  if (opts.qdrantUrl && !opts.qdrantApiKey) {
+    const promptApiKey =
+      deps?.promptQdrantApiKey ??
+      (() =>
+        input({
+          message: 'Qdrant API key (leave empty if none):',
+          default: '',
+        }));
 
-        const apiKey = await promptApiKey();
-        if (apiKey) {
-          opts.qdrantApiKey = apiKey;
-        }
-      }
+    const apiKey = await promptApiKey();
+    if (apiKey) {
+      opts.qdrantApiKey = apiKey;
     }
   }
 

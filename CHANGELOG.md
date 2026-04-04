@@ -5,10 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.19] - 2026-04-04
 
 ### Added
 
+- **Indexer YAML config file** (`paparats-indexer.yml`) — per-project indexing overrides for the indexer container. Supports `group`, `language`, `indexing.exclude`, `indexing.paths`, `metadata`, and more per repo. Global `defaults` section applies to all repos without explicit overrides. Falls back to `REPOS` env var when no config file is present. Mounted into the indexer container at `/config/paparats-indexer.yml`
 - **`delete_project` MCP tool** — deletes all indexed data for a specific project (chunks from Qdrant, metadata from SQLite, query cache) via MCP. Available in coding mode. The project will be re-indexed automatically on the next indexer cycle if configured. Replaces the `reindex` MCP tool which was a misplaced responsibility
 - **Qdrant API key prompt during install** — `paparats install` now asks for the Qdrant API key when using an external Qdrant instance. Previously only the URL was prompted, causing silent auth failures with Qdrant Cloud
 - **Group sync on MCP session init** — MCP server now refreshes group list from Qdrant when a new session connects (SSE, Streamable HTTP, or session recreation). Previously groups were only discovered via 2-minute polling, so clients connecting after a Qdrant auth fix would still see empty results until the next poll tick

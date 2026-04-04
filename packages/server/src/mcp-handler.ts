@@ -131,6 +131,21 @@ export class McpHandler {
     this.cleanupInterval.unref(); // Don't hold event loop open
   }
 
+  /** Sync groups with a timeout to avoid blocking session startup */
+  private async syncGroupsWithTimeout(): Promise<void> {
+    if (!this.syncGroups) return;
+    try {
+      await Promise.race([
+        this.syncGroups(),
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('syncGroups timeout')), 5000)
+        ),
+      ]);
+    } catch {
+      // Non-fatal — groups will be discovered on next poll tick
+    }
+  }
+
   /** Mount all MCP routes on the Express app (coding + support modes) */
   mount(app: Express): void {
     // Coding mode (backwards-compatible paths)
@@ -1737,7 +1752,7 @@ export class McpHandler {
   private async handleSSE(_req: Request, res: Response, mode: McpMode): Promise<void> {
     try {
       // Refresh group list before serving a new session
-      await this.syncGroups?.().catch(() => {});
+      await this.syncGroupsWithTimeout();
 
       const messagesPath = mode === 'coding' ? '/messages' : '/support/messages';
       const transport = new SSEServerTransport(messagesPath, res);
@@ -1805,7 +1820,7 @@ export class McpHandler {
 
       if (!sessionId && req.method === 'POST' && this.isInitializeRequest(req.body)) {
         // Refresh group list before serving a new session
-        await this.syncGroups?.().catch(() => {});
+        await this.syncGroupsWithTimeout();
 
         const lockKey = (req.socket?.remoteAddress ?? req.ip) || 'unknown';
 
@@ -1858,7 +1873,7 @@ export class McpHandler {
         console.log(`[mcp] Recreating lost session ${sessionId}`);
 
         // Refresh group list for the recreated session
-        await this.syncGroups?.().catch(() => {});
+        await this.syncGroupsWithTimeout();
 
         try {
           const server = this.createMcpServer(mode);
