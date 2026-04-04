@@ -7,6 +7,52 @@ export interface RepoConfig {
   name: string;
   /** Full identifier (e.g. "org/repo") */
   fullName: string;
+  /** Per-repo overrides from indexer config file */
+  overrides?: RepoOverrides;
+}
+
+/** Per-repo overrides in paparats-indexer.yml */
+export interface RepoOverrides {
+  group?: string;
+  language?: string | string[];
+  indexing?: {
+    paths?: string[];
+    exclude?: string[];
+    respectGitignore?: boolean;
+    extensions?: string[];
+    chunkSize?: number;
+    overlap?: number;
+    concurrency?: number;
+    batchSize?: number;
+  };
+  metadata?: {
+    service?: string;
+    bounded_context?: string;
+    tags?: string[];
+    directory_tags?: Record<string, string[]>;
+    git?: {
+      enabled?: boolean;
+      maxCommitsPerFile?: number;
+      ticketPatterns?: string[];
+    };
+  };
+}
+
+/** Structure of paparats-indexer.yml */
+export interface IndexerFileConfig {
+  repos: Array<
+    {
+      /** Repository in "owner/repo" format */
+      url: string;
+    } & RepoOverrides
+  >;
+  defaults?: {
+    group?: string;
+    language?: string | string[];
+    cron?: string;
+    indexing?: RepoOverrides['indexing'];
+    metadata?: RepoOverrides['metadata'];
+  };
 }
 
 export interface IndexerConfig {
