@@ -29,6 +29,13 @@ function mergeOverrides(
     if (repo.indexing?.exclude) merged.indexing.exclude = repo.indexing.exclude;
     if (repo.indexing?.paths) merged.indexing.paths = repo.indexing.paths;
     if (repo.indexing?.extensions) merged.indexing.extensions = repo.indexing.extensions;
+    // exclude_extra: concatenate defaults + repo (both are additive)
+    if (defaults.indexing?.exclude_extra || repo.indexing?.exclude_extra) {
+      merged.indexing.exclude_extra = [
+        ...(defaults.indexing?.exclude_extra ?? []),
+        ...(repo.indexing?.exclude_extra ?? []),
+      ];
+    }
   }
 
   // metadata: merge objects, repo wins per-field

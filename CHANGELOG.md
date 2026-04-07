@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.21] - 2026-04-07
+
+### Added
+
+- **`exclude_extra` indexing option** — new field in `.paparats.yml` and `paparats-indexer.yml` that appends extra patterns to the resolved exclude list without replacing language defaults. `exclude` still does full replacement for cases that need full control. In indexer YAML, `exclude_extra` from `defaults` and repo-level are concatenated (both additive)
+
 ## [0.2.19] - 2026-04-04
 
 ### Added

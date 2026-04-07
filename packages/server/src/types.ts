@@ -48,6 +48,7 @@ export interface PaparatsConfig {
 export interface IndexingConfig {
   paths?: string[];
   exclude?: string[];
+  exclude_extra?: string[];
   respectGitignore?: boolean;
   extensions?: string[];
   chunkSize?: number;

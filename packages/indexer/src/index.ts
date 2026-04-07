@@ -13,6 +13,7 @@ import {
   detectLanguages,
 } from '@paparats/server';
 import type { TreeSitterManager, ProjectConfig, PaparatsConfig } from '@paparats/server';
+import { normalizeExcludePatterns } from '@paparats/shared';
 import { parseReposEnv, cloneOrPull, repoPath } from './repo-manager.js';
 import { startScheduler } from './scheduler.js';
 import { tryLoadIndexerConfig } from './config-loader.js';
@@ -129,6 +130,11 @@ function applyOverrides(project: ProjectConfig, overrides: RepoOverrides): Proje
     if (overrides.indexing.exclude) {
       result.exclude = overrides.indexing.exclude;
       result.indexing.exclude = overrides.indexing.exclude;
+    }
+    if (overrides.indexing.exclude_extra) {
+      const extra = normalizeExcludePatterns(overrides.indexing.exclude_extra);
+      result.exclude = [...result.exclude, ...extra];
+      result.indexing.exclude = [...result.indexing.exclude, ...extra];
     }
     if (overrides.indexing.paths) result.indexing.paths = overrides.indexing.paths;
     if (overrides.indexing.extensions) result.indexing.extensions = overrides.indexing.extensions;
