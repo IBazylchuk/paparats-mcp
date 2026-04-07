@@ -18,6 +18,7 @@ export interface RepoOverrides {
   indexing?: {
     paths?: string[];
     exclude?: string[];
+    exclude_extra?: string[];
     respectGitignore?: boolean;
     extensions?: string[];
     chunkSize?: number;
