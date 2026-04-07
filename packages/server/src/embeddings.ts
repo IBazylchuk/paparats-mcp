@@ -122,7 +122,9 @@ export interface OllamaProviderConfig {
 
 const OLLAMA_TIMEOUT_MS = 120_000;
 const OLLAMA_MAX_RETRIES = 3;
-const OLLAMA_MAX_BATCH_SIZE = 10;
+const OLLAMA_DEFAULT_BATCH_SIZE = 5;
+const OLLAMA_MAX_BATCH_SIZE =
+  parseInt(process.env['OLLAMA_BATCH_SIZE'] ?? '', 10) || OLLAMA_DEFAULT_BATCH_SIZE;
 
 export class OllamaProvider implements EmbeddingProvider {
   private url: string;

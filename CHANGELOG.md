@@ -5,11 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.21] - 2026-04-07
+## [0.2.22] - 2026-04-07
 
 ### Added
 
 - **`exclude_extra` indexing option** — new field in `.paparats.yml` and `paparats-indexer.yml` that appends extra patterns to the resolved exclude list without replacing language defaults. `exclude` still does full replacement for cases that need full control. In indexer YAML, `exclude_extra` from `defaults` and repo-level are concatenated (both additive)
+- **Configurable Ollama embedding batch size** — `OLLAMA_BATCH_SIZE` env var controls how many texts are sent per Ollama embedding request (default: 5, was hardcoded 10). Passed through in generated `docker-compose.yml` for both server and indexer containers
+
+### Fixed
+
+- **Remaining `language.query()` deprecation warnings** — replaced two leftover `language.query()` calls in `ast-symbol-extractor.ts` with `new Query(language, source)` API. Commit `6d7312c` missed these
 
 ## [0.2.19] - 2026-04-04
 

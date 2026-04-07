@@ -90,6 +90,7 @@ function paparatsService(
   const env: Record<string, string> = {
     QDRANT_URL: qdrantUrl,
     OLLAMA_URL: ollamaUrl,
+    OLLAMA_BATCH_SIZE: '${OLLAMA_BATCH_SIZE:-5}',
   };
   if (qdrantApiKey) {
     env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
@@ -168,6 +169,7 @@ function indexerService(
     CRON: `\${CRON:-${config.cron ?? '0 */6 * * *'}}`,
     QDRANT_URL: qdrantUrl,
     OLLAMA_URL: ollamaUrl,
+    OLLAMA_BATCH_SIZE: '${OLLAMA_BATCH_SIZE:-5}',
   };
   if (config.group) {
     env['PAPARATS_GROUP'] = config.group;
