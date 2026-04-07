@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { Parser, Language } from 'web-tree-sitter';
+import { Parser, Language, Query } from 'web-tree-sitter';
 import { createRequire } from 'module';
 import { LANGUAGE_QUERIES } from '../src/ast-queries.js';
 
@@ -39,7 +39,7 @@ function queryCaptures(lang: string, code: string, queryStr: string): string[] {
   const language = languages.get(lang)!;
   parser.setLanguage(language);
   const tree = parser.parse(code);
-  const query = language.query(queryStr);
+  const query = new Query(language, queryStr);
   const captures = query.captures(tree.rootNode);
   const texts = captures.map((c) => c.node.text);
   query.delete();
