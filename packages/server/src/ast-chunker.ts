@@ -93,7 +93,7 @@ function splitNode(
     ];
   }
 
-  const children = node.namedChildren;
+  const children = node.namedChildren.filter((c): c is Node => c !== null);
 
   // At depth limit or no children to split by: fixed-size split
   if (depth >= MAX_RECURSIVE_DEPTH || children.length === 0) {
@@ -167,7 +167,7 @@ export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig
   if (contentLines.length === 0 || !content.trim()) return [];
 
   const root = tree.rootNode;
-  const topLevelNodes = root.namedChildren;
+  const topLevelNodes = root.namedChildren.filter((c): c is Node => c !== null);
 
   if (topLevelNodes.length === 0) {
     // No named children — treat entire content as one chunk if non-empty

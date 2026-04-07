@@ -1,12 +1,12 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import Parser from 'web-tree-sitter';
+import { Parser, Language, type Tree } from 'web-tree-sitter';
 import { createRequire } from 'module';
 import { chunkByAst, type AstChunkerConfig } from '../src/ast-chunker.js';
 
 const require = createRequire(import.meta.url);
 
 let parser: Parser;
-const languages = new Map<string, Parser.Language>();
+const languages = new Map<string, Language>();
 
 const GRAMMAR_MAP: Record<string, string> = {
   typescript: 'typescript',
@@ -26,7 +26,7 @@ async function setup() {
   parser = new Parser();
   for (const [lang, grammar] of Object.entries(GRAMMAR_MAP)) {
     const wasmPath = require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammar}.wasm`);
-    languages.set(lang, await Parser.Language.load(wasmPath));
+    languages.set(lang, await Language.load(wasmPath));
   }
 }
 
@@ -34,7 +34,7 @@ afterAll(() => {
   parser?.delete();
 });
 
-function parse(lang: string, code: string): Parser.Tree {
+function parse(lang: string, code: string): Tree {
   const language = languages.get(lang)!;
   parser.setLanguage(language);
   return parser.parse(code);

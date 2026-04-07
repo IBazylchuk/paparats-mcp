@@ -1,4 +1,4 @@
-import { Query, type Node, type Tree, type Language } from 'web-tree-sitter';
+import type { Node, Tree, Language, Query } from 'web-tree-sitter';
 import { LANGUAGE_QUERIES } from './ast-queries.js';
 import type { ChunkKind } from './types.js';
 
@@ -196,13 +196,13 @@ export function extractSymbolsForChunks(
 
   try {
     try {
-      defQuery = new Query(language, querySet.definitions);
+      defQuery = language.query(querySet.definitions);
     } catch {
       // Query compilation failed — skip definitions
     }
 
     try {
-      useQuery = new Query(language, querySet.usages);
+      useQuery = language.query(querySet.usages);
     } catch {
       // Query compilation failed — skip usages
     }
