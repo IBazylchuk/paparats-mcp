@@ -1,4 +1,4 @@
-import type Parser from 'web-tree-sitter';
+import { Query, type Node, type Tree, type Language } from 'web-tree-sitter';
 import { LANGUAGE_QUERIES } from './ast-queries.js';
 import type { ChunkKind } from './types.js';
 
@@ -159,8 +159,8 @@ function isNoise(symbol: string): boolean {
 /**
  * Resolve ChunkKind from a tree-sitter capture node by walking up to find a known parent type.
  */
-function resolveKind(node: Parser.SyntaxNode): ChunkKind {
-  let current: Parser.SyntaxNode | null = node.parent;
+function resolveKind(node: Node): ChunkKind {
+  let current: Node | null = node.parent;
   // Walk up at most 3 levels to find a recognized node type
   for (let depth = 0; current && depth < 3; depth++) {
     const kind = NODE_TYPE_TO_KIND[current.type];
@@ -181,8 +181,8 @@ function resolveKind(node: Parser.SyntaxNode): ChunkKind {
  * @returns Array of SymbolExtractionResult parallel to chunks
  */
 export function extractSymbolsForChunks(
-  tree: Parser.Tree,
-  language: Parser.Language,
+  tree: Tree,
+  language: Language,
   chunks: Array<{ startLine: number; endLine: number }>,
   lang: string
 ): SymbolExtractionResult[] {
@@ -191,18 +191,18 @@ export function extractSymbolsForChunks(
     return chunks.map(() => ({ defines_symbols: [], uses_symbols: [], defined_symbols: [] }));
   }
 
-  let defQuery: Parser.Query | null = null;
-  let useQuery: Parser.Query | null = null;
+  let defQuery: Query | null = null;
+  let useQuery: Query | null = null;
 
   try {
     try {
-      defQuery = language.query(querySet.definitions);
+      defQuery = new Query(language, querySet.definitions);
     } catch {
       // Query compilation failed — skip definitions
     }
 
     try {
-      useQuery = language.query(querySet.usages);
+      useQuery = new Query(language, querySet.usages);
     } catch {
       // Query compilation failed — skip usages
     }

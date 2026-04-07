@@ -1,11 +1,11 @@
-import Parser from 'web-tree-sitter';
+import { Parser, Language, type Tree } from 'web-tree-sitter';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 
 export interface ParsedFile {
-  tree: Parser.Tree;
-  language: Parser.Language;
+  tree: Tree;
+  language: Language;
 }
 
 export interface TreeSitterManager {
@@ -36,11 +36,11 @@ const LANGUAGE_GRAMMAR_MAP: Record<string, string | null> = {
 export async function createTreeSitterManager(): Promise<TreeSitterManager> {
   await Parser.init();
 
-  const languageCache = new Map<string, Parser.Language>();
+  const languageCache = new Map<string, Language>();
   const failedLanguages = new Set<string>();
   const parser = new Parser();
 
-  async function loadLanguage(language: string): Promise<Parser.Language | null> {
+  async function loadLanguage(language: string): Promise<Language | null> {
     if (languageCache.has(language)) return languageCache.get(language)!;
     if (failedLanguages.has(language)) return null;
 
@@ -52,7 +52,7 @@ export async function createTreeSitterManager(): Promise<TreeSitterManager> {
 
     try {
       const wasmPath = require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammarName}.wasm`);
-      const lang = await Parser.Language.load(wasmPath);
+      const lang = await Language.load(wasmPath);
       languageCache.set(language, lang);
       return lang;
     } catch (err) {
@@ -72,6 +72,7 @@ export async function createTreeSitterManager(): Promise<TreeSitterManager> {
       try {
         parser.setLanguage(lang);
         const tree = parser.parse(content);
+        if (!tree) return null;
         return { tree, language: lang };
       } catch (err) {
         console.warn(
