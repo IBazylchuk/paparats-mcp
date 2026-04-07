@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import Parser from 'web-tree-sitter';
+import { Parser, Language } from 'web-tree-sitter';
 import { createRequire } from 'module';
 import { LANGUAGE_QUERIES } from '../src/ast-queries.js';
 
@@ -20,14 +20,14 @@ const GRAMMAR_MAP: Record<string, string> = {
 };
 
 let parser: Parser;
-const languages = new Map<string, Parser.Language>();
+const languages = new Map<string, Language>();
 
 async function setup() {
   await Parser.init();
   parser = new Parser();
   for (const [lang, grammar] of Object.entries(GRAMMAR_MAP)) {
     const wasmPath = require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammar}.wasm`);
-    languages.set(lang, await Parser.Language.load(wasmPath));
+    languages.set(lang, await Language.load(wasmPath));
   }
 }
 

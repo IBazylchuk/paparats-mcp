@@ -556,7 +556,7 @@ __metadata:
     typescript: "npm:^5.9.3"
     uuid: "npm:^13.0.0"
     vitest: "npm:^4.1.2"
-    web-tree-sitter: "npm:^0.26.8"
+    web-tree-sitter: "npm:^0.25.10"
     zod: "npm:^4.3.6"
   languageName: unknown
   linkType: soft
@@ -3949,10 +3949,15 @@ __metadata:
   languageName: node
   linkType: hard
 
-"web-tree-sitter@npm:^0.26.8":
-  version: 0.26.8
-  resolution: "web-tree-sitter@npm:0.26.8"
-  checksum: 10c0/6382099fc8495dc6a464c532852b375ee05b8b3cc68682a8cddf7ba751c08088cd6ec5a34f6a752428fea6d8d6e29a9d281d6068adbc0831a29561c33cd1630f
+"web-tree-sitter@npm:^0.25.10":
+  version: 0.25.10
+  resolution: "web-tree-sitter@npm:0.25.10"
+  peerDependencies:
+    "@types/emscripten": ^1.40.0
+  peerDependenciesMeta:
+    "@types/emscripten":
+      optional: true
+  checksum: 10c0/8056263c75f59c8f992584386f85675fdce94f67eec506970f49d203a7d25effa96a4736eee5b06f06dc4d8f01339f68d9d4e97d713a6517d19db1f1c0954e06
   languageName: node
   linkType: hard
 
