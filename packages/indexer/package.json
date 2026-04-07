@@ -17,13 +17,13 @@
     "express": "^5.2.1",
     "js-yaml": "^4.1.1",
     "node-cron": "^4.2.1",
-    "simple-git": "^3.33.0",
+    "simple-git": "^3.35.2",
     "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^25.5.0",
+    "@types/node": "^25.5.2",
     "typescript": "^5.9.3",
     "vitest": "^4.1.2"
   }

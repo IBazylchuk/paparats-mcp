@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import type Parser from 'web-tree-sitter';
+import type { Node, Tree } from 'web-tree-sitter';
 import type { ChunkResult } from './types.js';
 
 export interface AstChunkerConfig {
@@ -16,7 +16,7 @@ function hash(text: string): string {
 /**
  * Check if a node is a comment type across languages.
  */
-function isCommentNode(node: Parser.SyntaxNode): boolean {
+function isCommentNode(node: Node): boolean {
   const t = node.type;
   return t === 'comment' || t === 'line_comment' || t === 'block_comment';
 }
@@ -73,7 +73,7 @@ function fixedSplit(
  * Recursively split a node that exceeds maxChunkSize by its named children.
  */
 function splitNode(
-  node: Parser.SyntaxNode,
+  node: Node,
   contentLines: string[],
   config: AstChunkerConfig,
   depth: number
@@ -162,11 +162,7 @@ function splitNode(
  * @param config - Chunking configuration (chunkSize, maxChunkSize)
  * @returns Array of ChunkResult with 0-indexed line numbers
  */
-export function chunkByAst(
-  tree: Parser.Tree,
-  content: string,
-  config: AstChunkerConfig
-): ChunkResult[] {
+export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig): ChunkResult[] {
   const contentLines = content.split('\n');
   if (contentLines.length === 0 || !content.trim()) return [];
 
