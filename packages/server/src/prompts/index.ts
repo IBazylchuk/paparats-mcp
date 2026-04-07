@@ -12,7 +12,7 @@ export interface Prompts {
   tools: {
     search_code: { description: string };
     health_check: { description: string };
-    reindex: { description: string };
+    delete_project: { description: string };
     get_chunk: { description: string };
     get_chunk_meta: { description: string };
     search_changes: { description: string };
@@ -61,7 +61,7 @@ function validatePrompts(data: unknown): Prompts {
   for (const name of [
     'search_code',
     'health_check',
-    'reindex',
+    'delete_project',
     'get_chunk',
     'get_chunk_meta',
     'search_changes',

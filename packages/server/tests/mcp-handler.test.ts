@@ -43,6 +43,7 @@ function createMockSearcher(): Searcher {
       avgTokensSavedPerSearch: 0,
     }),
     getProjectScope: vi.fn().mockReturnValue(null),
+    invalidateGroupCache: vi.fn(),
   } as unknown as Searcher;
 }
 
@@ -50,7 +51,7 @@ function createMockIndexer(): Indexer {
   return {
     listGroups: vi.fn().mockResolvedValue({}),
     getGroupStats: vi.fn().mockResolvedValue({ points: 0, status: 'not_indexed' }),
-    reindexGroup: vi.fn().mockResolvedValue(0),
+    deleteProjectChunks: vi.fn().mockResolvedValue(undefined),
     getChunkById: vi.fn().mockResolvedValue(null),
   } as unknown as Indexer;
 }
@@ -510,9 +511,17 @@ describe('McpHandler', () => {
     }
   });
 
-  it('POST /mcp tools/call reindex returns job ID', async () => {
+  it('POST /mcp tools/call delete_project removes chunks and registry entry', async () => {
     const indexer = createMockIndexer();
-    vi.mocked(indexer.reindexGroup).mockResolvedValue(5);
+    const projectsMap = new Map([['g1', [createProjectConfig()]]]);
+    const removeProject = vi.fn((group: string, name: string) => {
+      const projects = projectsMap.get(group);
+      if (projects) {
+        const filtered = projects.filter((p) => p.name !== name);
+        if (filtered.length > 0) projectsMap.set(group, filtered);
+        else projectsMap.delete(group);
+      }
+    });
 
     const app = express();
     app.use(express.json());
@@ -520,8 +529,9 @@ describe('McpHandler', () => {
     const handler2 = new McpHandler({
       searcher: createMockSearcher(),
       indexer,
-      getProjects: () => new Map([['g1', [createProjectConfig()]]]),
-      getGroupNames: () => ['g1'],
+      getProjects: () => projectsMap,
+      getGroupNames: () => Array.from(projectsMap.keys()),
+      removeProject,
     });
     handler2.mount(app);
 
@@ -561,7 +571,7 @@ describe('McpHandler', () => {
           jsonrpc: '2.0',
           id: 2,
           method: 'tools/call',
-          params: { name: 'reindex', arguments: { group: 'g1' } },
+          params: { name: 'delete_project', arguments: { group: 'g1', project: 'test-project' } },
         }),
       });
 
@@ -570,9 +580,10 @@ describe('McpHandler', () => {
         result?: { content?: { text?: string }[] };
       };
       const text = callBody.result?.content?.[0]?.text;
-      expect(text).toContain('Reindex started');
-      expect(text).toMatch(/Job ID: [a-f0-9]+/);
-      expect(text).toContain('health_check');
+      expect(text).toContain('Deleted project');
+      expect(text).toContain('test-project');
+      expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'test-project');
+      expect(removeProject).toHaveBeenCalledWith('g1', 'test-project');
     } finally {
       server.close();
       handler2.destroy();

@@ -15,7 +15,7 @@ The server exposes two MCP endpoints with different tool sets:
 | `get_chunk`       |       yes       |           yes            |
 | `find_usages`     |       yes       |           yes            |
 | `health_check`    |       yes       |           yes            |
-| `reindex`         |       yes       |            —             |
+| `delete_project`  |       yes       |            —             |
 | `get_chunk_meta`  |        —        |           yes            |
 | `search_changes`  |        —        |           yes            |
 | `explain_feature` |        —        |           yes            |

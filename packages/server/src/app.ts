@@ -145,6 +145,18 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     projectsByGroup.set(project.group, filtered);
   }
 
+  function unregisterProject(group: string, projectName: string): void {
+    const projects = projectsByGroup.get(group);
+    if (projects) {
+      const filtered = projects.filter((p) => p.name !== projectName);
+      if (filtered.length > 0) {
+        projectsByGroup.set(group, filtered);
+      } else {
+        projectsByGroup.delete(group);
+      }
+    }
+  }
+
   let shuttingDown = false;
   const setShuttingDown = (value: boolean): void => {
     shuttingDown = value;
@@ -430,15 +442,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
       searcher.invalidateGroupCache(group);
 
       // Remove from in-memory project registry
-      const projects = projectsByGroup.get(group);
-      if (projects) {
-        const filtered = projects.filter((p) => p.name !== projectName);
-        if (filtered.length > 0) {
-          projectsByGroup.set(group, filtered);
-        } else {
-          projectsByGroup.delete(group);
-        }
-      }
+      unregisterProject(group, projectName);
 
       console.log(`[api] Deleted project ${sanitizeForLog(group)}/${sanitizeForLog(projectName)}`);
       res.json({ status: 'ok', message: `Project ${group}/${projectName} deleted` });
@@ -526,6 +530,8 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     indexer,
     getProjects,
     getGroupNames,
+    removeProject: unregisterProject,
+    syncGroups: syncGroupsFromQdrant,
     metadataStore,
   });
   mcpHandler.mount(app);

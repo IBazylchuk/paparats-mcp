@@ -62,12 +62,13 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 
 **packages/indexer/src/**
 
-| Module            | Responsibility                                                                                       |
-| ----------------- | ---------------------------------------------------------------------------------------------------- |
-| `index.ts`        | Entry point — Express mini-server + cron scheduler bootstrap, uses `Indexer` from `@paparats/server` |
-| `repo-manager.ts` | `parseReposEnv()`, `cloneOrPull()` using simple-git — clone/pull repos to local filesystem           |
-| `scheduler.ts`    | `startScheduler()` — node-cron wrapper for scheduled index cycles                                    |
-| `types.ts`        | `IndexerConfig`, `RepoConfig`, `RunStatus`, `HealthResponse`                                         |
+| Module             | Responsibility                                                                                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.ts`         | Entry point — Express mini-server + cron scheduler bootstrap, uses `Indexer` from `@paparats/server`                                                    |
+| `config-loader.ts` | `loadIndexerConfig()`, `tryLoadIndexerConfig()` — parses `paparats-indexer.yml`, merges per-repo overrides with defaults, returns `RepoConfig[]` + cron |
+| `repo-manager.ts`  | `parseReposEnv()`, `cloneOrPull()` using simple-git — clone/pull repos to local filesystem                                                              |
+| `scheduler.ts`     | `startScheduler()` — node-cron wrapper for scheduled index cycles                                                                                       |
+| `types.ts`         | `IndexerConfig`, `RepoConfig`, `RepoOverrides`, `IndexerFileConfig`, `RunStatus`, `HealthResponse`                                                      |
 
 **packages/ollama/**
 
@@ -98,6 +99,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - **Docker Compose generator**: `packages/cli/src/docker-compose-generator.ts` builds YAML programmatically. `generateDockerCompose()` for developer mode, `generateServerCompose()` for server mode (adds indexer service)
 - **Install modes**: `paparats install --mode <developer|server|support>`. Developer = current flow + Ollama mode choice. Server = full Docker stack with auto-indexer. Support = client-only MCP config (no Docker). `--ollama-url` skips local Ollama entirely (no binary check, no GGUF download)
 - **Indexer container**: `packages/indexer` — separate Docker image that clones repos and indexes on a schedule. Uses `Indexer` class from `@paparats/server` as a library. HTTP trigger at `POST /trigger`, health at `GET /health`
+- **Indexer config file**: `paparats-indexer.yml` mounted at `/config/` in the container. Per-repo overrides (`group`, `language`, `indexing.exclude`, etc.) with global `defaults` section. Priority: `.paparats.yml` in repo > indexer YAML overrides > auto-detection. Falls back to `REPOS` env when no config file present. `CONFIG_DIR` env controls the lookup directory
 
 ## Testing
 

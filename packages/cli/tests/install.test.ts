@@ -295,6 +295,7 @@ describe('install', () => {
           writeFileSync: (p, d) => files.set(p, d),
           existsSync: () => false,
           unlinkSync: () => {},
+          promptQdrantApiKey: () => Promise.resolve(''),
         }
       );
 
@@ -322,6 +323,7 @@ describe('install', () => {
           unlinkSync: () => {},
           promptUseExternalQdrant: () => Promise.resolve(true),
           promptQdrantUrl: () => Promise.resolve('http://cloud-qdrant:6333'),
+          promptQdrantApiKey: () => Promise.resolve(''),
         }
       );
 
@@ -349,6 +351,7 @@ describe('install', () => {
           existsSync: () => false,
           unlinkSync: () => {},
           promptUseExternalQdrant: promptSpy,
+          promptQdrantApiKey: () => Promise.resolve(''),
         }
       );
 
@@ -369,6 +372,7 @@ describe('install', () => {
       waitForHealth: () => Promise.resolve(true),
       generateServerCompose,
       mkdirSync: () => {},
+      readFileSync: () => '',
       writeFileSync: () => {},
       existsSync: () => false,
       unlinkSync: () => {},

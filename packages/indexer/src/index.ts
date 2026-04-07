@@ -9,11 +9,14 @@ import {
   createTreeSitterManager,
   loadProject,
   autoProjectConfig,
+  resolveProject,
+  detectLanguages,
 } from '@paparats/server';
-import type { TreeSitterManager, ProjectConfig } from '@paparats/server';
+import type { TreeSitterManager, ProjectConfig, PaparatsConfig } from '@paparats/server';
 import { parseReposEnv, cloneOrPull, repoPath } from './repo-manager.js';
 import { startScheduler } from './scheduler.js';
-import type { RepoConfig, HealthResponse, RepoStatus, RunStatus } from './types.js';
+import { tryLoadIndexerConfig } from './config-loader.js';
+import type { RepoConfig, RepoOverrides, HealthResponse, RepoStatus, RunStatus } from './types.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
@@ -40,10 +43,24 @@ const repoStatuses = new Map<string, RepoStatus>();
 
 // ── Bootstrap ───────────────────────────────────────────────────────────────
 
-const repos = parseReposEnv(REPOS, GITHUB_TOKEN);
-if (repos.length === 0) {
-  console.warn('[indexer] No repos configured. Set REPOS env (e.g. "org/repo1,org/repo2").');
+const CONFIG_DIR = process.env['CONFIG_DIR'] ?? '/config';
+
+let repos: RepoConfig[];
+let configCron: string | undefined;
+
+const fileConfig = tryLoadIndexerConfig(CONFIG_DIR, GITHUB_TOKEN);
+if (fileConfig) {
+  repos = fileConfig.repos;
+  configCron = fileConfig.cron;
+  console.log(`[indexer] Loaded ${repos.length} repo(s) from config file`);
+} else {
+  repos = parseReposEnv(REPOS, GITHUB_TOKEN);
+  if (repos.length === 0) {
+    console.warn('[indexer] No repos configured. Set REPOS env or mount paparats-indexer.yml.');
+  }
 }
+
+const effectiveCron = configCron ?? CRON;
 
 for (const repo of repos) {
   repoStatuses.set(repo.fullName, { repo: repo.fullName, status: 'idle' });
@@ -79,6 +96,57 @@ const indexer = new Indexer({
 
 // ── Index cycle ─────────────────────────────────────────────────────────────
 
+/**
+ * Build a PaparatsConfig from repo overrides (indexer YAML) for repos without .paparats.yml.
+ * Falls back to auto-detected languages if not specified in overrides.
+ */
+function buildConfigFromOverrides(
+  repo: RepoConfig,
+  localPath: string,
+  overrides: RepoOverrides
+): PaparatsConfig {
+  const group = PAPARATS_GROUP ?? overrides.group ?? repo.name;
+  const language = overrides.language ?? detectLanguages(localPath);
+
+  const config: PaparatsConfig = { group, language };
+  if (overrides.indexing) config.indexing = overrides.indexing;
+  if (overrides.metadata) config.metadata = overrides.metadata;
+
+  return config;
+}
+
+/**
+ * Apply indexer YAML overrides on top of an already-resolved ProjectConfig.
+ * Used when .paparats.yml exists in the repo — overrides are additive.
+ */
+function applyOverrides(project: ProjectConfig, overrides: RepoOverrides): ProjectConfig {
+  const result = { ...project };
+
+  if (overrides.group) result.group = overrides.group;
+
+  if (overrides.indexing) {
+    result.indexing = { ...result.indexing };
+    if (overrides.indexing.exclude) {
+      result.exclude = overrides.indexing.exclude;
+      result.indexing.exclude = overrides.indexing.exclude;
+    }
+    if (overrides.indexing.paths) result.indexing.paths = overrides.indexing.paths;
+    if (overrides.indexing.extensions) result.indexing.extensions = overrides.indexing.extensions;
+    if (overrides.indexing.respectGitignore !== undefined)
+      result.indexing.respectGitignore = overrides.indexing.respectGitignore;
+    if (overrides.indexing.chunkSize !== undefined)
+      result.indexing.chunkSize = overrides.indexing.chunkSize;
+    if (overrides.indexing.overlap !== undefined)
+      result.indexing.overlap = overrides.indexing.overlap;
+    if (overrides.indexing.concurrency !== undefined)
+      result.indexing.concurrency = overrides.indexing.concurrency;
+    if (overrides.indexing.batchSize !== undefined)
+      result.indexing.batchSize = overrides.indexing.batchSize;
+  }
+
+  return result;
+}
+
 function buildDefaultProject(repo: RepoConfig, localPath: string): ProjectConfig {
   const project = autoProjectConfig(localPath, {
     group: PAPARATS_GROUP ?? repo.name,
@@ -98,12 +166,30 @@ async function indexRepo(repo: RepoConfig): Promise<number> {
 
     let project: ProjectConfig;
     const configPath = path.join(localPath, '.paparats.yml');
-    if (fs.existsSync(configPath)) {
+    const hasRepoConfig = fs.existsSync(configPath);
+    const overrides = repo.overrides;
+
+    if (hasRepoConfig) {
+      // .paparats.yml in the repo takes priority
       project = loadProject(localPath);
       if (PAPARATS_GROUP) {
         project = { ...project, group: PAPARATS_GROUP };
       }
+      // Apply indexer YAML overrides on top
+      if (overrides) {
+        project = applyOverrides(project, overrides);
+        console.log(`[indexer] ${repo.fullName}: .paparats.yml + indexer overrides applied`);
+      }
+    } else if (overrides) {
+      // No .paparats.yml but indexer YAML has overrides
+      const config = buildConfigFromOverrides(repo, localPath, overrides);
+      project = resolveProject(localPath, config);
+      project.watcher.enabled = false;
+      console.log(
+        `[indexer] ${repo.fullName}: using indexer config overrides (${project.languages.join(', ')})`
+      );
     } else {
+      // No config at all — auto-detect
       project = buildDefaultProject(repo, localPath);
       console.log(
         `[indexer] No .paparats.yml in ${repo.fullName}, auto-detected: ${project.languages.join(', ')} (${project.exclude.length} exclude patterns)`
@@ -194,7 +280,7 @@ app.get('/health', (_req, res) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[indexer] Listening on http://0.0.0.0:${PORT}`);
   console.log(`[indexer] Repos: ${repos.map((r) => r.fullName).join(', ') || '(none)'}`);
-  console.log(`[indexer] Cron: ${CRON}`);
+  console.log(`[indexer] Cron: ${effectiveCron}`);
   console.log(`[indexer] Qdrant: ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`);
   console.log(`[indexer] Ollama: ${OLLAMA_URL}`);
   if (PAPARATS_GROUP) {
@@ -204,7 +290,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
 
 // Start cron scheduler
 if (repos.length > 0) {
-  startScheduler(CRON, () => runIndexCycle());
+  startScheduler(effectiveCron, () => runIndexCycle());
 
   // Run initial index cycle on startup
   console.log('[indexer] Running initial index cycle...');

@@ -25,6 +25,8 @@ export interface ServerComposeConfig extends DockerComposeConfig {
   /** When set, all repos share this single Qdrant group (collection) */
   group?: string;
   indexerPort?: number;
+  /** Path to paparats-indexer.yml config file to mount into the indexer container */
+  indexerConfigPath?: string;
 }
 
 interface ComposeService {
@@ -174,12 +176,17 @@ function indexerService(
     env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
   }
 
+  const volumes = ['indexer_repos:/data/repos', 'paparats_data:/home/nodejs/.paparats'];
+  if (config.indexerConfigPath) {
+    volumes.push(`${config.indexerConfigPath}:/config/paparats-indexer.yml:ro`);
+  }
+
   const svc: ComposeService = {
     image: 'ibaz/paparats-indexer:latest',
     container_name: 'paparats-indexer',
     environment: env,
     ports: [`\${INDEXER_PORT:-${config.indexerPort ?? 9877}}:9877`],
-    volumes: ['indexer_repos:/data/repos', 'paparats_data:/home/nodejs/.paparats'],
+    volumes,
     depends_on: dependsOn,
     logging: { driver: 'json-file', options: { 'max-size': '10m', 'max-file': '3' } },
     restart: 'unless-stopped',
