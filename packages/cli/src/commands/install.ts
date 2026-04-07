@@ -232,6 +232,7 @@ export interface InstallDeps {
   unlinkSync?: (path: string) => void;
   promptUseExternalQdrant?: () => Promise<boolean>;
   promptQdrantUrl?: () => Promise<string>;
+  promptQdrantApiKey?: () => Promise<string>;
 }
 
 // ── Shared Ollama setup ─────────────────────────────────────────────────────
@@ -376,7 +377,30 @@ async function runDeveloperInstall(
       ollamaUrl: opts.ollamaUrl,
     });
     const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
-    deps.writeFileSync(composeDest, composeContent);
+
+    if (deps.existsSync(composeDest)) {
+      const existing = deps.readFileSync(composeDest, 'utf8');
+      if (existing !== composeContent) {
+        const overwrite = process.stdin.isTTY
+          ? await (async () => {
+              spinner.stop();
+              const result = await confirm({
+                message: `${composeDest} already exists and differs. Overwrite?`,
+                default: true,
+              });
+              spinner.start('Starting Docker containers...');
+              return result;
+            })()
+          : true;
+        if (!overwrite) {
+          console.log(chalk.dim('Keeping existing docker-compose.yml'));
+        } else {
+          deps.writeFileSync(composeDest, composeContent);
+        }
+      }
+    } else {
+      deps.writeFileSync(composeDest, composeContent);
+    }
 
     // Write .env for docker-compose variable substitution (API key, etc.)
     if (opts.qdrantApiKey) {
@@ -402,10 +426,24 @@ async function runDeveloperInstall(
     }
 
     const qdrantReady = await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
-    if (!qdrantReady) throw new Error('Qdrant failed to start');
+    if (!qdrantReady) {
+      console.log(
+        chalk.yellow(
+          '  Qdrant is not responding yet. Continuing with remaining setup.\n' +
+            '  Check Docker logs: docker compose -f ~/.paparats/docker-compose.yml logs qdrant'
+        )
+      );
+    }
 
     const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
-    if (!mcpReady) throw new Error('MCP server failed to start');
+    if (!mcpReady) {
+      console.log(
+        chalk.yellow(
+          '  MCP server is not responding yet. Continuing with remaining setup.\n' +
+            '  Check Docker logs: docker compose -f ~/.paparats/docker-compose.yml logs paparats'
+        )
+      );
+    }
   }
 
   // Ollama setup (local mode only, skip when external URL is provided)
@@ -445,6 +483,7 @@ async function runServerInstall(
       | 'generateServerCompose'
       | 'waitForHealth'
       | 'mkdirSync'
+      | 'readFileSync'
       | 'writeFileSync'
       | 'existsSync'
       | 'unlinkSync'
@@ -485,7 +524,25 @@ async function runServerInstall(
     group: opts.group,
   });
   const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
-  deps.writeFileSync(composeDest, composeContent);
+
+  if (deps.existsSync(composeDest)) {
+    const existing = deps.readFileSync(composeDest, 'utf8');
+    if (existing !== composeContent) {
+      const overwrite = process.stdin.isTTY
+        ? await confirm({
+            message: `${composeDest} already exists and differs. Overwrite?`,
+            default: true,
+          })
+        : true;
+      if (!overwrite) {
+        console.log(chalk.dim('Keeping existing docker-compose.yml'));
+      } else {
+        deps.writeFileSync(composeDest, composeContent);
+      }
+    }
+  } else {
+    deps.writeFileSync(composeDest, composeContent);
+  }
 
   // Create .env file for docker-compose variable substitution
   const envLines: string[] = [];
@@ -516,10 +573,24 @@ async function runServerInstall(
   }
 
   const qdrantReady = await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
-  if (!qdrantReady) throw new Error('Qdrant failed to start');
+  if (!qdrantReady) {
+    console.log(
+      chalk.yellow(
+        '  Qdrant is not responding yet. Continuing with remaining setup.\n' +
+          '  Check Docker logs: docker compose -f ~/.paparats/docker-compose.yml logs qdrant'
+      )
+    );
+  }
 
   const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
-  if (!mcpReady) throw new Error('MCP server failed to start');
+  if (!mcpReady) {
+    console.log(
+      chalk.yellow(
+        '  MCP server is not responding yet. Continuing with remaining setup.\n' +
+          '  Check Docker logs: docker compose -f ~/.paparats/docker-compose.yml logs paparats'
+      )
+    );
+  }
 
   // Ollama setup (local mode only, skip when external URL or Docker Ollama)
   if (needsLocalOllama) {
@@ -695,6 +766,22 @@ export async function runInstall(
           }));
 
       opts.qdrantUrl = await promptUrl();
+    }
+  }
+
+  // Prompt for API key when using external Qdrant (via prompt or --qdrant-url flag)
+  if (opts.qdrantUrl && !opts.qdrantApiKey) {
+    const promptApiKey =
+      deps?.promptQdrantApiKey ??
+      (() =>
+        input({
+          message: 'Qdrant API key (leave empty if none):',
+          default: '',
+        }));
+
+    const apiKey = await promptApiKey();
+    if (apiKey) {
+      opts.qdrantApiKey = apiKey;
     }
   }
 

@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.19] - 2026-04-04
+
+### Added
+
+- **Indexer YAML config file** (`paparats-indexer.yml`) — per-project indexing overrides for the indexer container. Supports `group`, `language`, `indexing.exclude`, `indexing.paths`, `metadata`, and more per repo. Global `defaults` section applies to all repos without explicit overrides. Falls back to `REPOS` env var when no config file is present. Mounted into the indexer container at `/config/paparats-indexer.yml`
+- **`delete_project` MCP tool** — deletes all indexed data for a specific project (chunks from Qdrant, metadata from SQLite, query cache) via MCP. Available in coding mode. The project will be re-indexed automatically on the next indexer cycle if configured. Replaces the `reindex` MCP tool which was a misplaced responsibility
+- **Qdrant API key prompt during install** — `paparats install` now asks for the Qdrant API key when using an external Qdrant instance. Previously only the URL was prompted, causing silent auth failures with Qdrant Cloud
+- **Group sync on MCP session init** — MCP server now refreshes group list from Qdrant when a new session connects (SSE, Streamable HTTP, or session recreation). Previously groups were only discovered via 2-minute polling, so clients connecting after a Qdrant auth fix would still see empty results until the next poll tick
+
+### Changed
+
+- **Health check failures no longer block install** — `paparats install` now warns and continues when Qdrant or MCP server health checks fail, instead of throwing and aborting the entire installation. Ollama setup and MCP IDE configuration proceed regardless. Provides actionable `docker compose logs` commands in the warning
+- **Docker-compose overwrite confirmation** — `paparats install` now detects an existing `~/.paparats/docker-compose.yml` and asks before overwriting when the content differs. Prevents losing manual edits on re-install
+
+### Removed
+
+- **`reindex` MCP tool** — removed from MCP server. Reindexing is the responsibility of the indexer container, not the MCP server. The tool was a relic from CLI-mode that called `reindexGroup()` (deletes entire Qdrant collection + re-indexes from disk), which doesn't work in server/indexer architecture where the MCP server is stateless. Use `delete_project` + indexer trigger instead
+
+## [0.2.18] - 2026-03-28
+
+### Fixed
+
+- **Missing `language` keyword index in Qdrant** — `ensureCollection()` now creates a keyword index on the `language` payload field. The `list_projects` tool uses Qdrant facet queries on this field, which require a keyword index to function. Older collections that lack the index now gracefully return empty languages instead of failing
+
+## [0.2.17] - 2026-03-25
+
+### Fixed
+
+- **CI arm64 Docker builds crash under QEMU** — `better-sqlite3` v12 dropped prebuilt binaries and always compiles via `node-gyp`, which crashes under QEMU arm64 emulation (`Illegal instruction`). Split CI Docker builds into per-platform jobs: amd64 on `ubuntu-latest`, arm64 on native `ubuntu-24.04-arm`, then merge into multi-arch manifest
+
+## [0.2.16] - 2026-03-24
+
+### Fixed
+
+- **Broken Docker builds after Yarn 4 migration** — Server Dockerfile was missing `COPY packages/indexer/package.json` (required by root workspace resolution). Both Dockerfiles removed stale `COPY` of per-workspace `node_modules` that no longer exist under Yarn 4 (all deps hoisted to root)
+
+## [0.2.15] - 2026-03-20
+
+### Added
+
+- **`list_projects` MCP tool** — lists all indexed projects with metadata (chunk count, languages) grouped by collection. Available in both coding and support modes with optional group filtering. Uses Qdrant facet API for efficient aggregation
+- **Yarn 4 migration** — migrated from Yarn Classic to Yarn 4 with Corepack. Dockerfiles and CI updated for `--immutable` installs
+- **Dependency updates** — Express 4→5 (fixes 3 path-to-regexp CVEs), `@inquirer/prompts` 7→8, `better-sqlite3` 11→12, `chokidar` 4→5, `commander` 12→14, and more
+
 ## [0.2.14] - 2026-02-27
 
 ### Fixed

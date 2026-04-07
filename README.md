@@ -454,6 +454,46 @@ Now searching `"authentication flow"` finds code in **both** backend and fronten
 paparats install --mode server --repos org/repo1,org/repo2 --group shared-index
 ```
 
+### Indexer Config File
+
+For per-project control over indexing in server mode, create `~/.paparats/paparats-indexer.yml`:
+
+```yaml
+# Global defaults applied to all repos without explicit overrides
+defaults:
+  group: shared-group
+  cron: '0 */2 * * *'
+  indexing:
+    exclude: [node_modules, dist, vendor]
+
+repos:
+  - url: org/frontend
+    language: [typescript]
+    indexing:
+      paths: [src/]
+      exclude: [__tests__, storybook]
+
+  - url: org/backend
+    language: ruby
+    group: backend-group
+    indexing:
+      exclude: [spec/fixtures, vendor]
+    metadata:
+      service: payment-api
+      tags: [backend, billing]
+
+  - url: org/docs
+    # Minimal — auto-detect language, inherit defaults
+```
+
+**Priority:** `.paparats.yml` inside the repo > indexer YAML overrides > auto-detection.
+
+When a repo has its own `.paparats.yml`, the indexer YAML overrides are applied on top (e.g., you can override `group` or add extra excludes without modifying the repo). When no `.paparats.yml` exists, the indexer YAML provides the full config.
+
+The config file is mounted into the indexer container at `/config/paparats-indexer.yml`. Falls back to `REPOS` env var when no config file is present (backward compatible).
+
+**Environment variable:** `CONFIG_DIR` controls where the indexer looks for the config file (default: `/config`).
+
 ### Metadata
 
 The `metadata` section enriches each indexed chunk with contextual information that improves search filtering and helps AI assistants understand code ownership.
@@ -858,9 +898,10 @@ paparats-mcp/
 │   ├── indexer/         # Automated repo indexer (Docker image: ibaz/paparats-indexer)
 │   │   ├── src/
 │   │   │   ├── index.ts              # Entry: Express mini-server + cron scheduler
+│   │   │   ├── config-loader.ts      # paparats-indexer.yml parser + per-repo overrides
 │   │   │   ├── repo-manager.ts       # parseReposEnv(), cloneOrPull() using simple-git
 │   │   │   ├── scheduler.ts          # node-cron wrapper
-│   │   │   └── types.ts              # IndexerConfig, RepoConfig, RunStatus
+│   │   │   └── types.ts              # IndexerConfig, RepoConfig, RepoOverrides, IndexerFileConfig
 │   │   └── Dockerfile
 │   ├── ollama/          # Custom Ollama with pre-baked model (Docker image: ibaz/paparats-ollama)
 │   │   └── Dockerfile

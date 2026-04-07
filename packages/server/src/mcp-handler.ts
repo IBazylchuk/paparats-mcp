@@ -63,6 +63,10 @@ export interface McpHandlerConfig {
   getProjects: () => Map<string, ProjectConfig[]>;
   /** Callback to get all known group names */
   getGroupNames: () => string[];
+  /** Callback to remove a project from the in-memory registry */
+  removeProject?: (group: string, projectName: string) => void;
+  /** Callback to refresh group list from Qdrant (called on session init) */
+  syncGroups?: () => Promise<void>;
   /** Optional metadata store for git history tools */
   metadataStore?: MetadataStore;
 }
@@ -73,14 +77,6 @@ type TransportEntry = {
   lastActivity: number;
 };
 
-type ReindexJob = {
-  status: 'running' | 'completed' | 'failed';
-  startedAt: number;
-  groups: string[];
-  chunksProcessed: number;
-  error?: string;
-};
-
 export type McpMode = 'coding' | 'support';
 
 /** Tool names available in each mode */
@@ -89,7 +85,7 @@ const CODING_TOOLS = new Set([
   'get_chunk',
   'find_usages',
   'health_check',
-  'reindex',
+  'delete_project',
   'list_projects',
 ]);
 
@@ -111,15 +107,15 @@ export class McpHandler {
   private indexer: Indexer;
   private getProjects: () => Map<string, ProjectConfig[]>;
   private getGroupNames: () => string[];
+  private removeProject: ((group: string, projectName: string) => void) | null;
+  private syncGroups: (() => Promise<void>) | null;
   private metadataStore: MetadataStore | null;
   private transports: Record<string, TransportEntry> = {};
   private servers = new Map<string, McpServer>();
   private sessionModes = new Map<string, McpMode>();
-  private reindexJobs = new Map<string, ReindexJob>();
   private sessionCreationLocks = new Set<string>();
 
   private readonly SESSION_TIMEOUT_MS = 1000 * 60 * 60 * 4; // 4 hours idle timeout
-  private readonly REINDEX_JOB_TTL_MS = 1000 * 60 * 60; // keep completed jobs for 1 hour
   private cleanupInterval: ReturnType<typeof setInterval>;
 
   constructor(config: McpHandlerConfig) {
@@ -127,10 +123,27 @@ export class McpHandler {
     this.indexer = config.indexer;
     this.getProjects = config.getProjects;
     this.getGroupNames = config.getGroupNames;
+    this.removeProject = config.removeProject ?? null;
+    this.syncGroups = config.syncGroups ?? null;
     this.metadataStore = config.metadataStore ?? null;
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000);
     this.cleanupInterval.unref(); // Don't hold event loop open
+  }
+
+  /** Sync groups with a timeout to avoid blocking session startup */
+  private async syncGroupsWithTimeout(): Promise<void> {
+    if (!this.syncGroups) return;
+    try {
+      await Promise.race([
+        this.syncGroups(),
+        new Promise<void>((_, reject) =>
+          setTimeout(() => reject(new Error('syncGroups timeout')), 5000)
+        ),
+      ]);
+    } catch {
+      // Non-fatal — groups will be discovered on next poll tick
+    }
   }
 
   /** Mount all MCP routes on the Express app (coding + support modes) */
@@ -152,7 +165,6 @@ export class McpHandler {
     for (const sessionId of Object.keys(this.transports)) {
       this.cleanupSession(sessionId);
     }
-    this.reindexJobs.clear();
   }
 
   private getMcpServer(sessionId: string, mode: McpMode): McpServer {
@@ -178,14 +190,6 @@ export class McpHandler {
     for (const [sessionId, entry] of Object.entries(this.transports)) {
       if (now - entry.lastActivity > this.SESSION_TIMEOUT_MS) {
         this.cleanupSession(sessionId);
-        cleaned++;
-      }
-    }
-
-    // Evict finished reindex jobs older than TTL
-    for (const [jobId, job] of this.reindexJobs.entries()) {
-      if (job.status !== 'running' && now - job.startedAt > this.REINDEX_JOB_TTL_MS) {
-        this.reindexJobs.delete(jobId);
         cleaned++;
       }
     }
@@ -381,13 +385,12 @@ export class McpHandler {
       server.tool('health_check', prompts.tools.health_check.description, {}, async () => {
         try {
           const groups = await this.indexer.listGroups();
-          const jobs = Object.fromEntries(this.reindexJobs.entries());
 
           return {
             content: [
               {
                 type: 'text' as const,
-                text: JSON.stringify({ status: 'ok', groups, reindexJobs: jobs }, null, 2),
+                text: JSON.stringify({ status: 'ok', groups }, null, 2),
               },
             ],
           };
@@ -723,65 +726,27 @@ export class McpHandler {
         }
       );
 
-    // ── Tool: reindex ───────────────────────────────────────────────────────
-    if (tools.has('reindex'))
+    // ── Tool: delete_project ──────────────────────────────────────────────
+    if (tools.has('delete_project'))
       server.tool(
-        'reindex',
-        prompts.tools.reindex.description,
+        'delete_project',
+        prompts.tools.delete_project.description,
         {
-          group: z.string().optional().describe('Group name or omit for all groups'),
+          group: z.string().describe('Group name (collection) the project belongs to'),
+          project: z.string().describe('Project name to delete'),
         },
-        async ({ group }) => {
+        async ({ group, project }) => {
           try {
-            const groupMap = this.getProjects();
-            const targetGroups = group
-              ? [[group, groupMap.get(group) ?? []] as const]
-              : Array.from(groupMap.entries());
-
-            const groupNames = targetGroups.map(([g]) => g);
-            const jobId = uuidv7().slice(0, 8);
-
-            this.reindexJobs.set(jobId, {
-              status: 'running',
-              startedAt: Date.now(),
-              groups: groupNames,
-              chunksProcessed: 0,
-            });
-
-            (async () => {
-              try {
-                let total = 0;
-                for (const [g, projects] of targetGroups) {
-                  if (projects.length === 0) continue;
-                  const n = await this.indexer.reindexGroup(g, projects);
-                  total += n;
-                }
-
-                const job = this.reindexJobs.get(jobId);
-                if (job) {
-                  this.reindexJobs.set(jobId, {
-                    ...job,
-                    status: 'completed',
-                    chunksProcessed: total,
-                  });
-                }
-              } catch (err) {
-                const job = this.reindexJobs.get(jobId);
-                if (job) {
-                  this.reindexJobs.set(jobId, {
-                    ...job,
-                    status: 'failed',
-                    error: (err as Error).message,
-                  });
-                }
-              }
-            })();
+            await this.indexer.deleteProjectChunks(group, project);
+            this.metadataStore?.deleteByProject(group, project);
+            this.searcher.invalidateGroupCache(group);
+            this.removeProject?.(group, project);
 
             return {
               content: [
                 {
                   type: 'text' as const,
-                  text: `Reindex started for ${groupNames.join(', ')}\nJob ID: ${jobId}\n\nCheck status with health_check tool.`,
+                  text: `Deleted project "${project}" from group "${group}". All chunks, metadata, and cache entries removed. The project will be re-indexed on the next indexer cycle if configured.`,
                 },
               ],
             };
@@ -790,7 +755,7 @@ export class McpHandler {
               content: [
                 {
                   type: 'text' as const,
-                  text: `Failed to start reindex: ${(err as Error).message}`,
+                  text: `Failed to delete project: ${(err as Error).message}`,
                 },
               ],
               isError: true,
@@ -1786,6 +1751,9 @@ export class McpHandler {
 
   private async handleSSE(_req: Request, res: Response, mode: McpMode): Promise<void> {
     try {
+      // Refresh group list before serving a new session
+      await this.syncGroupsWithTimeout();
+
       const messagesPath = mode === 'coding' ? '/messages' : '/support/messages';
       const transport = new SSEServerTransport(messagesPath, res);
       const sessionId = transport.sessionId;
@@ -1851,6 +1819,9 @@ export class McpHandler {
       }
 
       if (!sessionId && req.method === 'POST' && this.isInitializeRequest(req.body)) {
+        // Refresh group list before serving a new session
+        await this.syncGroupsWithTimeout();
+
         const lockKey = (req.socket?.remoteAddress ?? req.ip) || 'unknown';
 
         if (this.sessionCreationLocks.has(lockKey)) {
@@ -1900,6 +1871,9 @@ export class McpHandler {
         // Instead of returning 404, transparently recreate the session with the same ID.
         // This allows clients to survive server restarts without re-initializing.
         console.log(`[mcp] Recreating lost session ${sessionId}`);
+
+        // Refresh group list for the recreated session
+        await this.syncGroupsWithTimeout();
 
         try {
           const server = this.createMcpServer(mode);
