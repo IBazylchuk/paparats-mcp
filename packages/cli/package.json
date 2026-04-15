@@ -70,7 +70,7 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@inquirer/prompts": "^8.4.0",
+    "@inquirer/prompts": "^8.4.1",
     "@paparats/shared": "^0.2.14",
     "chalk": "^5.6.2",
     "chokidar": "^5.0.0",
@@ -83,8 +83,8 @@
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
-    "@types/node": "^25.5.2",
+    "@types/node": "^25.6.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.2"
+    "vitest": "^4.1.4"
   }
 }
