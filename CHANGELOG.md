@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.24] - 2026-04-23
+
+### Changed
+
+- **Per-file language detection during indexing** — each file is now classified by its own extension (with shebang fallback for extension-less scripts) instead of inheriting the project-wide `languages[0]`. Fixes two long-standing issues: (1) misclassified projects where a stray `pom.xml`/`build.gradle` in a Ruby repo forced every `.rb` file through Java tree-sitter grammar, producing broken AST chunks and no symbols; (2) genuinely multi-language projects (e.g. Rails + JS) where non-primary files were chunked with the wrong grammar. Project-level language is retained as a fallback for files whose extension is not recognized. New `detectLanguageByPath()` helper in `@paparats/shared`; wired into `Indexer.indexFile`, `Indexer.indexFilesContent`, and the `/api/file-changed` HTTP endpoint
+
 ## [0.2.22] - 2026-04-07
 
 ### Added
