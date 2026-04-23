@@ -17,6 +17,7 @@ import path from 'node:path';
 const EXT_TO_LANGUAGE: Record<string, string> = {
   '.rb': 'ruby',
   '.rake': 'ruby',
+  '.rbs': 'ruby',
   '.ts': 'typescript',
   '.tsx': 'typescript',
   '.js': 'typescript',

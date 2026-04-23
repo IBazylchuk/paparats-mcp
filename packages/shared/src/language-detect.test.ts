@@ -5,6 +5,7 @@ describe('detectLanguageByPath', () => {
   it('detects common extensions', () => {
     expect(detectLanguageByPath('app/models/user.rb')).toBe('ruby');
     expect(detectLanguageByPath('Rakefile.rake')).toBe('ruby');
+    expect(detectLanguageByPath('sig/user.rbs')).toBe('ruby');
     expect(detectLanguageByPath('src/index.ts')).toBe('typescript');
     expect(detectLanguageByPath('src/App.tsx')).toBe('typescript');
     expect(detectLanguageByPath('script.js')).toBe('typescript');
