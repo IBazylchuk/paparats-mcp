@@ -1,5 +1,6 @@
 import express, { type Express } from 'express';
 import cors from 'cors';
+import { detectLanguageByPath } from '@paparats/shared';
 import { buildProjectConfigFromContent } from './config.js';
 import { Indexer, parseChunkId } from './indexer.js';
 import { Searcher } from './searcher.js';
@@ -269,7 +270,8 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         return;
       }
 
-      const lang = language ?? project.languages[0] ?? 'generic';
+      const lang =
+        language ?? detectLanguageByPath(filePath, content) ?? project.languages[0] ?? 'generic';
       await withTimeout(
         indexer.updateFileContent(group, projectName, filePath, content, lang, project),
         FILE_CHANGED_TIMEOUT_MS,

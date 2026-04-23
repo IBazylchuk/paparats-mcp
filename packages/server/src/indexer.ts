@@ -2,7 +2,7 @@ import { QdrantClient } from '@qdrant/js-client-rest';
 import { glob } from 'glob';
 import fs from 'fs';
 import path from 'path';
-import { filterFilesByGitignore } from '@paparats/shared';
+import { filterFilesByGitignore, detectLanguageByPath } from '@paparats/shared';
 import { v7 as uuidv7 } from 'uuid';
 import PQueue from 'p-queue';
 import { Chunker } from './chunker.js';
@@ -526,7 +526,7 @@ export class Indexer {
 
     if (!content.trim()) return 0;
 
-    const language = project.languages[0] ?? 'generic';
+    const language = detectLanguageByPath(relPath, content) ?? project.languages[0] ?? 'generic';
     const { chunks, symbolResults } = await this.chunkFile(content, language, project);
     if (chunks.length === 0) return 0;
 
@@ -888,7 +888,7 @@ export class Indexer {
     const tasks = files.map((file) =>
       queue.add(async () => {
         const { path: relPath, content, language } = file;
-        const lang = language ?? defaultLang;
+        const lang = language ?? detectLanguageByPath(relPath, content) ?? defaultLang;
 
         if (!content.trim()) return;
 
