@@ -10,6 +10,10 @@ import type { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { MetricsRegistry } from './metrics.js';
+import type { Telemetry } from './telemetry/facade.js';
+import type { AnalyticsStore } from './telemetry/analytics-store.js';
+import { identityMiddleware } from './telemetry/identity-middleware.js';
+import { tctx } from './telemetry/context.js';
 
 /** Run a promise with a timeout; reject with Error on timeout */
 export async function withTimeout<T>(
@@ -58,6 +62,10 @@ export interface CreateAppOptions {
   metadataStore?: MetadataStore;
   /** Optional metrics registry for Prometheus metrics */
   metrics?: MetricsRegistry;
+  /** Optional telemetry facade (analytics, OTel) */
+  telemetry?: Telemetry;
+  /** Optional analytics store (used for direct read access in MCP analytics tools) */
+  analytics?: AnalyticsStore;
 }
 
 export interface CreateAppResult {
@@ -80,6 +88,8 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     projectsByGroup,
     metadataStore,
     metrics,
+    telemetry,
+    analytics,
   } = options;
 
   // ── Group discovery from Qdrant ───────────────────────────────────────────
@@ -167,6 +177,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   const app = express();
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
+  app.use(identityMiddleware());
 
   app.use((req, res, next) => {
     if (shuttingDown) {
@@ -502,7 +513,16 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         metrics.setQdrantCollections(Object.keys(groups).length);
       }
 
+      const ident = tctx.getOrAnonymous();
       res.json({
+        identity: {
+          user: ident.user,
+          session: ident.session,
+          client: ident.client,
+          anchorProject: ident.anchorProject,
+          requestId: ident.requestId,
+        },
+        telemetry: telemetry ? 'enabled' : 'disabled',
         groups,
         projectScope: searcher.getProjectScope(),
         registeredProjects: Object.fromEntries(
@@ -535,6 +555,8 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     removeProject: unregisterProject,
     syncGroups: syncGroupsFromQdrant,
     metadataStore,
+    telemetry,
+    analytics,
   });
   mcpHandler.mount(app);
 

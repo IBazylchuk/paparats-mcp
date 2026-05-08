@@ -13,9 +13,9 @@
     "build:docker:indexer": "docker build -f packages/indexer/Dockerfile -t paparats-indexer:latest .",
     "build:docker:ollama": "docker build -f packages/ollama/Dockerfile -t paparats-ollama:latest .",
     "docker:rebuild": "docker build -t ibaz/paparats-server:latest -f packages/server/Dockerfile . && docker compose -f $HOME/.paparats/docker-compose.yml up -d --force-recreate paparats",
-    "sync-version": "node scripts/sync-version.js",
-    "release": "node scripts/release.js",
-    "release:push": "node scripts/release-push.js",
+    "changeset": "changeset",
+    "version": "changeset version && node scripts/sync-server-json.js && yarn install --no-immutable",
+    "release": "yarn build && changeset publish",
     "release:docker": "bash scripts/release-docker.sh",
     "release:docker:push": "bash scripts/release-docker.sh --push",
     "clean": "rm -rf packages/*/dist",
@@ -28,13 +28,14 @@
     "prettier:check": "prettier --check .",
     "check": "yarn typecheck && yarn lint && yarn prettier:check",
     "publish:shared": "yarn workspace @paparats/shared exec npm publish",
-    "publish:cli": "yarn build && yarn workspace @paparats/cli exec npm publish",
-    "publish:npm": "yarn publish:shared && yarn publish:cli"
+    "publish:cli": "yarn build && yarn workspace @paparats/cli exec npm publish"
   },
   "engines": {
     "node": ">=20"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.0",
     "@eslint/js": "^10.0.1",
     "eslint": "^10.2.0",
     "eslint-config-prettier": "^10.1.8",

@@ -1,0 +1,84 @@
+# Changesets-driven release pipeline.
+#
+# How it works:
+#   1. Contributors run `yarn changeset` and commit `.changeset/<slug>.md` files
+#      in their PRs describing the change and bump type (patch/minor/major).
+#   2. When PRs land on `main`, this workflow either opens (or updates) a
+#      "chore: release X.Y.Z" PR with the version bumps + CHANGELOG entries,
+#      or — if such a PR was just merged — runs `yarn release` to publish to
+#      npm and push a `vX.Y.Z` tag.
+#   3. The git tag triggers the existing docker-publish.yml and publish-mcp.yml
+#      workflows. Nothing else changes downstream.
+#
+# Required secrets:
+#   - NPM_TOKEN — npm automation token with publish rights for @paparats/*
+#   - GITHUB_TOKEN — provided automatically by GitHub Actions
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org/'
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Build
+        run: yarn build
+
+      - name: Create release PR or publish
+        id: changesets
+        uses: changesets/action@v1
+        with:
+          version: yarn version
+          publish: yarn release
+          title: 'chore: release'
+          commit: 'chore: release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Push downstream tag
+        if: steps.changesets.outputs.published == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # changesets/action publishes individual packages and tags them like
+          # @paparats/cli@0.3.0. The existing Docker and MCP-registry workflows
+          # subscribe to plain `v*` tags, so we add one mirroring the cli version.
+          VERSION=$(node -p "require('./packages/cli/package.json').version")
+          TAG="v${VERSION}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists, skipping"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
