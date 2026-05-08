@@ -215,7 +215,7 @@ export function retryRate(
       FROM base s1
       JOIN base s2
         ON s1.user = s2.user
-       AND (s1.session = s2.session OR (s1.session IS NULL AND s2.session IS NULL))
+       AND s1.session IS s2.session
        AND s2.ts > s1.ts
        AND s2.ts - s1.ts <= @windowMs
        AND NOT EXISTS (
@@ -228,7 +228,7 @@ export function retryRate(
         CASE WHEN t1 = t2 THEN 1.0 ELSE
           CAST((SELECT COUNT(*) FROM json_each(t1) WHERE value IN (SELECT value FROM json_each(t2))) AS REAL)
           /
-          NULLIF((SELECT COUNT(DISTINCT value) FROM (
+          NULLIF((SELECT COUNT(*) FROM (
             SELECT value FROM json_each(t1) UNION SELECT value FROM json_each(t2)
           )), 0)
         END AS jaccard

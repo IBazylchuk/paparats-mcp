@@ -64,10 +64,8 @@ export async function buildTelemetry(options: BuildTelemetryOptions = {}): Promi
     }
   }
 
-  const sampleRate = Math.max(
-    0,
-    Math.min(1, parseFloat(process.env.PAPARATS_TELEMETRY_SAMPLE_RATE ?? '1.0'))
-  );
+  const rawSampleRate = parseFloat(process.env.PAPARATS_TELEMETRY_SAMPLE_RATE ?? '1.0');
+  const sampleRate = Number.isNaN(rawSampleRate) ? 1.0 : Math.max(0, Math.min(1, rawSampleRate));
 
   return { telemetry: createTelemetry({ sinks, sampleRate }), analytics };
 }

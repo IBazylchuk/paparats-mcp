@@ -330,7 +330,7 @@ export class AnalyticsStore implements TelemetrySink {
       SELECT se.id AS id
       FROM search_events se
       JOIN search_results sr ON sr.search_id = se.id
-      WHERE se.user = ? AND (se.session = ? OR (se.session IS NULL AND ? IS NULL))
+      WHERE se.user = ? AND se.session IS ?
         AND sr.chunk_id = ?
       ORDER BY se.ts DESC
       LIMIT 1
@@ -532,7 +532,7 @@ export class AnalyticsStore implements TelemetrySink {
   resolvePrecedingSearchId(chunkId: string, user: string, session: string | null): string | null {
     if (this.closed) return null;
     try {
-      const row = this.resolvePrecedingStmt.get(user, session, session, chunkId) as
+      const row = this.resolvePrecedingStmt.get(user, session, chunkId) as
         | { id: string }
         | undefined;
       return row?.id ?? null;

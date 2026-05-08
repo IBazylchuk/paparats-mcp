@@ -1224,7 +1224,7 @@ MIT
 
 ## Releasing (maintainers)
 
-Releases are driven by [Changesets](https://github.com/changesets/changesets). Contributors describe their changes in `.changeset/*.md` files inside their PR; CI handles versioning, CHANGELOG generation, npm publish, and downstream tagging on merge.
+Releases are driven by [Changesets](https://github.com/changesets/changesets). Versioning + CHANGELOG generation happen in CI; **publishing to npm and tagging happen locally** from a maintainer machine that's authenticated with npm. There are no npm credentials in CI.
 
 ### Authoring a changeset (per PR)
 
@@ -1237,19 +1237,36 @@ git commit -m "chore: changeset"
 
 All four packages (`@paparats/shared`, `@paparats/cli`, `@paparats/server`, `@paparats/indexer`) are kept on a **fixed version** — pick any one and the rest are bumped to match.
 
-### How a release happens (CI, after merge to `main`)
+### How a release happens
 
-1. The [Release workflow](.github/workflows/release.yml) inspects pending changesets.
-2. If any are present, it opens (or updates) a `chore: release` PR — version bumps in every `package.json`, regenerated per-package `CHANGELOG.md` files, `server.json` synced via `scripts/sync-server-json.js`.
-3. When a maintainer merges that release PR, the same workflow runs `yarn release` (`changeset publish`) to push to npm, then tags the commit `vX.Y.Z` and pushes the tag.
-4. The tag triggers [docker-publish.yml](.github/workflows/docker-publish.yml) and [publish-mcp.yml](.github/workflows/publish-mcp.yml) automatically.
+**1. CI opens a release PR (automatic).** The [Release workflow](.github/workflows/release.yml) runs on every push to `main`. If pending `.changeset/*.md` files exist, it opens (or updates) a `chore: release` PR with: version bumps in every `package.json`, regenerated per-package `CHANGELOG.md` files, `server.json` synced via `scripts/sync-server-json.js`, and the consumed `.changeset/*.md` files deleted.
 
-### Required secrets
+**2. Maintainer merges the release PR.** No further CI publish step runs.
 
-| Secret         | Purpose                                                       |
-| -------------- | ------------------------------------------------------------- |
-| `NPM_TOKEN`    | npm automation token with publish rights for `@paparats/*`    |
-| `GITHUB_TOKEN` | provided by GitHub Actions; used to open/merge the release PR |
+**3. Maintainer publishes locally.** From a clean checkout of `main` after the merge:
+
+```bash
+git checkout main && git pull
+yarn release:local         # or `--dry-run` to preview
+```
+
+`yarn release:local` runs `scripts/release-local.sh`, which:
+
+- refuses to run unless you're on `main`, the tree is clean, and you're in sync with `origin/main`;
+- refuses if any pending `.changeset/*.md` are present (means the release PR wasn't merged);
+- reads the new version from `packages/cli/package.json`;
+- builds, runs `yarn changeset publish` (skips already-published versions), then tags `vX.Y.Z` and pushes the tag.
+
+**4. Downstream workflows fire on the tag.** Pushing `vX.Y.Z` triggers [docker-publish.yml](.github/workflows/docker-publish.yml) and [publish-mcp.yml](.github/workflows/publish-mcp.yml) automatically.
+
+### Required credentials
+
+| Where | What                                | Purpose                                           |
+| ----- | ----------------------------------- | ------------------------------------------------- |
+| CI    | `GITHUB_TOKEN` (auto)               | Open/update the `chore: release` PR               |
+| Local | `npm login` (or `NPM_TOKEN` in env) | `yarn changeset publish` to publish `@paparats/*` |
+
+No npm token lives in GitHub secrets — publishing is intentionally a manual, authenticated step.
 
 ### Manual / fallback flows
 
