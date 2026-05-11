@@ -1,7 +1,11 @@
+import { createRequire } from 'node:module';
 import { v7 as uuidv7 } from 'uuid';
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+
+const require = createRequire(import.meta.url);
+const { version: PKG_VERSION } = require('../package.json') as { version: string };
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import type { Searcher } from './searcher.js';
@@ -299,7 +303,7 @@ export class McpHandler {
       instructions += `\n\nThis server is scoped to projects: ${scope.join(', ')}. All searches are automatically filtered.`;
     }
 
-    const server = new McpServer({ name: 'paparats-mcp', version: '0.1.2' }, { instructions });
+    const server = new McpServer({ name: 'paparats-mcp', version: PKG_VERSION }, { instructions });
 
     // Monkey-patch server.tool so every registered handler is wrapped in telemetry.
     if (this.telemetry) {
