@@ -10,6 +10,17 @@ import { parseChunkId } from './indexer.js';
 import type { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
 import { prompts, buildProjectOverviewSections } from './prompts/index.js';
+import type { Telemetry } from './telemetry/facade.js';
+import { tctx } from './telemetry/context.js';
+import type { AnalyticsStore } from './telemetry/analytics-store.js';
+import {
+  tokenSavingsReport,
+  topQueries,
+  slowestSearches,
+  crossProjectShare,
+  retryRate,
+  failedChunks,
+} from './telemetry/queries.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -69,6 +80,10 @@ export interface McpHandlerConfig {
   syncGroups?: () => Promise<void>;
   /** Optional metadata store for git history tools */
   metadataStore?: MetadataStore;
+  /** Optional telemetry façade */
+  telemetry?: Telemetry;
+  /** Optional analytics store backing the analytics MCP tools */
+  analytics?: AnalyticsStore;
 }
 
 type TransportEntry = {
@@ -100,6 +115,13 @@ const SUPPORT_TOOLS = new Set([
   'explain_feature',
   'recent_changes',
   'impact_analysis',
+  // analytics tools
+  'token_savings_report',
+  'top_queries',
+  'slowest_searches',
+  'cross_project_share',
+  'retry_rate',
+  'failed_chunks',
 ]);
 
 export class McpHandler {
@@ -110,6 +132,12 @@ export class McpHandler {
   private removeProject: ((group: string, projectName: string) => void) | null;
   private syncGroups: (() => Promise<void>) | null;
   private metadataStore: MetadataStore | null;
+  private telemetry: Telemetry | null;
+  private analytics: AnalyticsStore | null;
+  private sessionIdentity = new Map<
+    string,
+    { user: string; session: string | null; client: string | null; anchorProject: string | null }
+  >();
   private transports: Record<string, TransportEntry> = {};
   private servers = new Map<string, McpServer>();
   private sessionModes = new Map<string, McpMode>();
@@ -126,6 +154,8 @@ export class McpHandler {
     this.removeProject = config.removeProject ?? null;
     this.syncGroups = config.syncGroups ?? null;
     this.metadataStore = config.metadataStore ?? null;
+    this.telemetry = config.telemetry ?? null;
+    this.analytics = config.analytics ?? null;
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000);
     this.cleanupInterval.unref(); // Don't hold event loop open
@@ -177,10 +207,65 @@ export class McpHandler {
     return server;
   }
 
+  /**
+   * On a follow-up request that lacks identity headers, fall back to the
+   * identity captured at session-init. Per-request headers always win.
+   */
+  private applySessionIdentity(sessionId: string | undefined): void {
+    if (!sessionId) return;
+    const ctx = tctx.get();
+    if (!ctx) return;
+    if (ctx.user !== 'anonymous') return;
+    const stored = this.sessionIdentity.get(sessionId);
+    if (!stored) return;
+    tctx.patch({
+      user: stored.user,
+      session: stored.session,
+      client: stored.client,
+      anchorProject: ctx.anchorProject ?? stored.anchorProject,
+    });
+  }
+
   private cleanupSession(sessionId: string): void {
     delete this.transports[sessionId];
     this.servers.delete(sessionId);
     this.sessionModes.delete(sessionId);
+    this.sessionIdentity.delete(sessionId);
+  }
+
+  /**
+   * Wrap a tool callback so telemetry records each call (latency, ok/error).
+   * Falls through cleanly when telemetry is not configured.
+   */
+  private instrumentTool<TArgs extends unknown[], TResult>(
+    toolName: string,
+    fn: (...args: TArgs) => Promise<TResult>
+  ): (...args: TArgs) => Promise<TResult> {
+    return async (...args: TArgs) => {
+      if (!this.telemetry) return fn(...args);
+      const start = performance.now();
+      let ok = true;
+      let error: string | null = null;
+      try {
+        return await fn(...args);
+      } catch (err) {
+        ok = false;
+        error = (err as Error).message.slice(0, 256);
+        throw err;
+      } finally {
+        try {
+          this.telemetry.recordToolCall({
+            ts: Date.now(),
+            tool: toolName,
+            durationMs: Math.round(performance.now() - start),
+            ok,
+            error,
+          });
+        } catch {
+          // never break the tool call because of telemetry
+        }
+      }
+    };
   }
 
   private cleanupExpiredSessions(): void {
@@ -215,6 +300,21 @@ export class McpHandler {
     }
 
     const server = new McpServer({ name: 'paparats-mcp', version: '0.1.2' }, { instructions });
+
+    // Monkey-patch server.tool so every registered handler is wrapped in telemetry.
+    if (this.telemetry) {
+      const originalTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
+      const instrument = this.instrumentTool.bind(this);
+      server.tool = ((...args: unknown[]) => {
+        const last = args.length - 1;
+        const handler = args[last];
+        const name = typeof args[0] === 'string' ? args[0] : 'unknown';
+        if (typeof handler === 'function') {
+          args[last] = instrument(name, handler as (...rest: unknown[]) => Promise<unknown>);
+        }
+        return originalTool(...args);
+      }) as typeof server.tool;
+    }
 
     // ── Resource: project overview ──────────────────────────────────────────
     server.resource('project-overview', 'context://project-overview', async () => {
@@ -422,6 +522,8 @@ export class McpHandler {
             .describe('Lines of surrounding context to include (0-200)'),
         },
         async ({ chunk_id, radius_lines }) => {
+          const fetchStart = performance.now();
+          let fetchFound = false;
           try {
             const payload = await this.indexer.getChunkById(chunk_id);
 
@@ -435,6 +537,7 @@ export class McpHandler {
                 ],
               };
             }
+            fetchFound = true;
 
             const project = payload['project'] as string;
             const file = payload['file'] as string;
@@ -498,6 +601,14 @@ export class McpHandler {
               ],
               isError: true,
             };
+          } finally {
+            this.telemetry?.recordChunkFetch({
+              ts: Date.now(),
+              chunkId: chunk_id,
+              radiusLines: radius_lines,
+              durationMs: Math.round(performance.now() - fetchStart),
+              found: fetchFound,
+            });
           }
         }
       );
@@ -1744,6 +1855,134 @@ export class McpHandler {
         }
       );
 
+    // ── Analytics tools (support mode + analytics enabled) ─────────────────
+    if (this.analytics) {
+      const periodSchema = {
+        since_ms: z.coerce
+          .number()
+          .optional()
+          .describe('Period start (unix ms). Defaults to 7 days ago.'),
+        until_ms: z.coerce.number().optional().describe('Period end (unix ms). Defaults to now.'),
+        user: z.string().optional().describe('Filter by user id'),
+        group: z.string().optional().describe('Filter by group name'),
+      } as const;
+
+      const renderJson = (
+        label: string,
+        payload: unknown
+      ): { content: [{ type: 'text'; text: string }] } => ({
+        content: [
+          {
+            type: 'text' as const,
+            text: `**${label}**\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``,
+          },
+        ],
+      });
+
+      if (tools.has('token_savings_report'))
+        server.tool(
+          'token_savings_report',
+          'Token-savings estimates: naive baseline vs. search-only vs. actually-consumed (uses chunk_fetches correlation).',
+          periodSchema,
+          async ({ since_ms, until_ms, user, group }) => {
+            const result = tokenSavingsReport(this.analytics!, {
+              since: since_ms,
+              until: until_ms,
+              user,
+              group,
+            });
+            return renderJson('Token Savings Report', result);
+          }
+        );
+
+      if (tools.has('top_queries'))
+        server.tool(
+          'top_queries',
+          'Most-frequent queries by query_hash with one example, count, avg latency, avg result count.',
+          { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
+          async ({ since_ms, until_ms, user, group, limit }) => {
+            const rows = topQueries(
+              this.analytics!,
+              {
+                since: since_ms,
+                until: until_ms,
+                user,
+                group,
+              },
+              limit
+            );
+            return renderJson('Top Queries', rows);
+          }
+        );
+
+      if (tools.has('slowest_searches'))
+        server.tool(
+          'slowest_searches',
+          'Slowest individual searches in the period.',
+          { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
+          async ({ since_ms, until_ms, user, group, limit }) => {
+            const rows = slowestSearches(
+              this.analytics!,
+              {
+                since: since_ms,
+                until: until_ms,
+                user,
+                group,
+              },
+              limit
+            );
+            return renderJson('Slowest Searches', rows);
+          }
+        );
+
+      if (tools.has('cross_project_share'))
+        server.tool(
+          'cross_project_share',
+          'Per-user-per-anchor-project share of results that came from OTHER projects in the same group. Detects noisy cross-project search.',
+          periodSchema,
+          async ({ since_ms, until_ms, user, group }) => {
+            const rows = crossProjectShare(this.analytics!, {
+              since: since_ms,
+              until: until_ms,
+              user,
+              group,
+            });
+            return renderJson('Cross-Project Share', rows);
+          }
+        );
+
+      if (tools.has('retry_rate'))
+        server.tool(
+          'retry_rate',
+          'Reformulation rate per user: searches followed by another search within a window with no chunk_fetches in between.',
+          periodSchema,
+          async ({ since_ms, until_ms, user, group }) => {
+            const rows = retryRate(this.analytics!, {
+              since: since_ms,
+              until: until_ms,
+              user,
+              group,
+            });
+            return renderJson('Retry Rate', rows);
+          }
+        );
+
+      if (tools.has('failed_chunks'))
+        server.tool(
+          'failed_chunks',
+          'Aggregated chunking errors during indexing (AST failures, regex fallbacks, binary files).',
+          periodSchema,
+          async ({ since_ms, until_ms, group }) => {
+            const rows = failedChunks(this.analytics!, {
+              since: since_ms,
+              until: until_ms,
+              group,
+            });
+            return renderJson('Failed Chunks', rows);
+          }
+        );
+    }
+
     return server;
   }
 
@@ -1761,6 +2000,15 @@ export class McpHandler {
       const now = Date.now();
       this.transports[sessionId] = { transport, created: now, lastActivity: now };
       this.sessionModes.set(sessionId, mode);
+      const ctx = tctx.get();
+      if (ctx && ctx.user !== 'anonymous') {
+        this.sessionIdentity.set(sessionId, {
+          user: ctx.user,
+          session: ctx.session ?? sessionId,
+          client: ctx.client,
+          anchorProject: ctx.anchorProject,
+        });
+      }
       res.on('close', () => this.cleanupSession(sessionId));
 
       const server = this.getMcpServer(sessionId, mode);
@@ -1786,6 +2034,7 @@ export class McpHandler {
       }
 
       entry.lastActivity = Date.now();
+      this.applySessionIdentity(sessionId);
       const transport = entry.transport;
       if ('handlePostMessage' in transport) {
         await transport.handlePostMessage(req, res, req.body);
@@ -1811,6 +2060,7 @@ export class McpHandler {
 
       if (transportEntry) {
         transportEntry.lastActivity = Date.now();
+        this.applySessionIdentity(sessionId);
         const t = transportEntry.transport;
         if ('handleRequest' in t) {
           await t.handleRequest(req, res, req.body);
@@ -1851,6 +2101,15 @@ export class McpHandler {
               this.transports[sid] = { transport, created: now, lastActivity: now };
               this.servers.set(sid, server);
               this.sessionModes.set(sid, mode);
+              const ctx = tctx.get();
+              if (ctx && ctx.user !== 'anonymous') {
+                this.sessionIdentity.set(sid, {
+                  user: ctx.user,
+                  session: ctx.session ?? sid,
+                  client: ctx.client,
+                  anchorProject: ctx.anchorProject,
+                });
+              }
             },
           });
 

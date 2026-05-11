@@ -1,0 +1,60 @@
+# Changesets-driven release pipeline (PR-only mode).
+#
+# How it works:
+#   1. Contributors run `yarn changeset` and commit `.changeset/<slug>.md` files
+#      in their PRs describing the change and bump type (patch/minor/major).
+#   2. When PRs land on `main`, this workflow opens (or updates) a
+#      "chore: release X.Y.Z" PR with the version bumps + CHANGELOG entries.
+#   3. The maintainer reviews and merges that release PR.
+#   4. Publishing to npm and tagging happens locally — see `yarn release:local`.
+#      The local tag push triggers docker-publish.yml and publish-mcp.yml.
+#
+# Why no publish step here: npm tokens were revoked. We intentionally keep
+# CI permissions narrow — the workflow only needs GITHUB_TOKEN to manage
+# the version PR. Publishing is a manual, authenticated step from a trusted
+# machine.
+
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Create or update release PR
+        # No `publish:` input → action runs in version-only mode and never
+        # attempts npm publish. Publishing is done locally; see scripts/release-local.sh.
+        uses: changesets/action@v1
+        with:
+          version: yarn run version
+          title: 'chore: release'
+          commit: 'chore: release'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

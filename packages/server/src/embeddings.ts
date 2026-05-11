@@ -5,6 +5,7 @@ import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 import type { EmbeddingProvider } from './types.js';
 import { prefixQuery, prefixPassage, type TaskPrefixConfig } from './task-prefixes.js';
+import type { Telemetry } from './telemetry/facade.js';
 
 // ── SQLite embedding cache ─────────────────────────────────────────────────
 
@@ -322,6 +323,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   private cache: EmbeddingCache;
   private embedCalls = 0;
   private taskPrefixConfig: TaskPrefixConfig;
+  private telemetry: Telemetry | null = null;
 
   get dimensions(): number {
     return this.provider.dimensions;
@@ -351,6 +353,11 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     registerExitHandlers();
   }
 
+  /** Attach telemetry for embedding_calls instrumentation. Optional. */
+  attachTelemetry(telemetry: Telemetry): void {
+    this.telemetry = telemetry;
+  }
+
   /** Cache stats for monitoring */
   getCacheStats(): CacheStats {
     const stats = this.cache.getStats();
@@ -364,53 +371,99 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   async embed(text: string): Promise<number[]> {
     this.embedCalls++;
     const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
+    const start = performance.now();
+    let cacheHits = 0;
+    let cacheMiss = 0;
+    let error: string | null = null;
 
-    const cached = this.cache.get(hash, this.model);
-    if (cached) return cached;
-
-    const vector = await this.provider.embed(text);
-    this.cache.set(hash, this.model, vector);
-    return vector;
+    try {
+      const cached = this.cache.get(hash, this.model);
+      if (cached) {
+        cacheHits = 1;
+        return cached;
+      }
+      cacheMiss = 1;
+      const vector = await this.provider.embed(text);
+      this.cache.set(hash, this.model, vector);
+      return vector;
+    } catch (err) {
+      error = (err as Error).message.slice(0, 256);
+      throw err;
+    } finally {
+      this.telemetry?.recordEmbedding({
+        ts: Date.now(),
+        kind: 'query',
+        batchSize: 1,
+        cacheHits,
+        cacheMiss,
+        durationMs: Math.round(performance.now() - start),
+        timeout: false,
+        error,
+      });
+    }
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
 
     this.embedCalls += texts.length;
+    const start = performance.now();
+    let cacheHits = 0;
+    let cacheMiss = 0;
+    let error: string | null = null;
 
-    const model = this.model;
-    const hashes = texts.map((t) => createHash('sha256').update(t).digest('hex').slice(0, 32));
-    const results: (number[] | null)[] = hashes.map((h) => this.cache.get(h, model));
+    try {
+      const model = this.model;
+      const hashes = texts.map((t) => createHash('sha256').update(t).digest('hex').slice(0, 32));
+      const results: (number[] | null)[] = hashes.map((h) => this.cache.get(h, model));
 
-    const uncachedIndices: number[] = [];
-    const uncachedTexts: string[] = [];
-    results.forEach((r, i) => {
-      if (r === null) {
-        uncachedIndices.push(i);
-        uncachedTexts.push(texts[i]!);
-      }
-    });
+      const uncachedIndices: number[] = [];
+      const uncachedTexts: string[] = [];
+      results.forEach((r, i) => {
+        if (r === null) {
+          uncachedIndices.push(i);
+          uncachedTexts.push(texts[i]!);
+        } else {
+          cacheHits++;
+        }
+      });
+      cacheMiss = uncachedTexts.length;
 
-    if (uncachedTexts.length > 0) {
-      let vectors: number[][];
-      if (typeof this.provider.embedBatch === 'function') {
-        vectors = await this.provider.embedBatch(uncachedTexts);
-      } else {
-        vectors = await Promise.all(uncachedTexts.map((t) => this.provider.embed(t)));
+      if (uncachedTexts.length > 0) {
+        let vectors: number[][];
+        if (typeof this.provider.embedBatch === 'function') {
+          vectors = await this.provider.embedBatch(uncachedTexts);
+        } else {
+          vectors = await Promise.all(uncachedTexts.map((t) => this.provider.embed(t)));
+        }
+        if (vectors.length !== uncachedTexts.length) {
+          throw new Error(
+            `Provider returned ${vectors.length} embeddings, expected ${uncachedTexts.length}`
+          );
+        }
+        uncachedIndices.forEach((idx, i) => {
+          const vec = vectors[i]!;
+          this.cache.set(hashes[idx]!, model, vec);
+          results[idx] = vec;
+        });
       }
-      if (vectors.length !== uncachedTexts.length) {
-        throw new Error(
-          `Provider returned ${vectors.length} embeddings, expected ${uncachedTexts.length}`
-        );
-      }
-      uncachedIndices.forEach((idx, i) => {
-        const vec = vectors[i]!;
-        this.cache.set(hashes[idx]!, model, vec);
-        results[idx] = vec;
+
+      return results as number[][];
+    } catch (err) {
+      error = (err as Error).message.slice(0, 256);
+      throw err;
+    } finally {
+      this.telemetry?.recordEmbedding({
+        ts: Date.now(),
+        kind: 'batch',
+        batchSize: texts.length,
+        cacheHits,
+        cacheMiss,
+        durationMs: Math.round(performance.now() - start),
+        timeout: false,
+        error,
       });
     }
-
-    return results as number[][];
   }
 
   /** Embed a search query with auto-detected task prefix (if enabled) */

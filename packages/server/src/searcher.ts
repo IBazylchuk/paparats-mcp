@@ -5,6 +5,11 @@ import { expandQuery } from './query-expansion.js';
 import type { QueryCache } from './query-cache.js';
 import type { MetricsRegistry } from './metrics.js';
 import { toCollectionName, createQdrantClient } from './indexer.js';
+import type { Telemetry } from './telemetry/facade.js';
+import type { AnalyticsStore } from './telemetry/analytics-store.js';
+import type { SearchResultRecord } from './telemetry/types.js';
+import { hashQuery, tokenizeQuery } from './telemetry/query-utils.js';
+import { tctx } from './telemetry/context.js';
 
 export interface SearcherConfig {
   qdrantUrl: string;
@@ -21,6 +26,10 @@ export interface SearcherConfig {
   metrics?: MetricsRegistry;
   /** Optional list of allowed project names (from PAPARATS_PROJECTS env var) */
   allowedProjects?: string[];
+  /** Optional telemetry façade for analytics + tracing */
+  telemetry?: Telemetry;
+  /** Optional analytics store for file_total_lines lookup */
+  analytics?: AnalyticsStore;
 }
 
 const QDRANT_TIMEOUT_MS = 30_000;
@@ -55,6 +64,8 @@ export class Searcher {
   private totalTokensSaved = 0;
   private cache?: QueryCache;
   private metrics?: MetricsRegistry;
+  private telemetry?: Telemetry;
+  private analytics?: AnalyticsStore;
   private readonly allowedProjects: string[] | null;
 
   constructor(config: SearcherConfig) {
@@ -68,6 +79,8 @@ export class Searcher {
     this.provider = config.embeddingProvider;
     this.cache = config.cache;
     this.metrics = config.metrics;
+    this.telemetry = config.telemetry;
+    this.analytics = config.analytics;
     this.allowedProjects =
       config.allowedProjects && config.allowedProjects.length > 0 ? config.allowedProjects : null;
   }
@@ -93,11 +106,37 @@ export class Searcher {
           'search',
           (performance.now() - startTime) / 1000
         );
+        this.emitSearchTelemetry({
+          tool: 'search',
+          groupName,
+          query,
+          options,
+          response: cached,
+          durationMs: performance.now() - startTime,
+          cacheHit: true,
+          error: null,
+        });
         return cached;
       }
     }
 
-    const response = await this._searchInternal(groupName, query, options);
+    let response: SearchResponse;
+    try {
+      response = await this._searchInternal(groupName, query, options);
+    } catch (err) {
+      const empty: SearchResponse = { results: [], total: 0, metrics: this.computeMetrics([]) };
+      this.emitSearchTelemetry({
+        tool: 'search',
+        groupName,
+        query,
+        options,
+        response: empty,
+        durationMs: performance.now() - startTime,
+        cacheHit: false,
+        error: err as Error,
+      });
+      throw err;
+    }
 
     this.searchCount++;
     this.totalTokensSaved += response.metrics.tokensSaved;
@@ -114,6 +153,17 @@ export class Searcher {
       'search',
       (performance.now() - startTime) / 1000
     );
+
+    this.emitSearchTelemetry({
+      tool: 'search',
+      groupName,
+      query,
+      options,
+      response,
+      durationMs: performance.now() - startTime,
+      cacheHit: false,
+      error: null,
+    });
 
     return response;
   }
@@ -139,6 +189,16 @@ export class Searcher {
           'expandedSearch',
           (performance.now() - startTime) / 1000
         );
+        this.emitSearchTelemetry({
+          tool: 'expandedSearch',
+          groupName,
+          query,
+          options,
+          response: cached,
+          durationMs: performance.now() - startTime,
+          cacheHit: true,
+          error: null,
+        });
         return cached;
       }
     }
@@ -221,6 +281,17 @@ export class Searcher {
       (performance.now() - startTime) / 1000
     );
 
+    this.emitSearchTelemetry({
+      tool: 'expandedSearch',
+      groupName,
+      query,
+      options,
+      response,
+      durationMs: performance.now() - startTime,
+      cacheHit: false,
+      error: null,
+    });
+
     return response;
   }
 
@@ -253,6 +324,16 @@ export class Searcher {
           'searchWithFilter',
           (performance.now() - startTime) / 1000
         );
+        this.emitSearchTelemetry({
+          tool: 'searchWithFilter',
+          groupName,
+          query,
+          options,
+          response: cached,
+          durationMs: performance.now() - startTime,
+          cacheHit: true,
+          error: null,
+        });
         return cached;
       }
     }
@@ -329,6 +410,17 @@ export class Searcher {
       (performance.now() - startTime) / 1000
     );
 
+    this.emitSearchTelemetry({
+      tool: 'searchWithFilter',
+      groupName,
+      query,
+      options,
+      response,
+      durationMs: performance.now() - startTime,
+      cacheHit: false,
+      error: null,
+    });
+
     return response;
   }
 
@@ -393,6 +485,63 @@ export class Searcher {
       total: results.length,
       metrics,
     };
+  }
+
+  /** Write a search_event to telemetry. Resolves anchor project from context+param. */
+  private emitSearchTelemetry(args: {
+    tool: string;
+    groupName: string;
+    query: string;
+    options: { project?: string; limit?: number } | undefined;
+    response: SearchResponse;
+    durationMs: number;
+    cacheHit: boolean;
+    error: Error | null;
+  }): void {
+    if (!this.telemetry) return;
+    const ctx = tctx.getOrAnonymous();
+    const projectArg = args.options?.project ?? 'all';
+    const anchorProject =
+      ctx.anchorProject ?? (projectArg && projectArg !== 'all' ? projectArg : null);
+
+    const limit = Math.max(1, Math.min(args.options?.limit ?? 5, 100));
+    const results: SearchResultRecord[] = args.response.results.map((r, idx) => {
+      const chunkLines = Math.max(0, r.endLine - r.startLine + 1);
+      const fileTotalLines =
+        this.analytics?.getFileTotalLines(args.groupName, r.project, r.file) ?? null;
+      return {
+        rank: idx,
+        project: r.project,
+        file: r.file,
+        language: r.language ?? null,
+        score: r.score,
+        startLine: r.startLine,
+        endLine: r.endLine,
+        chunkLines,
+        fileTotalLines,
+        chunkId: r.chunk_id ?? null,
+      };
+    });
+
+    try {
+      this.telemetry.recordSearch({
+        ts: Date.now(),
+        tool: args.tool,
+        groupName: args.groupName,
+        anchorProject,
+        queryText: args.query,
+        queryHash: hashQuery(args.query),
+        queryTokens: tokenizeQuery(args.query),
+        limit,
+        durationMs: Math.round(args.durationMs),
+        resultCount: args.response.results.length,
+        cacheHit: args.cacheHit,
+        error: args.error ? args.error.message.slice(0, 256) : null,
+        results,
+      });
+    } catch (err) {
+      console.warn('[searcher] telemetry recordSearch failed:', (err as Error).message);
+    }
   }
 
   /**

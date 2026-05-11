@@ -81,6 +81,30 @@ export type { QueryCacheConfig, QueryCacheStats } from './query-cache.js';
 export { createMetrics, NoOpMetrics } from './metrics.js';
 export type { MetricsRegistry } from './metrics.js';
 
+// ── Telemetry ─────────────────────────────────────────────────────────────
+export { createTelemetry } from './telemetry/facade.js';
+export type { Telemetry, TelemetrySink } from './telemetry/facade.js';
+export { buildTelemetry } from './telemetry/factory.js';
+export type { BuildTelemetryOptions, BuiltTelemetry } from './telemetry/factory.js';
+export { AnalyticsStore } from './telemetry/analytics-store.js';
+export type { AnalyticsStoreOptions } from './telemetry/analytics-store.js';
+export { tctx, newContext, systemContext } from './telemetry/context.js';
+export type { TelemetryContext } from './telemetry/context.js';
+export { identityMiddleware } from './telemetry/identity-middleware.js';
+export { scheduleRetention, runRetention, getRetentionConfig } from './telemetry/retention.js';
+export type { RetentionConfig } from './telemetry/retention.js';
+export { hashQuery, tokenizeQuery, normalizeQuery } from './telemetry/query-utils.js';
+export type {
+  ChunkFetchEvent,
+  ChunkingErrorEvent,
+  EmbeddingCallEvent,
+  FileSnapshotRecord,
+  IndexingRunEvent,
+  SearchRecordEvent,
+  SearchResultRecord,
+  ToolCallEvent,
+} from './telemetry/types.js';
+
 export type {
   ChunkKind,
   GitMetadataConfig,

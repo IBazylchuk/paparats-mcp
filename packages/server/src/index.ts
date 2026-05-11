@@ -9,6 +9,9 @@ import type { ProjectConfig } from './types.js';
 import { createApp } from './app.js';
 import { QueryCache } from './query-cache.js';
 import { createMetrics } from './metrics.js';
+import { buildTelemetry } from './telemetry/factory.js';
+import { tctx, systemContext } from './telemetry/context.js';
+import { scheduleRetention } from './telemetry/retention.js';
 
 // ── State ──────────────────────────────────────────────────────────────────
 
@@ -52,6 +55,9 @@ try {
 const qdrantClient = createQdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY });
 const queryCache = new QueryCache();
 const metrics = await createMetrics();
+const { telemetry, analytics } = await buildTelemetry();
+embeddingProvider.attachTelemetry(telemetry);
+const stopRetention = analytics ? scheduleRetention(analytics) : null;
 
 const indexer = new Indexer({
   qdrantUrl: QDRANT_URL,
@@ -60,6 +66,7 @@ const indexer = new Indexer({
   metadataStore,
   treeSitter,
   qdrantClient,
+  telemetry,
 });
 
 const searcher = new Searcher({
@@ -69,18 +76,24 @@ const searcher = new Searcher({
   cache: queryCache,
   metrics,
   allowedProjects: PAPARATS_PROJECTS,
+  telemetry,
+  analytics: analytics ?? undefined,
 });
 
 const watcherManager = new WatcherManager({
   onFileChanged: async (groupName, project, filePath) => {
-    searcher.invalidateGroupCache(groupName);
-    metrics.incWatcherEventsTotal(groupName, 'changed');
-    await indexer.updateFile(groupName, project, filePath);
+    await tctx.run(systemContext('watcher'), async () => {
+      searcher.invalidateGroupCache(groupName);
+      metrics.incWatcherEventsTotal(groupName, 'changed');
+      await indexer.updateFile(groupName, project, filePath);
+    });
   },
   onFileDeleted: async (groupName, project, filePath) => {
-    searcher.invalidateGroupCache(groupName);
-    metrics.incWatcherEventsTotal(groupName, 'deleted');
-    await indexer.deleteFile(groupName, project, filePath);
+    await tctx.run(systemContext('watcher'), async () => {
+      searcher.invalidateGroupCache(groupName);
+      metrics.incWatcherEventsTotal(groupName, 'deleted');
+      await indexer.deleteFile(groupName, project, filePath);
+    });
   },
 });
 
@@ -94,6 +107,8 @@ const { app, mcpHandler, setShuttingDown, getShuttingDown, stopGroupPoll } = cre
   projectsByGroup,
   metadataStore,
   metrics,
+  telemetry,
+  analytics: analytics ?? undefined,
 });
 
 const server = app.listen(PORT, '0.0.0.0', () => {
@@ -157,6 +172,9 @@ async function shutdown(): Promise<void> {
   embeddingProvider.close();
   metadataStore.close();
   treeSitter?.close();
+  stopRetention?.();
+  analytics?.close();
+  telemetry.close();
 
   process.exit(0);
 }
