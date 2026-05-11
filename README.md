@@ -863,6 +863,69 @@ Cache stats are included in `GET /api/stats` under the `queryCache` field.
 
 ---
 
+## Analytics & Observability
+
+Paparats ships with three observability layers that work together:
+
+1. **Prometheus** (`PAPARATS_METRICS=true`, see above) — scrape `/metrics`.
+2. **Local SQLite analytics store** at `~/.paparats/analytics.db` (default ON) — raw search/tool/indexing events. Six MCP tools query it directly: `token_savings_report`, `top_queries`, `cross_project_share`, `retry_rate`, `slowest_searches`, `failed_chunks`.
+3. **OpenTelemetry** (`PAPARATS_OTEL_ENABLED=true` + `OTEL_EXPORTER_OTLP_ENDPOINT`) — spans for every search, MCP tool call, embedding, indexing run, chunking error. Works with Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud — anything that speaks OTLP/HTTP.
+
+### Identity attribution
+
+Clients (IDE plugins, CLI) can set `X-Paparats-User`, `X-Paparats-Session`, `X-Paparats-Client`, `X-Paparats-Anchor-Project` headers. The header name for `user` is configurable via `PAPARATS_IDENTITY_HEADER` (default `X-Paparats-User`). Missing header → events are attributed to `anonymous`. There is no cryptographic verification — this is for attribution, not access control.
+
+`GET /api/stats` echoes the resolved identity, useful for verifying header propagation:
+
+```bash
+curl -H 'X-Paparats-User: alice' http://localhost:9876/api/stats | jq .identity
+```
+
+### Token-savings estimators
+
+Three levels, computed from raw events at query-time:
+
+- **Naive baseline** — what a model would have read if it pulled the whole file for each result.
+- **Search-only** — tokens actually returned by `search_code`.
+- **Actually consumed** — tokens that the client subsequently fetched via `get_chunk`. The most honest signal, since it discounts noisy results that were never used.
+
+Run `token_savings_report` from any MCP client connected to `/support/mcp`.
+
+### Cross-project noise
+
+When a client passes `X-Paparats-Anchor-Project` (or specifies a single project in the search call), the share of results from _other_ projects in the same group is recorded. Use `cross_project_share` to see how noisy your group's index is for each user.
+
+### Indexer-pipeline visibility
+
+`failed_chunks` aggregates AST parse failures, regex fallbacks, zero-chunk files, and binary skips. `slowest_searches` ranks individual searches by latency.
+
+### Configuration matrix
+
+| Env var                                 | Default                    | Purpose                                                     |
+| --------------------------------------- | -------------------------- | ----------------------------------------------------------- |
+| `PAPARATS_METRICS`                      | `false`                    | Prometheus surface (existing, unchanged)                    |
+| `PAPARATS_ANALYTICS_ENABLED`            | `true`                     | Local SQLite analytics writes                               |
+| `PAPARATS_ANALYTICS_DB_PATH`            | `~/.paparats/analytics.db` | Analytics DB file                                           |
+| `PAPARATS_ANALYTICS_RETENTION_DAYS`     | `90`                       | Daily prune cutoff                                          |
+| `PAPARATS_ANALYTICS_RETENTION_RUN_HOUR` | `3`                        | Hour-of-day for prune (local time)                          |
+| `PAPARATS_IDENTITY_HEADER`              | `X-Paparats-User`          | Header name for user attribution                            |
+| `PAPARATS_LOG_RESULT_FILES`             | `true`                     | If `false`, store NULL for `search_results.file`            |
+| `PAPARATS_LOG_QUERY_TEXT`               | `true`                     | If `false`, store NULL for `search_events.query_text`       |
+| `PAPARATS_REFORMULATION_WINDOW_MS`      | `90000`                    | Reformulation detection window                              |
+| `PAPARATS_TELEMETRY_SAMPLE_RATE`        | `1.0`                      | Sampling rate (errors are always kept)                      |
+| `PAPARATS_OTEL_ENABLED`                 | `false`                    | Enable OTel SDK + OTLP exporter                             |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`           | unset                      | OTLP HTTP endpoint (e.g. `http://localhost:4318/v1/traces`) |
+| `OTEL_EXPORTER_OTLP_HEADERS`            | unset                      | OTLP auth headers (`key=value,key2=value2`)                 |
+| `OTEL_SERVICE_NAME`                     | `paparats-mcp`             | OTel resource attribute                                     |
+| `OTEL_RESOURCE_ATTRIBUTES`              | unset                      | Extra resource attrs (`key=value,key2=value2`)              |
+
+### PII guidance
+
+- File paths and query text are stored locally by default. For shared deployments where paths could leak sensitive info, set `PAPARATS_LOG_RESULT_FILES=false` and/or `PAPARATS_LOG_QUERY_TEXT=false`.
+- OTel spans never carry full query text by default — only `paparats.query.hash` and length.
+
+---
+
 ## Architecture
 
 ```
@@ -1161,34 +1224,53 @@ MIT
 
 ## Releasing (maintainers)
 
-### Full release checklist
+Releases are driven by [Changesets](https://github.com/changesets/changesets). Versioning + CHANGELOG generation happen in CI; **publishing to npm and tagging happen locally** from a maintainer machine that's authenticated with npm. There are no npm credentials in CI.
+
+### Authoring a changeset (per PR)
 
 ```bash
-# 1. Commit all changes, clean working tree
-git status  # must be clean
-
-# 2. Bump version, sync to all packages, commit (no tag, no push)
-yarn release minor   # 0.1.x → 0.2.0 (or: patch, major, or explicit version)
-
-# 3. Publish npm packages
-npm login            # if needed
-yarn publish:npm     # publishes @paparats/shared + @paparats/cli
-
-# 4. Tag and push (triggers CI workflows)
-yarn release:push    # creates git tag, pushes branch + tag
-
-# 5. Build and push Docker images
-./scripts/release-docker.sh --push   # builds and pushes all 3 images
+yarn changeset
+# Pick affected packages, bump type (patch/minor/major), and write the user-facing summary.
+git add .changeset/
+git commit -m "chore: changeset"
 ```
 
-### What each step does
+All four packages (`@paparats/shared`, `@paparats/cli`, `@paparats/server`, `@paparats/indexer`) are kept on a **fixed version** — pick any one and the rest are bumped to match.
 
-| Step                          | Script                      | Effect                                                                                                                                                                      |
-| ----------------------------- | --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `yarn release <ver>`          | `scripts/release.js`        | Bumps version in root `package.json`, syncs to all packages via `sync-version.js`, commits                                                                                  |
-| `yarn publish:npm`            | root scripts                | Publishes `@paparats/shared` and `@paparats/cli` to npm                                                                                                                     |
-| `yarn release:push`           | `scripts/release-push.js`   | Creates `v{version}` tag, pushes branch + tag. Triggers [docker-publish.yml](.github/workflows/docker-publish.yml) and [publish-mcp.yml](.github/workflows/publish-mcp.yml) |
-| `./scripts/release-docker.sh` | `scripts/release-docker.sh` | Builds `ibaz/paparats-server`, `ibaz/paparats-indexer`, `ibaz/paparats-ollama` with version + latest tags. `--push` pushes to Docker Hub                                    |
+### How a release happens
+
+**1. CI opens a release PR (automatic).** The [Release workflow](.github/workflows/release.yml) runs on every push to `main`. If pending `.changeset/*.md` files exist, it opens (or updates) a `chore: release` PR with: version bumps in every `package.json`, regenerated per-package `CHANGELOG.md` files, `server.json` synced via `scripts/sync-server-json.js`, and the consumed `.changeset/*.md` files deleted.
+
+**2. Maintainer merges the release PR.** No further CI publish step runs.
+
+**3. Maintainer publishes locally.** From a clean checkout of `main` after the merge:
+
+```bash
+git checkout main && git pull
+yarn release:local         # or `--dry-run` to preview
+```
+
+`yarn release:local` runs `scripts/release-local.sh`, which:
+
+- refuses to run unless you're on `main`, the tree is clean, and you're in sync with `origin/main`;
+- refuses if any pending `.changeset/*.md` are present (means the release PR wasn't merged);
+- reads the new version from `packages/cli/package.json`;
+- builds, runs `yarn changeset publish` (skips already-published versions), then tags `vX.Y.Z` and pushes the tag.
+
+**4. Downstream workflows fire on the tag.** Pushing `vX.Y.Z` triggers [docker-publish.yml](.github/workflows/docker-publish.yml) and [publish-mcp.yml](.github/workflows/publish-mcp.yml) automatically.
+
+### Required credentials
+
+| Where | What                                | Purpose                                           |
+| ----- | ----------------------------------- | ------------------------------------------------- |
+| CI    | `GITHUB_TOKEN` (auto)               | Open/update the `chore: release` PR               |
+| Local | `npm login` (or `NPM_TOKEN` in env) | `yarn changeset publish` to publish `@paparats/*` |
+
+No npm token lives in GitHub secrets — publishing is intentionally a manual, authenticated step.
+
+### Manual / fallback flows
+
+`./scripts/release-docker.sh --push` still builds and pushes the Docker images by hand if needed (e.g. between official releases). It reads the version from `package.json`.
 
 ### Docker images
 

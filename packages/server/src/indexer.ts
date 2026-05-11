@@ -16,6 +16,7 @@ import type { SymbolExtractionResult } from './ast-symbol-extractor.js';
 import { buildSymbolEdges } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
 import type { ChunkResult, ProjectConfig, IndexerStats } from './types.js';
+import type { Telemetry } from './telemetry/facade.js';
 
 // ── Collection name helpers ──────────────────────────────────────────────────
 
@@ -114,6 +115,8 @@ export interface IndexerConfig {
   metadataStore?: MetadataStore;
   /** Optional tree-sitter manager for AST-based symbol extraction */
   treeSitter?: TreeSitterManager;
+  /** Optional telemetry façade for analytics + tracing */
+  telemetry?: Telemetry;
 }
 
 /** Qdrant timeout in milliseconds (default: 30s) */
@@ -127,6 +130,7 @@ export class Indexer {
   private dimensions: number;
   private metadataStore: MetadataStore | null;
   private treeSitter: TreeSitterManager | null;
+  private telemetry: Telemetry | null;
   stats: IndexerStats;
 
   constructor(config: IndexerConfig) {
@@ -141,6 +145,7 @@ export class Indexer {
     this.dimensions = config.dimensions;
     this.metadataStore = config.metadataStore ?? null;
     this.treeSitter = config.treeSitter ?? null;
+    this.telemetry = config.telemetry ?? null;
     this.stats = { files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 };
   }
 
@@ -316,8 +321,32 @@ export class Indexer {
   private async chunkFile(
     content: string,
     language: string,
-    project: ProjectConfig
+    project: ProjectConfig,
+    fileContext?: { groupName: string; file: string }
   ): Promise<{ chunks: ChunkResult[]; symbolResults: SymbolExtractionResult[] | null }> {
+    const reportError = (
+      errorClass:
+        | 'ast_parse_failed'
+        | 'ast_chunk_zero'
+        | 'regex_fallback'
+        | 'read_error'
+        | 'binary'
+        | 'other',
+      message: string | null
+    ): void => {
+      if (!this.telemetry || !fileContext) return;
+      this.telemetry.recordChunkingError({
+        ts: Date.now(),
+        runId: null,
+        groupName: fileContext.groupName,
+        projectName: project.name,
+        file: fileContext.file,
+        language,
+        errorClass,
+        message,
+      });
+    };
+
     // Try AST-based chunking + symbol extraction (single parse)
     if (this.treeSitter) {
       try {
@@ -331,6 +360,7 @@ export class Indexer {
             let chunks = chunkByAst(parsed.tree, content, astConfig);
 
             if (chunks.length === 0) {
+              reportError('ast_chunk_zero', null);
               // AST chunking produced 0 chunks — fall back to regex
               const chunker = this.getChunker(project);
               chunks = chunker.chunk(content, language);
@@ -348,6 +378,7 @@ export class Indexer {
             console.warn(
               `[indexer] AST chunking/symbol extraction failed, falling back to regex: ${(err as Error).message}`
             );
+            reportError('regex_fallback', (err as Error).message);
             // Fall back to regex chunker, no symbols (tree may be in bad state)
             const chunker = this.getChunker(project);
             const chunks = chunker.chunk(content, language);
@@ -358,6 +389,7 @@ export class Indexer {
         }
       } catch (err) {
         console.warn(`[indexer] Tree-sitter parse failed (non-fatal): ${(err as Error).message}`);
+        reportError('ast_parse_failed', (err as Error).message);
       }
     }
 
@@ -527,7 +559,10 @@ export class Indexer {
     if (!content.trim()) return 0;
 
     const language = detectLanguageByPath(relPath, content) ?? project.languages[0] ?? 'generic';
-    const { chunks, symbolResults } = await this.chunkFile(content, language, project);
+    const { chunks, symbolResults } = await this.chunkFile(content, language, project, {
+      groupName,
+      file: relPath,
+    });
     if (chunks.length === 0) return 0;
 
     // Compare chunk hashes to skip unchanged files
@@ -584,6 +619,16 @@ export class Indexer {
         this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
       );
     }
+
+    this.telemetry?.upsertFile({
+      groupName,
+      projectName: project.name,
+      file: relPath,
+      language,
+      totalLines: content.split('\n').length,
+      totalBytes: Buffer.byteLength(content, 'utf8'),
+      indexedAt: Date.now(),
+    });
 
     return points.length;
   }
@@ -892,7 +937,10 @@ export class Indexer {
 
         if (!content.trim()) return;
 
-        const { chunks, symbolResults } = await this.chunkFile(content, lang, project);
+        const { chunks, symbolResults } = await this.chunkFile(content, lang, project, {
+          groupName,
+          file: relPath,
+        });
         if (chunks.length === 0) return;
 
         // Compare chunk hashes to skip unchanged files
@@ -950,6 +998,16 @@ export class Indexer {
           );
         }
 
+        this.telemetry?.upsertFile({
+          groupName,
+          projectName: project.name,
+          file: relPath,
+          language: lang,
+          totalLines: content.split('\n').length,
+          totalBytes: Buffer.byteLength(content, 'utf8'),
+          indexedAt: Date.now(),
+        });
+
         totalChunks += points.length;
         this.stats.files++;
         this.stats.chunks += points.length;
@@ -994,7 +1052,10 @@ export class Indexer {
       return 0;
     }
 
-    const { chunks, symbolResults } = await this.chunkFile(content, language, project);
+    const { chunks, symbolResults } = await this.chunkFile(content, language, project, {
+      groupName,
+      file: relPath,
+    });
     if (chunks.length === 0) {
       console.log(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks)`);
       return 0;
@@ -1031,6 +1092,16 @@ export class Indexer {
         this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
       );
     }
+
+    this.telemetry?.upsertFile({
+      groupName,
+      projectName,
+      file: relPath,
+      language,
+      totalLines: content.split('\n').length,
+      totalBytes: Buffer.byteLength(content, 'utf8'),
+      indexedAt: Date.now(),
+    });
 
     console.log(
       `[indexer] Updated ${groupName}/${projectName}/${relPath} (${points.length} chunks)`
