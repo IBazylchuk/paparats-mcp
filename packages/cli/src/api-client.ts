@@ -179,7 +179,8 @@ export class ApiClient {
         if (
           msg.includes('HTTP 4') ||
           msg.includes('Invalid JSON') ||
-          msg.includes('Response too large')
+          msg.includes('Response too large') ||
+          msg.includes('aborted')
         ) {
           throw lastError;
         }
