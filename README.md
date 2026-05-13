@@ -2,12 +2,23 @@
 
 <img src="docs/paparats-kvetka.png" alt="Paparats-kvetka (fern flower)" width="200" align="right">
 
-**Paparats-kvetka** — a magical flower from Slavic folklore that blooms on Kupala Night and grants power to whoever finds it. Likewise, paparats-mcp helps you find the right code across a sea of repositories.
+[![npm version](https://img.shields.io/npm/v/@paparats/cli?color=01696f)](https://www.npmjs.com/package/@paparats/cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-01696f.svg)](LICENSE)
+[![PulseMCP](https://img.shields.io/badge/PulseMCP-listed-01696f)](https://www.pulsemcp.com/servers/paparats-mcp)
 
-**Semantic code search for AI coding assistants.** Give Claude Code, Cursor, Windsurf, Codex and rest deep understanding of your entire codebase — single repo or multi-project workspaces. Search by meaning, not keywords. Keep your index fresh with real-time file watching. Return only relevant chunks instead of full files to save tokens.
+**Paparats-kvetka** — a magical flower from Slavic folklore that blooms on Kupala Night
+and grants power to whoever finds it. Likewise, paparats-mcp helps you find the right
+code across a sea of repositories.
 
-Everything runs locally. No cloud. No API keys. Your code never leaves your machine.
+> 🌿 Works with **Claude Code · Cursor · Windsurf · Copilot · Codex** · any MCP-compatible agent
 
+**Semantic code search for AI coding assistants.** Give your coding agent deep understanding
+of your entire codebase — single repo or multi-project workspaces. Search by meaning,
+not keywords. Keep your index fresh with real-time file watching. Return only relevant
+chunks instead of full files to save tokens.
+
+**100% local.** No cloud. No API keys. No telemetry. Your code never leaves your machine —
+perfect for proprietary and enterprise codebases.
 ---
 
 ## Table of Contents
