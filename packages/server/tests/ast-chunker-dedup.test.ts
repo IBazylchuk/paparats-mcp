@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Parser, Language } from 'web-tree-sitter';
 import { createRequire } from 'module';
-import { chunkByAst } from '../src/ast-chunker.js';
+import { chunkByAst, dedupeContainedChunks } from '../src/ast-chunker.js';
+import type { ChunkResult } from '../src/types.js';
 
 const require = createRequire(import.meta.url);
 
@@ -65,5 +66,58 @@ describe('chunkByAst: no overlapping chunks for a single declaration', () => {
       throw new Error(`Multiple chunks start at line 0: ${summary.join('\n  ')}`);
     }
     expect(startingAt0.length).toBeLessThanOrEqual(1);
+  });
+});
+
+describe('dedupeContainedChunks (direct unit tests)', () => {
+  const mk = (startLine: number, endLine: number, tag = ''): ChunkResult => ({
+    content: tag || `${startLine}-${endLine}`,
+    startLine,
+    endLine,
+    hash: `${startLine}-${endLine}-${tag}`,
+  });
+
+  it('drops chunks fully contained in another chunk', () => {
+    const input = [mk(0, 0, 'inner'), mk(0, 62, 'outer')];
+    const result = dedupeContainedChunks(input);
+    expect(result.map((c) => c.content)).toEqual(['outer']);
+  });
+
+  it('keeps the first chunk on identical ranges (tie-break by emission order)', () => {
+    const input = [mk(5, 10, 'first'), mk(5, 10, 'second')];
+    const result = dedupeContainedChunks(input);
+    expect(result.map((c) => c.content)).toEqual(['first']);
+  });
+
+  it('keeps partially overlapping chunks (only strict containment drops)', () => {
+    // (0,10) and (5,15) overlap but neither contains the other
+    const input = [mk(0, 10, 'a'), mk(5, 15, 'b')];
+    const result = dedupeContainedChunks(input);
+    expect(result.map((c) => c.content)).toEqual(['a', 'b']);
+  });
+
+  it('keeps disjoint chunks', () => {
+    const input = [mk(0, 5, 'a'), mk(10, 20, 'b'), mk(25, 30, 'c')];
+    const result = dedupeContainedChunks(input);
+    expect(result.map((c) => c.content)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('preserves original emission order of survivors', () => {
+    // Emit out of sort-order: big outer comes last, two inners first
+    const input = [mk(5, 10, 'inner1'), mk(20, 25, 'inner2'), mk(0, 100, 'outer')];
+    const result = dedupeContainedChunks(input);
+    expect(result.map((c) => c.content)).toEqual(['outer']);
+  });
+
+  it('handles empty and single-chunk inputs', () => {
+    expect(dedupeContainedChunks([])).toEqual([]);
+    const single = [mk(0, 10, 'only')];
+    expect(dedupeContainedChunks(single)).toEqual(single);
+  });
+
+  it('drops multiple contained chunks under one outer', () => {
+    const input = [mk(0, 100, 'outer'), mk(5, 10, 'inner1'), mk(20, 30, 'inner2')];
+    const result = dedupeContainedChunks(input);
+    expect(result.map((c) => c.content)).toEqual(['outer']);
   });
 });

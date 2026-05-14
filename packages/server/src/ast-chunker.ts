@@ -291,19 +291,26 @@ export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig
  * the entire body — the identifier emits its own (start,start) chunk while the
  * body emits (start,end), leaving the identifier chunk as a redundant subset.
  *
- * Preserves chunk order. O(n²) but n is small per file.
+ * O(n log n): sort by (startLine ASC, endLine DESC, originalIndex ASC) so the
+ * widest range at each start position is visited first, then a single pass
+ * keeps a chunk only when its endLine extends past the running max. Identical
+ * ranges break the tie via original emission order (the first one wins).
+ * Final output is returned in original emission order.
  */
-function dedupeContainedChunks(chunks: ChunkResult[]): ChunkResult[] {
-  return chunks.filter(
-    (c, i) =>
-      !chunks.some(
-        (other, j) =>
-          j !== i &&
-          other.startLine <= c.startLine &&
-          other.endLine >= c.endLine &&
-          // tie-break: drop the smaller / later one when ranges are identical
-          (other.endLine - other.startLine > c.endLine - c.startLine ||
-            (other.endLine - other.startLine === c.endLine - c.startLine && j < i))
-      )
-  );
+export function dedupeContainedChunks(chunks: ChunkResult[]): ChunkResult[] {
+  if (chunks.length <= 1) return chunks;
+
+  const indexed = chunks.map((c, i) => ({ c, i }));
+  indexed.sort((a, b) => a.c.startLine - b.c.startLine || b.c.endLine - a.c.endLine || a.i - b.i);
+
+  const keep = new Set<number>();
+  let maxEnd = -1;
+  for (const { c, i } of indexed) {
+    if (c.endLine > maxEnd) {
+      keep.add(i);
+      maxEnd = c.endLine;
+    }
+  }
+
+  return chunks.filter((_, i) => keep.has(i));
 }
