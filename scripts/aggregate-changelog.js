@@ -35,7 +35,7 @@ const PACKAGES = ['@paparats/shared', '@paparats/cli', '@paparats/server', '@pap
 const INTRO = `> **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by \`scripts/aggregate-changelog.js\`. Per-package detail lives in \`packages/<name>/CHANGELOG.md\`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).`;
 
 function parseSourceChangelog(content) {
-  const lines = content.split('\n');
+  const lines = content.split(/\r?\n/);
   const versions = [];
   let current = null;
   for (const line of lines) {
@@ -63,7 +63,7 @@ function findVersionDate(version) {
       { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
     ).trim();
     if (!out) return null;
-    return out.split('\n')[0].slice(0, 10);
+    return out.split(/\r?\n/)[0].slice(0, 10);
   } catch {
     return null;
   }
