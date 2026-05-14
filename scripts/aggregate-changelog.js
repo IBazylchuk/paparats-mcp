@@ -18,7 +18,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,7 +26,6 @@ const rootDir = join(__dirname, '..');
 
 const ROOT_CHANGELOG = join(rootDir, 'CHANGELOG.md');
 const SOURCE_CHANGELOG = join(rootDir, 'packages/server/CHANGELOG.md');
-const SOURCE_CHANGELOG_REL = relative(rootDir, SOURCE_CHANGELOG);
 const BEGIN_MARKER = '<!-- BEGIN AGGREGATED -->';
 const END_MARKER = '<!-- END AGGREGATED -->';
 
@@ -50,23 +49,52 @@ function parseSourceChangelog(content) {
   if (current) versions.push(current);
   return versions.map(({ version, bodyLines }) => ({
     version,
-    body: bodyLines.join('\n').trim(),
+    body: cleanBody(bodyLines.join('\n')),
   }));
 }
 
+/**
+ * Resolve the release date for a version. Prefer the `vX.Y.Z` git tag's
+ * commit date — that's the moment `yarn release:local` actually published.
+ * Versions that don't have a tag yet (e.g. a release PR is open but not
+ * yet published) fall back to today; the next run after the tag lands
+ * will rewrite the section with the correct date.
+ *
+ * We deliberately avoid `git log -S/-G` against the changelog file — both
+ * miss commits where the marker already existed elsewhere in the diff,
+ * which falsely collapses multiple version bumps onto the same date.
+ */
 function findVersionDate(version) {
   if (!/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(version)) return null;
   try {
-    const out = execFileSync(
-      'git',
-      ['log', '--diff-filter=A', `-S## ${version}`, '--format=%aI', '--', SOURCE_CHANGELOG_REL],
-      { cwd: rootDir, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }
-    ).trim();
+    const out = execFileSync('git', ['log', '-1', '--format=%aI', `v${version}`], {
+      cwd: rootDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
     if (!out) return null;
     return out.split(/\r?\n/)[0].slice(0, 10);
   } catch {
     return null;
   }
+}
+
+/**
+ * Strip noise that `@changesets/changelog-github` injects into entry
+ * bodies but that has no value in an aggregated single-maintainer view:
+ *   - `Thanks [@user](url)! - ` prefixes on every bullet
+ *   - The trailing `- Updated dependencies [...]:` block plus its
+ *     `- @paparats/<name>@x.y.z` follow-up lines (under `fixed` versioning
+ *     every package always bumps to the same version, so the block is
+ *     pure boilerplate)
+ */
+function cleanBody(body) {
+  let cleaned = body.replace(/(\) )Thanks \[@[^\]]+\]\([^)]+\)! - /g, '$1');
+  cleaned = cleaned.replace(
+    /\n+- Updated dependencies[^\n]*\n(?:[ \t]+- @paparats\/[^\n]+\n?)+/g,
+    ''
+  );
+  return cleaned.trim();
 }
 
 function todayIso() {
