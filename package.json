@@ -14,7 +14,7 @@
     "build:docker:ollama": "docker build -f packages/ollama/Dockerfile -t paparats-ollama:latest .",
     "docker:rebuild": "docker build -t ibaz/paparats-server:latest -f packages/server/Dockerfile . && docker compose -f $HOME/.paparats/docker-compose.yml up -d --force-recreate paparats",
     "changeset": "changeset",
-    "version": "changeset version && node scripts/sync-server-json.js && yarn install --no-immutable",
+    "version": "changeset version && node scripts/sync-server-json.js && node scripts/aggregate-changelog.js && yarn install --no-immutable",
     "release:local": "bash scripts/release-local.sh",
     "release:docker": "bash scripts/release-docker.sh",
     "release:docker:push": "bash scripts/release-docker.sh --push",
