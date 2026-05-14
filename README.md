@@ -19,6 +19,7 @@ chunks instead of full files to save tokens.
 
 **100% local.** No cloud. No API keys. No telemetry. Your code never leaves your machine —
 perfect for proprietary and enterprise codebases.
+
 ---
 
 ## Table of Contents
