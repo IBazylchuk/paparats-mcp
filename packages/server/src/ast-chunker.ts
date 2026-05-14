@@ -281,5 +281,29 @@ export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig
   }
   flushGroup();
 
-  return chunks;
+  return dedupeContainedChunks(chunks);
+}
+
+/**
+ * Drop any chunk whose [startLine, endLine] is fully contained inside another
+ * chunk's range. This happens when `splitNode` recurses into named children
+ * that span a single line (identifiers, keywords) while their sibling carries
+ * the entire body — the identifier emits its own (start,start) chunk while the
+ * body emits (start,end), leaving the identifier chunk as a redundant subset.
+ *
+ * Preserves chunk order. O(n²) but n is small per file.
+ */
+function dedupeContainedChunks(chunks: ChunkResult[]): ChunkResult[] {
+  return chunks.filter(
+    (c, i) =>
+      !chunks.some(
+        (other, j) =>
+          j !== i &&
+          other.startLine <= c.startLine &&
+          other.endLine >= c.endLine &&
+          // tie-break: drop the smaller / later one when ranges are identical
+          (other.endLine - other.startLine > c.endLine - c.startLine ||
+            (other.endLine - other.startLine === c.endLine - c.startLine && j < i))
+      )
+  );
 }

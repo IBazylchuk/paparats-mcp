@@ -12,6 +12,7 @@ import type { MetadataStore } from './metadata-db.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
 import { extractSymbolsForChunks } from './ast-symbol-extractor.js';
+import { resolveAstLanguage } from './ast-language.js';
 import type { SymbolExtractionResult } from './ast-symbol-extractor.js';
 import { buildSymbolEdges } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
@@ -350,7 +351,9 @@ export class Indexer {
     // Try AST-based chunking + symbol extraction (single parse)
     if (this.treeSitter) {
       try {
-        const parsed = await this.treeSitter.parseFile(content, language);
+        // Pick TSX grammar for .tsx/.jsx so JSX-based identifier usages aren't lost
+        const astLanguage = fileContext ? resolveAstLanguage(language, fileContext.file) : language;
+        const parsed = await this.treeSitter.parseFile(content, astLanguage);
         if (parsed) {
           try {
             const astConfig = {
@@ -371,7 +374,7 @@ export class Indexer {
               parsed.tree,
               parsed.language,
               chunks.map((c) => ({ startLine: c.startLine, endLine: c.endLine })),
-              language
+              astLanguage
             );
             return { chunks, symbolResults };
           } catch (err) {
