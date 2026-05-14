@@ -3,7 +3,7 @@
   "name": "io.github.IBazylchuk/paparats-mcp",
   "title": "Paparats – Local Semantic Code Search MCP",
   "description": "Local-first MCP server for multi-repository semantic code search with Qdrant and Ollama. Turns your entire workspace into private context for AI coding assistants like Claude Code, Codex, Cursor, Copilot and Windsurf.",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "license": "MIT",
   "author": {
     "name": "Ilya Bazylchuk",
@@ -41,7 +41,7 @@
     {
       "registryType": "npm",
       "identifier": "@paparats/cli",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "transport": {
         "type": "streamable-http",
         "url": "http://localhost:9876"
