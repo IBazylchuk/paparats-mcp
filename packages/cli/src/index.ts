@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { Command } from 'commander';
 import { initCommand } from './commands/init.js';
 import { installCommand } from './commands/install.js';
@@ -9,9 +12,15 @@ import { watchCommand } from './commands/watch.js';
 import { doctorCommand } from './commands/doctor.js';
 import { groupsCommand } from './commands/groups.js';
 
+// Read version from the package's own package.json so `paparats --version`
+// stays in sync with the published npm version automatically. The compiled
+// entry sits at dist/index.js, so package.json is one level up.
+const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+const { version } = JSON.parse(readFileSync(pkgPath, 'utf8')) as { version: string };
+
 const program = new Command();
 
-program.name('paparats').description('Semantic code search for your workspace').version('0.1.2');
+program.name('paparats').description('Semantic code search for your workspace').version(version);
 
 program.addCommand(initCommand);
 program.addCommand(installCommand);
