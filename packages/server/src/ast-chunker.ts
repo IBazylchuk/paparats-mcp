@@ -281,5 +281,36 @@ export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig
   }
   flushGroup();
 
-  return chunks;
+  return dedupeContainedChunks(chunks);
+}
+
+/**
+ * Drop any chunk whose [startLine, endLine] is fully contained inside another
+ * chunk's range. This happens when `splitNode` recurses into named children
+ * that span a single line (identifiers, keywords) while their sibling carries
+ * the entire body — the identifier emits its own (start,start) chunk while the
+ * body emits (start,end), leaving the identifier chunk as a redundant subset.
+ *
+ * O(n log n): sort by (startLine ASC, endLine DESC, originalIndex ASC) so the
+ * widest range at each start position is visited first, then a single pass
+ * keeps a chunk only when its endLine extends past the running max. Identical
+ * ranges break the tie via original emission order (the first one wins).
+ * Final output is returned in original emission order.
+ */
+export function dedupeContainedChunks(chunks: ChunkResult[]): ChunkResult[] {
+  if (chunks.length <= 1) return chunks;
+
+  const indexed = chunks.map((c, i) => ({ c, i }));
+  indexed.sort((a, b) => a.c.startLine - b.c.startLine || b.c.endLine - a.c.endLine || a.i - b.i);
+
+  const keep = new Set<number>();
+  let maxEnd = -1;
+  for (const { c, i } of indexed) {
+    if (c.endLine > maxEnd) {
+      keep.add(i);
+      maxEnd = c.endLine;
+    }
+  }
+
+  return chunks.filter((_, i) => keep.has(i));
 }
