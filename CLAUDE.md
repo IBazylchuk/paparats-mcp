@@ -110,11 +110,17 @@ yarn typecheck         # tsc --noEmit
 
 ## Versioning
 
-**Single source of truth:** root `package.json` field `version`. All other versions are derived by `scripts/sync-version.js` (writes to packages/shared, packages/cli, packages/server, packages/indexer, and server.json). Do not edit version in those files by hand.
+Releases are driven by [Changesets](https://github.com/changesets/changesets) in `fixed` mode — all four publishable packages (`@paparats/shared`, `@paparats/cli`, `@paparats/server`, `@paparats/indexer`) bump together. There is no `yarn release` command; never bump versions by hand.
 
-- `yarn sync-version` — copy root version into all packages and server.json.
-- `yarn release [version]` — bump/set version, sync, commit only (no tag, no push). Then run `yarn publish:npm` and `yarn release:push` so npm has the version before the tag triggers MCP registry.
-- `yarn release:push` — tag from root version and push (run after publish:npm).
+**Authoring a change:** run `yarn changeset` in your PR, pick patch/minor/major, write a summary, commit the generated `.changeset/<slug>.md`.
+
+**Release flow:**
+
+1. **CI opens a release PR** (`.github/workflows/release.yml`). On every push to `main` with pending `.changeset/*.md` files, `changesets/action@v1` runs `yarn run version` and opens (or updates) a `chore: release X.Y.Z` PR. The `version` script chains: `changeset version` → `scripts/sync-server-json.js` (syncs `server.json` + root `package.json` from `packages/cli/package.json`) → `scripts/aggregate-changelog.js` (mirrors per-package entries into root `CHANGELOG.md`) → `yarn install --no-immutable`.
+2. **Maintainer merges the release PR.** No publish runs in CI — npm tokens were intentionally revoked.
+3. **Maintainer publishes locally:** `yarn release:local` (or `--dry-run` to preview). The script in `scripts/release-local.sh` verifies main is clean and up-to-date, no pending changesets, then builds, runs `yarn changeset publish`, and pushes a `vX.Y.Z` tag. The tag triggers `docker-publish.yml` and `publish-mcp.yml`.
+
+**Single source of truth for the bumped version:** `packages/cli/package.json`. `sync-server-json.js` propagates it to root `package.json` and `server.json`. The aggregator reads `packages/server/CHANGELOG.md` (entry bodies are identical across packages under `fixed` versioning) and rewrites a marker-delimited block in the root `CHANGELOG.md` — idempotent, safe to re-run.
 
 ## Docker
 
