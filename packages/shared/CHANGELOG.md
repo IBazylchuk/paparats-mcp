@@ -1,5 +1,15 @@
 # @paparats/shared
 
+## 0.5.1
+
+### Patch Changes
+
+- [#54](https://github.com/IBazylchuk/paparats-mcp/pull/54) [`f15fa7a`](https://github.com/IBazylchuk/paparats-mcp/commit/f15fa7a08d11d50ff10cd763c36f39a942387487) Thanks [@IBazylchuk](https://github.com/IBazylchuk)! - Add six MCP workflow prompts (`find_implementation`, `trace_callers`,
+  `onboard_to_project`, `triage_incident`, `prepare_release_notes`,
+  `assess_change_impact`) and enforce mode isolation between `/mcp` and
+  `/support/mcp` so a coding session id cannot be replayed on the support
+  endpoint.
+
 ## 0.5.0
 
 ### Minor Changes
