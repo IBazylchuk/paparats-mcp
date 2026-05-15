@@ -9,9 +9,38 @@ import {
 } from './docker-compose-generator.js';
 
 export const PAPARATS_HOME = path.join(os.homedir(), '.paparats');
-export const INDEXER_YML = 'paparats-indexer.yml';
+/** Current name. Used by all reads after install. */
+export const PROJECTS_YML = 'projects.yml';
+/** Legacy name from paparats < 0.4. Read as fallback; auto-renamed by `paparats install`. */
+export const LEGACY_PROJECTS_YML = 'paparats-indexer.yml';
 export const COMPOSE_YML = 'docker-compose.yml';
 export const INSTALL_STATE = 'install.json';
+
+/**
+ * Migrate the legacy projects file to the new name if needed. Returns true iff
+ * the rename actually happened. Idempotent: no-op when projects.yml already
+ * exists or the legacy file doesn't.
+ */
+export function migrateLegacyProjectsFile(home: string = PAPARATS_HOME): boolean {
+  const next = path.join(home, PROJECTS_YML);
+  const legacy = path.join(home, LEGACY_PROJECTS_YML);
+  if (fs.existsSync(next)) return false;
+  if (!fs.existsSync(legacy)) return false;
+  fs.renameSync(legacy, next);
+  return true;
+}
+
+/**
+ * Resolve the current projects file path, preferring the new name and falling
+ * back to the legacy one. Returns null if neither exists.
+ */
+export function resolveProjectsFilePath(home: string = PAPARATS_HOME): string | null {
+  const next = path.join(home, PROJECTS_YML);
+  if (fs.existsSync(next)) return next;
+  const legacy = path.join(home, LEGACY_PROJECTS_YML);
+  if (fs.existsSync(legacy)) return legacy;
+  return null;
+}
 
 export interface InstallState {
   ollamaMode: OllamaMode;
@@ -63,10 +92,14 @@ export interface ProjectsFile {
   repos: ProjectEntry[];
 }
 
-/** Read paparats-indexer.yml from disk. Returns an empty file shape if missing. */
+/**
+ * Read the projects file from disk. Prefers the new name (projects.yml);
+ * falls back to the legacy paparats-indexer.yml if only that exists.
+ * Returns an empty file shape if neither is present.
+ */
 export function readProjectsFile(home: string = PAPARATS_HOME): ProjectsFile {
-  const file = path.join(home, INDEXER_YML);
-  if (!fs.existsSync(file)) return { repos: [] };
+  const file = resolveProjectsFilePath(home);
+  if (!file) return { repos: [] };
   const raw = fs.readFileSync(file, 'utf8');
   const parsed = yaml.load(raw, { schema: yaml.JSON_SCHEMA });
   if (!parsed || typeof parsed !== 'object') {
@@ -78,9 +111,13 @@ export function readProjectsFile(home: string = PAPARATS_HOME): ProjectsFile {
   return defaults ? { defaults, repos } : { repos };
 }
 
-/** Atomically write paparats-indexer.yml. */
+/**
+ * Atomically write the projects file. Always writes to the new name —
+ * callers that want to migrate a legacy file should call
+ * `migrateLegacyProjectsFile` first.
+ */
 export function writeProjectsFile(file: ProjectsFile, home: string = PAPARATS_HOME): void {
-  const target = path.join(home, INDEXER_YML);
+  const target = path.join(home, PROJECTS_YML);
   const tmp = `${target}.tmp`;
   const out =
     HEADER +
@@ -90,7 +127,7 @@ export function writeProjectsFile(file: ProjectsFile, home: string = PAPARATS_HO
   fs.renameSync(tmp, target);
 }
 
-const HEADER = `# paparats-mcp — project list (read by indexer at /config/paparats-indexer.yml)
+const HEADER = `# paparats-mcp — project list (read by indexer at /config/projects.yml)
 # Edit this file or use: paparats add | paparats remove | paparats edit projects
 # The indexer hot-reloads on save; saves trigger reindex.
 `;
@@ -135,7 +172,7 @@ export interface RegenerateResult {
 }
 
 /**
- * Read paparats-indexer.yml, regenerate the compose, and rewrite docker-compose.yml
+ * Read the projects file, regenerate the compose, and rewrite docker-compose.yml
  * if (and only if) the contents differ.
  */
 export function regenerateCompose(opts: RegenerateOptions): RegenerateResult {

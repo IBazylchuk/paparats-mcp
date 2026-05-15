@@ -6,6 +6,7 @@ import { confirm } from '@inquirer/prompts';
 import {
   PAPARATS_HOME,
   COMPOSE_YML,
+  PROJECTS_YML,
   readProjectsFile,
   writeProjectsFile,
   readInstallState,
@@ -324,7 +325,7 @@ export async function runRemove(
   const file = readProjectsFile(home);
   const idx = file.repos.findIndex((r) => resolveProjectName(r) === name);
   if (idx < 0) {
-    throw new Error(`Project "${name}" not found in ${path.join(home, 'paparats-indexer.yml')}`);
+    throw new Error(`Project "${name}" not found in ${path.join(home, PROJECTS_YML)}`);
   }
   const entry = file.repos[idx]!;
   const group = entry.group ?? name;

@@ -4,7 +4,7 @@ import { loadIndexerConfig, tryLoadIndexerConfig } from '../src/config-loader.js
 
 describe('loadIndexerConfig', () => {
   const tmpDir = '/tmp/paparats-test-config';
-  const configPath = `${tmpDir}/paparats-indexer.yml`;
+  const configPath = `${tmpDir}/projects.yml`;
 
   beforeEach(() => {
     fs.mkdirSync(tmpDir, { recursive: true });
@@ -289,10 +289,27 @@ describe('tryLoadIndexerConfig', () => {
   });
 
   it('loads config when file exists', () => {
-    fs.writeFileSync(`${tmpDir}/paparats-indexer.yml`, 'repos:\n  - url: org/repo\n');
+    fs.writeFileSync(`${tmpDir}/projects.yml`, 'repos:\n  - url: org/repo\n');
     const result = tryLoadIndexerConfig(tmpDir);
     expect(result).not.toBeNull();
     expect(result!.repos).toHaveLength(1);
     expect(result!.repos[0]!.fullName).toBe('org/repo');
+  });
+
+  it('falls back to paparats-indexer.yml when projects.yml is absent', () => {
+    fs.writeFileSync(`${tmpDir}/paparats-indexer.yml`, 'repos:\n  - url: legacy/repo\n');
+    const result = tryLoadIndexerConfig(tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.repos).toHaveLength(1);
+    expect(result!.repos[0]!.fullName).toBe('legacy/repo');
+  });
+
+  it('prefers projects.yml when both files exist', () => {
+    fs.writeFileSync(`${tmpDir}/projects.yml`, 'repos:\n  - url: new/repo\n');
+    fs.writeFileSync(`${tmpDir}/paparats-indexer.yml`, 'repos:\n  - url: legacy/repo\n');
+    const result = tryLoadIndexerConfig(tmpDir);
+    expect(result).not.toBeNull();
+    expect(result!.repos).toHaveLength(1);
+    expect(result!.repos[0]!.fullName).toBe('new/repo');
   });
 });

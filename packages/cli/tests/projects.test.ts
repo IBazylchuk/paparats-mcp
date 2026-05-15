@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 function readYml(): ProjectsFile {
-  const file = path.join(tmpHome, 'paparats-indexer.yml');
+  const file = path.join(tmpHome, 'projects.yml');
   if (!fs.existsSync(file)) return { repos: [] };
   const parsed = yaml.load(fs.readFileSync(file, 'utf8')) as ProjectsFile;
   return parsed ?? { repos: [] };
@@ -159,7 +159,7 @@ describe('runAdd', () => {
 describe('runList', () => {
   it('returns rows for configured projects with health status', async () => {
     fs.writeFileSync(
-      path.join(tmpHome, 'paparats-indexer.yml'),
+      path.join(tmpHome, 'projects.yml'),
       'repos:\n  - path: /Users/x/foo\n    group: dev\n  - url: org/bar\n'
     );
     const fetchHealth = vi.fn().mockResolvedValue({
@@ -179,7 +179,7 @@ describe('runList', () => {
   });
 
   it('returns rows even when indexer is unreachable', async () => {
-    fs.writeFileSync(path.join(tmpHome, 'paparats-indexer.yml'), 'repos:\n  - url: org/foo\n');
+    fs.writeFileSync(path.join(tmpHome, 'projects.yml'), 'repos:\n  - url: org/foo\n');
     const fetchHealth = vi.fn().mockResolvedValue(null);
     const rows = await runList({ paparatsHome: tmpHome }, { fetchHealth });
     expect(rows).toHaveLength(1);
@@ -188,7 +188,7 @@ describe('runList', () => {
 
   it('--group filters', async () => {
     fs.writeFileSync(
-      path.join(tmpHome, 'paparats-indexer.yml'),
+      path.join(tmpHome, 'projects.yml'),
       'repos:\n  - url: org/a\n    group: g1\n  - url: org/b\n    group: g2\n'
     );
     const fetchHealth = vi.fn().mockResolvedValue({ repos: [] });
@@ -204,7 +204,7 @@ describe('runList', () => {
 describe('runRemove', () => {
   it('removes entry and calls server delete', async () => {
     fs.writeFileSync(
-      path.join(tmpHome, 'paparats-indexer.yml'),
+      path.join(tmpHome, 'projects.yml'),
       'repos:\n  - url: org/foo\n    group: dev\n'
     );
     const del = vi.fn().mockResolvedValue(undefined);
@@ -222,7 +222,7 @@ describe('runRemove', () => {
 
   it('restarts on local-path removal', async () => {
     fs.writeFileSync(
-      path.join(tmpHome, 'paparats-indexer.yml'),
+      path.join(tmpHome, 'projects.yml'),
       'repos:\n  - path: /Users/x/foo\n    group: dev\n'
     );
     const del = vi.fn().mockResolvedValue(undefined);
@@ -237,7 +237,7 @@ describe('runRemove', () => {
 
   it('promptConfirm=false → no changes', async () => {
     fs.writeFileSync(
-      path.join(tmpHome, 'paparats-indexer.yml'),
+      path.join(tmpHome, 'projects.yml'),
       'repos:\n  - url: org/foo\n    group: dev\n'
     );
     const result = await runRemove(
@@ -254,7 +254,7 @@ describe('runRemove', () => {
   });
 
   it('throws on missing project', async () => {
-    fs.writeFileSync(path.join(tmpHome, 'paparats-indexer.yml'), 'repos: []\n');
+    fs.writeFileSync(path.join(tmpHome, 'projects.yml'), 'repos: []\n');
     await expect(runRemove('foo', { paparatsHome: tmpHome, yes: true })).rejects.toThrow(
       /not found/
     );
@@ -262,7 +262,7 @@ describe('runRemove', () => {
 
   it('still removes from YAML if server delete fails', async () => {
     fs.writeFileSync(
-      path.join(tmpHome, 'paparats-indexer.yml'),
+      path.join(tmpHome, 'projects.yml'),
       'repos:\n  - url: org/foo\n    group: dev\n'
     );
     const result = await runRemove(

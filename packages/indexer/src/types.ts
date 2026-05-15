@@ -13,7 +13,7 @@ export interface RepoConfig {
   overrides?: RepoOverrides;
 }
 
-/** Per-repo overrides in paparats-indexer.yml */
+/** Per-repo overrides in projects.yml */
 export interface RepoOverrides {
   group?: string;
   language?: string | string[];
@@ -42,7 +42,7 @@ export interface RepoOverrides {
 }
 
 /**
- * Structure of paparats-indexer.yml.
+ * Structure of projects.yml.
  * Each repo entry must have exactly one source: `url` (remote git) or `path` (local bind-mount).
  */
 export interface IndexerFileConfig {

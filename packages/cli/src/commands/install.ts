@@ -12,7 +12,8 @@ import type { OllamaMode, InstallMode } from '../docker-compose-generator.js';
 import {
   PAPARATS_HOME,
   COMPOSE_YML,
-  INDEXER_YML,
+  PROJECTS_YML,
+  migrateLegacyProjectsFile,
   readProjectsFile,
   writeProjectsFile,
   writeInstallState,
@@ -339,7 +340,7 @@ async function runMigration(
   console.log(
     chalk.yellow.bold('\nLegacy install detected.\n') +
       'Paparats has switched to a single global install with one docker-compose.yml and a\n' +
-      'project list at ~/.paparats/paparats-indexer.yml. Per-project `paparats init` and the\n' +
+      'project list at ~/.paparats/projects.yml. Per-project `paparats init` and the\n' +
       '`developer` / `server` install modes are no longer used.\n\n' +
       'Existing data volumes (qdrant_data, paparats_data, indexer_repos) are\n' +
       'preserved — your indexed projects survive. The legacy compose and .env will be\n' +
@@ -570,11 +571,18 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
     if (key) opts.qdrantApiKey = key;
   }
 
-  // 5. Ensure paparats-indexer.yml exists
-  const indexerYmlPath = path.join(PAPARATS_HOME, INDEXER_YML);
-  if (!deps.existsSync(indexerYmlPath)) {
+  // 5. Ensure projects.yml exists. Migrate the legacy paparats-indexer.yml
+  //    in place if present so users coming from paparats < 0.4 don't lose
+  //    their project list.
+  if (migrateLegacyProjectsFile(PAPARATS_HOME)) {
+    console.log(
+      chalk.yellow(`Renamed legacy paparats-indexer.yml → ${PROJECTS_YML} (one-time migration).`)
+    );
+  }
+  const projectsYmlPath = path.join(PAPARATS_HOME, PROJECTS_YML);
+  if (!deps.existsSync(projectsYmlPath)) {
     writeProjectsFile({ repos: [] }, PAPARATS_HOME);
-    console.log(chalk.dim(`Created empty ${indexerYmlPath}`));
+    console.log(chalk.dim(`Created empty ${projectsYmlPath}`));
   }
 
   // 6. Generate compose using current projects list

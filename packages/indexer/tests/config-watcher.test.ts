@@ -83,7 +83,7 @@ describe('ConfigWatcher', () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paparats-watcher-'));
-    configPath = path.join(tmpDir, 'paparats-indexer.yml');
+    configPath = path.join(tmpDir, 'projects.yml');
   });
 
   afterEach(() => {
