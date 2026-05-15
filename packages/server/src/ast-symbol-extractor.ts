@@ -172,76 +172,106 @@ function resolveKind(node: Node): ChunkKind {
 }
 
 /**
- * Node types whose interior is "inside a function body" — anything declared
- * deeper than these is local scope and must NOT be reported as dead code.
- * A symbol is local iff walking up from its declaration we hit one of these
- * before we hit a top-level container.
+ * Tree-sitter node types that introduce a "function-like scope" — anything
+ * declared inside one of these (apart from the declaration the node itself
+ * names) is local and must not appear in defines_symbols. Local symbols
+ * aren't addressable from other chunks and leaking them poisons cross-chunk
+ * reference analysis.
+ *
+ * Class / module / interface / namespace / impl / struct bodies are
+ * intentionally NOT in any of these sets: methods declared inside them are
+ * top-level in our model and stay in the graph.
+ *
+ * Per-language because different grammars reuse the same node names for
+ * unrelated concepts. Python's `block` is the body of any compound
+ * statement (class OR function); Ruby's `block` is a brace-syntax call
+ * argument. Mixing the two breaks methods on Python classes.
  */
-const FUNCTION_BODY_NODES = new Set([
-  // TS/JS
-  'function_declaration',
-  'function_expression',
-  'arrow_function',
-  'generator_function',
-  'generator_function_declaration',
-  'method_definition',
-  // Python
-  'function_definition',
-  'lambda',
-  // Go
-  'func_literal',
-  // 'function_declaration' already covered (Go uses same type)
-  // 'method_declaration' — methods on receivers, top-level in Go
-  // Rust — function_item is top-level definition; closures are 'closure_expression'
-  'closure_expression',
-  // Ruby
-  'method',
-  'singleton_method',
-  'lambda',
-  'do_block',
-  'block',
-  // Java — methods can declare locals; method_declaration body is the boundary
-  'method_declaration',
-  'constructor_declaration',
-  // C/C++ — function_definition declares a function, locals live inside its body
-  // 'function_definition' already covered
-  // C#
-  // 'method_declaration' already covered
-  'constructor_declaration_csharp',
-  'local_function_statement',
-]);
+const FUNCTION_LIKE_SCOPE_NODES_PER_LANG: Record<string, Set<string>> = {
+  typescript: new Set([
+    'function_declaration',
+    'function_expression',
+    'arrow_function',
+    'generator_function',
+    'generator_function_declaration',
+    'method_definition',
+  ]),
+  tsx: new Set([
+    'function_declaration',
+    'function_expression',
+    'arrow_function',
+    'generator_function',
+    'generator_function_declaration',
+    'method_definition',
+  ]),
+  javascript: new Set([
+    'function_declaration',
+    'function_expression',
+    'arrow_function',
+    'generator_function',
+    'generator_function_declaration',
+    'method_definition',
+  ]),
+  python: new Set(['function_definition', 'lambda']),
+  go: new Set(['function_declaration', 'func_literal', 'method_declaration']),
+  rust: new Set(['function_item', 'closure_expression']),
+  ruby: new Set(['method', 'singleton_method', 'do_block', 'block']),
+  java: new Set(['method_declaration', 'constructor_declaration', 'lambda_expression']),
+  c: new Set(['function_definition']),
+  cpp: new Set(['function_definition', 'lambda_expression']),
+  csharp: new Set([
+    'method_declaration',
+    'constructor_declaration',
+    'local_function_statement',
+    'lambda_expression',
+    'anonymous_method_expression',
+  ]),
+};
 
 /**
- * Returns true iff the captured identifier represents a module-level (or
- * class-level — methods on top-level classes count) declaration.
+ * Returns true iff the captured identifier represents a module-level or
+ * class-member declaration (and so may legitimately participate in the
+ * cross-chunk symbol graph). Returns false for symbols introduced inside a
+ * function body, lambda, or block — those are local-scope and not visible
+ * to other chunks.
  *
- * Algorithm: walk up from the identifier. If we encounter a function-body
- * node BEFORE reaching the file root, it's local. The walk skips over the
- * declaration the identifier is the name of (function_declaration's name is
- * an identifier child of function_declaration itself — that's the symbol's
- * own home, not its enclosing scope).
+ * Algorithm:
+ *   1. Walk up from the identifier. The first function-like-scope ancestor
+ *      we encounter is the symbol's OWN home (e.g. the `function_definition`
+ *      that the identifier names). Skip past it.
+ *   2. Continue walking. If we encounter a SECOND function-like-scope
+ *      ancestor before reaching the file root, this declaration lives
+ *      inside another function — i.e. it's a local. Return false.
+ *   3. Otherwise return true.
+ *
+ * Edge case: variable declarations (e.g. TS `lexical_declaration`,
+ * Python `assignment`) are not themselves function-like scopes, so step 1
+ * doesn't consume anything for them — the very first function-like
+ * ancestor already disqualifies them.
  */
-function isTopLevelDeclaration(identifierNode: Node): boolean {
-  // The identifier's first ancestor is its own declaration. We need to look
-  // ABOVE that. Walk up to find the declaration node, then keep walking from
-  // there to the root, checking each ancestor for "is a function body".
+function isTopLevelDeclaration(identifierNode: Node, scopeNodes: Set<string>): boolean {
+  let ancestor: Node | null = identifierNode.parent;
+  let seenSelfScope = false;
+  // For declarations whose own type is a function-like scope (functions,
+  // methods, lambdas, …) we need to consume that one before we start
+  // counting enclosing scopes. Detect this by looking up the identifier's
+  // ancestor chain for a NODE_TYPE_TO_KIND match — if that match is
+  // function-like, the first function-like-scope hit is the symbol's home.
   let decl: Node | null = identifierNode.parent;
   for (let depth = 0; decl && depth < 4; depth++) {
     if (NODE_TYPE_TO_KIND[decl.type]) break;
     decl = decl.parent;
   }
-  if (!decl) return false;
+  const declIsFunctionLike = decl !== null && scopeNodes.has(decl.type);
 
-  // Walk above the declaration. If any ancestor is a function-body node,
-  // the symbol lives in that function's scope (local). Otherwise it's
-  // module-level (or inside a top-level class/namespace, which is fine —
-  // method_definition itself is the declaration we want to keep).
-  //
-  // Special case: the declaration node IS sometimes `method_definition` (a
-  // method on a class). That's the symbol's home, not its scope — keep it.
-  let ancestor: Node | null = decl.parent;
   while (ancestor) {
-    if (FUNCTION_BODY_NODES.has(ancestor.type)) return false;
+    if (scopeNodes.has(ancestor.type)) {
+      if (declIsFunctionLike && !seenSelfScope) {
+        seenSelfScope = true;
+      } else {
+        return false;
+      }
+    }
     ancestor = ancestor.parent;
   }
   return true;
@@ -267,6 +297,9 @@ export function extractSymbolsForChunks(
   if (!querySet) {
     return chunks.map(() => ({ defines_symbols: [], uses_symbols: [], defined_symbols: [] }));
   }
+  // Empty set = no scope filtering (legitimate for languages we haven't
+  // mapped yet — better to over-emit than to silently drop top-level decls).
+  const scopeNodes = FUNCTION_LIKE_SCOPE_NODES_PER_LANG[lang] ?? new Set<string>();
 
   let defQuery: Query | null = null;
   let useQuery: Query | null = null;
@@ -316,7 +349,7 @@ export function extractSymbolsForChunks(
         const captureNode = defCaptures[d]!.node;
         const text = captureNode.text;
         if (isNoise(text) || defines.has(text)) continue;
-        if (!isTopLevelDeclaration(captureNode)) continue;
+        if (!isTopLevelDeclaration(captureNode, scopeNodes)) continue;
         defines.set(text, resolveKind(captureNode));
       }
 
