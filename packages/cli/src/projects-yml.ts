@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import yaml from 'js-yaml';
+import { DEFAULT_GROUP } from '@paparats/shared';
 import {
   generateCompose,
   type LocalProjectMount,
@@ -131,6 +132,18 @@ const HEADER = `# paparats-mcp — project list (read by indexer at /config/proj
 # Edit this file or use: paparats add | paparats remove | paparats edit projects
 # The indexer hot-reloads on save; saves trigger reindex.
 `;
+
+/**
+ * Resolve the effective group for a project entry. Per-entry `group` wins,
+ * then `defaults.group` from the projects file, then DEFAULT_GROUP. The
+ * fallback intentionally is NOT the project's own name — that would silo
+ * each project in its own Qdrant collection and break the multi-project
+ * model (one group = one collection, projects share via the `project`
+ * payload filter).
+ */
+export function resolveEntryGroup(entry: ProjectEntry, file: ProjectsFile): string {
+  return entry.group ?? file.defaults?.group ?? DEFAULT_GROUP;
+}
 
 /** Resolve the project name from an entry (basename(path) or repo of url, override wins). */
 export function resolveProjectName(entry: ProjectEntry): string {
