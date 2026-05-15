@@ -35,7 +35,9 @@ describe('diff', () => {
     const before = repo('a', { overrides: { group: 'one' } });
     const after = repo('a', { overrides: { group: 'two' } });
     const result = diff([before], [after]);
-    expect(result.modified.map((r) => r.name)).toEqual(['a']);
+    expect(result.modified.map((m) => m.next.name)).toEqual(['a']);
+    expect(result.modified[0]!.prior).toEqual(before);
+    expect(result.modified[0]!.next).toEqual(after);
     expect(result.added).toEqual([]);
     expect(result.removed).toEqual([]);
   });
@@ -52,7 +54,19 @@ describe('diff', () => {
     const before = repo('a', { localPath: '/projects/old' });
     const after = repo('a', { localPath: '/projects/new' });
     const result = diff([before], [after]);
-    expect(result.modified.map((r) => r.name)).toEqual(['a']);
+    expect(result.modified.map((m) => m.next.name)).toEqual(['a']);
+  });
+
+  it('reports modified with both prior and next when fullName changes', () => {
+    // Repointing the same name from oldOwner/repo to newOwner/repo: the
+    // indexer keys bookkeeping by fullName and would otherwise dereference
+    // a stale key; the diff carries `prior` so the caller can re-key.
+    const before = repo('app', { url: 'https://github.com/old/app.git', fullName: 'old/app' });
+    const after = repo('app', { url: 'https://github.com/new/app.git', fullName: 'new/app' });
+    const result = diff([before], [after]);
+    expect(result.modified).toHaveLength(1);
+    expect(result.modified[0]!.prior.fullName).toBe('old/app');
+    expect(result.modified[0]!.next.fullName).toBe('new/app');
   });
 });
 
@@ -132,7 +146,9 @@ describe('ConfigWatcher', () => {
     writeYaml('repos:\n  - url: org/a\n    group: two\n');
     watcher.triggerReloadNowForTest();
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange.mock.calls[0]![0]!.modified.map((r: RepoConfig) => r.name)).toEqual(['a']);
+    expect(
+      onChange.mock.calls[0]![0]!.modified.map((m: { next: RepoConfig }) => m.next.name)
+    ).toEqual(['a']);
   });
 
   it('does not emit when nothing changed', () => {

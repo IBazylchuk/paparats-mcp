@@ -5,10 +5,22 @@ import { loadIndexerConfig } from './config-loader.js';
 
 const DEFAULT_DEBOUNCE_MS = 500;
 
+export interface ModifiedRepo {
+  prior: RepoConfig;
+  next: RepoConfig;
+}
+
 export interface ConfigChange {
   added: RepoConfig[];
   removed: RepoConfig[];
-  modified: RepoConfig[];
+  /**
+   * Each modified entry carries both the prior and the next snapshot so the
+   * caller can detect identity changes — most importantly when `fullName`
+   * changed (e.g. the user re-pointed an entry from `oldOwner/repo` to
+   * `newOwner/repo`). The bookkeeping in the indexer is keyed by `fullName`,
+   * so the prior key has to be removed and a fresh one inserted.
+   */
+  modified: ModifiedRepo[];
   next: RepoConfig[];
 }
 
@@ -99,7 +111,7 @@ export function diff(prior: RepoConfig[], next: RepoConfig[]): ConfigChange {
   const nextByName = new Map(next.map((r) => [r.name, r]));
 
   const added: RepoConfig[] = [];
-  const modified: RepoConfig[] = [];
+  const modified: ModifiedRepo[] = [];
   for (const repo of next) {
     const prev = priorByName.get(repo.name);
     if (!prev) {
@@ -107,7 +119,7 @@ export function diff(prior: RepoConfig[], next: RepoConfig[]): ConfigChange {
       continue;
     }
     if (!sameRepo(prev, repo)) {
-      modified.push(repo);
+      modified.push({ prior: prev, next: repo });
     }
   }
 
