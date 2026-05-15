@@ -53,5 +53,97 @@
       "scoreInterpretation": "Each search result includes a confidence score. 60%+ means high confidence (trust the result). 40-59% means partial match (supplement with grep or file reading if available, or try rephrasing). Below 40% means low confidence (fall back to grep/file reading, rephrase, or ask the user for more specific terms).",
       "searchFirstNote": "MANDATORY: Always call search_code BEFORE answering any code question. Never guess or answer from memory."
     }
+  },
+  "workflows": {
+    "find_implementation": {
+      "title": "Find implementation",
+      "description": "Locate where a feature, concept, or behavior is implemented across the indexed codebase.",
+      "args": {
+        "feature": {
+          "description": "What feature, concept, or behavior to locate",
+          "required": true
+        },
+        "project": {
+          "description": "Project name to scope the search; omit for all projects",
+          "required": false
+        }
+      },
+      "message": "Locate the implementation of **{{feature}}** {{project|across all indexed projects}}.\n\nFind the entry points, the key types and functions, and any public surface. For the highest-scoring hits, open the full chunks and trace the call graph one level outward.\n\nDeliver:\n- 1-2 sentence summary of what implements this\n- File path + line range for each entry point, cited from results\n- Notable call sites, if any\n- Confidence note if top scores are below 60%"
+    },
+    "trace_callers": {
+      "title": "Trace callers",
+      "description": "Map who depends on a symbol before renaming, deleting, or changing its signature.",
+      "args": {
+        "symbol": {
+          "description": "Function, class, or identifier name to trace",
+          "required": true
+        },
+        "project": {
+          "description": "Project name to scope the search; omit for all projects",
+          "required": false
+        }
+      },
+      "message": "Map who depends on **{{symbol}}** {{project|across all indexed projects}}.\n\nFind the definition first, then walk callers one to two hops out. Group results by the calling file or service.\n\nDeliver:\n- Where {{symbol}} is defined (file:line)\n- Direct callers grouped by file\n- Transitive callers if direct callers are themselves small wrappers\n- Anything that looks like a public boundary (API handler, exported entry point)"
+    },
+    "onboard_to_project": {
+      "title": "Onboard to project",
+      "description": "Day-one overview of a project: what it does, tech stack, main subsystems, configuration, integrations.",
+      "args": {
+        "project": {
+          "description": "Project name to onboard to",
+          "required": true
+        }
+      },
+      "message": "Give an onboarding overview of **{{project}}**.\n\nIdentify the entry points, the main subsystems, the configuration surface, and any external integrations. Aim for the level of detail a new engineer needs on day one — high-signal, not exhaustive.\n\nDeliver:\n- What this project does (1-2 sentences)\n- Tech stack (languages, frameworks, key libraries)\n- 3-5 main subsystems with file pointers\n- Where configuration and env vars live\n- External integrations (databases, queues, third-party APIs)"
+    },
+    "triage_incident": {
+      "title": "Triage incident",
+      "description": "Locate the code behind a reported symptom, check recent changes, and surface linked tickets.",
+      "args": {
+        "symptom": {
+          "description": "What is broken or behaving wrong, in plain language",
+          "required": true
+        },
+        "since": {
+          "description": "Timeframe to scan for recent changes (ISO date or relative like '7 days ago')",
+          "required": false
+        },
+        "project": {
+          "description": "Project name to scope the search; omit for all services",
+          "required": false
+        }
+      },
+      "message": "Triage this incident: **{{symptom}}**. Scope: {{project|all services}}. Time window: {{since|7 days ago}}.\n\nFind the code that handles this area, check whether it changed recently, and surface any linked tickets. Plain-language summary — the reader cannot read code.\n\nDeliver:\n- What this code does (1-2 sentences)\n- Owning service + last-changed date + author\n- Linked tickets formatted as `[KEY-123]`\n- Recent commits in the window, if any, with one-line summaries"
+    },
+    "prepare_release_notes": {
+      "title": "Prepare release notes",
+      "description": "Build release notes for a project, grouped by functional area, with breaking-change call-outs.",
+      "args": {
+        "project": {
+          "description": "Project name",
+          "required": true
+        },
+        "since": {
+          "description": "Start of release window (ISO date or relative like '14 days ago')",
+          "required": true
+        }
+      },
+      "message": "Build release notes for **{{project}}** covering changes since **{{since}}**.\n\nGroup commits by functional area (auth, billing, infra, etc. — infer from file paths). Call out anything that looks like a breaking change, schema migration, or config change.\n\nDeliver:\n- Grouped change list, one bullet per commit cluster\n- Linked tickets per group, formatted as `[KEY-123]`\n- Separate \"Breaking / migrations\" section if any\n- Note any tracked area with zero activity in the window"
+    },
+    "assess_change_impact": {
+      "title": "Assess change impact",
+      "description": "Blast-radius analysis: dependents, high-risk call sites, and recent activity in the affected area.",
+      "args": {
+        "target": {
+          "description": "Feature, module, or symbol whose blast radius you want",
+          "required": true
+        },
+        "project": {
+          "description": "Project name to scope the search; omit for the whole codebase",
+          "required": false
+        }
+      },
+      "message": "Assess the blast radius of changing **{{target}}** {{project|across the indexed codebase}}.\n\nMap dependent services and modules, then drill into specific call sites for the high-risk ones. Flag whether this area has been actively changed recently (last 30 days).\n\nDeliver:\n- Dependent services and modules grouped by owner\n- High-confidence call sites with file:line citations\n- Recent activity in this area (commits in last 30 days, author, ticket)\n- Risk note: hot area vs. quiet area"
+    }
   }
 }
