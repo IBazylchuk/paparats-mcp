@@ -1,5 +1,16 @@
 # @paparats/server
 
+## 0.5.0
+
+### Minor Changes
+
+- [#52](https://github.com/IBazylchuk/paparats-mcp/pull/52) [`a6b60b2`](https://github.com/IBazylchuk/paparats-mcp/commit/a6b60b2efe0b32513b319d34839cecc387e22e80) Thanks [@IBazylchuk](https://github.com/IBazylchuk)! - `paparats add <local-path>` now auto-detects the project language from marker files (Gemfile, package.json, Cargo.toml, go.mod, …) and writes a commented `exclude_extra:` starter block beside the entry, listing the language defaults already applied by the server. The `projects.yml` header now documents every supported per-entry field. Existing entries are left untouched.
+
+### Patch Changes
+
+- Updated dependencies [[`a6b60b2`](https://github.com/IBazylchuk/paparats-mcp/commit/a6b60b2efe0b32513b319d34839cecc387e22e80)]:
+  - @paparats/shared@0.5.0
+
 ## 0.4.0
 
 ### Minor Changes
