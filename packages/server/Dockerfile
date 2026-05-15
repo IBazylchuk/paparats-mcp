@@ -71,7 +71,7 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
 
 LABEL org.opencontainers.image.title="paparats-mcp"
 LABEL org.opencontainers.image.description="Semantic code search MCP server with AST symbol analysis, git history, and ticket tracking"
-LABEL org.opencontainers.image.source="https://github.com/bkbhub/paparats-mcp"
+LABEL org.opencontainers.image.source="https://github.com/ibaz/paparats-mcp"
 
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["node", "packages/server/dist/index.js"]

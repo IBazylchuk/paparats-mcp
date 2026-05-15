@@ -16,7 +16,9 @@ import type { TreeSitterManager, ProjectConfig, PaparatsConfig } from '@paparats
 import { normalizeExcludePatterns } from '@paparats/shared';
 import { parseReposEnv, cloneOrPull, repoPath } from './repo-manager.js';
 import { startScheduler } from './scheduler.js';
-import { tryLoadIndexerConfig } from './config-loader.js';
+import { tryLoadIndexerConfig, resolveConfigPath } from './config-loader.js';
+import { ConfigWatcher } from './config-watcher.js';
+import { resolveTriggerTargets } from './trigger-filter.js';
 import type { RepoConfig, RepoOverrides, HealthResponse, RepoStatus, RunStatus } from './types.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -57,7 +59,7 @@ if (fileConfig) {
 } else {
   repos = parseReposEnv(REPOS, GITHUB_TOKEN);
   if (repos.length === 0) {
-    console.warn('[indexer] No repos configured. Set REPOS env or mount paparats-indexer.yml.');
+    console.warn('[indexer] No repos configured. Set REPOS env or mount projects.yml.');
   }
 }
 
@@ -162,10 +164,11 @@ function buildDefaultProject(repo: RepoConfig, localPath: string): ProjectConfig
   return project;
 }
 
-async function indexRepo(repo: RepoConfig): Promise<number> {
+async function indexRepo(repo: RepoConfig, opts?: { force?: boolean }): Promise<number> {
   const localPath = repoPath(repo, REPOS_DIR);
   const status = repoStatuses.get(repo.fullName)!;
   status.status = 'running';
+  const force = opts?.force === true;
 
   try {
     await cloneOrPull(repo, REPOS_DIR);
@@ -202,6 +205,13 @@ async function indexRepo(repo: RepoConfig): Promise<number> {
       );
     }
 
+    if (force) {
+      console.log(
+        `[indexer] ${repo.fullName}: force=true → dropping existing chunks for ${project.group}/${project.name}`
+      );
+      await indexer.deleteProjectChunks(project.group, project.name);
+    }
+
     const chunks = await indexer.indexProject(project);
     status.status = 'success';
     status.lastRun = new Date().toISOString();
@@ -220,7 +230,7 @@ async function indexRepo(repo: RepoConfig): Promise<number> {
 
 let indexCycleRunning = false;
 
-async function runIndexCycle(filter?: string[]): Promise<void> {
+async function runIndexCycle(filter?: string[], opts?: { force?: boolean }): Promise<void> {
   if (indexCycleRunning) {
     console.warn('[indexer] Index cycle already running, skipping');
     return;
@@ -229,14 +239,17 @@ async function runIndexCycle(filter?: string[]): Promise<void> {
   indexCycleRunning = true;
   globalStatus = 'running';
   const startTime = Date.now();
-  const targets = filter ? repos.filter((r) => filter.includes(r.fullName)) : repos;
+  const targets = filter ? resolveTriggerTargets(repos, filter) : repos;
+  const force = opts?.force === true;
 
-  console.log(`[indexer] Starting index cycle for ${targets.length} repo(s)...`);
+  console.log(
+    `[indexer] Starting index cycle for ${targets.length} repo(s)${force ? ' (force)' : ''}...`
+  );
 
   try {
     let totalChunks = 0;
     for (const repo of targets) {
-      totalChunks += await indexRepo(repo);
+      totalChunks += await indexRepo(repo, { force });
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -258,13 +271,38 @@ app.use(express.json());
 
 app.post('/trigger', async (req, res) => {
   try {
-    const body = req.body as { repos?: string[] } | undefined;
+    const body = req.body as { repos?: string[]; force?: boolean } | undefined;
     const filter = body?.repos;
+    const force = body?.force === true;
+
+    // Resolve the filter to actual repos *before* spawning the cycle so we
+    // can reject unknown identifiers with 404 instead of returning 200 and
+    // silently doing nothing — the CLI's --force recovery path depends on
+    // this signal.
+    let targets: RepoConfig[];
+    if (filter && filter.length > 0) {
+      targets = resolveTriggerTargets(repos, filter);
+      if (targets.length === 0) {
+        res.status(404).json({
+          error: 'No matching repos',
+          requested: filter,
+          known: repos.map((r) => ({ name: r.name, fullName: r.fullName })),
+        });
+        return;
+      }
+    } else {
+      targets = repos;
+    }
+
     // Run async — don't block the response
-    runIndexCycle(filter).catch((err) => {
+    runIndexCycle(filter, { force }).catch((err) => {
       console.error('[indexer] Triggered cycle failed:', (err as Error).message);
     });
-    res.json({ status: 'triggered', repos: filter ?? repos.map((r) => r.fullName) });
+    res.json({
+      status: 'triggered',
+      repos: targets.map((r) => r.fullName),
+      force,
+    });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
@@ -305,11 +343,65 @@ if (repos.length > 0) {
   });
 }
 
+// ── Hot-reload watcher ──────────────────────────────────────────────────────
+
+let configWatcher: ConfigWatcher | undefined;
+const configFilePath = resolveConfigPath(CONFIG_DIR);
+
+if (fileConfig && configFilePath) {
+  configWatcher = new ConfigWatcher(
+    {
+      configPath: configFilePath,
+      token: GITHUB_TOKEN,
+      onChange: (change) => {
+        console.log(
+          `[indexer] Config changed: +${change.added.length} -${change.removed.length} ~${change.modified.length}`
+        );
+        // Replace the in-memory project list with the parsed `next`.
+        repos.length = 0;
+        repos.push(...change.next);
+
+        // Drop bookkeeping for removed repos.
+        for (const repo of change.removed) {
+          repoStatuses.delete(repo.fullName);
+        }
+        // Register added repos.
+        for (const repo of change.added) {
+          repoStatuses.set(repo.fullName, { repo: repo.fullName, status: 'idle' });
+        }
+        // Modified repos: when fullName changed (e.g. `url` was repointed),
+        // the old key is now stale and the new one doesn't exist yet —
+        // indexRepo would dereference undefined. Re-key bookkeeping so the
+        // new fullName has an entry before the indexer touches it.
+        for (const { prior, next } of change.modified) {
+          if (prior.fullName !== next.fullName) {
+            repoStatuses.delete(prior.fullName);
+            repoStatuses.set(next.fullName, { repo: next.fullName, status: 'idle' });
+          }
+        }
+        // Reindex added + modified.
+        const targets = [...change.added, ...change.modified.map((m) => m.next)];
+        for (const repo of targets) {
+          indexRepo(repo).catch((err) => {
+            console.error(
+              `[indexer] Hot-reload index for ${repo.fullName} failed: ${(err as Error).message}`
+            );
+          });
+        }
+      },
+      onError: (err) => console.error(`[indexer] config-watcher error: ${err.message}`),
+    },
+    repos
+  );
+  console.log(`[indexer] Watching ${configFilePath} for changes`);
+}
+
 // ── Graceful shutdown ───────────────────────────────────────────────────────
 
 async function shutdown(): Promise<void> {
   console.log('\n[indexer] Shutting down...');
   server.close();
+  await configWatcher?.close();
   embeddingProvider.close();
   metadataStore.close();
   treeSitter?.close();

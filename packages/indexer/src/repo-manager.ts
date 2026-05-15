@@ -28,25 +28,32 @@ export function parseReposEnv(repos: string, token?: string): RepoConfig[] {
 
 /**
  * Clone a repo if it doesn't exist locally, or pull latest changes.
+ * No-op for local-path projects (the bind-mount provides the files).
  */
 export async function cloneOrPull(repo: RepoConfig, reposDir: string): Promise<void> {
-  const repoPath = path.join(reposDir, repo.owner, repo.name);
+  if (repo.localPath) {
+    console.log(`[repo-manager] Local project ${repo.name} at ${repo.localPath} (bind-mounted)`);
+    return;
+  }
 
-  if (fs.existsSync(path.join(repoPath, '.git'))) {
+  const dest = path.join(reposDir, repo.owner, repo.name);
+
+  if (fs.existsSync(path.join(dest, '.git'))) {
     console.log(`[repo-manager] Pulling latest for ${repo.fullName}...`);
-    const git = simpleGit(repoPath);
+    const git = simpleGit(dest);
     await git.pull();
   } else {
     console.log(`[repo-manager] Cloning ${repo.fullName}...`);
     fs.mkdirSync(path.join(reposDir, repo.owner), { recursive: true });
     const git = simpleGit();
-    await git.clone(repo.url, repoPath);
+    await git.clone(repo.url, dest);
   }
 }
 
 /**
- * Get the local path for a repo.
+ * Get the local path for a repo. Returns the bind-mounted path for local projects.
  */
 export function repoPath(repo: RepoConfig, reposDir: string): string {
+  if (repo.localPath) return repo.localPath;
   return path.join(reposDir, repo.owner, repo.name);
 }

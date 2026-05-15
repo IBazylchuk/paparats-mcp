@@ -5,12 +5,21 @@ import os from 'os';
 import { execSync, spawn } from 'child_process';
 import chalk from 'chalk';
 import ora from 'ora';
-import { confirm, input } from '@inquirer/prompts';
+import { confirm, input, select } from '@inquirer/prompts';
 import { createTimeoutSignal } from '../abort.js';
-import { generateDockerCompose, generateServerCompose } from '../docker-compose-generator.js';
+import { generateCompose } from '../docker-compose-generator.js';
 import type { OllamaMode, InstallMode } from '../docker-compose-generator.js';
+import {
+  PAPARATS_HOME,
+  COMPOSE_YML,
+  PROJECTS_YML,
+  migrateLegacyProjectsFile,
+  readProjectsFile,
+  writeProjectsFile,
+  writeInstallState,
+  localProjectsFor,
+} from '../projects-yml.js';
 
-const PAPARATS_HOME = path.join(os.homedir(), '.paparats');
 const MODELS_DIR = path.join(PAPARATS_HOME, 'models');
 const OLLAMA_MODEL_NAME = 'jina-code-embeddings';
 const GGUF_URL =
@@ -193,23 +202,17 @@ export function upsertMcpServer(
 export interface InstallOptions {
   mode?: InstallMode;
   ollamaMode?: OllamaMode;
-  skipDocker?: boolean;
-  skipOllama?: boolean;
-  verbose?: boolean;
+  /** External Ollama URL — bypasses native and docker Ollama */
+  ollamaUrl?: string;
   /** External Qdrant URL — skip Qdrant Docker container */
   qdrantUrl?: string;
-  /** Server mode: comma-separated repos */
-  repos?: string;
-  /** Server mode: GitHub token for private repos */
-  githubToken?: string;
-  /** Server mode: cron expression */
-  cron?: string;
-  /** Qdrant API key for authenticated access (e.g. Qdrant Cloud) */
+  /** Qdrant API key for authenticated access */
   qdrantApiKey?: string;
-  /** Server mode: shared Qdrant group (all repos → one collection) */
-  group?: string;
-  /** External Ollama URL — use instead of Docker/local Ollama */
-  ollamaUrl?: string;
+  /** Skip overwrite/migration prompts (always overwrite) */
+  force?: boolean;
+  /** Fail on prompts instead of asking */
+  nonInteractive?: boolean;
+  verbose?: boolean;
   /** Support mode: server URL */
   server?: string;
 }
@@ -217,22 +220,26 @@ export interface InstallOptions {
 export interface InstallDeps {
   commandExists?: (cmd: string) => boolean;
   getDockerComposeCommand?: () => string;
-  exec?: (cmd: string, opts?: { timeout?: number }) => string;
   ollamaModelExists?: (modelName: string) => boolean;
   isOllamaRunning?: () => Promise<boolean>;
   waitForHealth?: (url: string, label: string) => Promise<boolean>;
   downloadFile?: (url: string, dest: string, signal?: AbortSignal) => Promise<void>;
-  generateDockerCompose?: typeof generateDockerCompose;
-  generateServerCompose?: typeof generateServerCompose;
+  generateCompose?: typeof generateCompose;
   mkdirSync?: (dir: string) => void;
-  copyFileSync?: (src: string, dest: string) => void;
   readFileSync?: (path: string, encoding: 'utf8') => string;
   writeFileSync?: (path: string, data: string) => void;
   existsSync?: (path: string) => boolean;
   unlinkSync?: (path: string) => void;
+  renameSync?: (oldPath: string, newPath: string) => void;
   promptUseExternalQdrant?: () => Promise<boolean>;
   promptQdrantUrl?: () => Promise<string>;
   promptQdrantApiKey?: () => Promise<string>;
+  promptOllamaChoiceMacOs?: () => Promise<'brew' | 'docker' | 'remote'>;
+  promptRemoteOllamaUrl?: () => Promise<string>;
+  promptOverwriteCompose?: () => Promise<boolean>;
+  promptMigrate?: () => Promise<boolean>;
+  platform?: () => NodeJS.Platform;
+  execSync?: (cmd: string, opts?: object) => Buffer | string;
 }
 
 // ── Shared Ollama setup ─────────────────────────────────────────────────────
@@ -307,30 +314,213 @@ async function ensureLocalOllama(
   }
 }
 
-// ── Developer mode ──────────────────────────────────────────────────────────
+// ── Migration ───────────────────────────────────────────────────────────────
 
-async function runDeveloperInstall(
+/**
+ * Detects a v1 install: legacy compose has `paparats-mcp` container without
+ * `paparats-indexer` service.
+ */
+export function detectLegacyInstall(composeContent: string | null): string | null {
+  if (!composeContent) return null;
+  if (composeContent.includes('container_name: paparats-indexer')) return null;
+  if (
+    composeContent.includes('container_name: paparats-mcp') ||
+    composeContent.includes("container_name: 'paparats-mcp'")
+  ) {
+    return 'legacy compose has paparats-mcp without paparats-indexer';
+  }
+  return null;
+}
+
+/**
+ * Get the user's consent to migrate from a v1 install. Does NOT touch any
+ * file on disk — the actual tear-down happens later, after the replacement
+ * compose has been generated and written. This split prevents the
+ * "interrupt-mid-install" hole where we used to delete the legacy compose
+ * before knowing whether we could write a successor.
+ */
+async function confirmMigration(
+  resolvedDeps: ResolvedDeps,
+  opts: InstallOptions
+): Promise<boolean> {
+  console.log(
+    chalk.yellow.bold('\nLegacy install detected.\n') +
+      'Paparats has switched to a single global install with one docker-compose.yml and a\n' +
+      'project list at ~/.paparats/projects.yml. Per-project `paparats init` and the\n' +
+      '`developer` / `server` install modes are no longer used.\n\n' +
+      'Existing data volumes (qdrant_data, paparats_data, indexer_repos) are\n' +
+      'preserved — your indexed projects survive. The legacy compose and .env will be\n' +
+      'backed up to *.legacy.bak and replaced once the new compose is ready.\n'
+  );
+
+  if (opts.force) return true;
+  if (opts.nonInteractive) {
+    throw new Error(
+      'Migration prompt required but --non-interactive set; pass --force to proceed.'
+    );
+  }
+  const promptMigrate =
+    resolvedDeps.promptMigrate ??
+    (() => confirm({ message: 'Continue migration?', default: false }));
+  const proceed = await promptMigrate();
+  if (!proceed) {
+    console.log(chalk.dim('Migration aborted, no changes made.'));
+  }
+  return proceed;
+}
+
+/**
+ * Tear down the legacy stack and back up its compose+env. Backups stay on
+ * disk as `<name>.legacy.bak` so the user has a recovery path if anything
+ * downstream goes wrong; we only clean them up after a fully successful
+ * install. Returns the backup paths that were actually created.
+ */
+export function tearDownAndBackupLegacy(
+  composePath: string,
+  envPath: string,
+  resolvedDeps: ResolvedDeps,
+  opts: InstallOptions
+): { composeBak: string | null; envBak: string | null } {
+  // Best-effort: stop the legacy stack. A failure here doesn't block the
+  // upgrade — the user may already have stopped it manually, or the daemon
+  // may be unreachable; either way, the new compose can still be written.
+  try {
+    resolvedDeps.execSync(`${resolvedDeps.getDockerComposeCommand()} -f "${composePath}" down`, {
+      stdio: opts.verbose ? 'inherit' : ['pipe', 'pipe', 'pipe'],
+      timeout: 60_000,
+    });
+  } catch {
+    // user may have already stopped it; ignore
+  }
+
+  let composeBak: string | null = null;
+  let envBak: string | null = null;
+  if (resolvedDeps.existsSync(composePath)) {
+    composeBak = `${composePath}.legacy.bak`;
+    resolvedDeps.renameSync(composePath, composeBak);
+  }
+  if (resolvedDeps.existsSync(envPath)) {
+    envBak = `${envPath}.legacy.bak`;
+    resolvedDeps.renameSync(envPath, envBak);
+  }
+  return { composeBak, envBak };
+}
+
+// ── Resolved deps ───────────────────────────────────────────────────────────
+
+export interface ResolvedDeps {
+  commandExists: (cmd: string) => boolean;
+  getDockerComposeCommand: () => string;
+  ollamaModelExists: (modelName: string) => boolean;
+  isOllamaRunning: () => Promise<boolean>;
+  waitForHealth: (url: string, label: string) => Promise<boolean>;
+  downloadFile: (url: string, dest: string, signal?: AbortSignal) => Promise<void>;
+  generateCompose: typeof generateCompose;
+  mkdirSync: (dir: string) => void;
+  readFileSync: (path: string, encoding: 'utf8') => string;
+  writeFileSync: (path: string, data: string) => void;
+  existsSync: (path: string) => boolean;
+  unlinkSync: (path: string) => void;
+  renameSync: (oldPath: string, newPath: string) => void;
+  promptUseExternalQdrant?: () => Promise<boolean>;
+  promptQdrantUrl?: () => Promise<string>;
+  promptQdrantApiKey?: () => Promise<string>;
+  promptOllamaChoiceMacOs?: () => Promise<'brew' | 'docker' | 'remote'>;
+  promptRemoteOllamaUrl?: () => Promise<string>;
+  promptOverwriteCompose?: () => Promise<boolean>;
+  promptMigrate?: () => Promise<boolean>;
+  platform: () => NodeJS.Platform;
+  execSync: (cmd: string, opts?: object) => Buffer | string;
+  signal?: AbortSignal;
+}
+
+// ── Decide Ollama mode ──────────────────────────────────────────────────────
+
+export interface OllamaDecision {
+  mode: OllamaMode;
+  ollamaUrl?: string;
+  /** Should the host-side `ensureLocalOllama` (download + register model) run? */
+  setupHostOllama: boolean;
+}
+
+export async function decideOllamaMode(
   opts: InstallOptions,
-  deps: Required<
-    Pick<
-      InstallDeps,
-      | 'commandExists'
-      | 'getDockerComposeCommand'
-      | 'ollamaModelExists'
-      | 'isOllamaRunning'
-      | 'waitForHealth'
-      | 'downloadFile'
-      | 'generateDockerCompose'
-      | 'mkdirSync'
-      | 'readFileSync'
-      | 'writeFileSync'
-      | 'existsSync'
-      | 'unlinkSync'
-    >
-  > & { signal?: AbortSignal }
-): Promise<void> {
-  const ollamaMode = opts.ollamaMode ?? 'local';
+  deps: ResolvedDeps
+): Promise<OllamaDecision> {
+  if (opts.ollamaUrl) {
+    return { mode: 'external', ollamaUrl: opts.ollamaUrl, setupHostOllama: false };
+  }
+  if (opts.ollamaMode === 'docker') {
+    return { mode: 'docker', setupHostOllama: false };
+  }
+  if (opts.ollamaMode === 'native') {
+    return { mode: 'native', setupHostOllama: true };
+  }
 
+  const platform = deps.platform();
+  if (platform === 'darwin') {
+    if (deps.commandExists('ollama')) {
+      console.log(chalk.green('✓ Native Ollama detected on macOS\n'));
+      return { mode: 'native', setupHostOllama: true };
+    }
+    console.log(
+      chalk.yellow('Ollama is not installed.\n') +
+        chalk.dim(
+          'Recommendation for macOS: install Ollama natively. Running Ollama in Docker on\n' +
+            'macOS is significantly slower because the Docker VM cannot use Apple Silicon\n' +
+            'GPU acceleration. Native Ollama uses Metal directly.\n'
+        )
+    );
+    if (opts.nonInteractive) {
+      throw new Error(
+        'Ollama not found. Install with `brew install ollama`, or pass --ollama-mode docker / --ollama-url <url>.'
+      );
+    }
+    const choice = deps.promptOllamaChoiceMacOs
+      ? await deps.promptOllamaChoiceMacOs()
+      : await select({
+          message: 'How should Paparats reach Ollama?',
+          choices: [
+            { name: 'Install natively via brew install ollama (recommended)', value: 'brew' },
+            { name: 'Use a remote Ollama URL', value: 'remote' },
+            { name: 'Run Ollama in Docker (slower on macOS)', value: 'docker' },
+          ],
+          default: 'brew',
+        });
+    if (choice === 'brew') {
+      if (!deps.commandExists('brew')) {
+        throw new Error(
+          'Homebrew not found. Install brew first (https://brew.sh) or pass --ollama-mode docker / --ollama-url.'
+        );
+      }
+      const spinner = ora('Installing ollama via brew...').start();
+      try {
+        deps.execSync('brew install ollama', {
+          stdio: opts.verbose ? 'inherit' : ['pipe', 'pipe', 'pipe'],
+          timeout: 180_000,
+        });
+        spinner.succeed('ollama installed');
+      } catch (err) {
+        spinner.fail('brew install ollama failed');
+        throw err;
+      }
+      return { mode: 'native', setupHostOllama: true };
+    }
+    if (choice === 'remote') {
+      const url = deps.promptRemoteOllamaUrl
+        ? await deps.promptRemoteOllamaUrl()
+        : await input({ message: 'Remote Ollama URL:' });
+      return { mode: 'external', ollamaUrl: url, setupHostOllama: false };
+    }
+    return { mode: 'docker', setupHostOllama: false };
+  }
+
+  return { mode: 'docker', setupHostOllama: false };
+}
+
+// ── Unified install ─────────────────────────────────────────────────────────
+
+async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Promise<void> {
   const cleanupTasks: Array<() => void> = [];
   if (deps.signal) {
     deps.signal.addEventListener('abort', () => {
@@ -346,284 +536,209 @@ async function runDeveloperInstall(
     });
   }
 
-  // Check prerequisites
-  const checks: Array<{ cmd: string; name: string; install: string }> = [
-    { cmd: 'docker', name: 'Docker', install: 'https://docker.com' },
-  ];
-
-  if (ollamaMode === 'local' && !opts.ollamaUrl) {
-    checks.push({ cmd: 'ollama', name: 'Ollama', install: 'https://ollama.com' });
+  // 1. Prerequisites
+  if (!deps.commandExists('docker')) {
+    throw new Error('Docker not found. Install from https://docker.com');
   }
+  deps.getDockerComposeCommand();
+  console.log(chalk.green('✓ Docker + docker compose found\n'));
 
-  for (const check of checks) {
-    if (!deps.commandExists(check.cmd)) {
-      throw new Error(`${check.name} not found. Install from ${check.install}`);
-    }
-  }
-
-  const prereqNames = checks.map((c) => c.name).join(', ');
-  console.log(chalk.green(`\u2713 Prerequisites found (${prereqNames})\n`));
-
-  // Docker setup
-  if (!opts.skipDocker) {
-    const spinner = ora('Setting up Docker containers...').start();
-
-    deps.mkdirSync(PAPARATS_HOME);
-
-    const composeContent = deps.generateDockerCompose({
-      ollamaMode,
-      qdrantUrl: opts.qdrantUrl,
-      qdrantApiKey: opts.qdrantApiKey,
-      ollamaUrl: opts.ollamaUrl,
-    });
-    const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
-
-    if (deps.existsSync(composeDest)) {
-      const existing = deps.readFileSync(composeDest, 'utf8');
-      if (existing !== composeContent) {
-        const overwrite = process.stdin.isTTY
-          ? await (async () => {
-              spinner.stop();
-              const result = await confirm({
-                message: `${composeDest} already exists and differs. Overwrite?`,
-                default: true,
-              });
-              spinner.start('Starting Docker containers...');
-              return result;
-            })()
-          : true;
-        if (!overwrite) {
-          console.log(chalk.dim('Keeping existing docker-compose.yml'));
-        } else {
-          deps.writeFileSync(composeDest, composeContent);
-        }
-      }
-    } else {
-      deps.writeFileSync(composeDest, composeContent);
-    }
-
-    // Write .env for docker-compose variable substitution (API key, etc.)
-    if (opts.qdrantApiKey) {
-      const envPath = path.join(PAPARATS_HOME, '.env');
-      const envLines: string[] = [];
-      envLines.push(`QDRANT_API_KEY=${opts.qdrantApiKey}`);
-      deps.writeFileSync(envPath, envLines.join('\n') + '\n');
-    }
-
-    spinner.text = 'Starting Docker containers...';
-
-    const composeCmd = deps.getDockerComposeCommand();
-    const fullCmd = `${composeCmd} -f "${composeDest}" up -d`;
-    try {
-      execSync(fullCmd, {
-        stdio: opts.verbose ? 'inherit' : ['pipe', 'pipe', 'pipe'],
-        timeout: 120_000,
-      });
-      spinner.succeed('Docker containers started');
-    } catch (err) {
-      spinner.fail('Failed to start Docker containers');
-      throw err;
-    }
-
-    const qdrantReady = await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
-    if (!qdrantReady) {
-      console.log(
-        chalk.yellow(
-          '  Qdrant is not responding yet. Continuing with remaining setup.\n' +
-            '  Check Docker logs: docker compose -f ~/.paparats/docker-compose.yml logs qdrant'
-        )
-      );
-    }
-
-    const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
-    if (!mcpReady) {
-      console.log(
-        chalk.yellow(
-          '  MCP server is not responding yet. Continuing with remaining setup.\n' +
-            '  Check Docker logs: docker compose -f ~/.paparats/docker-compose.yml logs paparats'
-        )
-      );
-    }
-  }
-
-  // Ollama setup (local mode only, skip when external URL is provided)
-  if (!opts.skipOllama && ollamaMode === 'local' && !opts.ollamaUrl) {
-    await ensureLocalOllama(deps, cleanupTasks);
-  }
-
-  // Auto-configure Cursor MCP
-  configureCursorMcp('http://localhost:9876/mcp', deps);
-
-  console.log(chalk.bold.green('\n\u2713 Installation complete!\n'));
-  console.log('Next steps:');
-  console.log(chalk.dim('  1. cd <your-project>'));
-  console.log(chalk.dim('  2. paparats init'));
-  console.log(chalk.dim('  3. paparats index'));
-  console.log(chalk.dim('  4. Connect your IDE (see README)'));
-  console.log('');
-  console.log(chalk.dim('To scope searches to specific projects, set PAPARATS_PROJECTS in your'));
-  console.log(
-    chalk.dim('MCP client config (e.g. "billing,tracking"). Project names are directory')
-  );
-  console.log(chalk.dim('basenames, not org/repo format.\n'));
-}
-
-// ── Server mode ─────────────────────────────────────────────────────────────
-
-async function runServerInstall(
-  opts: InstallOptions,
-  deps: Required<
-    Pick<
-      InstallDeps,
-      | 'commandExists'
-      | 'getDockerComposeCommand'
-      | 'ollamaModelExists'
-      | 'isOllamaRunning'
-      | 'downloadFile'
-      | 'generateServerCompose'
-      | 'waitForHealth'
-      | 'mkdirSync'
-      | 'readFileSync'
-      | 'writeFileSync'
-      | 'existsSync'
-      | 'unlinkSync'
-    >
-  > & { signal?: AbortSignal }
-): Promise<void> {
-  const ollamaMode = opts.ollamaMode ?? 'docker';
-  const needsLocalOllama = ollamaMode === 'local' && !opts.ollamaUrl;
-
-  // Check prerequisites
-  const checks: Array<{ cmd: string; name: string; install: string }> = [
-    { cmd: 'docker', name: 'Docker', install: 'https://docker.com' },
-  ];
-  if (needsLocalOllama) {
-    checks.push({ cmd: 'ollama', name: 'Ollama', install: 'https://ollama.com' });
-  }
-
-  for (const check of checks) {
-    if (!deps.commandExists(check.cmd)) {
-      throw new Error(`${check.name} not found. Install from ${check.install}`);
-    }
-  }
-
-  const prereqNames = checks.map((c) => c.name).join(', ');
-  console.log(chalk.green(`\u2713 Prerequisites found (${prereqNames})\n`));
-
+  // 2. Migration check
   deps.mkdirSync(PAPARATS_HOME);
+  const composePath = path.join(PAPARATS_HOME, COMPOSE_YML);
+  const envPath = path.join(PAPARATS_HOME, '.env');
+  const composeContent = deps.existsSync(composePath)
+    ? deps.readFileSync(composePath, 'utf8')
+    : null;
+  const legacyTrigger = detectLegacyInstall(composeContent);
+  let needsLegacyTeardown = false;
+  if (legacyTrigger) {
+    const proceeded = await confirmMigration(deps, opts);
+    if (!proceeded) return;
+    // Defer the actual tear-down until we have the new compose generated
+    // and ready to write — see step 7c below.
+    needsLegacyTeardown = true;
+  }
 
-  // Generate docker-compose with all services
-  const composeContent = deps.generateServerCompose({
-    ollamaMode,
-    qdrantUrl: opts.qdrantUrl,
-    qdrantApiKey: opts.qdrantApiKey,
-    ollamaUrl: opts.ollamaUrl,
-    repos: opts.repos,
-    githubToken: opts.githubToken,
-    cron: opts.cron,
-    group: opts.group,
+  // 3. Ollama decision
+  const ollamaDecision = await decideOllamaMode(opts, deps);
+
+  // 4. Qdrant decision
+  if (!opts.qdrantUrl && !opts.nonInteractive) {
+    const promptExternal =
+      deps.promptUseExternalQdrant ??
+      (() =>
+        confirm({
+          message: 'Use an external Qdrant instance? (skip Qdrant Docker container)',
+          default: false,
+        }));
+    const useExternal = await promptExternal();
+    if (useExternal) {
+      const promptUrl =
+        deps.promptQdrantUrl ??
+        (() =>
+          input({
+            message: 'Qdrant URL:',
+            default: 'http://localhost:6333',
+            validate: (value: string) => {
+              try {
+                new URL(value);
+                return true;
+              } catch {
+                return 'Please enter a valid URL';
+              }
+            },
+          }));
+      opts.qdrantUrl = await promptUrl();
+    }
+  }
+  if (opts.qdrantUrl && !opts.qdrantApiKey && !opts.nonInteractive) {
+    const promptApiKey =
+      deps.promptQdrantApiKey ??
+      (() => input({ message: 'Qdrant API key (leave empty if none):', default: '' }));
+    const key = await promptApiKey();
+    if (key) opts.qdrantApiKey = key;
+  }
+
+  // 5. Ensure projects.yml exists. Migrate the legacy paparats-indexer.yml
+  //    in place if present so users coming from paparats < 0.4 don't lose
+  //    their project list.
+  if (migrateLegacyProjectsFile(PAPARATS_HOME)) {
+    console.log(
+      chalk.yellow(`Renamed legacy paparats-indexer.yml → ${PROJECTS_YML} (one-time migration).`)
+    );
+  }
+  const projectsYmlPath = path.join(PAPARATS_HOME, PROJECTS_YML);
+  if (!deps.existsSync(projectsYmlPath)) {
+    writeProjectsFile({ repos: [] }, PAPARATS_HOME);
+    console.log(chalk.dim(`Created empty ${projectsYmlPath}`));
+  }
+
+  // 6. Generate compose using current projects list
+  const projectsFile = readProjectsFile(PAPARATS_HOME);
+  const newComposeContent = deps.generateCompose({
+    ollamaMode: ollamaDecision.mode,
+    ...(ollamaDecision.ollamaUrl !== undefined ? { ollamaUrl: ollamaDecision.ollamaUrl } : {}),
+    ...(opts.qdrantUrl !== undefined ? { qdrantUrl: opts.qdrantUrl } : {}),
+    ...(opts.qdrantApiKey !== undefined ? { qdrantApiKey: opts.qdrantApiKey } : {}),
+    paparatsHome: PAPARATS_HOME,
+    localProjects: localProjectsFor(projectsFile),
   });
-  const composeDest = path.join(PAPARATS_HOME, 'docker-compose.yml');
 
-  if (deps.existsSync(composeDest)) {
-    const existing = deps.readFileSync(composeDest, 'utf8');
-    if (existing !== composeContent) {
-      const overwrite = process.stdin.isTTY
-        ? await confirm({
-            message: `${composeDest} already exists and differs. Overwrite?`,
-            default: true,
-          })
-        : true;
-      if (!overwrite) {
-        console.log(chalk.dim('Keeping existing docker-compose.yml'));
-      } else {
-        deps.writeFileSync(composeDest, composeContent);
+  // 7. Tear down the legacy stack and back up its compose+env now that we
+  //    have a validated replacement in memory. Backups stay on disk under
+  //    *.legacy.bak so the user has a recovery path; we keep them around
+  //    even after success — `paparats install` is idempotent and a stray
+  //    pair of bak files is cheaper than a missed rollback opportunity.
+  if (needsLegacyTeardown) {
+    const { composeBak, envBak } = tearDownAndBackupLegacy(composePath, envPath, deps, opts);
+    if (composeBak) {
+      console.log(
+        chalk.dim(
+          `Backed up legacy compose to ${composeBak}` + (envBak ? ` and .env to ${envBak}` : '')
+        )
+      );
+    }
+  }
+
+  // 7a. Compose write with overwrite confirmation (default N)
+  const existingCompose = deps.existsSync(composePath)
+    ? deps.readFileSync(composePath, 'utf8')
+    : null;
+  let writeCompose = true;
+  if (existingCompose !== null && existingCompose !== newComposeContent) {
+    if (opts.force) {
+      writeCompose = true;
+    } else if (opts.nonInteractive) {
+      throw new Error(
+        'docker-compose.yml differs; pass --force to overwrite or run without --non-interactive.'
+      );
+    } else {
+      const promptOverwrite =
+        deps.promptOverwriteCompose ??
+        (() =>
+          confirm({
+            message: `${composePath} has been hand-edited. Overwrite?`,
+            default: false,
+          }));
+      writeCompose = await promptOverwrite();
+      if (!writeCompose) {
+        console.log(
+          chalk.dim('Existing compose preserved. Run `paparats install --force` to regenerate.\n')
+        );
       }
     }
-  } else {
-    deps.writeFileSync(composeDest, composeContent);
+  }
+  if (writeCompose) {
+    deps.writeFileSync(composePath, newComposeContent);
   }
 
-  // Create .env file for docker-compose variable substitution
-  const envLines: string[] = [];
-  if (opts.repos) envLines.push(`REPOS=${opts.repos}`);
-  if (opts.githubToken) envLines.push(`GITHUB_TOKEN=${opts.githubToken}`);
-  if (opts.cron) envLines.push(`CRON=${opts.cron}`);
-  if (opts.group) envLines.push(`PAPARATS_GROUP=${opts.group}`);
-  if (opts.qdrantApiKey) envLines.push(`QDRANT_API_KEY=${opts.qdrantApiKey}`);
-  if (envLines.length > 0) {
-    const envPath = path.join(PAPARATS_HOME, '.env');
-    deps.writeFileSync(envPath, envLines.join('\n') + '\n');
-    console.log(chalk.dim(`Created ${envPath}`));
+  // 7b. Persist install state so `paparats add | remove | edit projects` can
+  //     regenerate compose later with the same flags (ollama mode, qdrant
+  //     credentials, cron). Without this, those commands have no idea which
+  //     services should be in the compose.
+  writeInstallState(
+    {
+      ollamaMode: ollamaDecision.mode,
+      ...(ollamaDecision.ollamaUrl !== undefined ? { ollamaUrl: ollamaDecision.ollamaUrl } : {}),
+      ...(opts.qdrantUrl !== undefined ? { qdrantUrl: opts.qdrantUrl } : {}),
+      ...(opts.qdrantApiKey !== undefined ? { qdrantApiKey: opts.qdrantApiKey } : {}),
+    },
+    PAPARATS_HOME
+  );
+
+  // 8. .env file
+  if (opts.qdrantApiKey) {
+    deps.writeFileSync(envPath, `QDRANT_API_KEY=${opts.qdrantApiKey}\n`);
   }
 
-  // Start containers
-  const spinner = ora('Starting Docker containers (this may take a while on first run)...').start();
+  // 9. Bring up the stack
   const composeCmd = deps.getDockerComposeCommand();
-  const fullCmd = `${composeCmd} -f "${composeDest}" up -d`;
+  const upSpinner = ora('Starting Docker containers...').start();
   try {
-    execSync(fullCmd, {
+    execSync(`${composeCmd} -f "${composePath}" up -d`, {
       stdio: opts.verbose ? 'inherit' : ['pipe', 'pipe', 'pipe'],
-      timeout: 300_000,
+      timeout: 180_000,
     });
-    spinner.succeed('Docker containers started');
+    upSpinner.succeed('Docker containers started');
   } catch (err) {
-    spinner.fail('Failed to start Docker containers');
+    upSpinner.fail('Failed to start Docker containers');
     throw err;
   }
 
-  const qdrantReady = await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
-  if (!qdrantReady) {
-    console.log(
-      chalk.yellow(
-        '  Qdrant is not responding yet. Continuing with remaining setup.\n' +
-          '  Check Docker logs: docker compose -f ~/.paparats/docker-compose.yml logs qdrant'
-      )
-    );
+  await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
+  await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
+  await deps.waitForHealth('http://localhost:9877/health', 'Indexer');
+
+  // 10. Ollama model registration on host (when native)
+  if (ollamaDecision.setupHostOllama) {
+    await ensureLocalOllama(deps, cleanupTasks);
   }
 
-  const mcpReady = await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
-  if (!mcpReady) {
-    console.log(
-      chalk.yellow(
-        '  MCP server is not responding yet. Continuing with remaining setup.\n' +
-          '  Check Docker logs: docker compose -f ~/.paparats/docker-compose.yml logs paparats'
-      )
-    );
-  }
+  // 11. MCP-client wiring
+  configureCursorMcp('http://localhost:9876/mcp', deps);
 
-  // Ollama setup (local mode only, skip when external URL or Docker Ollama)
-  if (needsLocalOllama) {
-    await ensureLocalOllama(deps, []);
-  }
-
-  console.log(chalk.bold.green('\n\u2713 Server installation complete!\n'));
-  console.log('MCP endpoints:');
-  console.log(chalk.dim('  Coding:  http://localhost:9876/mcp'));
-  console.log(chalk.dim('  Support: http://localhost:9876/support/mcp'));
-  console.log(chalk.dim('  Health:  http://localhost:9876/health'));
-  if (opts.repos) {
-    console.log(
-      chalk.dim(`\nIndexer will process repos on schedule: ${opts.cron ?? '0 */6 * * *'}`)
-    );
-    console.log(chalk.dim('  Trigger now: curl -X POST http://localhost:9877/trigger'));
-    console.log(chalk.dim('  Status:      curl http://localhost:9877/health'));
-  }
+  // 12. Final summary
+  console.log(chalk.bold.green('\n✓ Installation complete!\n'));
+  console.log('Next steps:');
+  console.log(chalk.dim(`  • Add a project:       paparats add <path-or-repo>`));
+  console.log(chalk.dim(`  • List projects:       paparats list`));
+  console.log(chalk.dim(`  • Edit project list:   paparats edit projects`));
+  console.log(chalk.dim(`  • Edit compose:        paparats edit compose`));
+  console.log(chalk.dim(`  • Stack lifecycle:     paparats start | stop | restart\n`));
+  console.log(chalk.dim('MCP endpoints:'));
+  console.log(chalk.dim('  http://localhost:9876/mcp'));
+  console.log(chalk.dim('  http://localhost:9876/support/mcp'));
   console.log('');
-  console.log(chalk.dim('To scope searches to specific projects, set PAPARATS_PROJECTS env var'));
-  console.log(chalk.dim('on the MCP server (e.g. PAPARATS_PROJECTS=billing,tracking). Project'));
-  console.log(chalk.dim('names are directory basenames, not org/repo format.\n'));
 }
 
 // ── Support mode ────────────────────────────────────────────────────────────
 
 async function runSupportInstall(
   opts: InstallOptions,
-  deps: Required<
-    Pick<
-      InstallDeps,
-      'waitForHealth' | 'existsSync' | 'readFileSync' | 'writeFileSync' | 'mkdirSync'
-    >
+  deps: Pick<
+    ResolvedDeps,
+    'waitForHealth' | 'existsSync' | 'readFileSync' | 'writeFileSync' | 'mkdirSync'
   >
 ): Promise<void> {
   const serverUrl = opts.server ?? 'http://localhost:9876';
@@ -718,119 +833,70 @@ export async function runInstall(
   opts: InstallOptions,
   deps?: InstallDeps & { signal?: AbortSignal }
 ): Promise<void> {
-  const cmdExists = deps?.commandExists ?? commandExists;
-  const getCompose = deps?.getDockerComposeCommand ?? getDockerComposeCommand;
-  const modelExists = deps?.ollamaModelExists ?? ollamaModelExists;
-  const ollamaRunning = deps?.isOllamaRunning ?? isOllamaRunning;
-  const waitHealth = deps?.waitForHealth ?? waitForHealth;
-  const download = deps?.downloadFile ?? downloadFile;
-  const genCompose = deps?.generateDockerCompose ?? generateDockerCompose;
-  const genServerCompose = deps?.generateServerCompose ?? generateServerCompose;
-  const mkdir = deps?.mkdirSync ?? ((p: string) => fs.mkdirSync(p, { recursive: true }));
-  const readFile = deps?.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
-  const writeFile = deps?.writeFileSync ?? fs.writeFileSync.bind(fs);
-  const exists = deps?.existsSync ?? fs.existsSync.bind(fs);
-  const unlink = deps?.unlinkSync ?? fs.unlinkSync.bind(fs);
-  const signal = deps?.signal;
-
-  const mode = opts.mode ?? 'developer';
-  console.log(chalk.bold(`\npaparats install --mode ${mode}\n`));
-
-  // Interactive Qdrant prompt (developer & server modes, when not already provided via CLI flag)
-  if ((mode === 'developer' || mode === 'server') && !opts.qdrantUrl && !opts.skipDocker) {
-    const promptExternal =
-      deps?.promptUseExternalQdrant ??
-      (() =>
-        confirm({
-          message: 'Use an external Qdrant instance? (skip Qdrant Docker container)',
-          default: false,
-        }));
-
-    const useExternal = await promptExternal();
-
-    if (useExternal) {
-      const promptUrl =
-        deps?.promptQdrantUrl ??
-        (() =>
-          input({
-            message: 'Qdrant URL:',
-            default: 'http://localhost:6333',
-            validate: (value: string) => {
-              try {
-                new URL(value);
-                return true;
-              } catch {
-                return 'Please enter a valid URL (e.g. http://localhost:6333)';
-              }
-            },
-          }));
-
-      opts.qdrantUrl = await promptUrl();
-    }
-  }
-
-  // Prompt for API key when using external Qdrant (via prompt or --qdrant-url flag)
-  if (opts.qdrantUrl && !opts.qdrantApiKey) {
-    const promptApiKey =
-      deps?.promptQdrantApiKey ??
-      (() =>
-        input({
-          message: 'Qdrant API key (leave empty if none):',
-          default: '',
-        }));
-
-    const apiKey = await promptApiKey();
-    if (apiKey) {
-      opts.qdrantApiKey = apiKey;
-    }
-  }
-
-  const resolvedDeps = {
-    commandExists: cmdExists,
-    getDockerComposeCommand: getCompose,
-    ollamaModelExists: modelExists,
-    isOllamaRunning: ollamaRunning,
-    waitForHealth: waitHealth,
-    downloadFile: download,
-    generateDockerCompose: genCompose,
-    generateServerCompose: genServerCompose,
-    mkdirSync: mkdir,
-    readFileSync: readFile,
-    writeFileSync: writeFile,
-    existsSync: exists,
-    unlinkSync: unlink,
-    signal,
+  const resolved: ResolvedDeps = {
+    commandExists: deps?.commandExists ?? commandExists,
+    getDockerComposeCommand: deps?.getDockerComposeCommand ?? getDockerComposeCommand,
+    ollamaModelExists: deps?.ollamaModelExists ?? ollamaModelExists,
+    isOllamaRunning: deps?.isOllamaRunning ?? isOllamaRunning,
+    waitForHealth: deps?.waitForHealth ?? waitForHealth,
+    downloadFile: deps?.downloadFile ?? downloadFile,
+    generateCompose: deps?.generateCompose ?? generateCompose,
+    mkdirSync: deps?.mkdirSync ?? ((p: string) => fs.mkdirSync(p, { recursive: true })),
+    readFileSync: deps?.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8')),
+    writeFileSync: deps?.writeFileSync ?? fs.writeFileSync.bind(fs),
+    existsSync: deps?.existsSync ?? fs.existsSync.bind(fs),
+    unlinkSync: deps?.unlinkSync ?? fs.unlinkSync.bind(fs),
+    renameSync: deps?.renameSync ?? fs.renameSync.bind(fs),
+    platform: deps?.platform ?? (() => process.platform),
+    execSync: deps?.execSync ?? (execSync as unknown as ResolvedDeps['execSync']),
+    ...(deps?.signal !== undefined ? { signal: deps.signal } : {}),
+    ...(deps?.promptUseExternalQdrant !== undefined
+      ? { promptUseExternalQdrant: deps.promptUseExternalQdrant }
+      : {}),
+    ...(deps?.promptQdrantUrl !== undefined ? { promptQdrantUrl: deps.promptQdrantUrl } : {}),
+    ...(deps?.promptQdrantApiKey !== undefined
+      ? { promptQdrantApiKey: deps.promptQdrantApiKey }
+      : {}),
+    ...(deps?.promptOllamaChoiceMacOs !== undefined
+      ? { promptOllamaChoiceMacOs: deps.promptOllamaChoiceMacOs }
+      : {}),
+    ...(deps?.promptRemoteOllamaUrl !== undefined
+      ? { promptRemoteOllamaUrl: deps.promptRemoteOllamaUrl }
+      : {}),
+    ...(deps?.promptOverwriteCompose !== undefined
+      ? { promptOverwriteCompose: deps.promptOverwriteCompose }
+      : {}),
+    ...(deps?.promptMigrate !== undefined ? { promptMigrate: deps.promptMigrate } : {}),
   };
 
-  switch (mode) {
-    case 'developer':
-      await runDeveloperInstall(opts, resolvedDeps);
-      break;
-    case 'server':
-      await runServerInstall(opts, resolvedDeps);
-      break;
-    case 'support':
-      await runSupportInstall(opts, resolvedDeps);
-      break;
-    default:
-      throw new Error(`Unknown install mode: ${mode as string}`);
+  const mode = opts.mode ?? 'developer';
+  console.log(chalk.bold(`\npaparats install${mode === 'support' ? ' --mode support' : ''}\n`));
+
+  if (mode === 'support') {
+    await runSupportInstall(opts, resolved);
+    return;
   }
+
+  await runUnifiedInstall(opts, resolved);
 }
 
 export const installCommand = new Command('install')
-  .description('Set up Paparats — Docker containers, Ollama model, and MCP configuration')
-  .option('--mode <mode>', 'Install mode: developer, server, or support', 'developer')
-  .option('--ollama-mode <mode>', 'Ollama deployment: docker or local (developer/server mode)')
-  .option('--ollama-url <url>', 'External Ollama URL (e.g. http://192.168.1.10:11434)')
-  .option('--skip-docker', 'Skip Docker setup (developer mode)')
-  .option('--skip-ollama', 'Skip Ollama model setup (developer mode)')
-  .option('--qdrant-url <url>', 'External Qdrant URL (skip Qdrant Docker container)')
+  .description('Set up Paparats — Docker stack, Ollama, MCP wiring')
+  .option(
+    '--mode <mode>',
+    'support to wire up an MCP client only; otherwise the unified install runs',
+    'developer'
+  )
+  .option(
+    '--ollama-mode <mode>',
+    'Force Ollama mode: native | docker (default: native on macOS, docker elsewhere)'
+  )
+  .option('--ollama-url <url>', 'External Ollama URL (skips both native and docker Ollama)')
+  .option('--qdrant-url <url>', 'External Qdrant URL (skips Qdrant Docker container)')
   .option('--qdrant-api-key <key>', 'Qdrant API key for authenticated access')
-  .option('--repos <repos>', 'Comma-separated repos to index (server mode)')
-  .option('--github-token <token>', 'GitHub token for private repos (server mode)')
-  .option('--cron <expression>', 'Cron schedule for indexing (server mode)')
-  .option('--group <name>', 'Shared Qdrant group — all repos in one collection (server mode)')
   .option('--server <url>', 'Server URL to connect to (support mode)', 'http://localhost:9876')
+  .option('--force', 'Skip overwrite/migration prompts (always overwrite)')
+  .option('--non-interactive', 'Fail on any prompt instead of asking')
   .option('-v, --verbose', 'Show detailed output')
   .action(async (opts: InstallOptions & { ollamaMode?: string }) => {
     const controller = new AbortController();
@@ -838,11 +904,7 @@ export const installCommand = new Command('install')
 
     try {
       await runInstall(
-        {
-          ...opts,
-          // --ollama-url implies local mode (no Docker Ollama)
-          ollamaMode: opts.ollamaUrl ? 'local' : ((opts.ollamaMode as OllamaMode) ?? 'local'),
-        },
+        { ...opts, ollamaMode: opts.ollamaMode as OllamaMode | undefined },
         { signal: controller.signal }
       );
     } catch (err) {
