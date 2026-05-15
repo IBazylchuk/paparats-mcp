@@ -5,6 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/@paparats/cli?color=01696f)](https://www.npmjs.com/package/@paparats/cli)
 [![License: MIT](https://img.shields.io/badge/License-MIT-01696f.svg)](LICENSE)
 [![PulseMCP](https://img.shields.io/badge/PulseMCP-listed-01696f)](https://www.pulsemcp.com/servers/paparats-mcp)
+[![MCP Badge](https://lobehub.com/badge/mcp/ibazylchuk-paparats-mcp)](https://lobehub.com/mcp/ibazylchuk-paparats-mcp)
 
 **Paparats-kvetka** — a magical flower from Slavic folklore that blooms on Kupala Night
 and grants whoever finds it the power to see hidden things. Likewise, paparats-mcp

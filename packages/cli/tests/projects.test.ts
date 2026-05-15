@@ -181,6 +181,111 @@ describe('runAdd', () => {
     expect(readYml().repos).toHaveLength(1);
     fs.rmSync(dir, { recursive: true, force: true });
   });
+
+  it('auto-detects language from Gemfile and writes a commented exclude_extra hint', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rb-'));
+    fs.writeFileSync(path.join(dir, 'Gemfile'), "source 'https://rubygems.org'\n");
+
+    await runAdd(
+      dir,
+      { paparatsHome: tmpHome },
+      { restartStack: vi.fn(), triggerReindex: vi.fn().mockResolvedValue(undefined) }
+    );
+
+    const file = readYml();
+    expect(file.repos[0]!.language).toBe('ruby');
+
+    // The commented hint is stripped by yaml.load, so assert against the raw text.
+    const raw = fs.readFileSync(path.join(tmpHome, 'projects.yml'), 'utf8');
+    expect(raw).toMatch(/# indexing:/);
+    expect(raw).toMatch(/#\s+exclude_extra:.*additive.*ruby defaults/);
+    expect(raw).toMatch(/#\s+- vendor\s+# \(already excluded by default for ruby\)/);
+    expect(raw).toMatch(/#\s+- spec\s+# \(already excluded by default for ruby\)/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('auto-detects typescript from package.json', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ts-'));
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"x"}\n');
+
+    await runAdd(
+      dir,
+      { paparatsHome: tmpHome },
+      { restartStack: vi.fn(), triggerReindex: vi.fn().mockResolvedValue(undefined) }
+    );
+
+    expect(readYml().repos[0]!.language).toBe('typescript');
+    const raw = fs.readFileSync(path.join(tmpHome, 'projects.yml'), 'utf8');
+    expect(raw).toMatch(/#\s+- node_modules\s+# \(already excluded by default for typescript\)/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('skips detection and hint when --language is passed explicitly', async () => {
+    // Gemfile would normally trigger ruby detection — the explicit flag wins.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'override-'));
+    fs.writeFileSync(path.join(dir, 'Gemfile'), '');
+
+    await runAdd(
+      dir,
+      { paparatsHome: tmpHome, language: 'go' },
+      { restartStack: vi.fn(), triggerReindex: vi.fn().mockResolvedValue(undefined) }
+    );
+
+    expect(readYml().repos[0]!.language).toBe('go');
+    const raw = fs.readFileSync(path.join(tmpHome, 'projects.yml'), 'utf8');
+    // The hint still renders, but for go (the user-specified language).
+    expect(raw).toMatch(/exclude_extra:.*additive.*go defaults/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('writes no language and no hint when the directory has no marker files', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'plain-'));
+
+    await runAdd(
+      dir,
+      { paparatsHome: tmpHome },
+      { restartStack: vi.fn(), triggerReindex: vi.fn().mockResolvedValue(undefined) }
+    );
+
+    expect(readYml().repos[0]!.language).toBeUndefined();
+    // The header documents `exclude_extra:` once; the per-entry hint block
+    // ("additive — added on top of …") is what we must NOT see here.
+    const raw = fs.readFileSync(path.join(tmpHome, 'projects.yml'), 'utf8');
+    expect(raw).not.toMatch(/additive — added on top/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('does not run language detection for remote entries', async () => {
+    await runAdd(
+      'org/repo',
+      { paparatsHome: tmpHome },
+      { restartStack: vi.fn(), triggerReindex: vi.fn().mockResolvedValue(undefined) }
+    );
+
+    expect(readYml().repos[0]!.language).toBeUndefined();
+    const raw = fs.readFileSync(path.join(tmpHome, 'projects.yml'), 'utf8');
+    expect(raw).not.toMatch(/additive — added on top/);
+  });
+
+  it('expanded header documents the per-entry schema', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'header-'));
+    await runAdd(
+      dir,
+      { paparatsHome: tmpHome },
+      { restartStack: vi.fn(), triggerReindex: vi.fn().mockResolvedValue(undefined) }
+    );
+
+    const raw = fs.readFileSync(path.join(tmpHome, 'projects.yml'), 'utf8');
+    expect(raw).toMatch(/Per-entry fields/);
+    expect(raw).toMatch(/exclude_extra:.*ADDS to per-language defaults/);
+    expect(raw).toMatch(/metadata:\s*\n#\s+git:/);
+
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe('runList', () => {

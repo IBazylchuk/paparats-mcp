@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import yaml from 'js-yaml';
-import { DEFAULT_GROUP } from '@paparats/shared';
+import { DEFAULT_GROUP, LANGUAGE_EXCLUDE_DEFAULTS } from '@paparats/shared';
 import {
   generateCompose,
   type LocalProjectMount,
@@ -112,17 +112,37 @@ export function readProjectsFile(home: string = PAPARATS_HOME): ProjectsFile {
   return defaults ? { defaults, repos } : { repos };
 }
 
+export interface WriteProjectsOptions {
+  /**
+   * Splice a commented hint block after the given entry index (0-based).
+   * Used by `paparats add` to render a per-language `exclude_extra` starter
+   * next to the freshly added entry. No-op if the entry can't be located.
+   */
+  hint?: { entryIndex: number; block: string };
+}
+
 /**
  * Atomically write the projects file. Always writes to the new name —
  * callers that want to migrate a legacy file should call
  * `migrateLegacyProjectsFile` first.
  */
-export function writeProjectsFile(file: ProjectsFile, home: string = PAPARATS_HOME): void {
+export function writeProjectsFile(
+  file: ProjectsFile,
+  home: string = PAPARATS_HOME,
+  opts: WriteProjectsOptions = {}
+): void {
   const target = path.join(home, PROJECTS_YML);
   const tmp = `${target}.tmp`;
-  const out =
-    HEADER +
-    yaml.dump(file, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false });
+  let body = yaml.dump(file, {
+    lineWidth: 120,
+    noRefs: true,
+    quotingType: "'",
+    forceQuotes: false,
+  });
+  if (opts.hint) {
+    body = spliceHintAfterEntry(body, opts.hint.entryIndex, opts.hint.block);
+  }
+  const out = HEADER + body;
   fs.mkdirSync(home, { recursive: true });
   fs.writeFileSync(tmp, out);
   fs.renameSync(tmp, target);
@@ -131,7 +151,98 @@ export function writeProjectsFile(file: ProjectsFile, home: string = PAPARATS_HO
 const HEADER = `# paparats-mcp — project list (read by indexer at /config/projects.yml)
 # Edit this file or use: paparats add | paparats remove | paparats edit projects
 # The indexer hot-reloads on save; saves trigger reindex.
+#
+# Per-entry fields (path OR url required; everything else optional):
+#   path: /absolute/host/path         # local bind-mount  (mutex with url)
+#   url:  owner/repo                  # remote git repo   (mutex with path)
+#   name: my-project                  # override derived name
+#   group: my-team                    # Qdrant collection bucket (default: defaults.group → 'default')
+#   language: ruby                    # or [ruby, javascript]; auto-detected on \`paparats add\` from marker files
+#   indexing:
+#     paths: ['app/**', 'lib/**']     # restrict to subtrees           (default: whole repo)
+#     exclude: ['vendor', 'tmp']      # REPLACES per-language defaults (use only to opt out of defaults)
+#     exclude_extra: ['fixtures']     # ADDS to per-language defaults  (preferred — purely additive)
+#     extensions: ['.rb', '.erb']     # restrict file extensions
+#   metadata:
+#     git: { enabled: true, lookbackDays: 365 }
+#
+# Built-in per-language exclude defaults (node_modules, vendor, tmp, …) are applied automatically
+# based on \`language:\`. New entries added via \`paparats add\` include a commented \`exclude_extra:\`
+# starter showing those defaults, so you can see what's already in effect and uncomment to add more.
+# Note: \`paparats add/remove/edit\` re-serialises this file and may strip comments you added by hand.
 `;
+
+/**
+ * Render a commented `exclude_extra` starter block for a language.
+ *
+ * The block is inert (every line is `#`-prefixed) — the user uncomments + edits
+ * to opt in. Each default exclude is annotated so it's clear the value is already
+ * applied by the server even without uncommenting. Returns null when the language
+ * has no defaults worth showing (e.g. 'generic' or unknown languages).
+ *
+ * `indent` is the per-entry indentation (e.g. '  ' for `repos:` children).
+ */
+export function renderExcludeHintComment(language: string, indent: string): string | null {
+  const defaults = LANGUAGE_EXCLUDE_DEFAULTS[language];
+  if (!defaults || defaults.length === 0) return null;
+  if (language === 'generic') return null;
+
+  const lines: string[] = [];
+  lines.push(`${indent}# indexing:`);
+  lines.push(
+    `${indent}#   exclude_extra:    # additive — added on top of the built-in ${language} defaults`
+  );
+  for (const pat of defaults) {
+    lines.push(`${indent}#     - ${pat}    # (already excluded by default for ${language})`);
+  }
+  return lines.join('\n') + '\n';
+}
+
+/**
+ * Splice a commented hint block into a freshly-dumped projects.yml after the
+ * last property of the entry at `entryIndex` (0-based, in document order).
+ *
+ * Implementation: walk the YAML line-by-line, count list items at the `repos:`
+ * indent (each list item starts with `- `), and when we reach the next item
+ * (or EOF) splice the hint just before it. The hint must already be indented
+ * to match the entry's property indent.
+ *
+ * Returns the input unchanged if the entry can't be located (defensive — the
+ * file is still valid YAML, only the comment is missing).
+ */
+export function spliceHintAfterEntry(yamlText: string, entryIndex: number, hint: string): string {
+  if (!hint) return yamlText;
+  const lines = yamlText.split('\n');
+
+  // Find the start of `repos:` (top-level key, no indent).
+  const reposLineIdx = lines.findIndex((l) => /^repos:\s*$/.test(l));
+  if (reposLineIdx === -1) return yamlText;
+
+  let currentItem = -1;
+  let insertBefore = -1;
+  for (let i = reposLineIdx + 1; i < lines.length; i++) {
+    const line = lines[i] ?? '';
+    // List-item start: any indentation followed by `- `. Tracked positionally —
+    // every `-` at any nesting *inside* an entry has a different leading
+    // pattern (e.g. `      - vendor`), so anchor on a `- ` with at most one
+    // level of indent (the same indent as the first item).
+    if (/^ {2}- /.test(line)) {
+      currentItem++;
+      if (currentItem === entryIndex + 1) {
+        insertBefore = i;
+        break;
+      }
+    }
+  }
+
+  if (currentItem < entryIndex) return yamlText; // entry not found
+  const idx = insertBefore === -1 ? lines.length : insertBefore;
+  const before = lines.slice(0, idx).join('\n');
+  const after = lines.slice(idx).join('\n');
+  // Ensure the previous chunk ends with a newline before the hint.
+  const sep = before.endsWith('\n') || before === '' ? '' : '\n';
+  return before + sep + hint + after;
+}
 
 /**
  * Resolve the effective group for a project entry. Per-entry `group` wins,
