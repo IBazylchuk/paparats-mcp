@@ -222,16 +222,24 @@ export function spliceHintAfterEntry(yamlText: string, entryIndex: number, hint:
   let insertBefore = -1;
   for (let i = reposLineIdx + 1; i < lines.length; i++) {
     const line = lines[i] ?? '';
-    // List-item start: any indentation followed by `- `. Tracked positionally —
-    // every `-` at any nesting *inside* an entry has a different leading
-    // pattern (e.g. `      - vendor`), so anchor on a `- ` with at most one
-    // level of indent (the same indent as the first item).
+    // List-item start: exactly two-space indent + `- `. Anchored at the
+    // `repos:` child indent so nested `- vendor` lines inside an entry's
+    // own `exclude_extra:` don't get counted as new entries.
     if (/^ {2}- /.test(line)) {
       currentItem++;
       if (currentItem === entryIndex + 1) {
         insertBefore = i;
         break;
       }
+      continue;
+    }
+    // Bound the search to the `repos:` block. Today our writer emits `repos:`
+    // last so this branch is unreachable in practice, but the helper is
+    // exported — if a future caller serialises top-level keys after `repos:`,
+    // we still splice inside the block rather than after the trailing key.
+    if (currentItem >= entryIndex && /^\S/.test(line)) {
+      insertBefore = i;
+      break;
     }
   }
 
