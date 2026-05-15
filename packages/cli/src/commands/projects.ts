@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import chalk from 'chalk';
 import { confirm } from '@inquirer/prompts';
+import { detectProjectLanguage } from '@paparats/shared';
 import {
   PAPARATS_HOME,
   COMPOSE_YML,
@@ -11,6 +12,7 @@ import {
   writeProjectsFile,
   readInstallState,
   regenerateCompose,
+  renderExcludeHintComment,
   resolveEntryGroup,
   resolveProjectName,
   type ProjectEntry,
@@ -107,9 +109,28 @@ export async function runAdd(
     );
   }
 
+  // For local paths without an explicit --language, sniff the working tree.
+  // Detection is best-effort: it only fires when there's an unambiguous marker
+  // file (Gemfile, package.json, …). Remote entries can't be sniffed at
+  // add-time — they get language detected lazily by the indexer at clone-time.
+  let detectedLanguage: string | null = null;
+  if (kind === 'local' && !opts.language) {
+    detectedLanguage = detectProjectLanguage(argument);
+    if (detectedLanguage) entry.language = detectedLanguage;
+  }
+
   file.repos.push(entry);
-  writeProjectsFile(file, home);
+  const entryIndex = file.repos.length - 1;
+  // Render a commented exclude_extra starter for the just-added entry, but
+  // only when we actually wrote a `language:` (explicit or detected) and that
+  // language has known defaults. Indent matches `repos:`-list-item properties.
+  const hintLang = opts.language ?? detectedLanguage;
+  const hintBlock = hintLang ? renderExcludeHintComment(hintLang, '    ') : null;
+  writeProjectsFile(file, home, hintBlock ? { hint: { entryIndex, block: hintBlock } } : {});
   console.log(chalk.green(`✓ Added ${kind} project "${name}"`));
+  if (detectedLanguage) {
+    console.log(chalk.dim(`  Detected language: ${detectedLanguage}`));
+  }
 
   // For local projects we add a new bind-mount in compose.yml — regenerate it
   // so the next `restart` actually exposes /projects/<name> inside the indexer.
