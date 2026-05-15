@@ -2066,6 +2066,17 @@ export class McpHandler {
     }
   }
 
+  private sendModeMismatchError(res: Response, sessionMode: McpMode, targetMode: McpMode): void {
+    res.status(400).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32000,
+        message: `Session belongs to ${sessionMode} mode, but was sent to ${targetMode} endpoint`,
+      },
+      id: null,
+    });
+  }
+
   private async handleMessages(req: Request, res: Response, mode: McpMode): Promise<void> {
     try {
       const sessionId = req.query.sessionId as string | undefined;
@@ -2082,14 +2093,7 @@ export class McpHandler {
 
       const sessionMode = sessionId ? this.sessionModes.get(sessionId) : undefined;
       if (sessionMode && sessionMode !== mode) {
-        res.status(400).json({
-          jsonrpc: '2.0',
-          error: {
-            code: -32000,
-            message: `Session belongs to ${sessionMode} mode, but was sent to ${mode} endpoint`,
-          },
-          id: null,
-        });
+        this.sendModeMismatchError(res, sessionMode, mode);
         return;
       }
 
@@ -2121,14 +2125,7 @@ export class McpHandler {
       if (transportEntry) {
         const sessionMode = sessionId ? this.sessionModes.get(sessionId) : undefined;
         if (sessionMode && sessionMode !== mode) {
-          res.status(400).json({
-            jsonrpc: '2.0',
-            error: {
-              code: -32000,
-              message: `Session belongs to ${sessionMode} mode, but was sent to ${mode} endpoint`,
-            },
-            id: null,
-          });
+          this.sendModeMismatchError(res, sessionMode, mode);
           return;
         }
         transportEntry.lastActivity = Date.now();
@@ -2200,14 +2197,7 @@ export class McpHandler {
       if (sessionId && (req.method === 'POST' || req.method === 'GET')) {
         const knownMode = this.sessionModes.get(sessionId);
         if (knownMode && knownMode !== mode) {
-          res.status(400).json({
-            jsonrpc: '2.0',
-            error: {
-              code: -32000,
-              message: `Session belongs to ${knownMode} mode, but was sent to ${mode} endpoint`,
-            },
-            id: null,
-          });
+          this.sendModeMismatchError(res, knownMode, mode);
           return;
         }
         // Session ID was provided but not found — expired or server restarted.
