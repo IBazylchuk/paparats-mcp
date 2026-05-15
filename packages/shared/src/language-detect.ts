@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 /**
@@ -60,6 +61,54 @@ export function detectLanguageByPath(relPath: string, content?: string): string 
     for (const { pattern, language } of SHEBANG_TO_LANGUAGE) {
       if (pattern.test(firstLine)) return language;
     }
+  }
+
+  return null;
+}
+
+// ── Project-level language detection ─────────────────────────────────────
+
+/** Marker files → language, ordered by specificity. Mirrors server/config.ts. */
+const PROJECT_MARKERS: Array<[string, string]> = [
+  ['tsconfig.json', 'typescript'],
+  ['package.json', 'typescript'],
+  ['Cargo.toml', 'rust'],
+  ['go.mod', 'go'],
+  ['pyproject.toml', 'python'],
+  ['requirements.txt', 'python'],
+  ['setup.py', 'python'],
+  ['pom.xml', 'java'],
+  ['build.gradle', 'java'],
+  ['Gemfile', 'ruby'],
+  ['Rakefile', 'ruby'],
+  ['CMakeLists.txt', 'cpp'],
+  ['Makefile', 'c'],
+];
+
+/**
+ * Detect the primary language of a project directory from marker files.
+ * Returns the first match in priority order, or `null` when no marker is
+ * found (caller decides whether to fall back to 'generic').
+ */
+export function detectProjectLanguage(projectDir: string): string | null {
+  try {
+    if (!fs.existsSync(projectDir)) return null;
+
+    for (const [file, lang] of PROJECT_MARKERS) {
+      if (fs.existsSync(path.join(projectDir, file))) return lang;
+    }
+
+    // C# fallback: presence of any .csproj/.sln file.
+    try {
+      const files = fs.readdirSync(projectDir);
+      if (files.some((f) => f.endsWith('.csproj') || f.endsWith('.sln'))) {
+        return 'csharp';
+      }
+    } catch {
+      // ignore
+    }
+  } catch {
+    return null;
   }
 
   return null;
