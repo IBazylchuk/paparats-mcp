@@ -100,7 +100,7 @@ npm install -g @paparats/cli
 # 2. macOS only — install Ollama natively (Linux uses Docker Ollama by default).
 brew install ollama
 
-# 3. One-time bootstrap. Generates ~/.paparats/{docker-compose.yml,paparats-indexer.yml},
+# 3. One-time bootstrap. Generates ~/.paparats/{docker-compose.yml,projects.yml},
 #    starts the stack, downloads the embedding model, wires Cursor/Claude Code MCP.
 paparats install
 
@@ -137,7 +137,7 @@ to reconfigure — it diffs the existing compose and asks before overwriting han
 ```
 ~/.paparats/
 ├── docker-compose.yml          generated; hand-editable; install asks before overwriting
-├── paparats-indexer.yml        project list (CLI rewrites it; comments survive your manual edits)
+├── projects.yml        project list (CLI rewrites it; comments survive your manual edits)
 ├── install.json                install flags persisted so add/remove can regenerate compose
 ├── .env                        secrets — Qdrant API key, GitHub token; chmod 600
 ├── models/                     jina-code-embeddings GGUF + Modelfile
@@ -156,7 +156,7 @@ Inside the Docker stack:
 | `qdrant`           | `qdrant/qdrant:latest`         | 6333  | Vector DB (skipped when you pass `--qdrant-url`)         |
 | `ollama`           | `ibaz/paparats-ollama:latest`  | 11434 | Embedding model (Linux default; macOS uses native Ollama) |
 
-The indexer hot-reloads `paparats-indexer.yml`. Edits that **change project metadata
+The indexer hot-reloads `projects.yml`. Edits that **change project metadata
 only** (group, language, indexing tweaks) reindex in place. Edits that **add or remove
 local-path projects** require a stack restart so Docker picks up the new bind-mount —
 the CLI does this for you on `paparats add` and `paparats remove`.
@@ -230,7 +230,7 @@ migration notice and asks before tearing the legacy stack down.
 
 **What survives:** Qdrant collections, SQLite metadata, indexer repos, and any
 `.paparats.yml` files inside your repos (those still take precedence over
-`paparats-indexer.yml` overrides).
+`projects.yml` overrides).
 
 **What's deleted:** the legacy `docker-compose.yml` and `.env`. They are regenerated on
 the spot under the new schema.
@@ -238,6 +238,11 @@ the spot under the new schema.
 **No re-indexing needed** — the data volumes are referenced by the same names in the new
 compose. Add your projects with `paparats add` and they re-appear in `paparats list` with
 their existing chunks.
+
+If your install predates the `paparats-indexer.yml` → `projects.yml` rename, the
+installer migrates the file in place on first run and prints a one-line notice.
+The indexer also reads the legacy name as a fallback, so nothing breaks if you
+roll out the indexer before re-running `paparats install`.
 
 Pass `--force` to skip the migration prompt in scripts.
 
@@ -356,7 +361,7 @@ AI assistant queries via MCP → server detects query type (nl2code / code2code 
 The indexer container watches the projects mounted into it via chokidar with debouncing
 (1s default). On change, only the affected file re-enters the pipeline. Unchanged content
 is never re-embedded thanks to the content-hash cache. The indexer also hot-reloads
-`~/.paparats/paparats-indexer.yml` itself: metadata-only edits reindex in place;
+`~/.paparats/projects.yml` itself: metadata-only edits reindex in place;
 add/remove of local-path projects triggers a stack restart through the CLI.
 
 ---
@@ -447,7 +452,7 @@ Bot workflow (via /support/mcp):
 
 Paparats uses two config files. Both are optional — defaults work for the common case.
 
-### `~/.paparats/paparats-indexer.yml` — global project list
+### `~/.paparats/projects.yml` — global project list
 
 Lives outside your repos. Edited by `paparats add` / `paparats remove` or by hand via
 `paparats edit projects`. Every entry has either `path:` (local bind-mount) or `url:`
@@ -512,7 +517,7 @@ metadata:
       - '#(\d+)' # GitHub-style #123
 ```
 
-In-repo `.paparats.yml` always wins over `paparats-indexer.yml`. The CLI never
+In-repo `.paparats.yml` always wins over `projects.yml`. The CLI never
 overwrites it.
 
 ### Groups
@@ -883,7 +888,7 @@ paparats-mcp/
 │   ├── indexer/         # Automated repo indexer (Docker image: ibaz/paparats-indexer)
 │   │   ├── src/
 │   │   │   ├── index.ts              # Entry: Express mini-server + cron scheduler
-│   │   │   ├── config-loader.ts      # paparats-indexer.yml parser + per-repo overrides
+│   │   │   ├── config-loader.ts      # projects.yml parser + per-repo overrides
 │   │   │   ├── config-watcher.ts     # chokidar watcher for hot-reloading the project list
 │   │   │   ├── repo-manager.ts       # parseReposEnv(), cloneOrPull() using simple-git
 │   │   │   ├── scheduler.ts          # node-cron wrapper
@@ -895,7 +900,7 @@ paparats-mcp/
 │   │   └── src/
 │   │       ├── index.ts                    # Commander entry
 │   │       ├── docker-compose-generator.ts # Programmatic YAML generation
-│   │       ├── projects-yml.ts             # paparats-indexer.yml + install.json read/write
+│   │       ├── projects-yml.ts             # projects.yml + install.json read/write
 │   │       └── commands/                   # install, projects (add/remove/list), lifecycle, edit, etc.
 │   └── shared/          # Shared utilities (npm package: @paparats/shared)
 │       └── src/
@@ -958,7 +963,7 @@ jobs:
 ```
 
 Pass `"force": true` in the body to drop existing chunks first (destructive — use after
-schema/config changes). If the project isn't yet in `paparats-indexer.yml`, add it once
+schema/config changes). If the project isn't yet in `projects.yml`, add it once
 during your initial setup and the indexer's cron + hot-reload will keep it in sync going
 forward.
 

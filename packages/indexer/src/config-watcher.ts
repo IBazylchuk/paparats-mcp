@@ -30,7 +30,7 @@ export interface MinimalWatcher {
 }
 
 /**
- * Watches paparats-indexer.yml on disk. On debounced change events, reparses
+ * Watches projects.yml on disk. On debounced change events, reparses
  * and emits a diff (added / removed / modified) against the prior in-memory state.
  */
 export class ConfigWatcher {

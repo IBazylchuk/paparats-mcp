@@ -16,7 +16,7 @@ import type { TreeSitterManager, ProjectConfig, PaparatsConfig } from '@paparats
 import { normalizeExcludePatterns } from '@paparats/shared';
 import { parseReposEnv, cloneOrPull, repoPath } from './repo-manager.js';
 import { startScheduler } from './scheduler.js';
-import { tryLoadIndexerConfig } from './config-loader.js';
+import { tryLoadIndexerConfig, resolveConfigPath } from './config-loader.js';
 import { ConfigWatcher } from './config-watcher.js';
 import type { RepoConfig, RepoOverrides, HealthResponse, RepoStatus, RunStatus } from './types.js';
 
@@ -58,7 +58,7 @@ if (fileConfig) {
 } else {
   repos = parseReposEnv(REPOS, GITHUB_TOKEN);
   if (repos.length === 0) {
-    console.warn('[indexer] No repos configured. Set REPOS env or mount paparats-indexer.yml.');
+    console.warn('[indexer] No repos configured. Set REPOS env or mount projects.yml.');
   }
 }
 
@@ -325,9 +325,9 @@ if (repos.length > 0) {
 // ── Hot-reload watcher ──────────────────────────────────────────────────────
 
 let configWatcher: ConfigWatcher | undefined;
-const configFilePath = `${CONFIG_DIR}/paparats-indexer.yml`;
+const configFilePath = resolveConfigPath(CONFIG_DIR);
 
-if (fileConfig && fs.existsSync(configFilePath)) {
+if (fileConfig && configFilePath) {
   configWatcher = new ConfigWatcher(
     {
       configPath: configFilePath,

@@ -6,7 +6,8 @@ import chalk from 'chalk';
 import {
   PAPARATS_HOME,
   COMPOSE_YML,
-  INDEXER_YML,
+  PROJECTS_YML,
+  resolveProjectsFilePath,
   readProjectsFile,
   type ProjectsFile,
 } from '../projects-yml.js';
@@ -46,7 +47,10 @@ export interface EditResult {
 
 export async function runEdit(target: EditTarget, deps: EditDeps = {}): Promise<EditResult> {
   const home = deps.paparatsHome ?? PAPARATS_HOME;
-  const file = target === 'compose' ? path.join(home, COMPOSE_YML) : path.join(home, INDEXER_YML);
+  const file =
+    target === 'compose'
+      ? path.join(home, COMPOSE_YML)
+      : (resolveProjectsFilePath(home) ?? path.join(home, PROJECTS_YML));
   const exists = deps.exists ?? fs.existsSync.bind(fs);
   if (!exists(file)) {
     throw new Error(`${file} not found. Run \`paparats install\` first.`);
@@ -142,7 +146,7 @@ async function defaultTriggerFullReindex(): Promise<void> {
 }
 
 export const editCommand = new Command('edit')
-  .description('Open ~/.paparats/docker-compose.yml or paparats-indexer.yml in $EDITOR')
+  .description('Open ~/.paparats/docker-compose.yml or projects.yml in $EDITOR')
   .argument('<target>', 'compose | projects')
   .action(async (target: string) => {
     if (target !== 'compose' && target !== 'projects') {

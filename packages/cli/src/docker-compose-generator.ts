@@ -30,7 +30,7 @@ export interface UnifiedComposeConfig {
   cron?: string;
   /** Local-path projects in projects.yml — added as bind-mounts on the indexer. */
   localProjects?: LocalProjectMount[];
-  /** Absolute host path to ~/.paparats (used to mount paparats-indexer.yml). */
+  /** Absolute host path to ~/.paparats (used to mount projects.yml). */
   paparatsHome: string;
   /** Optional port overrides (test convenience). */
   ports?: {
@@ -184,7 +184,7 @@ function indexerService(
   if (config.qdrantApiKey) env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
 
   // Mount the whole ~/.paparats as /config (directory bind-mount, not single file)
-  // so the indexer survives in-place rewrites of paparats-indexer.yml — single-file
+  // so the indexer survives in-place rewrites of projects.yml — single-file
   // bind-mounts pin to the host inode and break on atomic rename or replace.
   const volumes = [
     'indexer_repos:/data/repos',

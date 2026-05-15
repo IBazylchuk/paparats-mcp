@@ -65,7 +65,7 @@ describe('runEdit', () => {
   });
 
   it('projects target validates and triggers regenerate+reindex when valid', async () => {
-    fs.writeFileSync(path.join(tmpHome, 'paparats-indexer.yml'), 'repos:\n  - url: org/foo\n');
+    fs.writeFileSync(path.join(tmpHome, 'projects.yml'), 'repos:\n  - url: org/foo\n');
     const regen = vi.fn().mockResolvedValue({ composeChanged: true });
     const trigger = vi.fn().mockResolvedValue(undefined);
     const result = await runEdit('projects', {
@@ -81,7 +81,7 @@ describe('runEdit', () => {
   });
 
   it('projects target validation failure: no regenerate, no trigger', async () => {
-    fs.writeFileSync(path.join(tmpHome, 'paparats-indexer.yml'), 'not valid: : :');
+    fs.writeFileSync(path.join(tmpHome, 'projects.yml'), 'not valid: : :');
     const regen = vi.fn();
     const trigger = vi.fn();
     const result = await runEdit('projects', {

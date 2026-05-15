@@ -3,7 +3,11 @@ import path from 'path';
 import yaml from 'js-yaml';
 import type { RepoConfig, IndexerFileConfig, RepoOverrides } from './types.js';
 
-const CONFIG_FILE = 'paparats-indexer.yml';
+/** Current name. */
+const CONFIG_FILE = 'projects.yml';
+/** Legacy name from paparats < 0.4 — kept as fallback so indexer keeps reading
+ *  pre-rename installs until they migrate via `paparats install`. */
+const LEGACY_CONFIG_FILE = 'paparats-indexer.yml';
 
 /** Container-side mount root for local-path projects. */
 const LOCAL_MOUNT_ROOT = '/projects';
@@ -185,15 +189,33 @@ export function loadIndexerConfig(configPath: string, token?: string): LoadConfi
 }
 
 /**
+ * Resolve which config file to load, preferring the new name and falling back
+ * to the legacy paparats-indexer.yml. Returns null if neither file exists.
+ */
+export function resolveConfigPath(configDir: string): string | null {
+  const next = `${configDir}/${CONFIG_FILE}`;
+  if (fs.existsSync(next)) return next;
+  const legacy = `${configDir}/${LEGACY_CONFIG_FILE}`;
+  if (fs.existsSync(legacy)) return legacy;
+  return null;
+}
+
+/**
  * Try to load indexer config from standard paths.
  * Returns null if no config file found.
  */
 export function tryLoadIndexerConfig(configDir: string, token?: string): LoadConfigResult | null {
-  const configPath = `${configDir}/${CONFIG_FILE}`;
-  if (!fs.existsSync(configPath)) return null;
+  const configPath = resolveConfigPath(configDir);
+  if (!configPath) return null;
 
-  console.log(`[indexer] Loading config from ${configPath}`);
+  if (configPath.endsWith(LEGACY_CONFIG_FILE)) {
+    console.warn(
+      `[indexer] Loading legacy ${LEGACY_CONFIG_FILE}. Run \`paparats install\` to rename it to ${CONFIG_FILE}.`
+    );
+  } else {
+    console.log(`[indexer] Loading config from ${configPath}`);
+  }
   return loadIndexerConfig(configPath, token);
 }
 
-export { CONFIG_FILE };
+export { CONFIG_FILE, LEGACY_CONFIG_FILE };
