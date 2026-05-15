@@ -11,6 +11,7 @@ import {
   writeProjectsFile,
   readInstallState,
   regenerateCompose,
+  resolveEntryGroup,
   resolveProjectName,
   type ProjectEntry,
 } from '../projects-yml.js';
@@ -93,8 +94,10 @@ export async function runAdd(
 
   if (opts.name) entry.name = opts.name;
   const name = resolveProjectName(entry);
+  // Only persist `group` when explicitly provided. Omitting it lets the
+  // entry inherit `defaults.group` from projects.yml (or DEFAULT_GROUP),
+  // which preserves the multi-project-per-group model.
   if (opts.group) entry.group = opts.group;
-  else entry.group = name;
   if (opts.language) entry.language = opts.language;
 
   const dup = file.repos.find((r) => resolveProjectName(r) === name);
@@ -225,7 +228,7 @@ export async function runList(
   const rows: ListedProject[] = [];
   for (const entry of file.repos) {
     const name = resolveProjectName(entry);
-    const group = entry.group ?? name;
+    const group = resolveEntryGroup(entry, file);
     if (opts.group && group !== opts.group) continue;
     const kind: 'local' | 'remote' = entry.path ? 'local' : 'remote';
     const source = entry.path ?? entry.url ?? '';
@@ -328,7 +331,7 @@ export async function runRemove(
     throw new Error(`Project "${name}" not found in ${path.join(home, PROJECTS_YML)}`);
   }
   const entry = file.repos[idx]!;
-  const group = entry.group ?? name;
+  const group = resolveEntryGroup(entry, file);
   const kind: 'local' | 'remote' = entry.path ? 'local' : 'remote';
 
   if (!opts.yes) {
@@ -403,7 +406,10 @@ export const addCommand = new Command('add')
     'Absolute local path, or git URL (git@.../foo.git, https://.../foo.git, owner/repo)'
   )
   .option('--name <name>', 'Project name override')
-  .option('--group <group>', 'Group name (defaults to project name)')
+  .option(
+    '--group <group>',
+    'Qdrant collection bucket. Multiple projects in the same group share one collection. Defaults to projects.yml `defaults.group` or "default".'
+  )
   .option('--language <lang>', 'Language override')
   .option('--no-reindex', 'Skip the per-project reindex trigger')
   .option('--no-restart', 'Skip the docker compose restart for local-path adds')

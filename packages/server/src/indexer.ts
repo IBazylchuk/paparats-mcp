@@ -307,6 +307,49 @@ export class Indexer {
     }
   }
 
+  /**
+   * Drop chunks and SQLite metadata for `projectName` from any group OTHER
+   * than `keepGroup`. Called before indexing so a project that was renamed
+   * out of a group (or moved between groups) doesn't leave duplicate
+   * chunks behind in the old collection — those would surface in searches
+   * with a stale `chunk_id`, while symbol-graph edges live under the new
+   * key, breaking find_usages.
+   */
+  private async evictProjectFromOtherGroups(keepGroup: string, projectName: string): Promise<void> {
+    let groups: Record<string, number>;
+    try {
+      groups = await this.listGroups();
+    } catch (err) {
+      console.warn(
+        `  [indexer] Stale-group cleanup skipped (listGroups failed): ${(err as Error).message}`
+      );
+      return;
+    }
+    for (const otherGroup of Object.keys(groups)) {
+      if (otherGroup === keepGroup) continue;
+      try {
+        const probe = await this.retryQdrant(() =>
+          this.qdrant.scroll(this.col(otherGroup), {
+            filter: { must: [{ key: 'project', match: { value: projectName } }] },
+            with_payload: false,
+            with_vector: false,
+            limit: 1,
+          })
+        );
+        if (probe.points.length === 0) continue;
+        console.log(
+          `  [indexer] Evicting stale chunks for "${projectName}" from group "${otherGroup}" (now lives in "${keepGroup}")`
+        );
+        await this.deleteProjectChunks(otherGroup, projectName);
+        this.metadataStore?.deleteByProject(otherGroup, projectName);
+      } catch (err) {
+        console.warn(
+          `  [indexer] Stale-group eviction failed for ${otherGroup}/${projectName} (non-fatal): ${(err as Error).message}`
+        );
+      }
+    }
+  }
+
   private hashSetsEqual(a: Set<string>, b: Set<string>): boolean {
     if (a.size !== b.size) return false;
     for (const h of a) {
@@ -646,6 +689,7 @@ export class Indexer {
     }
 
     await this.ensureCollection(groupName);
+    await this.evictProjectFromOtherGroups(groupName, project.name);
 
     const fileSet = new Set<string>();
     for (const pattern of project.patterns) {

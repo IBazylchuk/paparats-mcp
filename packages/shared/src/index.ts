@@ -8,3 +8,4 @@ export {
 } from './language-excludes.js';
 export { createGitignoreFilter, filterFilesByGitignore } from './gitignore.js';
 export { detectLanguageByPath } from './language-detect.js';
+export { DEFAULT_GROUP } from './group.js';
