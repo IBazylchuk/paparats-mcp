@@ -1003,6 +1003,80 @@ describe('McpHandler', () => {
     }
   });
 
+  it('rejects reuse of a coding session id on the support endpoint', async () => {
+    const app = express();
+    app.use(express.json());
+    handler.mount(app);
+
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      const initRes = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '1.0.0' },
+          },
+        }),
+      });
+
+      expect(initRes.status).toBe(200);
+      const sessionId = initRes.headers.get('mcp-session-id');
+      expect(sessionId).toBeTruthy();
+
+      // Replay the coding session id against the support endpoint — must be rejected.
+      const crossRes = await fetch(`http://127.0.0.1:${port}/support/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'mcp-session-id': sessionId!,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'prompts/list',
+          params: {},
+        }),
+      });
+
+      expect(crossRes.status).toBe(400);
+      const body = (await crossRes.json()) as { error?: { code?: number; message?: string } };
+      expect(body.error?.code).toBe(-32000);
+      expect(body.error?.message).toContain('coding mode');
+      expect(body.error?.message).toContain('support endpoint');
+
+      // The original coding session is still usable.
+      const sameModeRes = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'mcp-session-id': sessionId!,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'prompts/list',
+          params: {},
+        }),
+      });
+      expect(sameModeRes.status).toBe(200);
+    } finally {
+      server.close();
+    }
+  });
+
   it('impact_analysis without metadataStore returns only seed chunks', async () => {
     const searcher = createMockSearcher();
     vi.mocked(searcher.expandedSearch).mockResolvedValue({

@@ -3,7 +3,20 @@
  * Edit packages/server/src/prompts/prompts.json to change tool descriptions and system instructions.
  */
 
+import { z } from 'zod';
 import promptsJson from './prompts.json' with { type: 'json' };
+
+export interface WorkflowPromptArg {
+  description: string;
+  required: boolean;
+}
+
+export interface WorkflowPrompt {
+  title: string;
+  description: string;
+  args: Record<string, WorkflowPromptArg>;
+  message: string;
+}
 
 export interface Prompts {
   codingInstructions: string;
@@ -31,6 +44,7 @@ export interface Prompts {
       searchFirstNote: string;
     };
   };
+  workflows: Record<string, WorkflowPrompt>;
 }
 
 function validatePrompts(data: unknown): Prompts {
@@ -98,10 +112,74 @@ function validatePrompts(data: unknown): Prompts {
   ) {
     throw new Error('prompts.resources.projectOverview has invalid structure');
   }
+  const workflows = p.workflows;
+  if (!workflows || typeof workflows !== 'object') {
+    throw new Error('prompts.workflows must be an object');
+  }
+  for (const [name, raw] of Object.entries(workflows as Record<string, unknown>)) {
+    if (!raw || typeof raw !== 'object') {
+      throw new Error(`prompts.workflows.${name} must be an object`);
+    }
+    const wf = raw as Record<string, unknown>;
+    if (typeof wf.title !== 'string') {
+      throw new Error(`prompts.workflows.${name}.title must be a string`);
+    }
+    if (typeof wf.description !== 'string') {
+      throw new Error(`prompts.workflows.${name}.description must be a string`);
+    }
+    if (typeof wf.message !== 'string') {
+      throw new Error(`prompts.workflows.${name}.message must be a string`);
+    }
+    if (!wf.args || typeof wf.args !== 'object') {
+      throw new Error(`prompts.workflows.${name}.args must be an object`);
+    }
+    for (const [argName, argRaw] of Object.entries(wf.args as Record<string, unknown>)) {
+      if (!argRaw || typeof argRaw !== 'object') {
+        throw new Error(`prompts.workflows.${name}.args.${argName} must be an object`);
+      }
+      const arg = argRaw as Record<string, unknown>;
+      if (typeof arg.description !== 'string') {
+        throw new Error(`prompts.workflows.${name}.args.${argName}.description must be a string`);
+      }
+      if (typeof arg.required !== 'boolean') {
+        throw new Error(`prompts.workflows.${name}.args.${argName}.required must be a boolean`);
+      }
+    }
+  }
   return data as Prompts;
 }
 
 export const prompts: Prompts = validatePrompts(promptsJson);
+
+export function buildWorkflowArgsSchema(
+  args: Record<string, WorkflowPromptArg>
+): Record<string, z.ZodTypeAny> {
+  const schema: Record<string, z.ZodTypeAny> = {};
+  for (const [name, arg] of Object.entries(args)) {
+    const base = z.string().describe(arg.description);
+    schema[name] = arg.required ? base : base.optional();
+  }
+  return schema;
+}
+
+/**
+ * Interpolate {{name}} and {{name|fallback}} placeholders against argument values.
+ * - {{name}} → value if present and non-empty, else empty string.
+ * - {{name|fallback}} → value if present and non-empty, else literal fallback text.
+ */
+export function interpolateWorkflowMessage(
+  template: string,
+  args: Record<string, string | undefined>
+): string {
+  return template.replace(
+    /\{\{([a-zA-Z_][a-zA-Z0-9_]*)(?:\|([^}]*))?\}\}/g,
+    (_match, name, fallback) => {
+      const value = args[name];
+      if (typeof value === 'string' && value.length > 0) return value;
+      return typeof fallback === 'string' ? fallback : '';
+    }
+  );
+}
 
 export function buildProjectOverviewSections(): string[] {
   const projectOverview = prompts.resources.projectOverview;

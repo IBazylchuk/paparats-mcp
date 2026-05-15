@@ -13,7 +13,12 @@ import type { Indexer } from './indexer.js';
 import { parseChunkId } from './indexer.js';
 import type { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
-import { prompts, buildProjectOverviewSections } from './prompts/index.js';
+import {
+  prompts,
+  buildProjectOverviewSections,
+  buildWorkflowArgsSchema,
+  interpolateWorkflowMessage,
+} from './prompts/index.js';
 import type { Telemetry } from './telemetry/facade.js';
 import { tctx } from './telemetry/context.js';
 import type { AnalyticsStore } from './telemetry/analytics-store.js';
@@ -128,6 +133,15 @@ const SUPPORT_TOOLS = new Set([
   'failed_chunks',
 ]);
 
+/** Workflow-prompt names available in each mode. Content lives in prompts.json. */
+const CODING_PROMPTS = ['find_implementation', 'trace_callers', 'onboard_to_project'];
+const SUPPORT_PROMPTS = [
+  'triage_incident',
+  'prepare_release_notes',
+  'assess_change_impact',
+  'onboard_to_project',
+];
+
 export class McpHandler {
   private searcher: Searcher;
   private indexer: Indexer;
@@ -184,12 +198,12 @@ export class McpHandler {
   mount(app: Express): void {
     // Coding mode (backwards-compatible paths)
     app.get('/sse', (req, res) => this.handleSSE(req, res, 'coding'));
-    app.post('/messages', (req, res) => this.handleMessages(req, res));
+    app.post('/messages', (req, res) => this.handleMessages(req, res, 'coding'));
     app.all('/mcp', (req, res) => this.handleStreamableHTTP(req, res, 'coding'));
 
     // Support mode
     app.get('/support/sse', (req, res) => this.handleSSE(req, res, 'support'));
-    app.post('/support/messages', (req, res) => this.handleMessages(req, res));
+    app.post('/support/messages', (req, res) => this.handleMessages(req, res, 'support'));
     app.all('/support/mcp', (req, res) => this.handleStreamableHTTP(req, res, 'support'));
   }
 
@@ -1987,6 +2001,35 @@ export class McpHandler {
         );
     }
 
+    // ── Workflow prompts ─────────────────────────────────────────────────────
+    const promptNames = mode === 'coding' ? CODING_PROMPTS : SUPPORT_PROMPTS;
+    for (const name of promptNames) {
+      const workflow = prompts.workflows[name];
+      if (!workflow) continue;
+      server.registerPrompt(
+        name,
+        {
+          title: workflow.title,
+          description: workflow.description,
+          argsSchema: buildWorkflowArgsSchema(workflow.args),
+        },
+        (rawArgs) => {
+          const args = rawArgs as Record<string, string | undefined>;
+          return {
+            messages: [
+              {
+                role: 'user' as const,
+                content: {
+                  type: 'text' as const,
+                  text: interpolateWorkflowMessage(workflow.message, args),
+                },
+              },
+            ],
+          };
+        }
+      );
+    }
+
     return server;
   }
 
@@ -2023,7 +2066,18 @@ export class McpHandler {
     }
   }
 
-  private async handleMessages(req: Request, res: Response): Promise<void> {
+  private sendModeMismatchError(res: Response, sessionMode: McpMode, targetMode: McpMode): void {
+    res.status(400).json({
+      jsonrpc: '2.0',
+      error: {
+        code: -32000,
+        message: `Session belongs to ${sessionMode} mode, but was sent to ${targetMode} endpoint`,
+      },
+      id: null,
+    });
+  }
+
+  private async handleMessages(req: Request, res: Response, mode: McpMode): Promise<void> {
     try {
       const sessionId = req.query.sessionId as string | undefined;
       const entry = sessionId ? this.transports[sessionId] : undefined;
@@ -2034,6 +2088,12 @@ export class McpHandler {
           error: { code: -32000, message: 'No transport for sessionId' },
           id: null,
         });
+        return;
+      }
+
+      const sessionMode = sessionId ? this.sessionModes.get(sessionId) : undefined;
+      if (sessionMode && sessionMode !== mode) {
+        this.sendModeMismatchError(res, sessionMode, mode);
         return;
       }
 
@@ -2063,6 +2123,11 @@ export class McpHandler {
       let transportEntry = sessionId ? this.transports[sessionId] : undefined;
 
       if (transportEntry) {
+        const sessionMode = sessionId ? this.sessionModes.get(sessionId) : undefined;
+        if (sessionMode && sessionMode !== mode) {
+          this.sendModeMismatchError(res, sessionMode, mode);
+          return;
+        }
         transportEntry.lastActivity = Date.now();
         this.applySessionIdentity(sessionId);
         const t = transportEntry.transport;
@@ -2130,6 +2195,11 @@ export class McpHandler {
       }
 
       if (sessionId && (req.method === 'POST' || req.method === 'GET')) {
+        const knownMode = this.sessionModes.get(sessionId);
+        if (knownMode && knownMode !== mode) {
+          this.sendModeMismatchError(res, knownMode, mode);
+          return;
+        }
         // Session ID was provided but not found — expired or server restarted.
         // Instead of returning 404, transparently recreate the session with the same ID.
         // This allows clients to survive server restarts without re-initializing.
