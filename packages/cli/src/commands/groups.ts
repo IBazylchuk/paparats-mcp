@@ -118,7 +118,9 @@ export async function runGroups(
 
     if (groupEntries.length === 0) {
       if (!opts.quiet) {
-        console.log(chalk.yellow('No groups indexed yet. Run `paparats index` first.'));
+        console.log(
+          chalk.yellow('No groups indexed yet. Run `paparats add <path-or-repo>` first.')
+        );
       }
       process.exit(0);
     }

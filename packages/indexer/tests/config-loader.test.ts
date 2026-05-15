@@ -156,12 +156,12 @@ defaults:
     expect(() => loadIndexerConfig(configPath)).toThrow(/"repos" must be an array/);
   });
 
-  it('throws for repo entry without url', () => {
+  it('throws for repo entry without url or path', () => {
     writeConfig(`
 repos:
   - group: test
 `);
-    expect(() => loadIndexerConfig(configPath)).toThrow(/must have a "url" field/);
+    expect(() => loadIndexerConfig(configPath)).toThrow(/must have a "url" or "path" field/);
   });
 
   it('throws for invalid repo format', () => {
@@ -185,6 +185,90 @@ repos:
 `);
     const result = loadIndexerConfig(configPath);
     expect(result.repos[0]!.overrides!.language).toBe('ruby');
+  });
+
+  // ── Local-path entries ────────────────────────────────────────────────────
+
+  it('parses local-path entry: derives name from basename and maps localPath to /projects/<name>', () => {
+    writeConfig(`
+repos:
+  - path: /Users/alice/code/billing
+`);
+    const result = loadIndexerConfig(configPath);
+    expect(result.repos).toHaveLength(1);
+    const r = result.repos[0]!;
+    expect(r.name).toBe('billing');
+    expect(r.fullName).toBe('billing');
+    expect(r.owner).toBe('_local');
+    expect(r.url).toBe('');
+    expect(r.localPath).toBe('/projects/billing');
+  });
+
+  it('parses local-path entry with explicit name override', () => {
+    writeConfig(`
+repos:
+  - path: /Users/alice/code/billing
+    name: billing-v2
+`);
+    const result = loadIndexerConfig(configPath);
+    const r = result.repos[0]!;
+    expect(r.name).toBe('billing-v2');
+    expect(r.fullName).toBe('billing-v2');
+    expect(r.localPath).toBe('/projects/billing-v2');
+  });
+
+  it('rejects entry with both url and path', () => {
+    writeConfig(`
+repos:
+  - url: org/repo
+    path: /Users/alice/code/billing
+`);
+    expect(() => loadIndexerConfig(configPath)).toThrow(/cannot set both "url" and "path"/);
+  });
+
+  it('rejects local-path entry with relative path', () => {
+    writeConfig(`
+repos:
+  - path: relative/path
+`);
+    expect(() => loadIndexerConfig(configPath)).toThrow(/must be absolute/);
+  });
+
+  it('rejects duplicate project names within the file', () => {
+    writeConfig(`
+repos:
+  - path: /Users/alice/code/billing
+  - path: /Users/bob/code/billing
+`);
+    expect(() => loadIndexerConfig(configPath)).toThrow(/Duplicate project name "billing"/);
+  });
+
+  it('rejects duplicate when one entry overrides name to clash with another basename', () => {
+    writeConfig(`
+repos:
+  - path: /Users/alice/code/billing
+  - path: /Users/alice/code/legacy
+    name: billing
+`);
+    expect(() => loadIndexerConfig(configPath)).toThrow(/Duplicate project name "billing"/);
+  });
+
+  it('parses mixed file with local-path and remote entries', () => {
+    writeConfig(`
+repos:
+  - path: /Users/alice/code/billing
+    group: dev
+  - url: org/repo
+    group: prod
+`);
+    const result = loadIndexerConfig(configPath);
+    expect(result.repos).toHaveLength(2);
+    expect(result.repos[0]!.name).toBe('billing');
+    expect(result.repos[0]!.localPath).toBe('/projects/billing');
+    expect(result.repos[0]!.overrides?.group).toBe('dev');
+    expect(result.repos[1]!.fullName).toBe('org/repo');
+    expect(result.repos[1]!.localPath).toBeUndefined();
+    expect(result.repos[1]!.overrides?.group).toBe('prod');
   });
 });
 

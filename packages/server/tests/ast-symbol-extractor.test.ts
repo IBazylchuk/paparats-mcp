@@ -277,6 +277,61 @@ end`;
     expect(uses).toEqual(uniqueUses);
   });
 
+  // ── Scope filter (only top-level / class-method declarations) ─────────
+
+  it('filters out locals declared inside function bodies (TypeScript)', async () => {
+    const code = `export function outer() {
+  const innerConst = 1;
+  function innerFn() {}
+  const handleClick = () => {};
+}
+export const topLevelConst = 2;
+function topLevelFn() {
+  let result = 0;
+  const merged = {};
+}`;
+    const { tree, language } = parse('typescript', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 9 }],
+      'typescript'
+    );
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('outer');
+    expect(names).toContain('topLevelConst');
+    expect(names).toContain('topLevelFn');
+    // Locals must NOT appear — these are scope-blindness false positives
+    // that show up as fake "dead code" if we leak them through.
+    expect(names).not.toContain('innerConst');
+    expect(names).not.toContain('innerFn');
+    expect(names).not.toContain('handleClick');
+    expect(names).not.toContain('result');
+    expect(names).not.toContain('merged');
+  });
+
+  it('keeps methods on top-level classes (TypeScript)', async () => {
+    const code = `export class Service {
+  doWork() {
+    const localVar = 1;
+    return localVar;
+  }
+}`;
+    const { tree, language } = parse('typescript', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 5 }],
+      'typescript'
+    );
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('Service');
+    expect(names).toContain('doWork');
+    expect(names).not.toContain('localVar');
+  });
+
   // ── Kind extraction tests ──────────────────────────────────────────────
 
   it('extracts kind for TypeScript symbols', async () => {

@@ -1060,6 +1060,7 @@ __metadata:
     "@types/express": "npm:^5.0.6"
     "@types/js-yaml": "npm:^4.0.9"
     "@types/node": "npm:^25.6.2"
+    chokidar: "npm:^5.0.0"
     express: "npm:^5.2.1"
     js-yaml: "npm:^4.1.1"
     node-cron: "npm:^4.2.1"
