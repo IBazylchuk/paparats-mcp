@@ -172,6 +172,82 @@ function resolveKind(node: Node): ChunkKind {
 }
 
 /**
+ * Node types whose interior is "inside a function body" — anything declared
+ * deeper than these is local scope and must NOT be reported as dead code.
+ * A symbol is local iff walking up from its declaration we hit one of these
+ * before we hit a top-level container.
+ */
+const FUNCTION_BODY_NODES = new Set([
+  // TS/JS
+  'function_declaration',
+  'function_expression',
+  'arrow_function',
+  'generator_function',
+  'generator_function_declaration',
+  'method_definition',
+  // Python
+  'function_definition',
+  'lambda',
+  // Go
+  'func_literal',
+  // 'function_declaration' already covered (Go uses same type)
+  // 'method_declaration' — methods on receivers, top-level in Go
+  // Rust — function_item is top-level definition; closures are 'closure_expression'
+  'closure_expression',
+  // Ruby
+  'method',
+  'singleton_method',
+  'lambda',
+  'do_block',
+  'block',
+  // Java — methods can declare locals; method_declaration body is the boundary
+  'method_declaration',
+  'constructor_declaration',
+  // C/C++ — function_definition declares a function, locals live inside its body
+  // 'function_definition' already covered
+  // C#
+  // 'method_declaration' already covered
+  'constructor_declaration_csharp',
+  'local_function_statement',
+]);
+
+/**
+ * Returns true iff the captured identifier represents a module-level (or
+ * class-level — methods on top-level classes count) declaration.
+ *
+ * Algorithm: walk up from the identifier. If we encounter a function-body
+ * node BEFORE reaching the file root, it's local. The walk skips over the
+ * declaration the identifier is the name of (function_declaration's name is
+ * an identifier child of function_declaration itself — that's the symbol's
+ * own home, not its enclosing scope).
+ */
+function isTopLevelDeclaration(identifierNode: Node): boolean {
+  // The identifier's first ancestor is its own declaration. We need to look
+  // ABOVE that. Walk up to find the declaration node, then keep walking from
+  // there to the root, checking each ancestor for "is a function body".
+  let decl: Node | null = identifierNode.parent;
+  for (let depth = 0; decl && depth < 4; depth++) {
+    if (NODE_TYPE_TO_KIND[decl.type]) break;
+    decl = decl.parent;
+  }
+  if (!decl) return false;
+
+  // Walk above the declaration. If any ancestor is a function-body node,
+  // the symbol lives in that function's scope (local). Otherwise it's
+  // module-level (or inside a top-level class/namespace, which is fine —
+  // method_definition itself is the declaration we want to keep).
+  //
+  // Special case: the declaration node IS sometimes `method_definition` (a
+  // method on a class). That's the symbol's home, not its scope — keep it.
+  let ancestor: Node | null = decl.parent;
+  while (ancestor) {
+    if (FUNCTION_BODY_NODES.has(ancestor.type)) return false;
+    ancestor = ancestor.parent;
+  }
+  return true;
+}
+
+/**
  * Extract defines_symbols, uses_symbols, and defined_symbols (with kind) for each chunk
  * from a parsed AST tree.
  *
@@ -229,14 +305,19 @@ export function extractSymbolsForChunks(
       ) {
         defIdx++;
       }
-      // Collect def captures within this chunk
+      // Collect def captures within this chunk. Module-level only — locals
+      // (vars/functions inside a function body, callback args, hook closures,
+      // etc.) are not addressable from other files and reporting them as
+      // "dead code" is just scope-blindness. Their dead-or-alive status is
+      // determined by the enclosing function, not by cross-file references.
       for (let d = defIdx; d < defCaptures.length; d++) {
         const row = defCaptures[d]!.node.startPosition.row;
         if (row > chunk.endLine) break;
-        const text = defCaptures[d]!.node.text;
-        if (!isNoise(text) && !defines.has(text)) {
-          defines.set(text, resolveKind(defCaptures[d]!.node));
-        }
+        const captureNode = defCaptures[d]!.node;
+        const text = captureNode.text;
+        if (isNoise(text) || defines.has(text)) continue;
+        if (!isTopLevelDeclaration(captureNode)) continue;
+        defines.set(text, resolveKind(captureNode));
       }
 
       // Advance useIdx past captures before this chunk

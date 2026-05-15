@@ -33,4 +33,4 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
 
 LABEL org.opencontainers.image.title="paparats-ollama"
 LABEL org.opencontainers.image.description="Ollama with pre-baked Jina Code Embeddings 1.5B for Paparats MCP"
-LABEL org.opencontainers.image.source="https://github.com/bkbhub/paparats-mcp"
+LABEL org.opencontainers.image.source="https://github.com/ibaz/paparats-mcp"

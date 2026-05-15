@@ -1,8 +1,12 @@
 import fs from 'fs';
+import path from 'path';
 import yaml from 'js-yaml';
 import type { RepoConfig, IndexerFileConfig, RepoOverrides } from './types.js';
 
 const CONFIG_FILE = 'paparats-indexer.yml';
+
+/** Container-side mount root for local-path projects. */
+const LOCAL_MOUNT_ROOT = '/projects';
 
 /**
  * Deep-merge repo overrides with defaults. Repo-level values win.
@@ -57,25 +61,60 @@ function mergeOverrides(
 
 /**
  * Parse a single repo entry from the config file into a RepoConfig.
+ * Entry must have exactly one source: `url` (remote git) or `path` (local bind-mount).
  */
 function parseRepoEntry(
   entry: IndexerFileConfig['repos'][number],
   defaults: IndexerFileConfig['defaults'],
   token?: string
 ): RepoConfig {
-  const fullName = entry.url.trim();
+  const hasUrl = typeof entry.url === 'string' && entry.url.trim().length > 0;
+  const hasPath = typeof entry.path === 'string' && entry.path.trim().length > 0;
+
+  if (hasUrl && hasPath) {
+    throw new Error(
+      `Invalid repo entry: cannot set both "url" and "path" (got url="${entry.url}", path="${entry.path}")`
+    );
+  }
+  if (!hasUrl && !hasPath) {
+    throw new Error('Invalid repo entry: must set exactly one of "url" or "path"');
+  }
+
+  // Extract overrides (everything except `url` / `path` / `name`)
+  /* eslint-disable @typescript-eslint/no-unused-vars */
+  const { url: _url, path: _path, name: _name, ...repoOverrides } = entry;
+  /* eslint-enable @typescript-eslint/no-unused-vars */
+  const overrides = mergeOverrides(defaults, repoOverrides);
+
+  if (hasPath) {
+    const localHostPath = entry.path!.trim();
+    if (!path.isAbsolute(localHostPath)) {
+      throw new Error(`Invalid local path "${localHostPath}": must be absolute`);
+    }
+    const name = (entry.name?.trim() || path.basename(localHostPath)).trim();
+    if (!name) {
+      throw new Error(`Invalid local path "${localHostPath}": cannot derive project name`);
+    }
+    return {
+      url: '',
+      owner: '_local',
+      name,
+      fullName: name,
+      localPath: `${LOCAL_MOUNT_ROOT}/${name}`,
+      overrides: Object.keys(overrides).length > 0 ? overrides : undefined,
+    };
+  }
+
+  // Remote git repo path
+  const fullName = entry.url!.trim();
   const parts = fullName.split('/');
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     throw new Error(`Invalid repo format: "${fullName}". Expected "owner/repo".`);
   }
-  const [owner, name] = parts as [string, string];
+  const [owner, repoName] = parts as [string, string];
   const host = token ? `${token}@github.com` : 'github.com';
-  const url = `https://${host}/${owner}/${name}.git`;
-
-  // Extract overrides (everything except `url`)
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { url: _url, ...repoOverrides } = entry;
-  const overrides = mergeOverrides(defaults, repoOverrides);
+  const url = `https://${host}/${owner}/${repoName}.git`;
+  const name = (entry.name?.trim() || repoName).trim();
 
   return {
     url,
@@ -104,8 +143,10 @@ function validateConfig(config: unknown): asserts config is IndexerFileConfig {
       throw new Error('Invalid indexer config: each repo entry must be an object');
     }
     const e = entry as Record<string, unknown>;
-    if (typeof e['url'] !== 'string' || !e['url']) {
-      throw new Error('Invalid indexer config: each repo entry must have a "url" field');
+    const hasUrl = typeof e['url'] === 'string' && (e['url'] as string).length > 0;
+    const hasPath = typeof e['path'] === 'string' && (e['path'] as string).length > 0;
+    if (!hasUrl && !hasPath) {
+      throw new Error('Invalid indexer config: each repo entry must have a "url" or "path" field');
     }
   }
 }
@@ -125,8 +166,21 @@ export function loadIndexerConfig(configPath: string, token?: string): LoadConfi
   validateConfig(parsed);
 
   const repos = parsed.repos.map((entry) => parseRepoEntry(entry, parsed.defaults, token));
-  const cron = parsed.defaults?.cron;
 
+  // Reject duplicate project names within the file (regardless of source).
+  const seen = new Map<string, number>();
+  for (let i = 0; i < repos.length; i++) {
+    const name = repos[i]!.name;
+    const prior = seen.get(name);
+    if (prior !== undefined) {
+      throw new Error(
+        `Duplicate project name "${name}" in indexer config (entries #${prior + 1} and #${i + 1})`
+      );
+    }
+    seen.set(name, i);
+  }
+
+  const cron = parsed.defaults?.cron;
   return { repos, cron };
 }
 

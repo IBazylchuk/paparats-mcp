@@ -1,12 +1,14 @@
 export interface RepoConfig {
-  /** Repository URL (e.g. https://github.com/org/repo.git) */
+  /** Repository URL (e.g. https://github.com/org/repo.git). Empty string for local-path projects. */
   url: string;
-  /** Owner/org (e.g. "org") */
+  /** Owner/org (e.g. "org"). "_local" for local-path projects. */
   owner: string;
   /** Repository name (e.g. "repo") */
   name: string;
-  /** Full identifier (e.g. "org/repo") */
+  /** Full identifier (e.g. "org/repo" or just the name for local). */
   fullName: string;
+  /** Absolute path to the project on the indexer's filesystem (bind-mounted from host). */
+  localPath?: string;
   /** Per-repo overrides from indexer config file */
   overrides?: RepoOverrides;
 }
@@ -39,12 +41,19 @@ export interface RepoOverrides {
   };
 }
 
-/** Structure of paparats-indexer.yml */
+/**
+ * Structure of paparats-indexer.yml.
+ * Each repo entry must have exactly one source: `url` (remote git) or `path` (local bind-mount).
+ */
 export interface IndexerFileConfig {
   repos: Array<
     {
-      /** Repository in "owner/repo" format */
-      url: string;
+      /** Repository in "owner/repo" format. Mutually exclusive with `path`. */
+      url?: string;
+      /** Absolute host path mounted at /projects/<name> in the indexer container. Mutually exclusive with `url`. */
+      path?: string;
+      /** Optional override for the project name (defaults to basename of `path` or repo of `url`). */
+      name?: string;
     } & RepoOverrides
   >;
   defaults?: {

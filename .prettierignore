@@ -3,3 +3,10 @@ node_modules
 coverage
 *.lock
 yarn.lock
+
+# Long-form prose — humans (and Claude) write these, prettier shouldn't fail CI on
+# line length / table widths / intentional formatting choices.
+*.md
+.changeset/*.md
+docs/**/*.md
+
