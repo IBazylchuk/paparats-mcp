@@ -18,6 +18,7 @@ import { parseReposEnv, cloneOrPull, repoPath } from './repo-manager.js';
 import { startScheduler } from './scheduler.js';
 import { tryLoadIndexerConfig, resolveConfigPath } from './config-loader.js';
 import { ConfigWatcher } from './config-watcher.js';
+import { resolveTriggerTargets } from './trigger-filter.js';
 import type { RepoConfig, RepoOverrides, HealthResponse, RepoStatus, RunStatus } from './types.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -238,7 +239,7 @@ async function runIndexCycle(filter?: string[], opts?: { force?: boolean }): Pro
   indexCycleRunning = true;
   globalStatus = 'running';
   const startTime = Date.now();
-  const targets = filter ? repos.filter((r) => filter.includes(r.fullName)) : repos;
+  const targets = filter ? resolveTriggerTargets(repos, filter) : repos;
   const force = opts?.force === true;
 
   console.log(
@@ -273,13 +274,33 @@ app.post('/trigger', async (req, res) => {
     const body = req.body as { repos?: string[]; force?: boolean } | undefined;
     const filter = body?.repos;
     const force = body?.force === true;
+
+    // Resolve the filter to actual repos *before* spawning the cycle so we
+    // can reject unknown identifiers with 404 instead of returning 200 and
+    // silently doing nothing — the CLI's --force recovery path depends on
+    // this signal.
+    let targets: RepoConfig[];
+    if (filter && filter.length > 0) {
+      targets = resolveTriggerTargets(repos, filter);
+      if (targets.length === 0) {
+        res.status(404).json({
+          error: 'No matching repos',
+          requested: filter,
+          known: repos.map((r) => ({ name: r.name, fullName: r.fullName })),
+        });
+        return;
+      }
+    } else {
+      targets = repos;
+    }
+
     // Run async — don't block the response
     runIndexCycle(filter, { force }).catch((err) => {
       console.error('[indexer] Triggered cycle failed:', (err as Error).message);
     });
     res.json({
       status: 'triggered',
-      repos: filter ?? repos.map((r) => r.fullName),
+      repos: targets.map((r) => r.fullName),
       force,
     });
   } catch (err) {
@@ -348,8 +369,18 @@ if (fileConfig && configFilePath) {
         for (const repo of change.added) {
           repoStatuses.set(repo.fullName, { repo: repo.fullName, status: 'idle' });
         }
+        // Modified repos: when fullName changed (e.g. `url` was repointed),
+        // the old key is now stale and the new one doesn't exist yet —
+        // indexRepo would dereference undefined. Re-key bookkeeping so the
+        // new fullName has an entry before the indexer touches it.
+        for (const { prior, next } of change.modified) {
+          if (prior.fullName !== next.fullName) {
+            repoStatuses.delete(prior.fullName);
+            repoStatuses.set(next.fullName, { repo: next.fullName, status: 'idle' });
+          }
+        }
         // Reindex added + modified.
-        const targets = [...change.added, ...change.modified];
+        const targets = [...change.added, ...change.modified.map((m) => m.next)];
         for (const repo of targets) {
           indexRepo(repo).catch((err) => {
             console.error(

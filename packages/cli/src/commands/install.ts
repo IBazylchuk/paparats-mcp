@@ -230,6 +230,7 @@ export interface InstallDeps {
   writeFileSync?: (path: string, data: string) => void;
   existsSync?: (path: string) => boolean;
   unlinkSync?: (path: string) => void;
+  renameSync?: (oldPath: string, newPath: string) => void;
   promptUseExternalQdrant?: () => Promise<boolean>;
   promptQdrantUrl?: () => Promise<string>;
   promptQdrantApiKey?: () => Promise<string>;
@@ -331,9 +332,14 @@ export function detectLegacyInstall(composeContent: string | null): string | nul
   return null;
 }
 
-async function runMigration(
-  composePath: string,
-  envPath: string,
+/**
+ * Get the user's consent to migrate from a v1 install. Does NOT touch any
+ * file on disk — the actual tear-down happens later, after the replacement
+ * compose has been generated and written. This split prevents the
+ * "interrupt-mid-install" hole where we used to delete the legacy compose
+ * before knowing whether we could write a successor.
+ */
+async function confirmMigration(
   resolvedDeps: ResolvedDeps,
   opts: InstallOptions
 ): Promise<boolean> {
@@ -344,30 +350,42 @@ async function runMigration(
       '`developer` / `server` install modes are no longer used.\n\n' +
       'Existing data volumes (qdrant_data, paparats_data, indexer_repos) are\n' +
       'preserved — your indexed projects survive. The legacy compose and .env will be\n' +
-      'removed and regenerated under the new schema.\n'
+      'backed up to *.legacy.bak and replaced once the new compose is ready.\n'
   );
 
-  let proceed = true;
-  if (!opts.force) {
-    if (opts.nonInteractive) {
-      throw new Error(
-        'Migration prompt required but --non-interactive set; pass --force to proceed.'
-      );
-    }
-    const promptMigrate =
-      resolvedDeps.promptMigrate ??
-      (() => confirm({ message: 'Continue migration?', default: false }));
-    proceed = await promptMigrate();
+  if (opts.force) return true;
+  if (opts.nonInteractive) {
+    throw new Error(
+      'Migration prompt required but --non-interactive set; pass --force to proceed.'
+    );
   }
-
+  const promptMigrate =
+    resolvedDeps.promptMigrate ??
+    (() => confirm({ message: 'Continue migration?', default: false }));
+  const proceed = await promptMigrate();
   if (!proceed) {
     console.log(chalk.dim('Migration aborted, no changes made.'));
-    return false;
   }
+  return proceed;
+}
 
-  // Best-effort: tear down the legacy stack.
+/**
+ * Tear down the legacy stack and back up its compose+env. Backups stay on
+ * disk as `<name>.legacy.bak` so the user has a recovery path if anything
+ * downstream goes wrong; we only clean them up after a fully successful
+ * install. Returns the backup paths that were actually created.
+ */
+export function tearDownAndBackupLegacy(
+  composePath: string,
+  envPath: string,
+  resolvedDeps: ResolvedDeps,
+  opts: InstallOptions
+): { composeBak: string | null; envBak: string | null } {
+  // Best-effort: stop the legacy stack. A failure here doesn't block the
+  // upgrade — the user may already have stopped it manually, or the daemon
+  // may be unreachable; either way, the new compose can still be written.
   try {
-    execSync(`${resolvedDeps.getDockerComposeCommand()} -f "${composePath}" down`, {
+    resolvedDeps.execSync(`${resolvedDeps.getDockerComposeCommand()} -f "${composePath}" down`, {
       stdio: opts.verbose ? 'inherit' : ['pipe', 'pipe', 'pipe'],
       timeout: 60_000,
     });
@@ -375,16 +393,22 @@ async function runMigration(
     // user may have already stopped it; ignore
   }
 
-  if (resolvedDeps.existsSync(composePath)) resolvedDeps.unlinkSync(composePath);
-  if (resolvedDeps.existsSync(envPath)) resolvedDeps.unlinkSync(envPath);
-
-  console.log(chalk.green('✓ Legacy compose removed; continuing with fresh install\n'));
-  return true;
+  let composeBak: string | null = null;
+  let envBak: string | null = null;
+  if (resolvedDeps.existsSync(composePath)) {
+    composeBak = `${composePath}.legacy.bak`;
+    resolvedDeps.renameSync(composePath, composeBak);
+  }
+  if (resolvedDeps.existsSync(envPath)) {
+    envBak = `${envPath}.legacy.bak`;
+    resolvedDeps.renameSync(envPath, envBak);
+  }
+  return { composeBak, envBak };
 }
 
 // ── Resolved deps ───────────────────────────────────────────────────────────
 
-interface ResolvedDeps {
+export interface ResolvedDeps {
   commandExists: (cmd: string) => boolean;
   getDockerComposeCommand: () => string;
   ollamaModelExists: (modelName: string) => boolean;
@@ -397,6 +421,7 @@ interface ResolvedDeps {
   writeFileSync: (path: string, data: string) => void;
   existsSync: (path: string) => boolean;
   unlinkSync: (path: string) => void;
+  renameSync: (oldPath: string, newPath: string) => void;
   promptUseExternalQdrant?: () => Promise<boolean>;
   promptQdrantUrl?: () => Promise<string>;
   promptQdrantApiKey?: () => Promise<string>;
@@ -526,9 +551,13 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
     ? deps.readFileSync(composePath, 'utf8')
     : null;
   const legacyTrigger = detectLegacyInstall(composeContent);
+  let needsLegacyTeardown = false;
   if (legacyTrigger) {
-    const proceeded = await runMigration(composePath, envPath, deps, opts);
+    const proceeded = await confirmMigration(deps, opts);
     if (!proceeded) return;
+    // Defer the actual tear-down until we have the new compose generated
+    // and ready to write — see step 7c below.
+    needsLegacyTeardown = true;
   }
 
   // 3. Ollama decision
@@ -596,7 +625,23 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
     localProjects: localProjectsFor(projectsFile),
   });
 
-  // 7. Compose write with overwrite confirmation (default N)
+  // 7. Tear down the legacy stack and back up its compose+env now that we
+  //    have a validated replacement in memory. Backups stay on disk under
+  //    *.legacy.bak so the user has a recovery path; we keep them around
+  //    even after success — `paparats install` is idempotent and a stray
+  //    pair of bak files is cheaper than a missed rollback opportunity.
+  if (needsLegacyTeardown) {
+    const { composeBak, envBak } = tearDownAndBackupLegacy(composePath, envPath, deps, opts);
+    if (composeBak) {
+      console.log(
+        chalk.dim(
+          `Backed up legacy compose to ${composeBak}` + (envBak ? ` and .env to ${envBak}` : '')
+        )
+      );
+    }
+  }
+
+  // 7a. Compose write with overwrite confirmation (default N)
   const existingCompose = deps.existsSync(composePath)
     ? deps.readFileSync(composePath, 'utf8')
     : null;
@@ -801,6 +846,7 @@ export async function runInstall(
     writeFileSync: deps?.writeFileSync ?? fs.writeFileSync.bind(fs),
     existsSync: deps?.existsSync ?? fs.existsSync.bind(fs),
     unlinkSync: deps?.unlinkSync ?? fs.unlinkSync.bind(fs),
+    renameSync: deps?.renameSync ?? fs.renameSync.bind(fs),
     platform: deps?.platform ?? (() => process.platform),
     execSync: deps?.execSync ?? (execSync as unknown as ResolvedDeps['execSync']),
     ...(deps?.signal !== undefined ? { signal: deps.signal } : {}),
