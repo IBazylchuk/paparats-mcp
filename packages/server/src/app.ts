@@ -104,12 +104,39 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
       const qdrantGroups = await indexer.listGroups();
       const qdrantNames = new Set(Object.keys(qdrantGroups));
 
-      // Add new groups discovered in Qdrant
+      // Add/refresh groups + their projects discovered in Qdrant
       for (const name of qdrantNames) {
-        if (!projectsByGroup.has(name)) {
-          projectsByGroup.set(name, []);
-          console.log(`[group-sync] Discovered group: ${name} (${qdrantGroups[name]} chunks)`);
+        const knownProjects = projectsByGroup.get(name);
+        let projectsInGroup: Array<{ name: string; languages: string[] }> = [];
+        try {
+          projectsInGroup = await indexer.listProjectsInGroup(name);
+        } catch {
+          // Listing projects in a freshly-created or empty group can fail
+          // before the first chunk is written. Leave the group empty in that
+          // case — the next poll cycle will pick the projects up.
         }
+
+        const desired = new Map<string, ProjectConfig>();
+        for (const p of projectsInGroup) {
+          const cfg = buildProjectConfigFromContent(p.name, name, {
+            languages: p.languages.length > 0 ? p.languages : undefined,
+          });
+          desired.set(p.name, cfg);
+        }
+
+        // Preserve any projects registered explicitly via POST /api/index that
+        // happen to share the group — explicit registration wins over the
+        // auto-built config (it has real paths, watchers, etc.).
+        for (const existing of knownProjects ?? []) {
+          desired.set(existing.name, existing);
+        }
+
+        if (!knownProjects) {
+          console.log(
+            `[group-sync] Discovered group: ${name} (${qdrantGroups[name]} chunks, ${desired.size} project(s))`
+          );
+        }
+        projectsByGroup.set(name, Array.from(desired.values()));
       }
 
       // Remove groups that no longer exist in Qdrant

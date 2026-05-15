@@ -7,18 +7,29 @@
 [![PulseMCP](https://img.shields.io/badge/PulseMCP-listed-01696f)](https://www.pulsemcp.com/servers/paparats-mcp)
 
 **Paparats-kvetka** — a magical flower from Slavic folklore that blooms on Kupala Night
-and grants power to whoever finds it. Likewise, paparats-mcp helps you find the right
-code across a sea of repositories.
+and grants whoever finds it the power to see hidden things. Likewise, paparats-mcp
+helps your agent see the right code across a sea of repositories.
 
-> 🌿 Works with **Claude Code · Cursor · Windsurf · Copilot · Codex** · any MCP-compatible agent
+> 🌿 Works with **Claude Code · Cursor · Windsurf · Copilot · Codex · Antigravity** · any MCP-compatible agent
 
-**Semantic code search for AI coding assistants.** Give your coding agent deep understanding
-of your entire codebase — single repo or multi-project workspaces. Search by meaning,
-not keywords. Keep your index fresh with real-time file watching. Return only relevant
-chunks instead of full files to save tokens.
+**Give your AI coding assistant deep, real understanding of your entire workspace.**
+Paparats indexes every repo you care about — semantically, with AST-aware chunking and
+a cross-chunk symbol graph — and exposes it through the Model Context Protocol. Search
+by meaning, follow `who-uses-what` through real symbol edges, see who last touched a
+chunk and which ticket it came from — all without your code ever leaving your machine.
 
-**100% local.** No cloud. No API keys. No telemetry. Your code never leaves your machine —
-perfect for proprietary and enterprise codebases.
+- ⚡ **One install, one config.** `paparats install` → `paparats add ~/code/repo` → done.
+- 🌳 **AST-aware chunking and symbol extraction.** Tree-sitter parses every supported
+  file once and feeds both chunking and the cross-chunk symbol graph (calls /
+  called_by / references / referenced_by) — 11 languages including TypeScript, Python,
+  Go, Rust, Java, Ruby, C, C++, C#.
+- 💸 **Saves tokens.** Returns only the chunks that matter, with token-savings telemetry
+  to prove it (per-query, per-user, per-anchor-project).
+- 🔭 **Production-ready observability.** Prometheus `/metrics`, OpenTelemetry traces
+  (Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud), local SQLite analytics with six
+  built-in MCP tools for cost reporting.
+- 🏠 **100% local by default.** Qdrant + Ollama on your machine. No cloud, no API keys,
+  no telemetry leaving the box. Bring your own Qdrant Cloud / Ollama URL if you want.
 
 ---
 
@@ -26,26 +37,19 @@ perfect for proprietary and enterprise codebases.
 
 - [Why Paparats?](#why-paparats)
 - [Quick Start](#quick-start)
-- [Deployment Guides](#deployment-guides)
-  - [Developer Local Setup](#developer-local-setup)
-  - [Server / Production Setup](#server--production-setup)
-  - [Support Agent Setup](#support-agent-setup)
+- [How the install works](#how-the-install-works)
+- [Install variants](#install-variants)
+- [Migrating from a v1 install](#migrating-from-a-v1-install)
+- [Support agent setup](#support-agent-setup)
 - [How It Works](#how-it-works)
 - [Key Features](#key-features)
 - [Use Cases](#use-cases)
-  - [For Developers (Coding)](#for-developers-coding)
-  - [For Support Teams](#for-support-teams)
 - [Configuration](#configuration)
 - [MCP Tools Reference](#mcp-tools-reference)
-  - [Coding Endpoint](#coding-endpoint-mcp)
-  - [Support Endpoint](#support-endpoint-supportmcp)
 - [Connecting MCP](#connecting-mcp)
 - [CLI Commands](#cli-commands)
-- [Docker & Ollama](#docker--ollama)
-  - [Local Ollama](#local-ollama)
-  - [Docker Ollama](#docker-ollama)
-  - [External Qdrant](#external-qdrant)
 - [Monitoring](#monitoring)
+- [Analytics & Observability](#analytics--observability)
 - [Architecture](#architecture)
 - [Embedding Model Setup](#embedding-model-setup)
 - [Comparison with Alternatives](#comparison-with-alternatives)
@@ -63,13 +67,12 @@ AI coding assistants are smart, but they can only see files you open. They don't
 
 - **Semantic code search** — ask "where is the rate limiting logic?" and get exact code ranked by meaning, not grep matches
 - **Real-time sync** — edit a file, and 2 seconds later it's re-indexed. No manual re-runs
-- **LSP intelligence** — go-to-definition, find-references, rename symbols via [CCLSP](https://github.com/nicobailon/cclsp) integration
+- **Cross-chunk symbol graph** — `find_usages` walks AST-derived edges (calls, called_by, references, referenced_by) so the agent can trace dependencies without re-grepping
 - **Token savings** — return only relevant chunks instead of full files to reduce context size
 - **Multi-project workspaces** — search across backend, frontend, infra repos in one query
 - **100% local & private** — Qdrant vector database + Ollama embeddings. Nothing leaves your laptop
 - **AST-aware chunking** — code split by AST nodes (functions/classes) via tree-sitter, not arbitrary character counts (TypeScript, JavaScript, TSX, Python, Go, Rust, Java, Ruby, C, C++, C#; regex fallback for Terraform)
 - **Rich metadata** — each chunk knows its symbol name (from tree-sitter AST), service, domain context, and tags from directory structure
-- **Symbol graph** — find usages and cross-chunk relationships powered by AST-based symbol extraction (defines/uses analysis)
 - **Git history per chunk** — see who last modified a chunk, when, and which tickets (Jira, GitHub) are linked to it
 
 ### Who benefits
@@ -86,131 +89,169 @@ AI coding assistants are smart, but they can only see files you open. They don't
 
 ## Quick Start
 
+You need **Docker** and **Docker Compose v2**. On macOS, also install **Ollama natively** —
+running it inside Docker on macOS is significantly slower because the Docker VM cannot
+use Apple Silicon GPU acceleration.
+
 ```bash
-# 1. Install CLI
+# 1. Install the CLI.
 npm install -g @paparats/cli
 
-# 2. One-time setup (downloads ~1.6 GB GGUF model, starts Docker containers)
+# 2. macOS only — install Ollama natively (Linux uses Docker Ollama by default).
+brew install ollama
+
+# 3. One-time bootstrap. Generates ~/.paparats/{docker-compose.yml,projects.yml},
+#    starts the stack, downloads the embedding model, wires Cursor/Claude Code MCP.
 paparats install
 
-# 3. In your project
-cd your-project
-paparats init   # creates .paparats.yml
-paparats index  # index the codebase
+# 4. Add the projects you want indexed. Local paths bind-mount read-only into the
+#    indexer; git URLs and owner/repo shorthand get cloned.
+paparats add ~/code/my-project
+paparats add git@github.com:acme/billing.git
+paparats add acme/widgets
 
-# 4. Keep index fresh with file watching
-paparats watch  # run in background or separate terminal
-
-# 5. Connect your IDE (Cursor, Claude Code) — see "Connecting MCP" below
+# 5. Watch it work.
+paparats list
 ```
 
-### Prerequisites
+That's it. Your IDE is already wired (`~/.cursor/mcp.json`, `~/.claude/mcp.json`) to
+`http://localhost:9876/mcp`. Open Cursor or Claude Code and ask:
 
-Install these **before** running `paparats install`:
+> "Search this workspace for the auth middleware and show me everything that calls it."
 
-| Tool               | Purpose                            | Install                                                                  |
-| ------------------ | ---------------------------------- | ------------------------------------------------------------------------ |
-| **Docker**         | Runs Qdrant vector DB + MCP server | [docker.com](https://docker.com)                                         |
-| **Docker Compose** | Orchestrates containers (v2)       | Included with Docker Desktop; Linux: `apt install docker-compose-plugin` |
-| **Ollama**         | Local embedding model (on host)    | [ollama.com](https://ollama.com) (or use `--ollama-mode docker`)         |
+### Existing v1 user?
 
-The CLI checks that `docker` and `ollama` (or `docker` only in Docker Ollama mode) are available. If missing, it exits with installation links.
+Just run `paparats install` again. The installer detects the legacy per-project
+compose, asks once before swapping it for the new global setup, and **preserves your
+indexed data** (Qdrant collections, SQLite metadata, embedding cache). Your in-repo
+`.paparats.yml` files keep working as per-project overrides.
 
 ---
 
-## Deployment Guides
+## How the install works
 
-Paparats supports three deployment modes, each designed for a different use case:
+`paparats install` is the only setup command. It creates a single global home at
+`~/.paparats/`, brings up a Docker stack, and wires your MCP clients. Re-run it any time
+to reconfigure — it diffs the existing compose and asks before overwriting hand edits.
 
-### Developer Local Setup
-
-The default mode — for developers using Claude Code, Cursor, or other AI assistants locally.
-
-```bash
-# Install with local Ollama (default, requires Ollama installed on host)
-paparats install --mode developer
-
-# Or with Docker Ollama (no host Ollama needed)
-paparats install --mode developer --ollama-mode docker
-
-# Or with an external Qdrant instance (e.g. Qdrant Cloud)
-paparats install --mode developer --qdrant-url http://your-qdrant:6333
-
-# Then, in each project:
-cd your-project
-paparats init   # creates .paparats.yml
-paparats index  # index the codebase
-paparats watch  # auto-reindex on file changes
+```
+~/.paparats/
+├── docker-compose.yml          generated; hand-editable; install asks before overwriting
+├── projects.yml        project list (CLI rewrites it; comments survive your manual edits)
+├── install.json                install flags persisted so add/remove can regenerate compose
+├── .env                        secrets — Qdrant API key, GitHub token; chmod 600
+├── models/                     jina-code-embeddings GGUF + Modelfile
+└── data/                       Docker volumes (mounted by name from compose)
+    ├── qdrant/                 vector index
+    ├── sqlite/                 metadata.db, embeddings.db, analytics.db
+    └── repos/                  cloned remote projects
 ```
 
-**What happens:**
+Inside the Docker stack:
 
-1. Checks Docker (and Ollama if local mode)
-2. Asks whether to use an external Qdrant instance (or pass `--qdrant-url` to skip the prompt)
-3. Generates docker-compose with qdrant + paparats server (+ ollama if docker mode). When using external Qdrant, the Qdrant container is omitted
-4. Downloads and registers the embedding model (local mode) or uses pre-baked Docker image (docker mode)
-5. Auto-configures Cursor MCP if `~/.cursor/` exists
+| Service            | Image                          | Port  | Role                                                     |
+| ------------------ | ------------------------------ | ----- | -------------------------------------------------------- |
+| `paparats-mcp`     | `ibaz/paparats-server:latest`  | 9876  | MCP HTTP/SSE endpoints, search, metadata API             |
+| `paparats-indexer` | `ibaz/paparats-indexer:latest` | 9877  | Cron + on-demand indexing, hot-reload of project list    |
+| `qdrant`           | `qdrant/qdrant:latest`         | 6333  | Vector DB (skipped when you pass `--qdrant-url`)         |
+| `ollama`           | `ibaz/paparats-ollama:latest`  | 11434 | Embedding model (Linux default; macOS uses native Ollama) |
 
-### Server / Production Setup
+The indexer hot-reloads `projects.yml`. Edits that **change project metadata
+only** (group, language, indexing tweaks) reindex in place. Edits that **add or remove
+local-path projects** require a stack restart so Docker picks up the new bind-mount —
+the CLI does this for you on `paparats add` and `paparats remove`.
 
-For teams wanting a self-contained Docker stack that auto-indexes repos on a schedule. No IDE integration — headless operation.
+---
 
-```bash
-# Full stack: qdrant + ollama + paparats server + indexer
-paparats install --mode server --repos org/repo1,org/repo2
+## Install variants
 
-# With private repos
-paparats install --mode server \
-  --repos org/private-repo,org/other \
-  --github-token ghp_xxx
-
-# Custom schedule (default: every 6 hours)
-paparats install --mode server \
-  --repos org/repo \
-  --cron "0 */2 * * *"
-
-# With external Qdrant (e.g. Qdrant Cloud)
-paparats install --mode server \
-  --repos org/repo \
-  --qdrant-url https://qdrant.example.com \
-  --qdrant-api-key your-api-key
-
-# All repos in one shared collection
-paparats install --mode server \
-  --repos org/repo1,org/repo2 \
-  --group shared-index
-```
-
-**What happens:**
-
-1. Checks Docker only (no Ollama check — runs in Docker)
-2. Asks whether to use an external Qdrant instance (or pass `--qdrant-url` to skip the prompt)
-3. Generates docker-compose with all services: qdrant + ollama + paparats + indexer. When using external Qdrant, the Qdrant container is omitted
-4. Creates `~/.paparats/.env` with `REPOS`, `GITHUB_TOKEN`, `CRON`, `PAPARATS_GROUP`, `QDRANT_API_KEY` (as applicable)
-5. Starts all containers
-6. Indexer clones repos and indexes them on the configured schedule
-
-**After setup:**
+### Default (recommended)
 
 ```bash
-# Trigger immediate reindex
-curl -X POST http://localhost:9877/trigger
-
-# Trigger specific repos only
-curl -X POST http://localhost:9877/trigger -H 'Content-Type: application/json' \
-  -d '{"repos": ["org/repo1"]}'
-
-# Check indexer status
-curl http://localhost:9877/health
-
-# MCP endpoints for clients
-# Coding:  http://localhost:9876/mcp
-# Support: http://localhost:9876/support/mcp
+paparats install
 ```
 
-### Support Agent Setup
+On macOS prefers native Ollama and dockerized Qdrant. On Linux defaults to Docker for
+both.
 
-For support teams and bots that connect to an existing Paparats server — no Docker, no Ollama needed.
+### Bring your own Qdrant
+
+```bash
+paparats install --qdrant-url https://qdrant.example.com
+# Asks for an API key after; stored in ~/.paparats/.env as QDRANT_API_KEY.
+```
+
+When `--qdrant-url` is set the Qdrant container is omitted from the stack entirely.
+
+### Bring your own Ollama
+
+```bash
+paparats install --ollama-url http://10.0.0.5:11434
+```
+
+Skips both native and Docker Ollama.
+
+> **You must register the embedding model on the remote Ollama yourself.** The installer
+> will not touch a remote instance. On the Ollama host, download the GGUF
+> ([jinaai/jina-code-embeddings-1.5b-Q8_0.gguf](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF))
+> and run:
+>
+> ```bash
+> echo "FROM /path/to/jina-code-embeddings-1.5b-Q8_0.gguf" > Modelfile
+> ollama create jina-code-embeddings -f Modelfile
+> ```
+>
+> Then `paparats install --ollama-url http://that-host:11434` and Paparats will use it.
+
+### Force Docker Ollama on macOS
+
+```bash
+paparats install --ollama-mode docker
+```
+
+Slower on Apple Silicon (no Metal GPU), but useful for parity testing or laptops without
+brew.
+
+### Scripted / CI
+
+```bash
+paparats install --non-interactive --force
+```
+
+Fails on any prompt; `--force` answers Y to compose-overwrite and migration prompts.
+
+---
+
+## Migrating from a v1 install
+
+When `paparats install` finds a legacy `~/.paparats/docker-compose.yml` (the one from the
+old per-project flow with no `paparats-indexer` service), it prints a one-screen
+migration notice and asks before tearing the legacy stack down.
+
+**What survives:** Qdrant collections, SQLite metadata, indexer repos, and any
+`.paparats.yml` files inside your repos (those still take precedence over
+`projects.yml` overrides).
+
+**What's deleted:** the legacy `docker-compose.yml` and `.env`. They are regenerated on
+the spot under the new schema.
+
+**No re-indexing needed** — the data volumes are referenced by the same names in the new
+compose. Add your projects with `paparats add` and they re-appear in `paparats list` with
+their existing chunks.
+
+If your install predates the `paparats-indexer.yml` → `projects.yml` rename, the
+installer migrates the file in place on first run and prints a one-line notice.
+The indexer also reads the legacy name as a fallback, so nothing breaks if you
+roll out the indexer before re-running `paparats install`.
+
+Pass `--force` to skip the migration prompt in scripts.
+
+---
+
+## Support agent setup
+
+For bots and support teams that consume an existing Paparats server — no Docker, no
+Ollama needed on this side.
 
 ```bash
 # Connect to a running server (default: localhost:9876)
@@ -220,14 +261,12 @@ paparats install --mode support
 paparats install --mode support --server http://prod-server:9876
 ```
 
-**What happens:**
-
-1. Verifies the server is reachable (health check)
-2. Configures Cursor MCP with support endpoint (`/support/mcp`)
-3. Configures Claude Code MCP if `~/.claude/` exists
-4. Prints available tools and endpoint info
-
-**Support endpoint tools:** `search_code`, `get_chunk`, `find_usages`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`
+The installer verifies the server is reachable, then wires Cursor MCP
+(`~/.cursor/mcp.json`) and Claude Code MCP (`~/.claude/mcp.json`) to the support
+endpoint. Tools available on `/support/mcp`: `search_code`, `get_chunk`, `find_usages`,
+`list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`,
+`recent_changes`, `impact_analysis`, plus the analytics tools described in
+**Observability** below.
 
 ---
 
@@ -247,7 +286,8 @@ Your projects                   Paparats                       AI assistant
 
 ### Indexing Pipeline
 
-When you run `paparats index` (or a file changes during `paparats watch`), each file goes through this pipeline:
+During each indexer cycle (cron-driven, on-demand via `paparats add`, or triggered by
+the indexer's chokidar file watcher), every file in scope flows through this pipeline:
 
 ```
  Source file
@@ -275,9 +315,9 @@ When you run `paparats index` (or a file changes during `paparats watch`), each 
  └────────┬────────┘
           ▼
  ┌─────────────────┐
- │ 5. Symbol        │  AST queries extract defines (function,
- │    extraction    │  class, variable names) and uses (calls,
- │                  │  references) per chunk. 10+ languages
+ │ 5. Symbol        │  AST queries extract module-level defines
+ │    extraction    │  (function/class/variable names) and uses
+ │                  │  (calls, references) per chunk. 11 languages
  └────────┬────────┘
           ▼
  ┌─────────────────┐
@@ -308,13 +348,21 @@ When you run `paparats index` (or a file changes during `paparats watch`), each 
  └─────────────────┘
 ```
 
+Step 5's symbol extractor only emits **module-level** definitions — locals declared
+inside function bodies, callback args, and hook closures stay out of the graph because
+they're not addressable from another chunk anyway.
+
 ### Search Flow
 
 AI assistant queries via MCP → server detects query type (nl2code / code2code / techqa) → expands query (abbreviations, case variants, plurals) → all variants searched in parallel against Qdrant → results merged by max score → only relevant chunks returned with confidence scores and symbol info.
 
 ### Watching
 
-`paparats watch` monitors file changes via chokidar with debouncing (1s default). On change, only the affected file re-enters the pipeline. Unchanged content is never re-embedded thanks to the content-hash cache.
+The indexer container watches the projects mounted into it via chokidar with debouncing
+(1s default). On change, only the affected file re-enters the pipeline. Unchanged content
+is never re-embedded thanks to the content-hash cache. The indexer also hot-reloads
+`~/.paparats/projects.yml` itself: metadata-only edits reindex in place;
+add/remove of local-path projects triggers a stack restart through the CLI.
 
 ---
 
@@ -345,17 +393,17 @@ All variants searched in parallel, results merged by max score.
 
 **AST-aware chunking** — tree-sitter AST nodes define natural chunk boundaries for 11 languages. Falls back to regex strategies (block-based for Ruby, brace-based for JS/TS, indent-based for Python, fixed-size) for unsupported languages.
 
-**Real-time watching** — `paparats watch` monitors file changes with debouncing (1s default). Edit → save → re-index in ~2 seconds.
+**Real-time watching** — the indexer's `chokidar` watcher reindexes a project on file
+changes with debouncing (1s default). For local-path projects bind-mounted into the
+indexer, edits on your host show up in MCP queries within seconds.
 
-### Integrations
+### Cross-chunk symbol graph
 
-**CCLSP (Claude Code LSP)** — during `paparats init`, optionally sets up:
-
-- LSP server for your language (TypeScript, Python, Go, Ruby, etc.)
-- MCP config for go-to-definition, find-references, rename
-- Typical AI workflow: `search_code` (semantic) → `find_definition` (precise navigation) → `find_references` (impact analysis)
-
-Skip with `--skip-cclsp` if not needed.
+The post-index pass walks every chunk's `defines_symbols` / `uses_symbols` lists and
+materializes edges into SQLite — `calls`, `called_by`, `references`, `referenced_by`.
+`find_usages` returns those edges grouped by direction so the agent can traverse the
+graph without re-searching. Because extraction is AST-driven, function locals don't
+pollute the graph.
 
 ---
 
@@ -365,12 +413,13 @@ Skip with `--skip-cclsp` if not needed.
 
 Connect via the **coding endpoint** (`/mcp`):
 
-| Use Case                     | How                                                         |
-| ---------------------------- | ----------------------------------------------------------- |
-| **Navigate unfamiliar code** | `search_code "authentication middleware"` → exact locations |
-| **Find similar patterns**    | `search_code "retry with exponential backoff"` → examples   |
-| **Trace dependencies**       | `find_usages <chunk_id> --direction both` → callers + deps  |
-| **Explore context**          | `get_chunk <chunk_id> --radius_lines 50` → expand around    |
+| Use Case                     | How                                                                    |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| **Navigate unfamiliar code** | `search_code "authentication middleware"` → exact locations            |
+| **Find similar patterns**    | `search_code "retry with exponential backoff"` → examples              |
+| **Trace dependencies**       | `find_usages {chunk_id, direction: "incoming"}` → callers via the graph |
+| **Explore context**          | `get_chunk <chunk_id> --radius_lines 50` → expand around               |
+| **Manage projects**          | `list_projects` and `delete_project` for index hygiene                 |
 
 ### For Support Teams
 
@@ -378,10 +427,11 @@ Connect via the **support endpoint** (`/support/mcp`):
 
 | Use Case              | How                                                                    |
 | --------------------- | ---------------------------------------------------------------------- |
-| **Explain a feature** | `explain_feature "rate limiting"` → code locations + changes + modules |
+| **Explain a feature** | `explain_feature "rate limiting"` → code locations + changes          |
 | **Recent changes**    | `recent_changes "auth" --since 2024-01-01` → timeline with tickets     |
-| **Impact analysis**   | `impact_analysis "payment processing"` → blast radius + service graph  |
+| **Trace usages**      | `find_usages {chunk_id}` → who calls/references this chunk             |
 | **Change history**    | `get_chunk_meta <chunk_id>` → authors, dates, linked tickets           |
+| **Blast radius**      | `impact_analysis <chunk_id>` → cross-chunk + cross-project impact      |
 
 **Support chatbot example:**
 
@@ -400,212 +450,161 @@ Bot workflow (via /support/mcp):
 
 ## Configuration
 
-`.paparats.yml` in your project root:
+Paparats uses two config files. Both are optional — defaults work for the common case.
+
+### `~/.paparats/projects.yml` — global project list
+
+Lives outside your repos. Edited by `paparats add` / `paparats remove` or by hand via
+`paparats edit projects`. Every entry has either `path:` (local bind-mount) or `url:`
+(remote git, cloned by the indexer), never both.
 
 ```yaml
-group: 'my-project-group' # required — maps to Qdrant collection "paparats_my-project-group"
-language: ruby # required — or array: [ruby, typescript]
+defaults:
+  cron: '0 */6 * * *' # global indexer schedule
+  group: workspace # default group when an entry doesn't specify one
 
-indexing:
-  paths: ['app/', 'lib/'] # directories to index (default: ["./"])
-  exclude: ['vendor/**'] # additional excludes (merged with language defaults)
-  extensions: ['.rb'] # override auto-detected extensions
-  chunkSize: 1024 # max chars per chunk (default: 1024)
-  concurrency: 2 # parallel file processing (default: 2)
-  batchSize: 50 # Qdrant upsert batch size (default: 50)
+repos:
+  - path: /Users/alice/code/billing # local bind-mount
+    group: dev
+    language: typescript
 
-watcher:
-  enabled: true # auto-reindex on file changes (default: true)
-  debounce: 1000 # ms debounce (default: 1000)
+  - url: org/widgets # remote git, cloned by the indexer
+    group: prod
+    language: ruby
 
-embeddings:
-  provider: 'ollama' # embedding provider (default: "ollama")
-  model: 'jina-code-embeddings' # Ollama alias (see below)
-  dimensions: 1536 # vector dimensions (default: 1536)
-
-metadata:
-  service: 'my-service' # service name (default: project directory name)
-  bounded_context: 'identity' # domain context (default: null)
-  tags: ['api', 'auth'] # global tags applied to all chunks
-  directory_tags: # tags applied to chunks from specific directories
-    src/controllers: ['controller']
-    src/models: ['model']
-  git:
-    enabled: true # extract git history per chunk (default: true)
-    maxCommitsPerFile: 50 # max commits to analyze per file (1-500, default: 50)
-    ticketPatterns: # custom regex patterns for ticket extraction
-      - 'TASK_\d+'
-      - 'ISSUE-\d+'
+  - url: git@github.com:acme/billing.git
+    name: billing # override the auto-derived name
+    group: prod
 ```
+
+The indexer hot-reloads this file. Adding/removing **local-path** entries causes the CLI
+to restart the stack so Docker picks up the new bind-mount; metadata-only edits reindex
+in place.
+
+### `.paparats.yml` in your repo — per-project overrides
+
+Drop one at the project root to override anything from the global file.
+
+```yaml
+group: my-app
+language: typescript
+
+# Indexing tuning (all optional)
+indexing:
+  paths: [src, packages] # restrict to these subdirectories
+  exclude: [node_modules, dist, '**/*.test.ts']
+  exclude_extra: ['**/__fixtures__/**'] # added on top of language defaults
+  chunkSize: 1500 # characters per chunk (default: 1200)
+  overlap: 100 # chunk overlap (default: 100)
+  concurrency: 4 # parallel embedding requests
+  batchSize: 8 # embeddings per Ollama call
+
+# Metadata
+metadata:
+  service: billing
+  bounded_context: payments
+  tags: [backend, critical]
+  directory_tags:
+    src/api: [public-api]
+    src/internal: [internal]
+
+  # Git history per chunk (Jira / GitHub ticket extraction included)
+  git:
+    enabled: true
+    maxCommitsPerFile: 50
+    ticketPatterns:
+      - '\b([A-Z]+-\d+)\b' # Jira-style PROJ-123
+      - '#(\d+)' # GitHub-style #123
+```
+
+In-repo `.paparats.yml` always wins over `projects.yml`. The CLI never
+overwrites it.
 
 ### Groups
 
-Projects with the same `group` name share a search scope. All indexed together in one Qdrant collection. The `group` name maps to a Qdrant collection with a `paparats_` prefix (e.g. group `my-fullstack` → collection `paparats_my-fullstack`). This prevents namespace collisions when sharing a Qdrant instance with other applications.
+A **group** is a Qdrant collection (`paparats_<group>`). Multiple projects can share a
+group to enable cross-project search; each project lives as a `project:` field in the
+chunk payload. By default `group` defaults to the project name (one project, one
+collection). Set the same `group:` on multiple entries to consolidate them.
 
-```yaml
-# backend/.paparats.yml
-group: 'my-fullstack'
-language: ruby
-indexing:
-  paths: ['app/', 'lib/']
-```
+### Git history per chunk
 
-```yaml
-# frontend/.paparats.yml
-group: 'my-fullstack'
-language: typescript
-indexing:
-  paths: ['src/']
-```
-
-Now searching `"authentication flow"` finds code in **both** backend and frontend.
-
-**Server mode shared group:** When using the indexer container with multiple repos, set `PAPARATS_GROUP` (or `--group` during install) to index all repos into a single collection:
-
-```bash
-paparats install --mode server --repos org/repo1,org/repo2 --group shared-index
-```
-
-### Indexer Config File
-
-For per-project control over indexing in server mode, create `~/.paparats/paparats-indexer.yml`:
-
-```yaml
-# Global defaults applied to all repos without explicit overrides
-defaults:
-  group: shared-group
-  cron: '0 */2 * * *'
-  indexing:
-    exclude: [node_modules, dist, vendor]
-
-repos:
-  - url: org/frontend
-    language: [typescript]
-    indexing:
-      paths: [src/]
-      exclude: [__tests__, storybook]
-
-  - url: org/backend
-    language: ruby
-    group: backend-group
-    indexing:
-      exclude: [spec/fixtures, vendor]
-    metadata:
-      service: payment-api
-      tags: [backend, billing]
-
-  - url: org/docs
-    # Minimal — auto-detect language, inherit defaults
-```
-
-**Priority:** `.paparats.yml` inside the repo > indexer YAML overrides > auto-detection.
-
-When a repo has its own `.paparats.yml`, the indexer YAML overrides are applied on top (e.g., you can override `group` or add extra excludes without modifying the repo). When no `.paparats.yml` exists, the indexer YAML provides the full config.
-
-The config file is mounted into the indexer container at `/config/paparats-indexer.yml`. Falls back to `REPOS` env var when no config file is present (backward compatible).
-
-**Environment variable:** `CONFIG_DIR` controls where the indexer looks for the config file (default: `/config`).
-
-### Metadata
-
-The `metadata` section enriches each indexed chunk with contextual information that improves search filtering and helps AI assistants understand code ownership.
-
-| Field             | Description                                      | Default                |
-| ----------------- | ------------------------------------------------ | ---------------------- |
-| `service`         | Service name (e.g., `payment-service`)           | Project directory name |
-| `bounded_context` | Domain context (e.g., `billing`, `identity`)     | `null`                 |
-| `tags`            | Global tags applied to all chunks                | `[]`                   |
-| `directory_tags`  | Tags applied to chunks from specific directories | `{}`                   |
-
-Tags from `directory_tags` are matched by path prefix. Additionally, tags are auto-detected from directory structure (e.g., `src/controllers/user.ts` gets a `controllers` tag).
-
-### Git History
-
-When `metadata.git.enabled` is `true` (the default), the server extracts git history after indexing:
-
-1. For each indexed file, runs `git log` to get commit history
-2. Parses diff hunks to determine which commits affected which line ranges
-3. Maps commits to chunks by line-range overlap
-4. Extracts ticket references from commit messages
-5. Stores results in a local SQLite database (`~/.paparats/metadata.db`)
-6. Enriches Qdrant payloads with `last_commit_at`, `last_author_email`, `ticket_keys`
-
-**Built-in ticket patterns:**
-
-- Jira: `PROJ-123`, `TEAM-456`
-- GitHub issues: `#42`
-- GitHub cross-repo: `org/repo#99`
-
-**Custom patterns** can be added via `metadata.git.ticketPatterns` — each entry is a regex string. Use a capture group to extract the ticket key, or the full match is used.
-
-| Config                  | Description                                 | Default             |
-| ----------------------- | ------------------------------------------- | ------------------- |
-| `git.enabled`           | Enable git history extraction               | `true`              |
-| `git.maxCommitsPerFile` | Max commits to analyze per file             | `50` (range: 1-500) |
-| `git.ticketPatterns`    | Custom regex patterns for ticket extraction | `[]`                |
-
-Git metadata extraction is non-fatal — if a project is not a git repository or git is unavailable, indexing continues normally without git enrichment.
+When `metadata.git.enabled: true` (default), the indexer maps each chunk to the commits
+that touched its line range using diff-hunk overlap. Tickets are extracted from commit
+messages using `metadata.git.ticketPatterns` (built-in: Jira `PROJ-123`, GitHub `#42`,
+cross-repo `org/repo#99`). Surfaced through MCP tools `get_chunk_meta`, `search_changes`,
+`recent_changes`, `explain_feature`. Non-fatal: non-git projects index normally.
 
 ---
 
 ## MCP Tools Reference
 
-Paparats exposes 10 tools via the Model Context Protocol on **two separate endpoints**, each with its own tool set and system instructions:
+Paparats serves the Model Context Protocol on **two separate endpoints**, each with its
+own tool set and system instructions.
 
-### Coding Endpoint (`/mcp`)
+### Coding endpoint (`/mcp`)
 
-For developers using Claude Code, Cursor, etc. Focus: search code, read chunks, trace symbol dependencies, manage indexing.
+For developers using Claude Code, Cursor, etc. Focus: search code, read chunks, follow
+the cross-chunk symbol graph, manage projects.
 
-| Tool           | Description                                                                                                     |
-| :------------- | :-------------------------------------------------------------------------------------------------------------- |
-| `search_code`  | Semantic search across indexed projects. Returns code chunks with symbol definitions/uses and confidence scores |
-| `get_chunk`    | Retrieve a chunk by ID with optional surrounding context. Returns code with symbol info                         |
-| `find_usages`  | Find symbol relationships: incoming (callers), outgoing (dependencies), or both directions                      |
-| `health_check` | Indexing status: chunks per group, running jobs                                                                 |
-| `reindex`      | Trigger full reindex; track progress with `health_check`                                                        |
+| Tool             | Description                                                                                       |
+| :--------------- | :------------------------------------------------------------------------------------------------ |
+| `search_code`    | Semantic search across indexed projects. Returns chunks with symbol info and confidence scores.   |
+| `get_chunk`      | Retrieve a chunk by ID with optional surrounding context.                                         |
+| `find_usages`    | Walk the symbol graph from a `chunk_id` — `incoming` (callers/references in), `outgoing` (calls/references out), or `both`. |
+| `list_projects`  | List indexed projects with chunk counts and detected languages.                                   |
+| `delete_project` | Wipe Qdrant chunks + SQLite metadata for a project (CLI's `paparats remove` calls it).            |
+| `health_check`   | Indexing status, chunks per group, running jobs.                                                  |
 
-### Support Endpoint (`/support/mcp`)
+### Support endpoint (`/support/mcp`)
 
-For support teams and bots without direct code access. Focus: feature explanations, change history, impact analysis — all in plain language.
+For support teams and bots without direct code access. Focus: feature explanations,
+change history, cost reporting — all in plain language.
 
-| Tool              | Description                                                                                                                   |
-| :---------------- | :---------------------------------------------------------------------------------------------------------------------------- |
-| `search_code`     | Semantic search across indexed projects                                                                                       |
-| `get_chunk`       | Retrieve a chunk by ID with optional surrounding context                                                                      |
-| `find_usages`     | Find symbol relationships: callers, dependencies, or both                                                                     |
-| `health_check`    | Indexing status: chunks per group, running jobs                                                                               |
-| `get_chunk_meta`  | Git history and ticket references for a chunk: commits, authors, dates, linked tickets. No code                               |
-| `search_changes`  | Semantic search filtered by last commit date. Each result shows when it was last changed                                      |
-| `explain_feature` | Comprehensive feature analysis: code locations + recent changes + related modules for a question                              |
-| `recent_changes`  | Timeline of changes matching a query, grouped by date with commits, tickets, and affected files. Supports `since` date filter |
-| `impact_analysis` | Dependency impact subgraph: seed chunks + impact grouped by service/context + dependency edges. 1-2 hop graph traversal       |
+| Tool                   | Description                                                                            |
+| :--------------------- | :------------------------------------------------------------------------------------- |
+| `search_code`          | Same as coding endpoint.                                                               |
+| `get_chunk`            | Same.                                                                                  |
+| `find_usages`          | Same.                                                                                  |
+| `list_projects`        | Same.                                                                                  |
+| `health_check`         | Same.                                                                                  |
+| `get_chunk_meta`       | Git history and ticket references for a chunk — commits, authors, dates. No code.     |
+| `search_changes`       | Semantic search filtered by last-commit date. Each result shows when it last changed. |
+| `explain_feature`      | Comprehensive feature analysis: locations + recent changes for a question.            |
+| `recent_changes`       | Timeline grouped by date with commits, tickets, affected files. `since` filter.       |
+| `impact_analysis`      | Cross-chunk impact for a `chunk_id` — symbol graph traversal + cross-project blast radius. |
+| `token_savings_report` | Aggregate token-savings stats (naive baseline vs search-only vs actually consumed).   |
+| `top_queries`          | Most frequent queries by user/session/project anchor.                                  |
+| `slowest_searches`     | Top-N slowest searches with timing + chunk counts.                                    |
+| `cross_project_share`  | Off-anchor result share per user — indicator of search noise.                         |
+| `retry_rate`           | Tool-call retry rate per user — indicator of unhelpful results.                       |
+| `failed_chunks`        | AST parse failures, regex fallbacks, zero-chunk files, binary skips.                  |
 
-### Typical Workflow
+### Typical workflows
 
-**Drill-down workflow** — start broad, zoom in:
+**Drill-down (coding agent):**
 
 ```
-1. search_code "authentication middleware"     → find relevant chunks with symbols
-2. get_chunk <chunk_id> --radius_lines 50      → expand context around a result
-3. find_usages <chunk_id> --direction both     → see callers and dependencies
-4. get_chunk_meta <chunk_id>                   → see who modified it, when, linked tickets
-5. search_changes "auth" --since 2024-01-01    → find recent auth changes
+1. search_code "authentication middleware"           → relevant chunks with symbols
+2. get_chunk <chunk_id> --radius_lines 50            → expand context around a hit
+3. find_usages {chunk_id, direction: "incoming"}     → who calls / references this chunk
 ```
 
-**Single-call workflow** — get the full picture in one round-trip:
+**Single-call (support agent):**
 
 ```
-1. explain_feature "How does authentication work?"  → code locations + changes + related modules
-2. recent_changes "auth" --since 2024-01-01         → timeline of auth changes with tickets
-3. impact_analysis "rate limiting"                   → blast radius: seed chunks + service graph + edges
-4. get_chunk <chunk_id>                              → drill into any specific chunk for code
+1. explain_feature "How does authentication work?"   → locations + recent changes
+2. recent_changes "auth" --since 2024-01-01          → timeline with tickets
+3. token_savings_report                              → cost report for the last 7 days
 ```
 
 ---
 
 ## Connecting MCP
 
-After `paparats install` and `paparats index`, connect your IDE:
+`paparats install` already wires Cursor (`~/.cursor/mcp.json`) and Claude Code
+(`~/.claude/mcp.json`) to `http://localhost:9876/mcp`. The sections below are for
+manual setup or for adding the **support** endpoint alongside the default coding one.
 
 ### Cursor
 
@@ -662,167 +661,83 @@ Or add to `.mcp.json` in project root:
 
 ### Verify
 
-- `paparats status` — check server is running
-- **Coding endpoint** (`/mcp`): tools — `search_code`, `get_chunk`, `find_usages`, `health_check`, `reindex`
-- **Support endpoint** (`/support/mcp`): tools — `search_code`, `get_chunk`, `find_usages`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`
-- Ask the AI: _"Search for authentication logic in the codebase"_
+- `paparats status` — check stack is up
+- **Coding endpoint** (`/mcp`): `search_code`, `get_chunk`, `find_usages`,
+  `list_projects`, `delete_project`, `health_check`
+- **Support endpoint** (`/support/mcp`): `search_code`, `get_chunk`, `find_usages`,
+  `health_check`, `list_projects`, plus the support-specific tools `get_chunk_meta`,
+  `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`, and the
+  analytics tools listed in **Observability** (`token_savings_report`, `top_queries`,
+  `slowest_searches`, `cross_project_share`, `retry_rate`, `failed_chunks`)
+- Ask the AI: _"Search this workspace for the auth middleware"_
 
 ---
 
 ## CLI Commands
 
-| Command                   | Description                                                   |
-| ------------------------- | ------------------------------------------------------------- |
-| `paparats init`           | Create `.paparats.yml` (interactive or `--non-interactive`)   |
-| `paparats install`        | Set up Docker + Ollama + MCP configuration                    |
-| `paparats update`         | Update CLI from npm + pull latest Docker image                |
-| `paparats index`          | Index the current project                                     |
-| `paparats search <query>` | Semantic search across indexed projects                       |
-| `paparats watch`          | Watch files and auto-reindex on changes                       |
-| `paparats status`         | System status (Docker, Ollama, config, server health, groups) |
-| `paparats doctor`         | Run diagnostic checks                                         |
-| `paparats groups`         | List all indexed groups and projects                          |
+```text
+paparats install [flags]                Bootstrap or reconfigure the global stack.
+paparats add <path-or-repo> [flags]     Add a project (local path or git URL/shorthand).
+paparats list [--json] [--group g]      Show indexed projects with status from the indexer.
+paparats remove <name> [--yes]          Remove a project — deletes Qdrant + SQLite data.
 
-Most commands support `--server <url>` (default: `http://localhost:9876`) and `--json` for machine-readable output.
+paparats start [--logs]                 Start the Docker stack (with `--logs` follows them).
+paparats stop                           Stop the stack (preserves data volumes).
+paparats restart                        Recreate containers (applies new compose changes).
+paparats edit compose|projects          Open the file in $EDITOR; on save, validate +
+                                          regenerate compose + restart + reindex (projects).
 
-### Common Options
+paparats search <query> [flags]         Semantic search from the terminal.
+paparats status                         Stack health: Docker, Ollama, server, indexer.
+paparats groups [--json]                List groups and their projects.
+paparats doctor                         Diagnostic checks (Docker, Ollama, ports, configs).
+paparats update                         Update CLI from npm + pull latest Docker images.
+```
 
-**`paparats init`**
+The legacy per-project commands (`paparats init`, `paparats index`, `paparats watch`) are
+gone — adding a project is now `paparats add`, indexing is automatic in the indexer
+container, watching is the `chokidar` watcher inside the indexer.
 
-- `--force` — Overwrite existing config
-- `--group <name>` — Set group (skip prompt)
-- `--language <lang>` — Set language (skip prompt)
-- `--non-interactive` — Use defaults without prompts
-- `--skip-cclsp` — Skip CCLSP language server setup
+### Common flags
 
 **`paparats install`**
 
-- `--mode <mode>` — Install mode: `developer` (default), `server`, or `support`
-- `--ollama-mode <mode>` — Ollama deployment: `docker` or `local` (default, developer/server mode)
-- `--ollama-url <url>` — External Ollama URL (e.g. `http://192.168.1.10:11434`). Implies `--ollama-mode local`. Skips local Ollama binary check and model setup
-- `--skip-docker` — Skip Docker setup (developer mode)
-- `--skip-ollama` — Skip Ollama model (developer mode)
-- `--qdrant-url <url>` — External Qdrant URL — skip Qdrant Docker container (developer/server mode)
-- `--qdrant-api-key <key>` — Qdrant API key for authenticated access (e.g. Qdrant Cloud)
-- `--repos <repos>` — Comma-separated repos to index (server mode)
-- `--github-token <token>` — GitHub token for private repos (server mode)
-- `--cron <expression>` — Cron schedule for indexing (server mode, default: `0 */6 * * *`)
-- `--group <name>` — Shared Qdrant group — all repos in one collection (server mode). Sets `PAPARATS_GROUP` env var
-- `--server <url>` — Server URL to connect to (support mode)
-- `-v, --verbose` — Show detailed output
+- `--ollama-mode <native|docker>` — force Ollama mode (default: native on macOS, docker on Linux)
+- `--ollama-url <url>` — external Ollama; skips both native and docker Ollama
+- `--qdrant-url <url>` — external Qdrant; skips the Qdrant container
+- `--qdrant-api-key <key>` — for authenticated Qdrant (e.g. Qdrant Cloud); written to `~/.paparats/.env`
+- `--mode support` — wire MCP clients only, no Docker stack
+- `--server <url>` — server URL for support mode (default: `http://localhost:9876`)
+- `--force` — skip overwrite/migration prompts
+- `--non-interactive` — fail on any prompt instead of asking
+- `-v, --verbose` — stream Docker output
 
-**`paparats index`**
+**`paparats add <path-or-repo>`**
 
-- `-f, --force` — Force reindex (clear existing chunks)
-- `--dry-run` — Show what would be indexed
-- `--timeout <ms>` — Request timeout (default: 300000)
-- `-v, --verbose` — Show skipped files and errors
-- `--json` — Output as JSON
+- `--name <name>` — override the auto-derived project name (basename of path / repo)
+- `--group <group>` — override group (default: project name)
+- `--language <lang>` — override language (default: auto-detect)
+- `--no-restart` — skip the Docker restart for local-path adds (useful in scripts)
+- `--no-reindex` — skip the per-project reindex trigger
+- `--force` — drop the project's existing chunks before reindexing (destructive, use after schema/config changes)
+
+**`paparats remove <name>`**
+
+- `--yes` — skip the confirmation prompt
 
 **`paparats search <query>`**
 
-- `-n, --limit <n>` — Max results (default: 5)
-- `-p, --project <name>` — Filter by project
-- `-g, --group <name>` — Override group from config
-- `--timeout <ms>` — Request timeout (default: 30000)
-- `-v, --verbose` — Show token savings
-- `--json` — Output as JSON
+- `-n, --limit <n>` — max results (default: 5)
+- `-p, --project <name>` — filter by project
+- `-g, --group <name>` — restrict to a group
+- `--json` — machine-readable output
 
-**`paparats watch`**
+### Environment overrides
 
-- `--dry-run` — Show what would be watched
-- `-v, --verbose` — Show file events
-- `--json` — Output events as JSON lines
-- `--polling` — Use polling instead of native watchers (fewer file descriptors; use if EMFILE occurs)
-
----
-
-## Docker & Ollama
-
-Paparats supports two ways to run Ollama: on the host (local) or in Docker.
-
-### Local Ollama
-
-The default mode. Ollama runs on your host machine, and the Docker containers connect to it.
-
-- **Qdrant** and **MCP server** run in Docker containers
-- **Ollama** runs on the host (not Docker). Server connects via `host.docker.internal:11434` (Mac/Windows)
-- On Linux, set `OLLAMA_URL=http://172.17.0.1:11434` in `~/.paparats/docker-compose.yml`
-- **Embedding cache** (SQLite) persists in `paparats_data` Docker volume
-
-```bash
-paparats install                            # local Ollama (default)
-paparats install --ollama-mode local        # explicit
-```
-
-### Docker Ollama
-
-Ollama runs in a Docker container using `ibaz/paparats-ollama` — a custom image with the Jina Code Embeddings model pre-baked (~3 GB). No host Ollama installation needed.
-
-```bash
-paparats install --ollama-mode docker       # Docker Ollama
-```
-
-**Benefits:**
-
-- Zero host setup — no Ollama binary, no GGUF download
-- Model immediately ready on container start
-- Consistent across environments
-
-**Trade-offs:**
-
-- ~1.7 GB Docker image (one-time pull)
-- CPU-only — no GPU/Metal acceleration (sufficient for embedding generation, but slower than native Ollama on Mac)
-
-### External Ollama
-
-If you run Ollama on a separate machine (e.g. AWS Fargate, a GPU server, or another host on your network), use `--ollama-url` to point the install at it:
-
-```bash
-paparats install --ollama-url http://192.168.1.10:11434
-
-# Server mode with external Ollama
-paparats install --mode server --ollama-url http://ollama.internal:11434 --repos org/repo1
-```
-
-When `--ollama-url` is set:
-
-- The Ollama Docker container is **omitted** from the generated `docker-compose.yml`
-- No local `ollama` binary is required — GGUF download and model registration are skipped
-- The `OLLAMA_URL` environment variable in the paparats server (and indexer in server mode) points to your external instance
-- Implies `--ollama-mode local` (no Docker Ollama)
-
-This is useful when Docker Ollama is too slow (e.g. CPU-only on Mac, where native Ollama can use Metal GPU acceleration) or when you want to share a single Ollama instance across multiple machines.
-
-### External Qdrant
-
-By default, `paparats install` runs Qdrant as a Docker container. If you already have a Qdrant instance (e.g. [Qdrant Cloud](https://cloud.qdrant.io/), a shared cluster, or a host-level install), you can skip the Qdrant container entirely:
-
-```bash
-# Via CLI flag
-paparats install --qdrant-url http://your-qdrant:6333
-
-# With API key authentication (e.g. Qdrant Cloud)
-paparats install --qdrant-url https://xxx.cloud.qdrant.io --qdrant-api-key your-api-key
-
-# Or answer the interactive prompt during install
-paparats install
-# ? Use an external Qdrant instance? (skip Qdrant Docker container) Yes
-# ? Qdrant URL: http://your-qdrant:6333
-```
-
-When `--qdrant-url` is set:
-
-- The Qdrant Docker service is **omitted** from the generated `docker-compose.yml`
-- The `QDRANT_URL` environment variable in the paparats server (and indexer in server mode) points to your external instance
-- Health check during install verifies the external Qdrant is reachable
-
-When `--qdrant-api-key` is set:
-
-- `QDRANT_API_KEY` is passed to all containers (server + indexer) via `docker-compose.yml` and `~/.paparats/.env`
-- Can also be set directly as an environment variable: `QDRANT_API_KEY=your-key` on the server or indexer process
-
-This works with both `--mode developer` and `--mode server`.
+| Var                    | Default                 | What                                       |
+| ---------------------- | ----------------------- | ------------------------------------------ |
+| `PAPARATS_SERVER_URL`  | `http://localhost:9876` | MCP server base URL (used by CLI commands) |
+| `PAPARATS_INDEXER_URL` | `http://localhost:9877` | Indexer base URL (`add`, `list`, `edit`)   |
 
 ---
 
@@ -956,14 +871,14 @@ paparats-mcp/
 │   │   │   ├── metrics.ts            # Prometheus metrics (opt-in)
 │   │   │   ├── ast-chunker.ts        # AST-based code chunking (tree-sitter, primary strategy)
 │   │   │   ├── chunker.ts            # Regex-based code chunking (fallback for unsupported languages)
-│   │   │   ├── ast-symbol-extractor.ts # AST-based symbol extraction (tree-sitter, 10 languages)
+│   │   │   ├── ast-symbol-extractor.ts # AST-based symbol extraction (module-level only, 11 languages)
 │   │   │   ├── ast-queries.ts        # Tree-sitter S-expression queries per language
 │   │   │   ├── tree-sitter-parser.ts # WASM tree-sitter manager
-│   │   │   ├── symbol-graph.ts       # Cross-chunk symbol edges
+│   │   │   ├── symbol-graph.ts       # Cross-chunk symbol edges (calls/called_by/refs)
 │   │   │   ├── embeddings.ts         # Ollama provider + SQLite cache
 │   │   │   ├── config.ts             # .paparats.yml reader + validation
 │   │   │   ├── metadata.ts           # Tag resolution + auto-detection
-│   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets
+│   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets + symbol edges
 │   │   │   ├── git-metadata.ts       # Git history extraction + chunk mapping
 │   │   │   ├── ticket-extractor.ts   # Jira/GitHub/custom ticket parsing
 │   │   │   ├── mcp-handler.ts        # MCP protocol — dual-mode (coding /mcp + support /support/mcp)
@@ -973,7 +888,8 @@ paparats-mcp/
 │   ├── indexer/         # Automated repo indexer (Docker image: ibaz/paparats-indexer)
 │   │   ├── src/
 │   │   │   ├── index.ts              # Entry: Express mini-server + cron scheduler
-│   │   │   ├── config-loader.ts      # paparats-indexer.yml parser + per-repo overrides
+│   │   │   ├── config-loader.ts      # projects.yml parser + per-repo overrides
+│   │   │   ├── config-watcher.ts     # chokidar watcher for hot-reloading the project list
 │   │   │   ├── repo-manager.ts       # parseReposEnv(), cloneOrPull() using simple-git
 │   │   │   ├── scheduler.ts          # node-cron wrapper
 │   │   │   └── types.ts              # IndexerConfig, RepoConfig, RepoOverrides, IndexerFileConfig
@@ -984,7 +900,8 @@ paparats-mcp/
 │   │   └── src/
 │   │       ├── index.ts                    # Commander entry
 │   │       ├── docker-compose-generator.ts # Programmatic YAML generation
-│   │       └── commands/                   # init, install, update, index, etc.
+│   │       ├── projects-yml.ts             # projects.yml + install.json read/write
+│   │       └── commands/                   # install, projects (add/remove/list), lifecycle, edit, etc.
 │   └── shared/          # Shared utilities (npm package: @paparats/shared)
 │       └── src/
 │           ├── path-validation.ts    # Path validation
@@ -1001,7 +918,7 @@ paparats-mcp/
 
 - **Qdrant** — vector database (1 collection per group with `paparats_` prefix, cosine similarity, payload filtering)
 - **Ollama** — local embeddings via Jina Code Embeddings 1.5B with task-specific prefixes
-- **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata store (`~/.paparats/metadata.db`)
+- **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata + symbol edges store (`~/.paparats/metadata.db`)
 - **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
 - **TypeScript** monorepo with Yarn workspaces
 
@@ -1011,7 +928,7 @@ paparats-mcp/
 
 ### Support Chatbot
 
-Use paparats as the knowledge backend for a product support bot. Connect the bot to the **support endpoint** (`/support/mcp`) for access to `explain_feature`, `recent_changes`, `impact_analysis`, and other support-oriented tools:
+Use paparats as the knowledge backend for a product support bot. Connect the bot to the **support endpoint** (`/support/mcp`) for access to `explain_feature`, `recent_changes`, `find_usages`, and other support-oriented tools:
 
 ```
 User: "How do I configure rate limiting?"
@@ -1024,9 +941,10 @@ Bot workflow (via /support/mcp):
 3. Bot synthesizes response in plain language with ticket references
 ```
 
-### CI/CD (GitHub Actions)
+### CI/CD reindex on push
 
-Re-index on every push to keep the search index fresh:
+Indexing lives in the indexer container. To force a reindex of a project from CI,
+trigger the indexer's HTTP endpoint:
 
 ```yaml
 name: Reindex Paparats
@@ -1037,47 +955,27 @@ on:
 jobs:
   reindex:
     runs-on: ubuntu-latest
-    services:
-      qdrant:
-        image: qdrant/qdrant:latest
-        ports: ['6333:6333']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: jcarpenter/setup-ollama@v1
-      - run: npm install -g @paparats/cli
-      - run: paparats install --skip-docker
-      - run: paparats index --server http://localhost:9876
-```
-
-### CI/CD with Indexer Container
-
-For server deployments, trigger the indexer directly via HTTP:
-
-```yaml
-name: Trigger Paparats Reindex
-on:
-  push:
-    branches: [main]
-
-jobs:
-  reindex:
-    runs-on: ubuntu-latest
     steps:
       - run: |
-          curl -X POST http://your-server:9877/trigger \
+          curl -X POST http://your-paparats-host:9877/trigger \
             -H 'Content-Type: application/json' \
             -d '{"repos": ["your-org/your-repo"]}'
 ```
 
-### Code Review Assistant
+Pass `"force": true` in the body to drop existing chunks first (destructive — use after
+schema/config changes). If the project isn't yet in `projects.yml`, add it once
+during your initial setup and the indexer's cron + hot-reload will keep it in sync going
+forward.
+
+### Code-review assistant
 
 Combine multiple tools to analyze the impact of a pull request:
 
 ```
 1. explain_feature("the feature being changed")
    → understand what the code does and how it connects
-2. impact_analysis("the changed function or module")
-   → blast radius: which services and modules are affected
+2. find_usages({chunk_id: "<changed chunk>", direction: "both"})
+   → blast radius via the symbol graph
 3. search_changes("related area", since="2024-01-01")
    → recent changes that might conflict or overlap
 ```
@@ -1090,8 +988,8 @@ Default: [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/j
 
 **Recommended:** `paparats install` automates this:
 
-- **Local mode** (`--ollama-mode local`): Downloads GGUF (~1.65 GB) to `~/.paparats/models/`, creates Modelfile and runs `ollama create jina-code-embeddings`
-- **Docker mode** (`--ollama-mode docker`): Uses `ibaz/paparats-ollama` image with model pre-baked — zero setup
+- **Native mode** (`--ollama-mode native`, default on macOS): Downloads GGUF (~1.65 GB) to `~/.paparats/models/`, creates Modelfile and runs `ollama create jina-code-embeddings`
+- **Docker mode** (`--ollama-mode docker`, default on Linux): Uses `ibaz/paparats-ollama` image with model pre-baked — zero setup
 
 **Manual setup:**
 
@@ -1159,7 +1057,7 @@ Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
 | Feature           | Paparats | Vexify | SeaGOAT |  Augment   | Sourcegraph | Greptile | Bloop |
 | :---------------- | :------: | :----: | :-----: | :--------: | :---------: | :------: | :---: |
 | MCP native        |    ✅    |   ✅   |   ❌    |     ✅     |     ❌      |  ⚠️ API  |  ❌   |
-| LSP integration   | ✅ CCLSP |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
+| Symbol graph      |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
 | Token metrics     |    ✅    |   ❌   |   ❌    | ⚠️ Partial |     ❌      |    ❌    |  ❌   |
 | Git history       |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
 | Ticket extraction |    ✅    |   ❌   |   ❌    |     ❌     |     ❌      |    ❌    |  ❌   |
@@ -1310,7 +1208,6 @@ Open an issue or pull request to get started.
 ## Links
 
 - [Jina Code Embeddings](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — embedding model
-- [CCLSP](https://github.com/nicobailon/cclsp) — LSP integration for MCP
 - [Qdrant](https://qdrant.tech) — vector database
 - [Ollama](https://ollama.com) — local LLM runtime
 - [MCP](https://modelcontextprotocol.io) — Model Context Protocol

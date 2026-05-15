@@ -277,6 +277,270 @@ end`;
     expect(uses).toEqual(uniqueUses);
   });
 
+  // ── Scope filter (only top-level / class-method declarations) ─────────
+
+  it('filters out locals declared inside function bodies (TypeScript)', async () => {
+    const code = `export function outer() {
+  const innerConst = 1;
+  function innerFn() {}
+  const handleClick = () => {};
+}
+export const topLevelConst = 2;
+function topLevelFn() {
+  let result = 0;
+  const merged = {};
+}`;
+    const { tree, language } = parse('typescript', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 9 }],
+      'typescript'
+    );
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('outer');
+    expect(names).toContain('topLevelConst');
+    expect(names).toContain('topLevelFn');
+    // Locals must NOT appear — these are scope-blindness false positives
+    // that show up as fake "dead code" if we leak them through.
+    expect(names).not.toContain('innerConst');
+    expect(names).not.toContain('innerFn');
+    expect(names).not.toContain('handleClick');
+    expect(names).not.toContain('result');
+    expect(names).not.toContain('merged');
+  });
+
+  it('keeps methods on top-level classes (TypeScript)', async () => {
+    const code = `export class Service {
+  doWork() {
+    const localVar = 1;
+    return localVar;
+  }
+}`;
+    const { tree, language } = parse('typescript', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 5 }],
+      'typescript'
+    );
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('Service');
+    expect(names).toContain('doWork');
+    expect(names).not.toContain('localVar');
+  });
+
+  // Multi-language scope-filter: each test asserts top-level declarations
+  // stay in defines_symbols and locals declared inside function bodies do
+  // not. Catches silent regressions if a tree-sitter grammar bump renames
+  // a function-body node type.
+
+  it('filters function-body locals (Python)', async () => {
+    const code = `def outer():
+    inner_local = 1
+    def inner_fn():
+        pass
+    return inner_local
+
+class Service:
+    def method(self):
+        method_local = 2
+        return method_local
+
+top_level_const = 3`;
+    const { tree, language } = parse('python', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 11 }],
+      'python'
+    );
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('outer');
+    expect(names).toContain('Service');
+    expect(names).toContain('method');
+    expect(names).not.toContain('inner_local');
+    expect(names).not.toContain('inner_fn');
+    expect(names).not.toContain('method_local');
+  });
+
+  it('filters function-body locals (Go)', async () => {
+    const code = `package main
+
+func outer() {
+    innerVar := 1
+    closure := func() {}
+    _ = innerVar
+    _ = closure
+}
+
+type MyStruct struct{}
+
+func (s MyStruct) Method() {
+    methodLocal := 2
+    _ = methodLocal
+}`;
+    const { tree, language } = parse('go', code);
+    const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 13 }], 'go');
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('outer');
+    expect(names).toContain('MyStruct');
+    expect(names).toContain('Method');
+    expect(names).not.toContain('innerVar');
+    expect(names).not.toContain('closure');
+    expect(names).not.toContain('methodLocal');
+  });
+
+  it('filters function-body locals (Rust)', async () => {
+    const code = `fn outer() {
+    let inner_var = 1;
+    fn inner_fn() {}
+    let closure = || {};
+}
+
+struct Service;
+
+impl Service {
+    fn method(&self) {
+        let method_local = 2;
+    }
+}`;
+    const { tree, language } = parse('rust', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 12 }],
+      'rust'
+    );
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('outer');
+    expect(names).toContain('Service');
+    expect(names).toContain('method');
+    expect(names).not.toContain('inner_var');
+    expect(names).not.toContain('inner_fn');
+    expect(names).not.toContain('closure');
+    expect(names).not.toContain('method_local');
+  });
+
+  it('filters function-body locals (Java)', async () => {
+    const code = `public class Service {
+    public void doWork() {
+        int methodLocal = 1;
+        String another = "x";
+    }
+    public Service() {
+        int ctorLocal = 2;
+    }
+}`;
+    const { tree, language } = parse('java', code);
+    const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 8 }], 'java');
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('Service');
+    expect(names).toContain('doWork');
+    expect(names).not.toContain('methodLocal');
+    expect(names).not.toContain('another');
+    expect(names).not.toContain('ctorLocal');
+  });
+
+  it('filters function-body locals (Ruby)', async () => {
+    const code = `class Service
+  def do_work
+    method_local = 1
+    do_other do |arg|
+      block_local = 2
+      block_local
+    end
+  end
+end
+
+module MyModule
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 11 }],
+      'ruby'
+    );
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('Service');
+    expect(names).toContain('do_work');
+    expect(names).toContain('MyModule');
+    expect(names).not.toContain('method_local');
+    expect(names).not.toContain('block_local');
+  });
+
+  it('filters function-body locals (C)', async () => {
+    const code = `void greet(void) {
+    int local_var = 1;
+    int another = 2;
+}
+
+struct Point { int x; };`;
+    const { tree, language } = parse('c', code);
+    const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 5 }], 'c');
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('greet');
+    expect(names).toContain('Point');
+    expect(names).not.toContain('local_var');
+    expect(names).not.toContain('another');
+  });
+
+  it('filters function-body locals (C++)', async () => {
+    // Note: the cpp definitions query catches free functions and class /
+    // struct names. It does NOT capture in-class member-function names — a
+    // pre-existing limitation of the query, not the scope filter.
+    const code = `class Service {};
+
+void freeFn() {
+    int freeLocal = 3;
+    auto closure = []() { int innermost = 2; return innermost; };
+}`;
+    const { tree, language } = parse('cpp', code);
+    const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 5 }], 'cpp');
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('Service');
+    expect(names).toContain('freeFn');
+    expect(names).not.toContain('freeLocal');
+    expect(names).not.toContain('closure');
+    expect(names).not.toContain('innermost');
+  });
+
+  it('filters function-body locals (C#)', async () => {
+    const code = `class Service {
+    public void DoWork() {
+        int methodLocal = 1;
+        var another = "x";
+    }
+    public Service() {
+        int ctorLocal = 2;
+    }
+}`;
+    const { tree, language } = parse('csharp', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 8 }],
+      'csharp'
+    );
+    tree.delete();
+    const names = results[0]!.defines_symbols;
+    expect(names).toContain('Service');
+    expect(names).toContain('DoWork');
+    expect(names).not.toContain('methodLocal');
+    expect(names).not.toContain('another');
+    expect(names).not.toContain('ctorLocal');
+  });
+
   // ── Kind extraction tests ──────────────────────────────────────────────
 
   it('extracts kind for TypeScript symbols', async () => {
