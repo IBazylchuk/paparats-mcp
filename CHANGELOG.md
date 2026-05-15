@@ -4,6 +4,64 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [0.4.0] - 2026-05-15
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- [#49](https://github.com/IBazylchuk/paparats-mcp/pull/49) [`72aab0c`](https://github.com/IBazylchuk/paparats-mcp/commit/72aab0cf524584cbf13eff25ec1fe3afe7c4e185) Rework the install/CLI flow around a single global home, add indexer hot-reload, and clean up the symbol graph.
+
+  **CLI**
+  - Replace per-project `init` / `index` / `watch` with a unified `install` plus `add` / `remove` / `list` / `edit` / `lifecycle` subcommands working off `~/.paparats/`.
+  - Persist install configuration in `install.json` so `paparats add` / `remove` can regenerate `docker-compose.yml` without losing context.
+  - Add `--force` to `paparats add` — drops the project's existing chunks before reindexing (use after schema or config changes).
+  - Drop the legacy `lsp-installers` / `init` / `watch` modules and their tests.
+
+  **Indexer**
+  - Hot-reload `~/.paparats/projects.yml` via a chokidar `ConfigWatcher`. Added/modified repos reindex live; removed repos drop bookkeeping. No restart needed for metadata-only edits.
+  - Accept `{repos?, force?}` body on `POST /trigger`; `force: true` drops the project's existing chunks before reindexing.
+  - Bind-mount the whole `~/.paparats` as `/config:ro` (directory mount, not single-file) so atomic rewrites of `projects.yml` survive — single-file mounts pin to host inode and break on rename.
+
+  **Project list rename**
+  - Renamed `~/.paparats/paparats-indexer.yml` → `~/.paparats/projects.yml`. The CLI reads `projects` semantics throughout (`paparats edit projects`, etc.) so the file name now matches.
+  - `paparats install` automatically renames a legacy `paparats-indexer.yml` to `projects.yml` on first run and prints a one-line notice. No manual migration needed.
+  - Both the CLI and the indexer fall back to reading `paparats-indexer.yml` when `projects.yml` is absent, so an out-of-sync upgrade (e.g. new indexer image, old CLI) keeps working.
+
+  **Server**
+  - `syncGroupsFromQdrant` now also enumerates projects per group via `listProjectsInGroup` and rebuilds `ProjectConfig` from payload, while preserving any explicit `POST /api/index` registrations.
+  - `ast-symbol-extractor`: filter out symbols declared inside function bodies (locals, callback args, hook closures). Module-level only — these are the only symbols meaningful for cross-chunk reference analysis. Adds two coverage tests.
+
+  **Docs**
+  - Full README rewrite to match the new install flow, project model, and the actual MCP tool set.
+
+- [#50](https://github.com/IBazylchuk/paparats-mcp/pull/50) [`d478587`](https://github.com/IBazylchuk/paparats-mcp/commit/d4785877da0a8d67948777441fda3181c6ec0bec) fix(group): default to a shared `default` group instead of project name
+
+  A regression introduced when `paparats add` landed silently siloed every
+  project in its own Qdrant collection, breaking the multi-project model
+  ("group = collection, projects share via the `project` payload filter").
+
+  What changed:
+  - `@paparats/shared` exports `DEFAULT_GROUP = 'default'` as the single
+    source of truth.
+  - `paparats add` no longer writes `group: <name>` when `--group` is
+    omitted — the entry inherits `defaults.group` from `projects.yml` or
+    falls back to `DEFAULT_GROUP`. CLI `list` / `remove` resolve through
+    the same path.
+  - The indexer container falls back to `DEFAULT_GROUP` (still respects
+    `PAPARATS_GROUP` env and per-repo `group:` override).
+  - `autoProjectConfig` in the server falls back to `DEFAULT_GROUP`.
+  - `Indexer.indexProject` now evicts the project's chunks from any other
+    group before indexing, so a project that was renamed out of its old
+    group doesn't leave behind stale chunks (whose `chunk_id` would no
+    longer match symbol-graph edges, silently breaking `find_usages`).
+
+  Migration: no action required for new installs. Existing installs with
+  per-project groups continue to work — the eviction pass kicks in only
+  when the project moves between groups.
+
+### Patch Changes
+
 ## [0.3.2] - 2026-05-14
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -29,7 +87,7 @@
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-05-14
+## [0.3.0] - 2026-05-15
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -418,3 +476,4 @@
 ### Changed
 
 - Updated publish-mcp workflow to trigger on version tag pushes
+
