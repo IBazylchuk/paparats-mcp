@@ -5,6 +5,7 @@ import {
   validateIndexingPaths,
   normalizeExcludePatterns,
   LANGUAGE_EXCLUDE_DEFAULTS,
+  DEFAULT_GROUP,
 } from '@paparats/shared';
 import { validateTicketPatterns } from './ticket-extractor.js';
 import type {
@@ -436,8 +437,10 @@ export function detectLanguages(projectDir: string): string[] {
  */
 export function autoProjectConfig(projectDir: string, opts?: { group?: string }): ProjectConfig {
   const languages = detectLanguages(projectDir);
-  const projectName = path.basename(projectDir);
-  const group = opts?.group ?? projectName;
+  // Group fallback is intentionally a shared bucket, not the project's own
+  // name — that would silo each project in its own Qdrant collection and
+  // break the multi-project model.
+  const group = opts?.group ?? DEFAULT_GROUP;
 
   // Build a synthetic PaparatsConfig and resolve through the standard pipeline
   const synthetic: PaparatsConfig = {

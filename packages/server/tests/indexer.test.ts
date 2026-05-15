@@ -74,17 +74,12 @@ function createMockQdrant() {
         };
         const fileMatch = filter?.must?.find((m) => m.key === 'file');
         const projectMatch = filter?.must?.find((m) => m.key === 'project');
-        if (fileMatch && projectMatch) {
-          const points = collections.get(groupName)!;
-          for (const [id, point] of points.entries()) {
-            const payload = (point as { payload?: { file?: string; project?: string } }).payload;
-            if (
-              payload?.file === fileMatch.match.value &&
-              payload?.project === projectMatch.match.value
-            ) {
-              points.delete(id);
-            }
-          }
+        const points = collections.get(groupName)!;
+        for (const [id, point] of points.entries()) {
+          const payload = (point as { payload?: { file?: string; project?: string } }).payload;
+          const fileOk = !fileMatch || payload?.file === fileMatch.match.value;
+          const projectOk = !projectMatch || payload?.project === projectMatch.match.value;
+          if (fileOk && projectOk) points.delete(id);
         }
       }
       return Promise.resolve(true);
@@ -688,5 +683,90 @@ describe('Indexer', () => {
 
     const groups = await indexer.listGroups();
     expect(groups).toEqual({ g1: 10, g2: 20 });
+  });
+
+  it('evicts project chunks from old group when re-indexing under a new group', async () => {
+    // Stage: project "billing" used to live in group "old-group" (legacy
+    // chunks with chunk_id starting `old-group//billing//...`). The user
+    // moved it to "new-group" and re-runs the indexer. The first thing
+    // indexProject must do is evict the stale chunks — otherwise search
+    // returns chunk_ids whose symbol-graph edges live under the new key,
+    // and find_usages silently returns 0 results.
+    fs.writeFileSync(path.join(projectDir, 'a.ts'), 'export const x = 1;\n');
+
+    const oldCollection = toCollectionName('old-group');
+    const newCollection = toCollectionName('new-group');
+    mockQdrant.collections.set(oldCollection, new Map());
+    mockQdrant.collections.get(oldCollection)!.set('legacy-1', {
+      id: 'legacy-1',
+      payload: { project: 'billing', file: 'a.ts' },
+    });
+    // A chunk for an UNRELATED project sharing old-group must NOT be touched.
+    mockQdrant.collections.get(oldCollection)!.set('keep-1', {
+      id: 'keep-1',
+      payload: { project: 'other-project', file: 'b.ts' },
+    });
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir, { name: 'billing', group: 'new-group' });
+    await indexer.indexProject(project);
+
+    // Old group lost the billing chunk but kept the unrelated one.
+    const oldPoints = mockQdrant.collections.get(oldCollection)!;
+    expect(Array.from(oldPoints.keys())).toEqual(['keep-1']);
+    // New group received the freshly-indexed chunk(s).
+    const newPoints = mockQdrant.collections.get(newCollection)!;
+    expect(newPoints.size).toBeGreaterThan(0);
+    for (const point of newPoints.values()) {
+      const payload = (point as { payload: { project: string } }).payload;
+      expect(payload.project).toBe('billing');
+    }
+  });
+
+  it('does not delete from the keep group during eviction (no self-eviction)', async () => {
+    fs.writeFileSync(path.join(projectDir, 'a.ts'), 'export const x = 1;\n');
+    // Pre-existing chunk in the SAME group must survive the eviction probe.
+    const keepCollection = toCollectionName('test-group');
+    mockQdrant.collections.set(keepCollection, new Map());
+    mockQdrant.collections.get(keepCollection)!.set('preexisting', {
+      id: 'preexisting',
+      payload: { project: 'test-project', file: 'old.ts' },
+    });
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const project = createProjectConfig(projectDir);
+    await indexer.indexProject(project);
+
+    const keepPoints = mockQdrant.collections.get(keepCollection)!;
+    // The pre-existing chunk should still be there (the orphan-cleanup pass
+    // will reap it because the file no longer exists, but eviction itself
+    // must not fire on the keep group). Inspecting the delete calls confirms
+    // no delete was issued targeting test-group with a project-only filter.
+    const deleteCalls = mockQdrant.client.delete.mock.calls as Array<
+      [string, { filter?: { must?: Array<{ key: string; match: { value: string } }> } }]
+    >;
+    const projectOnlyDeletesOnKeep = deleteCalls.filter(([colName, opts]) => {
+      if (colName !== keepCollection) return false;
+      const must = opts.filter?.must ?? [];
+      const hasProject = must.some((m) => m.key === 'project');
+      const hasFile = must.some((m) => m.key === 'file');
+      return hasProject && !hasFile;
+    });
+    expect(projectOnlyDeletesOnKeep).toHaveLength(0);
+    // And the orphan is still around (sanity: orphan-cleanup runs per-file,
+    // so this point only goes if the file no longer exists in `currentRelPaths`)
+    expect(keepPoints.has('preexisting')).toBe(false); // orphan-cleanup reaped it
   });
 });

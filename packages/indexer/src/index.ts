@@ -13,7 +13,7 @@ import {
   detectLanguages,
 } from '@paparats/server';
 import type { TreeSitterManager, ProjectConfig, PaparatsConfig } from '@paparats/server';
-import { normalizeExcludePatterns } from '@paparats/shared';
+import { DEFAULT_GROUP, normalizeExcludePatterns } from '@paparats/shared';
 import { parseReposEnv, cloneOrPull, repoPath } from './repo-manager.js';
 import { startScheduler } from './scheduler.js';
 import { tryLoadIndexerConfig, resolveConfigPath } from './config-loader.js';
@@ -108,7 +108,7 @@ function buildConfigFromOverrides(
   localPath: string,
   overrides: RepoOverrides
 ): PaparatsConfig {
-  const group = PAPARATS_GROUP ?? overrides.group ?? repo.name;
+  const group = PAPARATS_GROUP ?? overrides.group ?? DEFAULT_GROUP;
   const language = overrides.language ?? detectLanguages(localPath);
 
   const config: PaparatsConfig = { group, language };
@@ -157,7 +157,7 @@ function applyOverrides(project: ProjectConfig, overrides: RepoOverrides): Proje
 
 function buildDefaultProject(repo: RepoConfig, localPath: string): ProjectConfig {
   const project = autoProjectConfig(localPath, {
-    group: PAPARATS_GROUP ?? repo.name,
+    group: PAPARATS_GROUP ?? DEFAULT_GROUP,
   });
   // Disable watcher in indexer (indexer uses cron, not filesystem events)
   project.watcher.enabled = false;
