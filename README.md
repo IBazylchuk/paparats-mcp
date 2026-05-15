@@ -14,15 +14,15 @@ helps your agent see the right code across a sea of repositories.
 
 **Give your AI coding assistant deep, real understanding of your entire workspace.**
 Paparats indexes every repo you care about — semantically, with AST-aware chunking and
-real LSP cross-references — and exposes it through the Model Context Protocol. Search
-by meaning, find dead code with actual language-server precision, see who calls a
-symbol, all without your code ever leaving your machine.
+a cross-chunk symbol graph — and exposes it through the Model Context Protocol. Search
+by meaning, follow `who-uses-what` through real symbol edges, see who last touched a
+chunk and which ticket it came from — all without your code ever leaving your machine.
 
 - ⚡ **One install, one config.** `paparats install` → `paparats add ~/code/repo` → done.
-- 🧭 **Real LSP intelligence.** TypeScript, Ruby, Python, Java (jdtls + bundled JRE),
-  Go, Rust, C#, PHP, Kotlin, C/C++ — proper definitions and references, not regex guesses.
-- 🪦 **`find_dead_code`.** Symbols nobody calls, scoped by entrypoint matchers and a
-  code-only deny-list, ready for the agent to clean up.
+- 🌳 **AST-aware chunking and symbol extraction.** Tree-sitter parses every supported
+  file once and feeds both chunking and the cross-chunk symbol graph (calls /
+  called_by / references / referenced_by) — 11 languages including TypeScript, Python,
+  Go, Rust, Java, Ruby, C, C++, C#.
 - 💸 **Saves tokens.** Returns only the chunks that matter, with token-savings telemetry
   to prove it (per-query, per-user, per-anchor-project).
 - 🔭 **Production-ready observability.** Prometheus `/metrics`, OpenTelemetry traces
@@ -41,7 +41,6 @@ symbol, all without your code ever leaving your machine.
 - [Install variants](#install-variants)
 - [Migrating from a v1 install](#migrating-from-a-v1-install)
 - [Support agent setup](#support-agent-setup)
-- [Finding dead code](#finding-dead-code)
 - [How It Works](#how-it-works)
 - [Key Features](#key-features)
 - [Use Cases](#use-cases)
@@ -68,13 +67,12 @@ AI coding assistants are smart, but they can only see files you open. They don't
 
 - **Semantic code search** — ask "where is the rate limiting logic?" and get exact code ranked by meaning, not grep matches
 - **Real-time sync** — edit a file, and 2 seconds later it's re-indexed. No manual re-runs
-- **LSP intelligence** — built-in 11-language LSP layer (TypeScript, Ruby, Python, Java, Go, Rust, C#, PHP, Kotlin, C, C++) drives `find_usages` and `find_dead_code` with real definitions and references
+- **Cross-chunk symbol graph** — `find_usages` walks AST-derived edges (calls, called_by, references, referenced_by) so the agent can trace dependencies without re-grepping
 - **Token savings** — return only relevant chunks instead of full files to reduce context size
 - **Multi-project workspaces** — search across backend, frontend, infra repos in one query
 - **100% local & private** — Qdrant vector database + Ollama embeddings. Nothing leaves your laptop
 - **AST-aware chunking** — code split by AST nodes (functions/classes) via tree-sitter, not arbitrary character counts (TypeScript, JavaScript, TSX, Python, Go, Rust, Java, Ruby, C, C++, C#; regex fallback for Terraform)
 - **Rich metadata** — each chunk knows its symbol name (from tree-sitter AST), service, domain context, and tags from directory structure
-- **Symbol graph** — find usages and cross-chunk relationships powered by AST-based symbol extraction (defines/uses analysis)
 - **Git history per chunk** — see who last modified a chunk, when, and which tickets (Jira, GitHub) are linked to it
 
 ### Who benefits
@@ -120,14 +118,12 @@ That's it. Your IDE is already wired (`~/.cursor/mcp.json`, `~/.claude/mcp.json`
 `http://localhost:9876/mcp`. Open Cursor or Claude Code and ask:
 
 > "Search this workspace for the auth middleware and show me everything that calls it."
->
-> "What's dead in `packages/server/src/`?"
 
 ### Existing v1 user?
 
 Just run `paparats install` again. The installer detects the legacy per-project
 compose, asks once before swapping it for the new global setup, and **preserves your
-indexed data** (Qdrant collections, SQLite metadata, LSP cache). Your in-repo
+indexed data** (Qdrant collections, SQLite metadata, embedding cache). Your in-repo
 `.paparats.yml` files keep working as per-project overrides.
 
 ---
@@ -142,13 +138,13 @@ to reconfigure — it diffs the existing compose and asks before overwriting han
 ~/.paparats/
 ├── docker-compose.yml          generated; hand-editable; install asks before overwriting
 ├── paparats-indexer.yml        project list (CLI rewrites it; comments survive your manual edits)
+├── install.json                install flags persisted so add/remove can regenerate compose
 ├── .env                        secrets — Qdrant API key, GitHub token; chmod 600
 ├── models/                     jina-code-embeddings GGUF + Modelfile
 └── data/                       Docker volumes (mounted by name from compose)
     ├── qdrant/                 vector index
     ├── sqlite/                 metadata.db, embeddings.db, analytics.db
-    ├── repos/                  cloned remote projects
-    └── lsp/                    shared LSP install dir (one set of language servers for everything)
+    └── repos/                  cloned remote projects
 ```
 
 Inside the Docker stack:
@@ -156,12 +152,12 @@ Inside the Docker stack:
 | Service            | Image                          | Port  | Role                                                     |
 | ------------------ | ------------------------------ | ----- | -------------------------------------------------------- |
 | `paparats-mcp`     | `ibaz/paparats-server:latest`  | 9876  | MCP HTTP/SSE endpoints, search, metadata API             |
-| `paparats-indexer` | `ibaz/paparats-indexer:latest` | 9877  | Cron + on-demand indexing, LSP cycle, hot-reload         |
+| `paparats-indexer` | `ibaz/paparats-indexer:latest` | 9877  | Cron + on-demand indexing, hot-reload of project list    |
 | `qdrant`           | `qdrant/qdrant:latest`         | 6333  | Vector DB (skipped when you pass `--qdrant-url`)         |
 | `ollama`           | `ibaz/paparats-ollama:latest`  | 11434 | Embedding model (Linux default; macOS uses native Ollama) |
 
 The indexer hot-reloads `paparats-indexer.yml`. Edits that **change project metadata
-only** (group, language, dead_code rules) reindex in place. Edits that **add or remove
+only** (group, language, indexing tweaks) reindex in place. Edits that **add or remove
 local-path projects** require a stack restart so Docker picks up the new bind-mount —
 the CLI does this for you on `paparats add` and `paparats remove`.
 
@@ -232,8 +228,8 @@ When `paparats install` finds a legacy `~/.paparats/docker-compose.yml` (the one
 old per-project flow with no `paparats-indexer` service), it prints a one-screen
 migration notice and asks before tearing the legacy stack down.
 
-**What survives:** Qdrant collections, SQLite metadata, indexer repos, the LSP install
-dir, and any `.paparats.yml` files inside your repos (those still take precedence over
+**What survives:** Qdrant collections, SQLite metadata, indexer repos, and any
+`.paparats.yml` files inside your repos (those still take precedence over
 `paparats-indexer.yml` overrides).
 
 **What's deleted:** the legacy `docker-compose.yml` and `.env`. They are regenerated on
@@ -263,85 +259,9 @@ paparats install --mode support --server http://prod-server:9876
 The installer verifies the server is reachable, then wires Cursor MCP
 (`~/.cursor/mcp.json`) and Claude Code MCP (`~/.claude/mcp.json`) to the support
 endpoint. Tools available on `/support/mcp`: `search_code`, `get_chunk`, `find_usages`,
-`find_dead_code`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`,
-`recent_changes`, plus the analytics tools described in **Observability** below.
-
----
-
-## Finding dead code
-
-Most "dead code" tools either lie (regex matches think every `foo` references your
-`foo()`) or burn an hour configuring per-language linters. Paparats does it once, with
-**real language servers**, across every project on the same install.
-
-```text
-In Cursor, Claude Code, or any MCP client:
-
-  > Find dead code in packages/server.
-```
-
-The agent calls `find_dead_code` with `{project: "server", path_glob: "packages/server/**"}`
-and gets back a list of definitions that have **zero inbound references in the LSP graph**,
-filtered through your entrypoint matchers and a built-in code-only deny-list (no
-markdown, no yaml, no logs, no compiled output).
-
-> **Language support.** TypeScript is the reference implementation, fully validated end
-> to end. Ruby, Python, Java, Go, Rust, C#, PHP, Kotlin, C and C++ ship as **beta** —
-> their LSP plugins are bundled and unit-tested, but production validation on real
-> codebases is in progress. Please open an issue if something looks off in your language.
-
-### How it works under the hood
-
-1. **Per-language LSP plugins.** TypeScript (typescript-language-server), Ruby
-   (Solargraph), Python (pyright), Go (gopls), Rust (rust-analyzer), Java (jdtls with a
-   bundled Adoptium Temurin 17 JRE), C# (omnisharp), PHP (intelephense), Kotlin (KLS),
-   C and C++ (clangd). Installed once into `~/.paparats/data/lsp/` and shared across
-   every indexed project.
-2. **Real definitions and references.** During each indexing cycle the indexer asks every
-   relevant LSP for `textDocument/definition` and `textDocument/references`, persists the
-   results into SQLite (`lsp_definitions` and `lsp_references` tables), and sweeps stale
-   rows for files that no longer exist. No regex, no heuristics.
-3. **Entrypoint matchers.** Each plugin contributes plausible entrypoints out of the
-   box: TypeScript reads `package.json` `bin`/`main`/`module`/`exports` plus Next.js
-   `pages/**` and `app/**/page.tsx` / `route.ts`. Python reads `[project.scripts]` from
-   `pyproject.toml`. Java parses `pom.xml` mainClass. Ruby honours `Gemfile`. Go matches
-   `cmd/**/main.go`. You override or extend per-project in `.paparats.yml`.
-4. **`find_dead_code`** then does `LEFT JOIN ... WHERE references IS NULL`, drops symbols
-   the entrypoint matcher considers alive, drops anything matched by your `ignore`
-   globs, and applies the code-only deny-list.
-
-### Per-project tuning
-
-Drop a `.paparats.yml` at your project root:
-
-```yaml
-group: my-app
-language: typescript
-
-dead_code:
-  enabled: true
-  entrypoints:
-    - scripts/** # CLIs we kick off from package.json scripts
-    - test/fixtures/** # don't flag fixtures that are referenced dynamically
-  ignore:
-    - packages/*/dist/** # generated output
-    - '**/__generated__/**'
-```
-
-Defaults are sensible (`enabled: true`, no extra entrypoints, no extra ignores). Set
-`enabled: false` to skip the LSP cycle entirely for that project.
-
-### `find_usages`
-
-The reverse direction — "who calls this symbol?" — runs against the same
-`lsp_references` table.
-
-```text
-  > Where is `createSession` used in this project?
-```
-
-The agent calls `find_usages {project: "server", symbol: "createSession"}` and gets back
-file:line locations grouped by definition site, no chunk IDs needed.
+`list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`,
+`recent_changes`, `impact_analysis`, plus the analytics tools described in
+**Observability** below.
 
 ---
 
@@ -390,9 +310,9 @@ the indexer's chokidar file watcher), every file in scope flows through this pip
  └────────┬────────┘
           ▼
  ┌─────────────────┐
- │ 5. Symbol        │  AST queries extract defines (function,
- │    extraction    │  class, variable names) and uses (calls,
- │                  │  references) per chunk. 10+ languages
+ │ 5. Symbol        │  AST queries extract module-level defines
+ │    extraction    │  (function/class/variable names) and uses
+ │                  │  (calls, references) per chunk. 11 languages
  └────────┬────────┘
           ▼
  ┌─────────────────┐
@@ -422,6 +342,10 @@ the indexer's chokidar file watcher), every file in scope flows through this pip
  │    (post-index)  │  references ↔ referenced_by → SQLite
  └─────────────────┘
 ```
+
+Step 5's symbol extractor only emits **module-level** definitions — locals declared
+inside function bodies, callback args, and hook closures stay out of the graph because
+they're not addressable from another chunk anyway.
 
 ### Search Flow
 
@@ -468,13 +392,13 @@ All variants searched in parallel, results merged by max score.
 changes with debouncing (1s default). For local-path projects bind-mounted into the
 indexer, edits on your host show up in MCP queries within seconds.
 
-### Integrations
+### Cross-chunk symbol graph
 
-**Native LSP** — Paparats now ships its own LSP layer (`@paparats/lsp` workspace
-package) that drives 11 language servers — TypeScript, Ruby, Python, Java (jdtls +
-bundled JRE), Go, Rust, C#, PHP, Kotlin, C, C++. Real `textDocument/definition` and
-`textDocument/references` results back `find_usages` and `find_dead_code`. No CCLSP
-configuration needed.
+The post-index pass walks every chunk's `defines_symbols` / `uses_symbols` lists and
+materializes edges into SQLite — `calls`, `called_by`, `references`, `referenced_by`.
+`find_usages` returns those edges grouped by direction so the agent can traverse the
+graph without re-searching. Because extraction is AST-driven, function locals don't
+pollute the graph.
 
 ---
 
@@ -484,13 +408,13 @@ configuration needed.
 
 Connect via the **coding endpoint** (`/mcp`):
 
-| Use Case                     | How                                                         |
-| ---------------------------- | ----------------------------------------------------------- |
-| **Navigate unfamiliar code** | `search_code "authentication middleware"` → exact locations |
+| Use Case                     | How                                                                    |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| **Navigate unfamiliar code** | `search_code "authentication middleware"` → exact locations            |
 | **Find similar patterns**    | `search_code "retry with exponential backoff"` → examples              |
-| **Trace dependencies**       | `find_usages {symbol: "createSession"}` → file:line refs by definition |
-| **Find dead code**           | `find_dead_code {project, path_glob: "src/**"}` → safely deletable     |
+| **Trace dependencies**       | `find_usages {chunk_id, direction: "incoming"}` → callers via the graph |
 | **Explore context**          | `get_chunk <chunk_id> --radius_lines 50` → expand around               |
+| **Manage projects**          | `list_projects` and `delete_project` for index hygiene                 |
 
 ### For Support Teams
 
@@ -500,8 +424,9 @@ Connect via the **support endpoint** (`/support/mcp`):
 | --------------------- | ---------------------------------------------------------------------- |
 | **Explain a feature** | `explain_feature "rate limiting"` → code locations + changes          |
 | **Recent changes**    | `recent_changes "auth" --since 2024-01-01` → timeline with tickets     |
-| **Trace usages**      | `find_usages {symbol: "PaymentProcessor"}` → blast radius              |
+| **Trace usages**      | `find_usages {chunk_id}` → who calls/references this chunk             |
 | **Change history**    | `get_chunk_meta <chunk_id>` → authors, dates, linked tickets           |
+| **Blast radius**      | `impact_analysis <chunk_id>` → cross-chunk + cross-project impact      |
 
 **Support chatbot example:**
 
@@ -537,10 +462,6 @@ repos:
   - path: /Users/alice/code/billing # local bind-mount
     group: dev
     language: typescript
-    dead_code:
-      enabled: true
-      entrypoints: [scripts/**]
-      ignore: [packages/*/dist/**]
 
   - url: org/widgets # remote git, cloned by the indexer
     group: prod
@@ -557,9 +478,7 @@ in place.
 
 ### `.paparats.yml` in your repo — per-project overrides
 
-Drop one at the project root to override anything from the global file. This is also
-where you tune `dead_code` rules (entrypoints + ignore globs — see "Finding dead code"
-above).
+Drop one at the project root to override anything from the global file.
 
 ```yaml
 group: my-app
@@ -574,11 +493,6 @@ indexing:
   overlap: 100 # chunk overlap (default: 100)
   concurrency: 4 # parallel embedding requests
   batchSize: 8 # embeddings per Ollama call
-
-dead_code:
-  enabled: true
-  entrypoints: [scripts/**]
-  ignore: [packages/*/dist/**]
 
 # Metadata
 metadata:
@@ -625,17 +539,16 @@ own tool set and system instructions.
 
 ### Coding endpoint (`/mcp`)
 
-For developers using Claude Code, Cursor, etc. Focus: search code, read chunks, trace
-symbol relationships through the LSP graph, find dead code, manage projects.
+For developers using Claude Code, Cursor, etc. Focus: search code, read chunks, follow
+the cross-chunk symbol graph, manage projects.
 
 | Tool             | Description                                                                                       |
 | :--------------- | :------------------------------------------------------------------------------------------------ |
 | `search_code`    | Semantic search across indexed projects. Returns chunks with symbol info and confidence scores.   |
 | `get_chunk`      | Retrieve a chunk by ID with optional surrounding context.                                         |
-| `find_usages`    | LSP-derived references for `{symbol, file?, language?}` — locations grouped by definition site.   |
-| `find_dead_code` | Definitions with zero inbound LSP references, filtered by entrypoints + ignore + code-only deny.  |
+| `find_usages`    | Walk the symbol graph from a `chunk_id` — `incoming` (callers/references in), `outgoing` (calls/references out), or `both`. |
 | `list_projects`  | List indexed projects with chunk counts and detected languages.                                   |
-| `delete_project` | Wipe Qdrant chunks + SQLite metadata + LSP rows for a project (CLI's `paparats remove` calls it). |
+| `delete_project` | Wipe Qdrant chunks + SQLite metadata for a project (CLI's `paparats remove` calls it).            |
 | `health_check`   | Indexing status, chunks per group, running jobs.                                                  |
 
 ### Support endpoint (`/support/mcp`)
@@ -654,7 +567,7 @@ change history, cost reporting — all in plain language.
 | `search_changes`       | Semantic search filtered by last-commit date. Each result shows when it last changed. |
 | `explain_feature`      | Comprehensive feature analysis: locations + recent changes for a question.            |
 | `recent_changes`       | Timeline grouped by date with commits, tickets, affected files. `since` filter.       |
-| `impact_analysis`      | **Retired** — returns a directive message pointing to `find_usages` (LSP-driven).     |
+| `impact_analysis`      | Cross-chunk impact for a `chunk_id` — symbol graph traversal + cross-project blast radius. |
 | `token_savings_report` | Aggregate token-savings stats (naive baseline vs search-only vs actually consumed).   |
 | `top_queries`          | Most frequent queries by user/session/project anchor.                                  |
 | `slowest_searches`     | Top-N slowest searches with timing + chunk counts.                                    |
@@ -669,8 +582,7 @@ change history, cost reporting — all in plain language.
 ```
 1. search_code "authentication middleware"           → relevant chunks with symbols
 2. get_chunk <chunk_id> --radius_lines 50            → expand context around a hit
-3. find_usages {project, symbol: "createSession"}    → who calls it, where
-4. find_dead_code {project, path_glob: "src/**"}     → safely deletable symbols
+3. find_usages {chunk_id, direction: "incoming"}     → who calls / references this chunk
 ```
 
 **Single-call (support agent):**
@@ -745,15 +657,14 @@ Or add to `.mcp.json` in project root:
 ### Verify
 
 - `paparats status` — check stack is up
-- **Coding endpoint** (`/mcp`): `search_code`, `get_chunk`, `find_usages`, `find_dead_code`,
+- **Coding endpoint** (`/mcp`): `search_code`, `get_chunk`, `find_usages`,
   `list_projects`, `delete_project`, `health_check`
 - **Support endpoint** (`/support/mcp`): `search_code`, `get_chunk`, `find_usages`,
   `health_check`, `list_projects`, plus the support-specific tools `get_chunk_meta`,
-  `search_changes`, `explain_feature`, `recent_changes`, and the analytics tools listed
-  in **Observability** (`token_savings_report`, `top_queries`, `slowest_searches`,
-  `cross_project_share`, `retry_rate`, `failed_chunks`)
-- Ask the AI: _"Search this workspace for the auth middleware"_ or _"What's dead in
-  packages/server?"_
+  `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`, and the
+  analytics tools listed in **Observability** (`token_savings_report`, `top_queries`,
+  `slowest_searches`, `cross_project_share`, `retry_rate`, `failed_chunks`)
+- Ask the AI: _"Search this workspace for the auth middleware"_
 
 ---
 
@@ -803,6 +714,7 @@ container, watching is the `chokidar` watcher inside the indexer.
 - `--language <lang>` — override language (default: auto-detect)
 - `--no-restart` — skip the Docker restart for local-path adds (useful in scripts)
 - `--no-reindex` — skip the per-project reindex trigger
+- `--force` — drop the project's existing chunks before reindexing (destructive, use after schema/config changes)
 
 **`paparats remove <name>`**
 
@@ -954,14 +866,14 @@ paparats-mcp/
 │   │   │   ├── metrics.ts            # Prometheus metrics (opt-in)
 │   │   │   ├── ast-chunker.ts        # AST-based code chunking (tree-sitter, primary strategy)
 │   │   │   ├── chunker.ts            # Regex-based code chunking (fallback for unsupported languages)
-│   │   │   ├── ast-symbol-extractor.ts # AST-based symbol extraction (tree-sitter, 10 languages)
+│   │   │   ├── ast-symbol-extractor.ts # AST-based symbol extraction (module-level only, 11 languages)
 │   │   │   ├── ast-queries.ts        # Tree-sitter S-expression queries per language
 │   │   │   ├── tree-sitter-parser.ts # WASM tree-sitter manager
-│   │   │   ├── symbol-graph.ts       # Cross-chunk symbol edges
+│   │   │   ├── symbol-graph.ts       # Cross-chunk symbol edges (calls/called_by/refs)
 │   │   │   ├── embeddings.ts         # Ollama provider + SQLite cache
 │   │   │   ├── config.ts             # .paparats.yml reader + validation
 │   │   │   ├── metadata.ts           # Tag resolution + auto-detection
-│   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets
+│   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets + symbol edges
 │   │   │   ├── git-metadata.ts       # Git history extraction + chunk mapping
 │   │   │   ├── ticket-extractor.ts   # Jira/GitHub/custom ticket parsing
 │   │   │   ├── mcp-handler.ts        # MCP protocol — dual-mode (coding /mcp + support /support/mcp)
@@ -972,6 +884,7 @@ paparats-mcp/
 │   │   ├── src/
 │   │   │   ├── index.ts              # Entry: Express mini-server + cron scheduler
 │   │   │   ├── config-loader.ts      # paparats-indexer.yml parser + per-repo overrides
+│   │   │   ├── config-watcher.ts     # chokidar watcher for hot-reloading the project list
 │   │   │   ├── repo-manager.ts       # parseReposEnv(), cloneOrPull() using simple-git
 │   │   │   ├── scheduler.ts          # node-cron wrapper
 │   │   │   └── types.ts              # IndexerConfig, RepoConfig, RepoOverrides, IndexerFileConfig
@@ -982,7 +895,8 @@ paparats-mcp/
 │   │   └── src/
 │   │       ├── index.ts                    # Commander entry
 │   │       ├── docker-compose-generator.ts # Programmatic YAML generation
-│   │       └── commands/                   # init, install, update, index, etc.
+│   │       ├── projects-yml.ts             # paparats-indexer.yml + install.json read/write
+│   │       └── commands/                   # install, projects (add/remove/list), lifecycle, edit, etc.
 │   └── shared/          # Shared utilities (npm package: @paparats/shared)
 │       └── src/
 │           ├── path-validation.ts    # Path validation
@@ -999,7 +913,7 @@ paparats-mcp/
 
 - **Qdrant** — vector database (1 collection per group with `paparats_` prefix, cosine similarity, payload filtering)
 - **Ollama** — local embeddings via Jina Code Embeddings 1.5B with task-specific prefixes
-- **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata store (`~/.paparats/metadata.db`)
+- **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata + symbol edges store (`~/.paparats/metadata.db`)
 - **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
 - **TypeScript** monorepo with Yarn workspaces
 
@@ -1043,8 +957,10 @@ jobs:
             -d '{"repos": ["your-org/your-repo"]}'
 ```
 
-If the project isn't yet in `paparats-indexer.yml`, add it once during your initial
-setup and the indexer's cron + hot-reload will keep it in sync going forward.
+Pass `"force": true` in the body to drop existing chunks first (destructive — use after
+schema/config changes). If the project isn't yet in `paparats-indexer.yml`, add it once
+during your initial setup and the indexer's cron + hot-reload will keep it in sync going
+forward.
 
 ### Code-review assistant
 
@@ -1053,8 +969,8 @@ Combine multiple tools to analyze the impact of a pull request:
 ```
 1. explain_feature("the feature being changed")
    → understand what the code does and how it connects
-2. find_usages({project, symbol: "<changed function>"})
-   → blast radius: every reference, file:line, grouped by definition site
+2. find_usages({chunk_id: "<changed chunk>", direction: "both"})
+   → blast radius via the symbol graph
 3. search_changes("related area", since="2024-01-01")
    → recent changes that might conflict or overlap
 ```
@@ -1067,8 +983,8 @@ Default: [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/j
 
 **Recommended:** `paparats install` automates this:
 
-- **Local mode** (`--ollama-mode local`): Downloads GGUF (~1.65 GB) to `~/.paparats/models/`, creates Modelfile and runs `ollama create jina-code-embeddings`
-- **Docker mode** (`--ollama-mode docker`): Uses `ibaz/paparats-ollama` image with model pre-baked — zero setup
+- **Native mode** (`--ollama-mode native`, default on macOS): Downloads GGUF (~1.65 GB) to `~/.paparats/models/`, creates Modelfile and runs `ollama create jina-code-embeddings`
+- **Docker mode** (`--ollama-mode docker`, default on Linux): Uses `ibaz/paparats-ollama` image with model pre-baked — zero setup
 
 **Manual setup:**
 
@@ -1136,7 +1052,7 @@ Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
 | Feature           | Paparats | Vexify | SeaGOAT |  Augment   | Sourcegraph | Greptile | Bloop |
 | :---------------- | :------: | :----: | :-----: | :--------: | :---------: | :------: | :---: |
 | MCP native        |    ✅    |   ✅   |   ❌    |     ✅     |     ❌      |  ⚠️ API  |  ❌   |
-| LSP integration   | ✅ Built-in |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
+| Symbol graph      |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
 | Token metrics     |    ✅    |   ❌   |   ❌    | ⚠️ Partial |     ❌      |    ❌    |  ❌   |
 | Git history       |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
 | Ticket extraction |    ✅    |   ❌   |   ❌    |     ❌     |     ❌      |    ❌    |  ❌   |
@@ -1290,7 +1206,6 @@ Open an issue or pull request to get started.
 - [Qdrant](https://qdrant.tech) — vector database
 - [Ollama](https://ollama.com) — local LLM runtime
 - [MCP](https://modelcontextprotocol.io) — Model Context Protocol
-- [Adoptium Temurin 17](https://adoptium.net/) — JRE bundled for jdtls (Java LSP)
 
 ---
 
