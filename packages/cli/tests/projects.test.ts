@@ -140,6 +140,33 @@ describe('runAdd', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  it('does NOT default group to project name when --group omitted', async () => {
+    // Regression: prior behaviour set entry.group = name, which gave every
+    // project its own Qdrant collection and broke the multi-project model.
+    // Omitting --group must leave the entry without a group so it inherits
+    // defaults.group / DEFAULT_GROUP at read time.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sample-'));
+    await runAdd(
+      dir,
+      { paparatsHome: tmpHome },
+      { restartStack: vi.fn(), triggerReindex: vi.fn().mockResolvedValue(undefined) }
+    );
+    const file = readYml();
+    expect(file.repos[0]!.group).toBeUndefined();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('persists group when --group is passed', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sample-'));
+    await runAdd(
+      dir,
+      { paparatsHome: tmpHome, group: 'workspace' },
+      { restartStack: vi.fn(), triggerReindex: vi.fn().mockResolvedValue(undefined) }
+    );
+    expect(readYml().repos[0]!.group).toBe('workspace');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('survives indexer-trigger failure with a warning (project still added)', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sample-'));
     const result = await runAdd(
@@ -184,6 +211,28 @@ describe('runList', () => {
     const rows = await runList({ paparatsHome: tmpHome }, { fetchHealth });
     expect(rows).toHaveLength(1);
     expect(rows[0]!.status).toBe('?');
+  });
+
+  it('falls back to defaults.group, then DEFAULT_GROUP, when entry omits group', async () => {
+    fs.writeFileSync(
+      path.join(tmpHome, 'projects.yml'),
+      'defaults:\n  group: shared\nrepos:\n  - url: org/a\n  - url: org/b\n    group: explicit\n  - url: org/c\n'
+    );
+    const fetchHealth = vi.fn().mockResolvedValue({ repos: [] });
+    const rows: ListedProject[] = await runList({ paparatsHome: tmpHome }, { fetchHealth });
+    const a = rows.find((r) => r.name === 'a')!;
+    const b = rows.find((r) => r.name === 'b')!;
+    const c = rows.find((r) => r.name === 'c')!;
+    expect(a.group).toBe('shared');
+    expect(b.group).toBe('explicit');
+    expect(c.group).toBe('shared');
+  });
+
+  it('falls back to DEFAULT_GROUP when neither entry nor defaults specify a group', async () => {
+    fs.writeFileSync(path.join(tmpHome, 'projects.yml'), 'repos:\n  - url: org/a\n');
+    const fetchHealth = vi.fn().mockResolvedValue({ repos: [] });
+    const rows = await runList({ paparatsHome: tmpHome }, { fetchHealth });
+    expect(rows[0]!.group).toBe('default');
   });
 
   it('--group filters', async () => {

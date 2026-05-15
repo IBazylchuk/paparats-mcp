@@ -80,6 +80,20 @@ describe('runEdit', () => {
     expect(trigger).toHaveBeenCalled();
   });
 
+  it('forwards paparatsHome to regenerateAndRestart', async () => {
+    // Regression: defaultRegenerateAndRestart used to read PAPARATS_HOME
+    // unconditionally, ignoring the home overridden via opts/EditDeps.
+    fs.writeFileSync(path.join(tmpHome, 'projects.yml'), 'repos:\n  - url: org/foo\n');
+    const regen = vi.fn().mockResolvedValue({ composeChanged: false });
+    await runEdit('projects', {
+      paparatsHome: tmpHome,
+      spawnEditor: () => ({ status: 0 }),
+      regenerateAndRestart: regen,
+      triggerFullReindex: vi.fn().mockResolvedValue(undefined),
+    });
+    expect(regen).toHaveBeenCalledWith(tmpHome);
+  });
+
   it('projects target validation failure: no regenerate, no trigger', async () => {
     fs.writeFileSync(path.join(tmpHome, 'projects.yml'), 'not valid: : :');
     const regen = vi.fn();

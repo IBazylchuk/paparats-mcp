@@ -18,7 +18,7 @@ export interface EditDeps {
   spawnEditor?: (cmd: string, args: string[]) => { status: number };
   exists?: (p: string) => boolean;
   resolveEditor?: (platform: NodeJS.Platform) => { cmd: string; args: string[] };
-  regenerateAndRestart?: () => Promise<{ composeChanged: boolean }>;
+  regenerateAndRestart?: (paparatsHome?: string) => Promise<{ composeChanged: boolean }>;
   triggerFullReindex?: () => Promise<void>;
   paparatsHome?: string;
 }
@@ -87,7 +87,7 @@ export async function runEdit(target: EditTarget, deps: EditDeps = {}): Promise<
   void parsed; // quieten unused-variable warning
 
   const regenerate = deps.regenerateAndRestart ?? defaultRegenerateAndRestart;
-  const { composeChanged } = await regenerate();
+  const { composeChanged } = await regenerate(home);
   if (composeChanged) console.log(chalk.green('✓ Compose regenerated and stack restarted'));
 
   const triggerFull = deps.triggerFullReindex ?? defaultTriggerFullReindex;
@@ -103,12 +103,14 @@ export async function runEdit(target: EditTarget, deps: EditDeps = {}): Promise<
   return { edited: true, validated: true, composeChanged, reindexed };
 }
 
-async function defaultRegenerateAndRestart(): Promise<{ composeChanged: boolean }> {
+async function defaultRegenerateAndRestart(
+  paparatsHome: string = PAPARATS_HOME
+): Promise<{ composeChanged: boolean }> {
   // Lazy import to avoid pulling install.ts (and its deps) in non-edit code paths.
   const { regenerateCompose } = await import('../projects-yml.js');
   // We can't know ollamaMode/qdrantUrl from edit context; re-read the existing compose
   // to keep the same generator inputs.
-  const composePath = path.join(PAPARATS_HOME, COMPOSE_YML);
+  const composePath = path.join(paparatsHome, COMPOSE_YML);
   if (!fs.existsSync(composePath)) {
     return { composeChanged: false };
   }
@@ -131,6 +133,7 @@ async function defaultRegenerateAndRestart(): Promise<{ composeChanged: boolean 
     ollamaMode,
     ...(ollamaUrl !== undefined ? { ollamaUrl } : {}),
     ...(qdrantUrl !== undefined ? { qdrantUrl } : {}),
+    paparatsHome,
   });
   if (!changed) return { composeChanged: false };
 

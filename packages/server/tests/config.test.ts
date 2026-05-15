@@ -624,11 +624,15 @@ metadata:
       }
     });
 
-    it('defaults group to directory basename', () => {
+    it('defaults group to DEFAULT_GROUP (not directory basename)', () => {
+      // Regression: the prior fallback was the project's own basename, which
+      // siloed every project in its own Qdrant collection and broke the
+      // multi-project model (one group = one collection, projects share via
+      // the `project` payload filter).
       const tmpDir = createTempDir();
       try {
         const config = autoProjectConfig(tmpDir);
-        expect(config.group).toBe(path.basename(tmpDir));
+        expect(config.group).toBe('default');
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
