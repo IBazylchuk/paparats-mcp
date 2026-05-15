@@ -239,7 +239,11 @@ async function runIndexCycle(filter?: string[], opts?: { force?: boolean }): Pro
   indexCycleRunning = true;
   globalStatus = 'running';
   const startTime = Date.now();
-  const targets = filter ? resolveTriggerTargets(repos, filter) : repos;
+  // Shallow-copy: the hot-reload watcher swaps `repos` in place
+  // (`repos.length = 0; repos.push(...next)`). If a config change lands
+  // mid-cycle and `targets === repos`, the for-of loop below would terminate
+  // early. resolveTriggerTargets already returns a fresh array.
+  const targets = filter ? resolveTriggerTargets(repos, filter) : [...repos];
   const force = opts?.force === true;
 
   console.log(
