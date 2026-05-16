@@ -3,7 +3,7 @@
   "name": "io.github.IBazylchuk/paparats-mcp",
   "title": "Paparats – Local Semantic Code Search MCP",
   "description": "Local-first semantic code search across all your repos. Private context for AI coding assistants.",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "license": "MIT",
   "author": {
     "name": "Ilya Bazylchuk",
@@ -41,7 +41,7 @@
     {
       "registryType": "npm",
       "identifier": "@paparats/cli",
-      "version": "0.5.1",
+      "version": "0.6.0",
       "transport": {
         "type": "streamable-http",
         "url": "http://localhost:9876"
