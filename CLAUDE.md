@@ -64,11 +64,13 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 
 | Module             | Responsibility                                                                                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`         | Entry point — Express mini-server + cron scheduler bootstrap, uses `Indexer` from `@paparats/server`                                                    |
-| `config-loader.ts` | `loadIndexerConfig()`, `tryLoadIndexerConfig()` — parses `projects.yml`, merges per-repo overrides with defaults, returns `RepoConfig[]` + cron |
-| `repo-manager.ts`  | `parseReposEnv()`, `cloneOrPull()` using simple-git — clone/pull repos to local filesystem                                                              |
-| `scheduler.ts`     | `startScheduler()` — node-cron wrapper for scheduled index cycles                                                                                       |
-| `types.ts`         | `IndexerConfig`, `RepoConfig`, `RepoOverrides`, `IndexerFileConfig`, `RunStatus`, `HealthResponse`                                                      |
+| `index.ts`           | Entry point — Express mini-server + dual cron scheduler bootstrap (fast change-check + slow safety-net), uses `Indexer` from `@paparats/server` |
+| `config-loader.ts`   | `loadIndexerConfig()`, `tryLoadIndexerConfig()` — parses `projects.yml`, merges per-repo overrides with defaults, returns `RepoConfig[]` + cron + cron_fast |
+| `repo-manager.ts`    | `parseReposEnv()`, `cloneOrPull()` using simple-git — clone/pull repos to local filesystem                                                              |
+| `scheduler.ts`       | `startScheduler()` — node-cron wrapper for scheduled index cycles                                                                                       |
+| `change-detector.ts` | `GitDetector` (remote `ls-remote HEAD`), `MtimeDetector` (file stat hash) — produce fingerprints used to decide whether to re-index                     |
+| `state-store.ts`     | SQLite store of per-repo fingerprints (default `/data/indexer-state.db`); persisted between cron ticks                                                  |
+| `types.ts`           | `IndexerConfig`, `RepoConfig`, `RepoOverrides`, `IndexerFileConfig`, `RunStatus`, `HealthResponse`                                                      |
 
 **packages/ollama/**
 
@@ -100,6 +102,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - **Install modes**: `paparats install --mode <developer|server|support>`. Developer = current flow + Ollama mode choice. Server = full Docker stack with auto-indexer. Support = client-only MCP config (no Docker). `--ollama-url` skips local Ollama entirely (no binary check, no GGUF download)
 - **Indexer container**: `packages/indexer` — separate Docker image that clones repos and indexes on a schedule. Uses `Indexer` class from `@paparats/server` as a library. HTTP trigger at `POST /trigger`, health at `GET /health`
 - **Indexer config file**: `projects.yml` mounted at `/config/` in the container. Per-repo overrides (`group`, `language`, `indexing.exclude`, etc.) with global `defaults` section. Priority: `.paparats.yml` in repo > indexer YAML overrides > auto-detection. Falls back to `REPOS` env when no config file present. `CONFIG_DIR` env controls the lookup directory
+- **Indexer change detection**: two cron schedules run side by side. Fast `CRON_FAST` (default `*/10 * * * *`) computes a fingerprint per repo and only invokes `indexProject()` when it differs from the last persisted value; slow `CRON` (default `0 */3 * * *`) is the safety-net full pass. Remote repos fingerprint via `git ls-remote HEAD`; bind-mounted local repos via mtime/size hash of the project's file set (same patterns/excludes as indexing). State persists in `STATE_DB_PATH` (default `/data/indexer-state.db`). Fingerprints advance only after successful indexing; detector failures fall through to a defensive reindex. Set `CHANGE_DETECTION=false` to opt out
 
 ## Testing
 
