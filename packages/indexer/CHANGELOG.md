@@ -1,5 +1,17 @@
 # @paparats/indexer
 
+## 0.6.0
+
+### Minor Changes
+
+- [#56](https://github.com/IBazylchuk/paparats-mcp/pull/56) [`aafbfc2`](https://github.com/IBazylchuk/paparats-mcp/commit/aafbfc2e98679357f87b98b72f7c1a7155207e23) Thanks [@IBazylchuk](https://github.com/IBazylchuk)! - Add change-detection to the indexer. Two cron schedules now run side by side: a fast `CRON_FAST` tick (default `*/10 * * * *`) that fingerprints each repo and only re-indexes when it changed, and a slow `CRON` safety-net (default `0 */3 * * *`, was `0 */6 * * *`) that still does a full pass. Remote repos use `git ls-remote HEAD`; bind-mounted local repos use a file mtime/size hash. State persists in `STATE_DB_PATH` (default `/data/indexer-state.db`). Set `CHANGE_DETECTION=false` to opt out.
+
+### Patch Changes
+
+- Updated dependencies [[`aafbfc2`](https://github.com/IBazylchuk/paparats-mcp/commit/aafbfc2e98679357f87b98b72f7c1a7155207e23)]:
+  - @paparats/server@0.6.0
+  - @paparats/shared@0.6.0
+
 ## 0.5.1
 
 ### Patch Changes

@@ -4,7 +4,17 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
-## [0.5.1] - 2026-05-15
+## [0.6.0] - 2026-05-16
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- [#56](https://github.com/IBazylchuk/paparats-mcp/pull/56) [`aafbfc2`](https://github.com/IBazylchuk/paparats-mcp/commit/aafbfc2e98679357f87b98b72f7c1a7155207e23) Add change-detection to the indexer. Two cron schedules now run side by side: a fast `CRON_FAST` tick (default `*/10 * * * *`) that fingerprints each repo and only re-indexes when it changed, and a slow `CRON` safety-net (default `0 */3 * * *`, was `0 */6 * * *`) that still does a full pass. Remote repos use `git ls-remote HEAD`; bind-mounted local repos use a file mtime/size hash. State persists in `STATE_DB_PATH` (default `/data/indexer-state.db`). Set `CHANGE_DETECTION=false` to opt out.
+
+### Patch Changes
+
+## [0.5.1] - 2026-05-16
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -16,7 +26,7 @@
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-05-15
+## [0.5.0] - 2026-05-16
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -109,7 +119,7 @@
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-05-15
+## [0.3.0] - 2026-05-16
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
