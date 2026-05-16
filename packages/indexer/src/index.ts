@@ -337,11 +337,42 @@ async function runIndexCycle(filter?: string[], opts?: { force?: boolean }): Pro
   }
 }
 
+/** Per-repo fingerprint phase result; consumed by the indexing phase below. */
+type FingerprintProbe =
+  | { repo: RepoConfig; outcome: 'fingerprint'; current: Fingerprint }
+  | { repo: RepoConfig; outcome: 'failed'; error: Error };
+
+/**
+ * Cap on time a single remote `ls-remote` may block the fast cycle. A frozen
+ * upstream would otherwise stall every other repo's fingerprint behind it.
+ */
+const FINGERPRINT_TIMEOUT_MS = 30_000;
+
+async function probeFingerprint(repo: RepoConfig): Promise<FingerprintProbe> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`fingerprint timed out after ${FINGERPRINT_TIMEOUT_MS}ms`)),
+      FINGERPRINT_TIMEOUT_MS
+    );
+  });
+  try {
+    const current = await Promise.race([computeFingerprint(repo), timeout]);
+    return { repo, outcome: 'fingerprint', current };
+  } catch (err) {
+    return { repo, outcome: 'failed', error: err as Error };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * Fast cycle: compute a cheap fingerprint per repo (remote `ls-remote` or
  * local file-stat hash) and only invoke indexProject() when it differs from
- * the last persisted fingerprint. Detector failures fall through to a
- * defensive reindex.
+ * the last persisted fingerprint. Fingerprint probes run concurrently — a
+ * slow remote can't block the others — but the indexing phase stays
+ * sequential because indexProject() is heavy on Ollama and Qdrant. Probe
+ * failures fall through to a defensive reindex.
  */
 async function runChangeCheckCycle(): Promise<void> {
   if (fastCycleRunning) {
@@ -361,26 +392,28 @@ async function runChangeCheckCycle(): Promise<void> {
   let totalChunks = 0;
 
   try {
-    for (const repo of targets) {
-      try {
-        const current = await computeFingerprint(repo);
+    const probes = await Promise.all(targets.map((repo) => probeFingerprint(repo)));
+
+    for (const probe of probes) {
+      const { repo } = probe;
+      if (probe.outcome === 'fingerprint') {
         const stored = stateStore.get(repo.fullName);
-        if (stored && stored.fingerprint === current.value) {
+        if (stored && stored.fingerprint === probe.current.value) {
           skipped++;
           continue;
         }
         console.log(
-          `[indexer] ${repo.fullName}: changed (${stored?.fingerprint ?? 'new'} → ${current.value.slice(0, 12)}), reindexing`
+          `[indexer] ${repo.fullName}: changed (${stored?.fingerprint ?? 'new'} → ${probe.current.value.slice(0, 12)}), reindexing`
         );
         const result = await indexRepo(repo);
         if (result.success) {
           indexed++;
           totalChunks += result.chunks;
-          stateStore.set(repo.fullName, current.value, current.kind, result.chunks);
+          stateStore.set(repo.fullName, probe.current.value, probe.current.kind, result.chunks);
         }
-      } catch (err) {
+      } else {
         console.warn(
-          `[indexer] ${repo.fullName}: fingerprint failed (${(err as Error).message}), reindexing defensively`
+          `[indexer] ${repo.fullName}: fingerprint failed (${probe.error.message}), reindexing defensively`
         );
         const result = await indexRepo(repo);
         if (result.success) {
