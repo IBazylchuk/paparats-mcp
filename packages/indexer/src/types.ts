@@ -59,7 +59,10 @@ export interface IndexerFileConfig {
   defaults?: {
     group?: string;
     language?: string | string[];
+    /** Slow safety-net cron — runs a full index of every repo. */
     cron?: string;
+    /** Fast change-detection cron — only re-indexes repos whose fingerprint changed. */
+    cron_fast?: string;
     indexing?: RepoOverrides['indexing'];
     metadata?: RepoOverrides['metadata'];
   };
