@@ -65,15 +65,27 @@ export class MtimeDetector {
 
     const hash = crypto.createHash('sha256');
     hash.update(`count=${files.length}\n`);
-    for (const file of files) {
-      const rel = path.relative(localPath, file);
-      let stat: fs.Stats;
-      try {
-        stat = fs.statSync(file);
-      } catch {
-        continue;
+
+    // Stat in bounded-concurrency batches. Promise.all over every file at
+    // once would open thousands of concurrent fds; a tight sync loop blocks
+    // the event loop. 64 is a reasonable balance for an indexer workload.
+    const BATCH = 64;
+    for (let i = 0; i < files.length; i += BATCH) {
+      const slice = files.slice(i, i + BATCH);
+      const stats = await Promise.all(
+        slice.map(async (file) => {
+          try {
+            return { file, stat: await fs.promises.stat(file) };
+          } catch {
+            return null;
+          }
+        })
+      );
+      for (const entry of stats) {
+        if (!entry) continue;
+        const rel = path.relative(localPath, entry.file);
+        hash.update(`${rel}\0${entry.stat.mtimeMs}\0${entry.stat.size}\n`);
       }
-      hash.update(`${rel}\0${stat.mtimeMs}\0${stat.size}\n`);
     }
 
     return { kind: 'mtime', value: hash.digest('hex') };
