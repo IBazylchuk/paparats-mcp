@@ -158,6 +158,7 @@ function validateConfig(config: unknown): asserts config is IndexerFileConfig {
 export interface LoadConfigResult {
   repos: RepoConfig[];
   cron?: string;
+  cronFast?: string;
 }
 
 /**
@@ -185,7 +186,8 @@ export function loadIndexerConfig(configPath: string, token?: string): LoadConfi
   }
 
   const cron = parsed.defaults?.cron;
-  return { repos, cron };
+  const cronFast = parsed.defaults?.cron_fast;
+  return { repos, cron, cronFast };
 }
 
 /**

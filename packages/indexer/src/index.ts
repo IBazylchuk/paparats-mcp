@@ -19,17 +19,27 @@ import { startScheduler } from './scheduler.js';
 import { tryLoadIndexerConfig, resolveConfigPath } from './config-loader.js';
 import { ConfigWatcher } from './config-watcher.js';
 import { resolveTriggerTargets } from './trigger-filter.js';
+import { StateStore } from './state-store.js';
+import { GitDetector, MtimeDetector, type Fingerprint } from './change-detector.js';
 import type { RepoConfig, RepoOverrides, HealthResponse, RepoStatus, RunStatus } from './types.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const REPOS = process.env['REPOS'] ?? '';
 const GITHUB_TOKEN = process.env['GITHUB_TOKEN'];
-const CRON = process.env['CRON'] ?? '0 */6 * * *';
+/** Slow safety-net cycle: indexes every repo unconditionally. */
+const CRON = process.env['CRON'] ?? '0 */3 * * *';
+/** Fast change-detection cycle: only indexes repos whose fingerprint changed. */
+const CRON_FAST = process.env['CRON_FAST'] ?? '*/10 * * * *';
+/** Set to "false" to disable change-detection entirely and rely on CRON only. */
+const CHANGE_DETECTION_ENABLED =
+  (process.env['CHANGE_DETECTION'] ?? 'true').toLowerCase() !== 'false';
 const QDRANT_URL = process.env['QDRANT_URL'] ?? 'http://localhost:6333';
 const QDRANT_API_KEY = process.env['QDRANT_API_KEY'] || undefined;
 const OLLAMA_URL = process.env['OLLAMA_URL'] ?? 'http://127.0.0.1:11434';
 const REPOS_DIR = process.env['REPOS_DIR'] ?? '/data/repos';
+const STATE_DB_PATH =
+  process.env['STATE_DB_PATH'] ?? path.join(REPOS_DIR, '..', 'indexer-state.db');
 const PORT = parseInt(process.env['PORT'] ?? '9877', 10);
 /** When set, all repos share this single Qdrant collection (group) */
 const PAPARATS_GROUP = process.env['PAPARATS_GROUP']?.trim() || undefined;
@@ -50,11 +60,13 @@ const CONFIG_DIR = process.env['CONFIG_DIR'] ?? '/config';
 
 let repos: RepoConfig[];
 let configCron: string | undefined;
+let configCronFast: string | undefined;
 
 const fileConfig = tryLoadIndexerConfig(CONFIG_DIR, GITHUB_TOKEN);
 if (fileConfig) {
   repos = fileConfig.repos;
   configCron = fileConfig.cron;
+  configCronFast = fileConfig.cronFast;
   console.log(`[indexer] Loaded ${repos.length} repo(s) from config file`);
 } else {
   repos = parseReposEnv(REPOS, GITHUB_TOKEN);
@@ -64,6 +76,7 @@ if (fileConfig) {
 }
 
 const effectiveCron = configCron ?? CRON;
+const effectiveCronFast = configCronFast ?? CRON_FAST;
 
 for (const repo of repos) {
   repoStatuses.set(repo.fullName, { repo: repo.fullName, status: 'idle' });
@@ -96,6 +109,10 @@ const indexer = new Indexer({
   treeSitter,
   qdrantClient,
 });
+
+const stateStore = new StateStore(STATE_DB_PATH);
+const gitDetector = new GitDetector();
+const mtimeDetector = new MtimeDetector();
 
 // ── Index cycle ─────────────────────────────────────────────────────────────
 
@@ -164,7 +181,38 @@ function buildDefaultProject(repo: RepoConfig, localPath: string): ProjectConfig
   return project;
 }
 
-async function indexRepo(repo: RepoConfig, opts?: { force?: boolean }): Promise<number> {
+/**
+ * Resolve a `ProjectConfig` for a repo using whichever source applies:
+ * `.paparats.yml` in the repo, indexer YAML overrides, or auto-detection.
+ * The repo must already be on disk (either bind-mounted or cloned).
+ */
+function resolveRepoProject(repo: RepoConfig, localPath: string): ProjectConfig {
+  const configPath = path.join(localPath, '.paparats.yml');
+  const hasRepoConfig = fs.existsSync(configPath);
+  const overrides = repo.overrides;
+
+  if (hasRepoConfig) {
+    let project = loadProject(localPath);
+    if (PAPARATS_GROUP) project = { ...project, group: PAPARATS_GROUP };
+    if (overrides) project = applyOverrides(project, overrides);
+    return project;
+  }
+  if (overrides) {
+    const config = buildConfigFromOverrides(repo, localPath, overrides);
+    const project = resolveProject(localPath, config);
+    project.watcher.enabled = false;
+    return project;
+  }
+  return buildDefaultProject(repo, localPath);
+}
+
+interface IndexRepoResult {
+  chunks: number;
+  success: boolean;
+  project?: ProjectConfig;
+}
+
+async function indexRepo(repo: RepoConfig, opts?: { force?: boolean }): Promise<IndexRepoResult> {
   const localPath = repoPath(repo, REPOS_DIR);
   const status = repoStatuses.get(repo.fullName)!;
   status.status = 'running';
@@ -173,33 +221,16 @@ async function indexRepo(repo: RepoConfig, opts?: { force?: boolean }): Promise<
   try {
     await cloneOrPull(repo, REPOS_DIR);
 
-    let project: ProjectConfig;
-    const configPath = path.join(localPath, '.paparats.yml');
-    const hasRepoConfig = fs.existsSync(configPath);
+    const project = resolveRepoProject(repo, localPath);
     const overrides = repo.overrides;
-
-    if (hasRepoConfig) {
-      // .paparats.yml in the repo takes priority
-      project = loadProject(localPath);
-      if (PAPARATS_GROUP) {
-        project = { ...project, group: PAPARATS_GROUP };
-      }
-      // Apply indexer YAML overrides on top
-      if (overrides) {
-        project = applyOverrides(project, overrides);
-        console.log(`[indexer] ${repo.fullName}: .paparats.yml + indexer overrides applied`);
-      }
-    } else if (overrides) {
-      // No .paparats.yml but indexer YAML has overrides
-      const config = buildConfigFromOverrides(repo, localPath, overrides);
-      project = resolveProject(localPath, config);
-      project.watcher.enabled = false;
+    const hasRepoConfig = fs.existsSync(path.join(localPath, '.paparats.yml'));
+    if (hasRepoConfig && overrides) {
+      console.log(`[indexer] ${repo.fullName}: .paparats.yml + indexer overrides applied`);
+    } else if (!hasRepoConfig && overrides) {
       console.log(
         `[indexer] ${repo.fullName}: using indexer config overrides (${project.languages.join(', ')})`
       );
-    } else {
-      // No config at all — auto-detect
-      project = buildDefaultProject(repo, localPath);
+    } else if (!hasRepoConfig) {
       console.log(
         `[indexer] No .paparats.yml in ${repo.fullName}, auto-detected: ${project.languages.join(', ')} (${project.exclude.length} exclude patterns)`
       );
@@ -218,21 +249,55 @@ async function indexRepo(repo: RepoConfig, opts?: { force?: boolean }): Promise<
     status.chunksIndexed = chunks;
     status.lastError = undefined;
     console.log(`[indexer] ${repo.fullName}: indexed ${chunks} chunks`);
-    return chunks;
+    return { chunks, success: true, project };
   } catch (err) {
     status.status = 'error';
     status.lastRun = new Date().toISOString();
     status.lastError = (err as Error).message;
     console.error(`[indexer] ${repo.fullName}: failed - ${(err as Error).message}`);
-    return 0;
+    return { chunks: 0, success: false };
   }
 }
 
+/**
+ * Refresh the fingerprint for a repo after a successful index. Failures here
+ * are non-fatal — the next fast-check tick will recompute and may decide to
+ * reindex defensively. We only advance state when we can prove "this is what
+ * was indexed".
+ */
+async function refreshFingerprint(
+  repo: RepoConfig,
+  project: ProjectConfig,
+  chunks: number
+): Promise<void> {
+  try {
+    const fp = await computeFingerprint(repo, project);
+    stateStore.set(repo.fullName, fp.value, fp.kind, chunks);
+  } catch (err) {
+    console.warn(
+      `[indexer] ${repo.fullName}: post-index fingerprint refresh failed: ${(err as Error).message}`
+    );
+  }
+}
+
+async function computeFingerprint(repo: RepoConfig, project?: ProjectConfig): Promise<Fingerprint> {
+  if (repo.localPath) {
+    const resolved = project ?? resolveRepoProject(repo, repo.localPath);
+    return mtimeDetector.fingerprint(repo.localPath, resolved);
+  }
+  return gitDetector.fingerprint(repo);
+}
+
 let indexCycleRunning = false;
+let fastCycleRunning = false;
 
 async function runIndexCycle(filter?: string[], opts?: { force?: boolean }): Promise<void> {
   if (indexCycleRunning) {
     console.warn('[indexer] Index cycle already running, skipping');
+    return;
+  }
+  if (fastCycleRunning) {
+    console.warn('[indexer] Fast cycle running, deferring full cycle');
     return;
   }
 
@@ -253,7 +318,11 @@ async function runIndexCycle(filter?: string[], opts?: { force?: boolean }): Pro
   try {
     let totalChunks = 0;
     for (const repo of targets) {
-      totalChunks += await indexRepo(repo, { force });
+      const result = await indexRepo(repo, { force });
+      totalChunks += result.chunks;
+      if (result.success && result.project) {
+        await refreshFingerprint(repo, result.project, result.chunks);
+      }
     }
 
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
@@ -265,6 +334,73 @@ async function runIndexCycle(filter?: string[], opts?: { force?: boolean }): Pro
     throw err;
   } finally {
     indexCycleRunning = false;
+  }
+}
+
+/**
+ * Fast cycle: compute a cheap fingerprint per repo (remote `ls-remote` or
+ * local file-stat hash) and only invoke indexProject() when it differs from
+ * the last persisted fingerprint. Detector failures fall through to a
+ * defensive reindex.
+ */
+async function runChangeCheckCycle(): Promise<void> {
+  if (fastCycleRunning) {
+    console.log('[indexer] Fast cycle already running, skipping');
+    return;
+  }
+  if (indexCycleRunning) {
+    console.log('[indexer] Full cycle running, skipping fast check');
+    return;
+  }
+
+  fastCycleRunning = true;
+  const startTime = Date.now();
+  const targets = [...repos];
+  let skipped = 0;
+  let indexed = 0;
+  let totalChunks = 0;
+
+  try {
+    for (const repo of targets) {
+      try {
+        const current = await computeFingerprint(repo);
+        const stored = stateStore.get(repo.fullName);
+        if (stored && stored.fingerprint === current.value) {
+          skipped++;
+          continue;
+        }
+        console.log(
+          `[indexer] ${repo.fullName}: changed (${stored?.fingerprint ?? 'new'} → ${current.value.slice(0, 12)}), reindexing`
+        );
+        const result = await indexRepo(repo);
+        if (result.success) {
+          indexed++;
+          totalChunks += result.chunks;
+          stateStore.set(repo.fullName, current.value, current.kind, result.chunks);
+        }
+      } catch (err) {
+        console.warn(
+          `[indexer] ${repo.fullName}: fingerprint failed (${(err as Error).message}), reindexing defensively`
+        );
+        const result = await indexRepo(repo);
+        if (result.success) {
+          indexed++;
+          totalChunks += result.chunks;
+          // State not advanced — next tick will retry the fingerprint.
+        }
+      }
+    }
+
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    if (indexed > 0) {
+      lastRunAt = new Date().toISOString();
+      globalStatus = 'success';
+    }
+    console.log(
+      `[indexer] Fast cycle complete: ${indexed} indexed, ${skipped} skipped, ${totalChunks} chunks in ${elapsed}s`
+    );
+  } finally {
+    fastCycleRunning = false;
   }
 }
 
@@ -328,7 +464,11 @@ app.get('/health', (_req, res) => {
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[indexer] Listening on http://0.0.0.0:${PORT}`);
   console.log(`[indexer] Repos: ${repos.map((r) => r.fullName).join(', ') || '(none)'}`);
-  console.log(`[indexer] Cron: ${effectiveCron}`);
+  console.log(`[indexer] Full cron: ${effectiveCron}`);
+  console.log(
+    `[indexer] Fast cron: ${CHANGE_DETECTION_ENABLED ? effectiveCronFast : '(disabled)'}`
+  );
+  console.log(`[indexer] State DB: ${STATE_DB_PATH}`);
   console.log(`[indexer] Qdrant: ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`);
   console.log(`[indexer] Ollama: ${OLLAMA_URL}`);
   if (PAPARATS_GROUP) {
@@ -336,9 +476,12 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   }
 });
 
-// Start cron scheduler
+// Start cron schedulers
 if (repos.length > 0) {
   startScheduler(effectiveCron, () => runIndexCycle());
+  if (CHANGE_DETECTION_ENABLED) {
+    startScheduler(effectiveCronFast, () => runChangeCheckCycle());
+  }
 
   // Run initial index cycle on startup
   console.log('[indexer] Running initial index cycle...');
@@ -368,6 +511,7 @@ if (fileConfig && configFilePath) {
         // Drop bookkeeping for removed repos.
         for (const repo of change.removed) {
           repoStatuses.delete(repo.fullName);
+          stateStore.delete(repo.fullName);
         }
         // Register added repos.
         for (const repo of change.added) {
@@ -377,20 +521,32 @@ if (fileConfig && configFilePath) {
         // the old key is now stale and the new one doesn't exist yet —
         // indexRepo would dereference undefined. Re-key bookkeeping so the
         // new fullName has an entry before the indexer touches it.
+        // Also drop the prior fingerprint — overrides like `exclude_extra`
+        // can shift which files get indexed without touching content, so
+        // the stale fingerprint would otherwise mask a real config change.
         for (const { prior, next } of change.modified) {
           if (prior.fullName !== next.fullName) {
             repoStatuses.delete(prior.fullName);
             repoStatuses.set(next.fullName, { repo: next.fullName, status: 'idle' });
+            stateStore.delete(prior.fullName);
+          } else {
+            stateStore.delete(prior.fullName);
           }
         }
         // Reindex added + modified.
         const targets = [...change.added, ...change.modified.map((m) => m.next)];
         for (const repo of targets) {
-          indexRepo(repo).catch((err) => {
-            console.error(
-              `[indexer] Hot-reload index for ${repo.fullName} failed: ${(err as Error).message}`
-            );
-          });
+          indexRepo(repo)
+            .then(async (result) => {
+              if (result.success && result.project) {
+                await refreshFingerprint(repo, result.project, result.chunks);
+              }
+            })
+            .catch((err) => {
+              console.error(
+                `[indexer] Hot-reload index for ${repo.fullName} failed: ${(err as Error).message}`
+              );
+            });
         }
       },
       onError: (err) => console.error(`[indexer] config-watcher error: ${err.message}`),
@@ -408,6 +564,7 @@ async function shutdown(): Promise<void> {
   await configWatcher?.close();
   embeddingProvider.close();
   metadataStore.close();
+  stateStore.close();
   treeSitter?.close();
   process.exit(0);
 }
