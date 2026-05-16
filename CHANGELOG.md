@@ -4,6 +4,18 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [0.5.1] - 2026-05-15
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- [#54](https://github.com/IBazylchuk/paparats-mcp/pull/54) [`f15fa7a`](https://github.com/IBazylchuk/paparats-mcp/commit/f15fa7a08d11d50ff10cd763c36f39a942387487) Add six MCP workflow prompts (`find_implementation`, `trace_callers`,
+  `onboard_to_project`, `triage_incident`, `prepare_release_notes`,
+  `assess_change_impact`) and enforce mode isolation between `/mcp` and
+  `/support/mcp` so a coding session id cannot be replayed on the support
+  endpoint.
+
 ## [0.5.0] - 2026-05-15
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
