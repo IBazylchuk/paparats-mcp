@@ -53,11 +53,26 @@ interface SearchClient {
     query: string,
     opts: { project?: string; limit?: number; timeout?: number; signal?: AbortSignal }
   ): Promise<{ status: number; data: unknown }>;
+  stats?(options?: { timeout?: number }): Promise<{ status: number; data: unknown }>;
 }
 
 export interface SearchDeps {
   readConfig?: () => { config: { group: string } };
   spinner?: ReturnType<typeof ora> | null;
+}
+
+async function inferSingleGroup(client: SearchClient): Promise<string | null> {
+  if (!client.stats) return null;
+  try {
+    const res = await client.stats({ timeout: 5_000 });
+    if (res.status !== 200 || !res.data || typeof res.data !== 'object') return null;
+    const groups = (res.data as { groups?: Record<string, unknown> }).groups;
+    if (!groups) return null;
+    const names = Object.keys(groups);
+    return names.length === 1 ? names[0]! : null;
+  } catch {
+    return null;
+  }
 }
 
 function outputError(message: string, json: boolean): never {
@@ -83,9 +98,19 @@ export async function runSearch(
     try {
       const config = readCfg();
       group = config.config.group;
-    } catch (err) {
-      spinner?.stop();
-      outputError((err as Error).message, opts.json ?? false);
+    } catch {
+      // No .paparats.yml. If the server has exactly one group, use it —
+      // makes demo flows (Codespaces, ad-hoc explorers) work without setup.
+      const inferred = await inferSingleGroup(client);
+      if (inferred) {
+        group = inferred;
+      } else {
+        spinner?.stop();
+        outputError(
+          'No group specified and could not infer one. Pass --group <name>, or run `paparats init` in a project directory to create a .paparats.yml.',
+          opts.json ?? false
+        );
+      }
     }
   }
 
@@ -267,6 +292,7 @@ export const searchCommand = new Command('search')
 
       const searchClient: SearchClient = {
         search: (g, q, o) => client.search(g, q, { ...o, signal: controller.signal }),
+        stats: (o) => client.stats(o),
       };
 
       spinner = opts.json ? null : ora('Searching...').start();

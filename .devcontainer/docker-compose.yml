@@ -1,0 +1,112 @@
+# Devcontainer compose for paparats-mcp Codespaces quickstart.
+# Pulls pre-built images so first start is ~2 minutes instead of 15.
+# Indexes the checked-out repo automatically (see post-start.sh).
+
+services:
+  # Seeds an empty projects.yml so the indexer enables its config-watcher
+  # at startup; otherwise `paparats add` from the workspace is invisible to it.
+  init:
+    image: busybox:latest
+    command:
+      ['sh', '-c', '[ -f /config/projects.yml ] || printf "repos: []\n" > /config/projects.yml']
+    volumes:
+      - paparats_home:/config
+
+  workspace:
+    image: mcr.microsoft.com/devcontainers/base:bookworm
+    volumes:
+      - ..:/workspaces/paparats-mcp:cached
+      - paparats_home:/root/.paparats
+    command: sleep infinity
+    environment:
+      PAPARATS_SERVER_URL: http://paparats:9876
+      PAPARATS_INDEXER_URL: http://indexer:9877
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_URL: http://ollama:11434
+    networks:
+      - paparats-net
+    depends_on:
+      paparats:
+        condition: service_started
+      indexer:
+        condition: service_started
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    networks:
+      - paparats-net
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/6333 || exit 1']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+
+  ollama:
+    image: ibaz/paparats-ollama:latest
+    networks:
+      - paparats-net
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ['CMD', 'ollama', 'list']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  paparats:
+    image: ibaz/paparats-server:latest
+    ports:
+      - '9876:9876'
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_URL: http://ollama:11434
+    volumes:
+      - paparats_data:/home/nodejs/.paparats
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - paparats-net
+
+  # Reads /config/projects.yml (written by `paparats add` in the workspace via
+  # the shared paparats_home volume) and indexes local paths bind-mounted at
+  # the same `/workspaces/<repo>` location as in the workspace container.
+  indexer:
+    image: ibaz/paparats-indexer:latest
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      OLLAMA_URL: http://ollama:11434
+      CONFIG_DIR: /config
+      CRON_FAST: '*/2 * * * *'
+    volumes:
+      - paparats_home:/config
+      # Indexer maps each local-path entry to /projects/<name>; the
+      # post-start helper registers the repo under the name "paparats-mcp".
+      - ..:/projects/paparats-mcp:cached
+      - indexer_data:/data
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    networks:
+      - paparats-net
+
+volumes:
+  qdrant_data:
+  ollama_data:
+  paparats_data:
+  paparats_home:
+  indexer_data:
+
+networks:
+  paparats-net:
+    driver: bridge
