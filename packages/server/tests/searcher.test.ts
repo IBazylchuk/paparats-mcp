@@ -4,6 +4,10 @@ import path from 'path';
 import os from 'os';
 import { Searcher } from '../src/searcher.js';
 import { toCollectionName } from '../src/indexer.js';
+
+/** All searches now exclude the per-collection metadata sentinel point.
+ *  Shorthand so the test assertions stay readable. */
+const META_NOT = [{ key: '__meta', match: { value: true } }];
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { EmbeddingProvider } from '../src/types.js';
 
@@ -120,7 +124,7 @@ describe('Searcher', () => {
       vector: expect.any(Array),
       limit: 5,
       with_payload: true,
-      filter: undefined,
+      filter: { must_not: META_NOT },
     });
   });
 
@@ -140,6 +144,7 @@ describe('Searcher', () => {
       expect.objectContaining({
         filter: {
           must: [{ key: 'project', match: { value: 'my-project' } }],
+          must_not: META_NOT,
         },
       })
     );
@@ -726,6 +731,7 @@ describe('Searcher', () => {
               range: { gte: '2024-01-01T00:00:00Z' },
             },
           ]),
+          must_not: META_NOT,
         },
       })
     );
@@ -756,6 +762,7 @@ describe('Searcher', () => {
             { key: 'ticket_keys', match: { value: 'PROJ-123' } },
             { key: 'project', match: { value: 'my-project' } },
           ]),
+          must_not: META_NOT,
         },
       })
     );
@@ -844,7 +851,7 @@ describe('Searcher', () => {
       expect(mockQdrant.client.search).toHaveBeenCalledWith(
         toCollectionName('test-group'),
         expect.objectContaining({
-          filter: undefined,
+          filter: { must_not: META_NOT },
         })
       );
     });
@@ -866,6 +873,7 @@ describe('Searcher', () => {
         expect.objectContaining({
           filter: {
             must: [{ key: 'project', match: { value: 'org/billing' } }],
+            must_not: META_NOT,
           },
         })
       );
@@ -888,6 +896,7 @@ describe('Searcher', () => {
         expect.objectContaining({
           filter: {
             must: [{ key: 'project', match: { any: ['org/core', 'org/tracking', 'org/events'] } }],
+            must_not: META_NOT,
           },
         })
       );
@@ -910,6 +919,7 @@ describe('Searcher', () => {
         expect.objectContaining({
           filter: {
             must: [{ key: 'project', match: { value: 'org/tracking' } }],
+            must_not: META_NOT,
           },
         })
       );
@@ -1009,6 +1019,7 @@ describe('Searcher', () => {
               { key: 'last_commit_at', range: { gte: '2024-01-01' } },
               { key: 'project', match: { any: ['org/core', 'org/tracking'] } },
             ]),
+            must_not: META_NOT,
           },
         })
       );

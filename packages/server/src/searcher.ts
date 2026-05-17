@@ -373,7 +373,7 @@ export class Searcher {
           vector: queryVector,
           limit,
           with_payload: true,
-          filter: { must },
+          filter: { must, must_not: [this.metaExclusion()] },
         })
       );
 
@@ -447,9 +447,12 @@ export class Searcher {
 
     const queryVector = await this.provider.embedQuery(query);
 
-    const filter = effectiveProjects
-      ? { must: [this.buildProjectCondition(effectiveProjects)] }
-      : undefined;
+    const filter: Record<string, unknown> = {
+      must_not: [this.metaExclusion()],
+    };
+    if (effectiveProjects) {
+      filter['must'] = [this.buildProjectCondition(effectiveProjects)];
+    }
 
     let results: SearchResult[];
     try {
@@ -574,6 +577,12 @@ export class Searcher {
       return { key: 'project', match: { value: projects[0] } };
     }
     return { key: 'project', match: { any: projects } };
+  }
+
+  /** Filter clause that excludes the per-collection metadata sentinel point.
+   *  Real chunks don't carry __meta, so this is a cheap must_not. */
+  private metaExclusion(): { key: string; match: { value: boolean } } {
+    return { key: '__meta', match: { value: true } };
   }
 
   /** Get the configured project scope, or null if unrestricted */
