@@ -187,15 +187,30 @@ export async function runAdd(
   return kind === 'local' ? { kind, entry, restarted, reindexed } : { kind, entry, reindexed };
 }
 
-async function defaultTriggerReindex(name: string, opts?: { force?: boolean }): Promise<void> {
+export async function defaultTriggerReindex(
+  name: string,
+  opts?: { force?: boolean }
+): Promise<void> {
   const body: { repos: string[]; force?: boolean } = { repos: [name] };
   if (opts?.force) body.force = true;
-  const res = await fetch(`${INDEXER_BASE}/trigger`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) throw new Error(`Indexer ${INDEXER_BASE} returned ${res.status}`);
+
+  // The indexer's projects.yml watcher debounces filesystem events, so the
+  // entry we just wrote may not be in its in-memory list yet — we'd get a
+  // 404 "No matching repos". Retry briefly to ride out the debounce window.
+  const delaysMs = [0, 500, 1500, 3000];
+  let lastStatus = 0;
+  for (const delay of delaysMs) {
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    const res = await fetch(`${INDEXER_BASE}/trigger`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) return;
+    lastStatus = res.status;
+    if (res.status !== 404) break;
+  }
+  throw new Error(`Indexer ${INDEXER_BASE} returned ${lastStatus}`);
 }
 
 async function defaultRestart(): Promise<void> {

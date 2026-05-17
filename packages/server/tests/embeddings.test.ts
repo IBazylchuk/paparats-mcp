@@ -235,4 +235,37 @@ describe('OllamaProvider', () => {
 
     vi.unstubAllGlobals();
   });
+
+  it('embedBatch further splits when total chars exceed the per-request budget', async () => {
+    const fetchMock = vi.fn().mockImplementation((_url: string, opts: { body?: string }) => {
+      const body = JSON.parse(opts?.body ?? '{}');
+      const input = body.input as string[];
+      const count = input?.length ?? 0;
+      return Promise.resolve({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            embeddings: Array.from({ length: count }, () => [0, 0, 0, 0]),
+          }),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    // 4 chunks within the count cap (5) but ~32k chars total — well past the
+    // 16k char cap. Adaptive splitter must subdivide so no single request
+    // carries the full payload that would time out on CPU Ollama.
+    const big = 'x'.repeat(8000);
+    const provider = new OllamaProvider({ url: 'http://localhost:9999' });
+    const results = await provider.embedBatch([big, big, big, big]);
+
+    expect(results).toHaveLength(4);
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+    for (const call of fetchMock.mock.calls) {
+      const inputs = JSON.parse((call[1] as { body: string }).body).input as string[];
+      const totalChars = inputs.reduce((s, t) => s + t.length, 0);
+      expect(totalChars).toBeLessThanOrEqual(16_000);
+    }
+
+    vi.unstubAllGlobals();
+  });
 });

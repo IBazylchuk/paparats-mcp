@@ -126,6 +126,11 @@ const OLLAMA_MAX_RETRIES = 3;
 const OLLAMA_DEFAULT_BATCH_SIZE = 5;
 const OLLAMA_MAX_BATCH_SIZE =
   parseInt(process.env['OLLAMA_BATCH_SIZE'] ?? '', 10) || OLLAMA_DEFAULT_BATCH_SIZE;
+// Cap suburb of large chunks per request. CPU-only Ollama can exceed 240s on
+// dense batches; splitting by total chars keeps each request bounded.
+const OLLAMA_DEFAULT_BATCH_CHARS = 16_000;
+const OLLAMA_MAX_BATCH_CHARS =
+  parseInt(process.env['OLLAMA_BATCH_CHARS'] ?? '', 10) || OLLAMA_DEFAULT_BATCH_CHARS;
 
 export class OllamaProvider implements EmbeddingProvider {
   private url: string;
@@ -203,6 +208,8 @@ export class OllamaProvider implements EmbeddingProvider {
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
 
+    // Split by count first, then re-check total chars on each slice — a slice
+    // of 5 ~4KB chunks easily exceeds CPU Ollama's per-request budget.
     if (texts.length > OLLAMA_MAX_BATCH_SIZE) {
       const results: number[][] = [];
       for (let i = 0; i < texts.length; i += OLLAMA_MAX_BATCH_SIZE) {
@@ -210,6 +217,13 @@ export class OllamaProvider implements EmbeddingProvider {
         results.push(...(await this.embedBatch(batch)));
       }
       return results;
+    }
+    const totalChars = texts.reduce((sum, t) => sum + Math.min(t.length, 8192), 0);
+    if (texts.length > 1 && totalChars > OLLAMA_MAX_BATCH_CHARS) {
+      const mid = Math.ceil(texts.length / 2);
+      const left = await this.embedBatch(texts.slice(0, mid));
+      const right = await this.embedBatch(texts.slice(mid));
+      return [...left, ...right];
     }
 
     const inputs = texts.map((t) => {

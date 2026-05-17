@@ -90,6 +90,28 @@ AI coding assistants are smart, but they can only see files you open. They don't
 
 ## Quick Start
 
+### Try it in the browser (no install)
+
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp)
+
+Click the badge to spin up a full Qdrant + Ollama + paparats stack in a Codespace.
+A small slice of the repo (`packages/shared/src`) is auto-indexed on first start so
+you can run
+
+```bash
+paparats search -g demo 'gitignore filter'
+```
+
+within a few minutes. Codespace forwards port 9876 for MCP — point Cursor/Claude Code
+at it via the URL VS Code shows in the Ports panel.
+
+> Note: Codespaces is for demo only. Embedding runs on the 4-core CPU via Ollama, so
+> the full repo would take 15+ minutes and can hit batch timeouts on large files. For
+> real workloads run locally — and cloud embedding providers (OpenAI / Voyage) are
+> coming in a follow-up release.
+
+### Run locally
+
 You need **Docker** and **Docker Compose v2**. On macOS, also install **Ollama natively** —
 running it inside Docker on macOS is significantly slower because the Docker VM cannot
 use Apple Silicon GPU acceleration.
