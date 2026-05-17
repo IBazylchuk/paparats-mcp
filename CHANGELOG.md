@@ -4,6 +4,31 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [0.7.0] - 2026-05-17
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- [#58](https://github.com/IBazylchuk/paparats-mcp/pull/58) [`4d46aef`](https://github.com/IBazylchuk/paparats-mcp/commit/4d46aefcf34cd308368f13077f6e902a6728497d) Add GitHub Codespaces quickstart and fix three rough edges surfaced while
+  building it:
+  - `.devcontainer/` spins up the full Qdrant + Ollama + paparats stack on
+    pre-built images and auto-indexes a small slice of the repo on first
+    start, so users can try semantic search in the browser without installing
+    anything.
+  - `paparats add` no longer fails with a noisy `Indexer returned 404` when
+    the indexer's config-watcher hasn't yet picked up the new `projects.yml`
+    entry — the CLI retries briefly to ride out the debounce window.
+  - `OllamaProvider.embedBatch` adaptively splits batches by total character
+    size (default 16k chars per request, override via `OLLAMA_BATCH_CHARS`).
+    Previously, 5 large chunks could exceed the 240s CPU embed budget and
+    fail the whole batch.
+  - `paparats search` without `--group` and without a local `.paparats.yml`
+    now infers the group when the server has exactly one — keeps the demo
+    flow (and ad-hoc explorers) usable without setup.
+
+### Patch Changes
+
 ## [0.6.0] - 2026-05-16
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -26,7 +51,7 @@
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-05-16
+## [0.5.0] - 2026-05-17
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -119,7 +144,7 @@
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-05-16
+## [0.3.0] - 2026-05-17
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
