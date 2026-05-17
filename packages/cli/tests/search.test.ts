@@ -211,7 +211,7 @@ describe('search', () => {
 
       await expect(runSearch(client, 'foo', {}, { readConfig, spinner })).rejects.toThrow('EXIT:1');
 
-      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Config not found'));
+      expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('Pass --group'));
     });
 
     it('shows verbose output when --verbose', async () => {

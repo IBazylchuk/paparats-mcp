@@ -98,7 +98,7 @@ export async function runSearch(
     try {
       const config = readCfg();
       group = config.config.group;
-    } catch (err) {
+    } catch {
       // No .paparats.yml. If the server has exactly one group, use it —
       // makes demo flows (Codespaces, ad-hoc explorers) work without setup.
       const inferred = await inferSingleGroup(client);
@@ -107,7 +107,7 @@ export async function runSearch(
       } else {
         spinner?.stop();
         outputError(
-          `${(err as Error).message} Pass --group to search a specific group.`,
+          'No group specified and could not infer one. Pass --group <name>, or run `paparats init` in a project directory to create a .paparats.yml.',
           opts.json ?? false
         );
       }
