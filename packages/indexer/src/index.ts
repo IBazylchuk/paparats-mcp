@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   createEmbeddingProvider,
+  resolveEmbeddingConfigFromEnv,
   Indexer,
   createQdrantClient,
   MetadataStore,
@@ -82,11 +83,11 @@ for (const repo of repos) {
   repoStatuses.set(repo.fullName, { repo: repo.fullName, status: 'idle' });
 }
 
-const embeddingProvider = createEmbeddingProvider({
-  provider: 'ollama',
-  model: process.env['EMBEDDING_MODEL'] ?? 'jina-code-embeddings',
-  dimensions: parseInt(process.env['EMBEDDING_DIMENSIONS'] ?? '1536', 10),
-});
+const embeddingConfig = resolveEmbeddingConfigFromEnv();
+const embeddingProvider = createEmbeddingProvider(embeddingConfig);
+console.log(
+  `[indexer] Embedding provider: ${embeddingConfig.provider} (${embeddingConfig.model}, ${embeddingConfig.dimensions}d)`
+);
 
 const metadataStore = new MetadataStore();
 const qdrantClient = createQdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY });

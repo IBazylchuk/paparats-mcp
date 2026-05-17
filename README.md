@@ -105,10 +105,11 @@ paparats search -g demo 'gitignore filter'
 within a few minutes. Codespace forwards port 9876 for MCP — point Cursor/Claude Code
 at it via the URL VS Code shows in the Ports panel.
 
-> Note: Codespaces is for demo only. Embedding runs on the 4-core CPU via Ollama, so
-> the full repo would take 15+ minutes and can hit batch timeouts on large files. For
-> real workloads run locally — and cloud embedding providers (OpenAI / Voyage) are
-> coming in a follow-up release.
+> Note: Codespaces is for demo only. With Ollama-on-CPU embedding the full repo
+> would take 15+ minutes and can hit batch timeouts on large files. For real
+> workloads run locally — or set `OPENAI_API_KEY` (or `VOYAGE_API_KEY`) as a
+> Codespaces user secret and indexing drops to a couple of seconds; see the
+> Embedding providers section below.
 
 ### Run locally
 
@@ -1006,6 +1007,40 @@ Combine multiple tools to analyze the impact of a pull request:
 ---
 
 ## Embedding Model Setup
+
+Paparats supports three embedding backends. **Pick one** — the choice is
+sticky per Qdrant collection (changing it requires reindexing; the server
+refuses to mix providers in one collection and surfaces a clear error).
+
+| Provider     | Model                       | Dims  | Privacy        | Speed (1k chunks)        | Cost                  |
+| ------------ | --------------------------- | ----- | -------------- | ------------------------ | --------------------- |
+| **Ollama**   | `jina-code-embeddings` 1.5B | 1536  | 100% local     | ~10–20 min (CPU)         | Free, ~1.7 GB on disk |
+| **OpenAI**   | `text-embedding-3-small`    | 1536  | Sent to OpenAI | ~30 s                    | ~$0.02 / 1 M tokens   |
+| **Voyage**   | `voyage-code-3`             | 1024  | Sent to Voyage | ~30 s                    | ~$0.18 / 1 M tokens   |
+
+Selection precedence: explicit `EMBEDDING_PROVIDER` → `OPENAI_API_KEY` present
+→ `VOYAGE_API_KEY` present → Ollama. So setting just your API key in the
+environment is enough to switch.
+
+```bash
+# OpenAI — cheapest cloud option
+export OPENAI_API_KEY=sk-...
+docker compose up -d
+
+# Voyage AI — best quality on code per recent benchmarks
+export VOYAGE_API_KEY=pa-...
+docker compose up -d
+
+# Force a provider explicitly (overrides auto-detect)
+export EMBEDDING_PROVIDER=voyage
+```
+
+Overrides: `EMBEDDING_MODEL` (defaults: `text-embedding-3-small`,
+`voyage-code-3`, `jina-code-embeddings`) and `EMBEDDING_DIMENSIONS` (1536 /
+1024 / 1536). Voyage `voyage-code-3` supports 256/512/1024/2048 via
+Matryoshka — set `EMBEDDING_DIMENSIONS` to opt into a non-default size.
+
+### Local (Ollama) — defaults below
 
 Default: [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — code-optimized, 1.5B params, 1536 dims, 32k context. Not in Ollama registry, so we create a local alias.
 

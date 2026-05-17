@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { Indexer, toCollectionName } from '../src/indexer.js';
+import { Indexer, toCollectionName, CollectionMetaMismatchError } from '../src/indexer.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { EmbeddingProvider, ProjectConfig } from '../src/types.js';
 
@@ -118,6 +118,13 @@ function createMockQdrant() {
         collections: Array.from(collections.keys()).map((name) => ({ name })),
       })
     ),
+
+    retrieve: vi.fn().mockImplementation((groupName: string, opts: { ids: string[] }) => {
+      const points = collections.get(groupName);
+      if (!points) return Promise.resolve([]);
+      const out = opts.ids.map((id) => points.get(String(id))).filter(Boolean);
+      return Promise.resolve(out);
+    }),
   };
 
   return { client, upsertedPoints, collections };
@@ -720,10 +727,14 @@ describe('Indexer', () => {
     // Old group lost the billing chunk but kept the unrelated one.
     const oldPoints = mockQdrant.collections.get(oldCollection)!;
     expect(Array.from(oldPoints.keys())).toEqual(['keep-1']);
-    // New group received the freshly-indexed chunk(s).
+    // New group received the freshly-indexed chunk(s). Skip the metadata
+    // sentinel that ensureCollection now writes alongside real chunks.
     const newPoints = mockQdrant.collections.get(newCollection)!;
-    expect(newPoints.size).toBeGreaterThan(0);
-    for (const point of newPoints.values()) {
+    const chunkPoints = Array.from(newPoints.values()).filter(
+      (p) => !(p as { payload?: Record<string, unknown> }).payload?.['__meta']
+    );
+    expect(chunkPoints.length).toBeGreaterThan(0);
+    for (const point of chunkPoints) {
       const payload = (point as { payload: { project: string } }).payload;
       expect(payload.project).toBe('billing');
     }
@@ -768,5 +779,90 @@ describe('Indexer', () => {
     // And the orphan is still around (sanity: orphan-cleanup runs per-file,
     // so this point only goes if the file no longer exists in `currentRelPaths`)
     expect(keepPoints.has('preexisting')).toBe(false); // orphan-cleanup reaped it
+  });
+});
+
+describe('Indexer collection metadata sentinel', () => {
+  let mockQdrant: ReturnType<typeof createMockQdrant>;
+  let cache: EmbeddingCache;
+  let cacheDbPath: string;
+  let provider: CachedEmbeddingProvider;
+
+  beforeEach(() => {
+    mockQdrant = createMockQdrant();
+    const tmp = createTempDir();
+    cacheDbPath = path.join(tmp, 'cache.db');
+    cache = new EmbeddingCache(cacheDbPath, 100);
+    provider = new CachedEmbeddingProvider(new MockEmbeddingProvider(), cache);
+  });
+
+  afterEach(() => {
+    provider.close();
+    fs.rmSync(path.dirname(cacheDbPath), { recursive: true, force: true });
+  });
+
+  it('writes a __meta sentinel point alongside the new collection', async () => {
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      embeddingProviderId: 'ollama',
+      embeddingModelId: 'jina-code-embeddings',
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    await indexer.ensureCollection('g1');
+
+    const meta = await indexer.readCollectionMeta('g1');
+    expect(meta).toEqual({
+      provider: 'ollama',
+      model: 'jina-code-embeddings',
+      dimensions: 4,
+      createdAt: expect.any(Number),
+      metaVersion: 1,
+    });
+  });
+
+  it('throws CollectionMetaMismatchError when reopening a collection with a different provider', async () => {
+    const stamp = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      embeddingProviderId: 'ollama',
+      embeddingModelId: 'jina-code-embeddings',
+      qdrantClient: mockQdrant.client as never,
+    });
+    await stamp.ensureCollection('g2');
+
+    const wrong = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      embeddingProviderId: 'openai',
+      embeddingModelId: 'text-embedding-3-small',
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    await expect(wrong.ensureCollection('g2')).rejects.toBeInstanceOf(CollectionMetaMismatchError);
+  });
+
+  it('backfills the sentinel for a legacy collection that has none', async () => {
+    // Pre-create the collection without the sentinel — simulates an upgrade
+    // from a pre-metadata version.
+    mockQdrant.collections.set(toCollectionName('legacy'), new Map());
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      embeddingProviderId: 'ollama',
+      embeddingModelId: 'jina-code-embeddings',
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    await indexer.ensureCollection('legacy');
+
+    const meta = await indexer.readCollectionMeta('legacy');
+    expect(meta?.provider).toBe('ollama');
   });
 });

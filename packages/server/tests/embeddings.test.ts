@@ -5,8 +5,11 @@ import os from 'os';
 import {
   EmbeddingCache,
   OllamaProvider,
+  OpenAIProvider,
+  VoyageProvider,
   CachedEmbeddingProvider,
   createEmbeddingProvider,
+  resolveEmbeddingConfigFromEnv,
 } from '../src/embeddings.js';
 import type { EmbeddingProvider } from '../src/types.js';
 
@@ -267,5 +270,183 @@ describe('OllamaProvider', () => {
     }
 
     vi.unstubAllGlobals();
+  });
+});
+
+describe('OpenAIProvider', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects construction without an API key', () => {
+    expect(() => new OpenAIProvider({ apiKey: '' })).toThrow(/apiKey/);
+  });
+
+  it('embed sends model+input+dimensions and returns the vector', async () => {
+    const fetchMock = vi.fn(async (_url, opts) => {
+      const body = JSON.parse((opts as { body: string }).body);
+      expect(body.model).toBe('text-embedding-3-small');
+      expect(body.input).toBe('hello');
+      expect(body.dimensions).toBe(1536);
+      return new Response(JSON.stringify({ data: [{ embedding: [0.1, 0.2, 0.3], index: 0 }] }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    const v = await provider.embed('hello');
+    expect(v).toEqual([0.1, 0.2, 0.3]);
+  });
+
+  it('embedBatch returns results sorted by `index`', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            data: [
+              { embedding: [3], index: 2 },
+              { embedding: [1], index: 0 },
+              { embedding: [2], index: 1 },
+            ],
+          }),
+          { status: 200 }
+        )
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    const result = await provider.embedBatch(['a', 'b', 'c']);
+    expect(result).toEqual([[1], [2], [3]]);
+  });
+
+  it('does not retry on 401 (bad key)', async () => {
+    const fetchMock = vi.fn(async () => new Response('unauthorized', { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAIProvider({ apiKey: 'sk-bad' });
+    await expect(provider.embed('x')).rejects.toThrow(/OpenAI error 401/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries on 429 and eventually succeeds', async () => {
+    let calls = 0;
+    const fetchMock = vi.fn(async () => {
+      calls++;
+      if (calls < 2) return new Response('busy', { status: 429 });
+      return new Response(JSON.stringify({ data: [{ embedding: [9], index: 0 }] }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    const v = await provider.embed('x');
+    expect(v).toEqual([9]);
+    expect(calls).toBe(2);
+  });
+});
+
+describe('VoyageProvider', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('rejects construction without an API key', () => {
+    expect(() => new VoyageProvider({ apiKey: '' })).toThrow(/apiKey/);
+  });
+
+  it('tags input_type=document by default, query after setInputType', async () => {
+    const seen: string[] = [];
+    const fetchMock = vi.fn(async (_url, opts) => {
+      seen.push(JSON.parse((opts as { body: string }).body).input_type);
+      return new Response(JSON.stringify({ data: [{ embedding: [1, 2, 3], index: 0 }] }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new VoyageProvider({ apiKey: 'pa-test' });
+    await provider.embed('a passage');
+    provider.setInputType('query');
+    await provider.embed('a query');
+    expect(seen).toEqual(['document', 'query']);
+  });
+
+  it('only sends output_dimension when non-default', async () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (_url, opts) => {
+      seen.push(JSON.parse((opts as { body: string }).body));
+      return new Response(JSON.stringify({ data: [{ embedding: [1], index: 0 }] }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const defaultDim = new VoyageProvider({ apiKey: 'pa' });
+    await defaultDim.embed('x');
+    const customDim = new VoyageProvider({ apiKey: 'pa', dimensions: 512 });
+    await customDim.embed('x');
+
+    expect(seen[0]).not.toHaveProperty('output_dimension');
+    expect(seen[1]?.['output_dimension']).toBe(512);
+  });
+
+  it('does not retry on 402 (no credit)', async () => {
+    const fetchMock = vi.fn(async () => new Response('billing', { status: 402 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = new VoyageProvider({ apiKey: 'pa' });
+    await expect(provider.embed('x')).rejects.toThrow(/Voyage error 402/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('resolveEmbeddingConfigFromEnv', () => {
+  it('defaults to ollama with jina model and 1536 dims when nothing is set', () => {
+    const c = resolveEmbeddingConfigFromEnv({});
+    expect(c).toEqual({
+      provider: 'ollama',
+      model: 'jina-code-embeddings',
+      dimensions: 1536,
+    });
+  });
+
+  it('auto-picks openai when only OPENAI_API_KEY is set', () => {
+    const c = resolveEmbeddingConfigFromEnv({ OPENAI_API_KEY: 'sk-test' });
+    expect(c.provider).toBe('openai');
+    expect(c.apiKey).toBe('sk-test');
+    expect(c.model).toBe('text-embedding-3-small');
+    expect(c.dimensions).toBe(1536);
+  });
+
+  it('auto-picks voyage when only VOYAGE_API_KEY is set', () => {
+    const c = resolveEmbeddingConfigFromEnv({ VOYAGE_API_KEY: 'pa-test' });
+    expect(c.provider).toBe('voyage');
+    expect(c.apiKey).toBe('pa-test');
+    expect(c.model).toBe('voyage-code-3');
+    expect(c.dimensions).toBe(1024);
+  });
+
+  it('explicit EMBEDDING_PROVIDER wins over key auto-detect', () => {
+    const c = resolveEmbeddingConfigFromEnv({
+      EMBEDDING_PROVIDER: 'voyage',
+      VOYAGE_API_KEY: 'pa-test',
+      OPENAI_API_KEY: 'sk-test',
+    });
+    expect(c.provider).toBe('voyage');
+  });
+
+  it('explicit cloud provider without a key throws a useful error', () => {
+    expect(() => resolveEmbeddingConfigFromEnv({ EMBEDDING_PROVIDER: 'openai' })).toThrow(
+      /OPENAI_API_KEY/
+    );
+    expect(() => resolveEmbeddingConfigFromEnv({ EMBEDDING_PROVIDER: 'voyage' })).toThrow(
+      /VOYAGE_API_KEY/
+    );
+  });
+
+  it('respects EMBEDDING_MODEL and EMBEDDING_DIMENSIONS overrides', () => {
+    const c = resolveEmbeddingConfigFromEnv({
+      OPENAI_API_KEY: 'sk',
+      EMBEDDING_MODEL: 'text-embedding-3-large',
+      EMBEDDING_DIMENSIONS: '3072',
+    });
+    expect(c.model).toBe('text-embedding-3-large');
+    expect(c.dimensions).toBe(3072);
   });
 });
