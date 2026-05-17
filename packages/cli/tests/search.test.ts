@@ -259,5 +259,35 @@ describe('search', () => {
         expect.objectContaining({ limit: 10, timeout: 5000 })
       );
     });
+
+    it('infers single group from /api/stats when readConfig throws', async () => {
+      const client = {
+        ...mockSearch({ status: 200, data: validData }),
+        stats: vi.fn().mockResolvedValue({ status: 200, data: { groups: { 'only-one': {} } } }),
+      };
+      const spinner = createMockSpinner();
+      const readConfig = vi.fn(() => {
+        throw new Error('No .paparats.yml found');
+      });
+
+      await runSearch(client, 'foo', {}, { readConfig, spinner });
+
+      expect(client.stats).toHaveBeenCalled();
+      expect(client.search).toHaveBeenCalledWith('only-one', 'foo', expect.any(Object));
+    });
+
+    it('reports original error when readConfig throws and stats has multiple groups', async () => {
+      const client = {
+        ...mockSearch({ status: 200, data: validData }),
+        stats: vi.fn().mockResolvedValue({ status: 200, data: { groups: { a: {}, b: {} } } }),
+      };
+      const spinner = createMockSpinner();
+      const readConfig = vi.fn(() => {
+        throw new Error('No .paparats.yml found');
+      });
+
+      await expect(runSearch(client, 'foo', {}, { readConfig, spinner })).rejects.toThrow(/EXIT:1/);
+      expect(client.search).not.toHaveBeenCalled();
+    });
   });
 });
