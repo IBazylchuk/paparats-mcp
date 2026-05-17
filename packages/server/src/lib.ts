@@ -22,10 +22,13 @@ export {
 export {
   EmbeddingCache,
   OllamaProvider,
+  OpenAIProvider,
+  VoyageProvider,
   CachedEmbeddingProvider,
   createEmbeddingProvider,
+  resolveEmbeddingConfigFromEnv,
 } from './embeddings.js';
-export type { CacheStats } from './embeddings.js';
+export type { CacheStats, ResolvedEmbeddingConfig } from './embeddings.js';
 
 export {
   Indexer,
