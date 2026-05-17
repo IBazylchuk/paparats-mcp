@@ -23,7 +23,10 @@
   },
 
   "remoteEnv": {
-    "PAPARATS_SERVER_URL": "http://localhost:9876"
+    "PAPARATS_SERVER_URL": "http://localhost:9876",
+    "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
+    "VOYAGE_API_KEY": "${localEnv:VOYAGE_API_KEY}",
+    "EMBEDDING_PROVIDER": "${localEnv:EMBEDDING_PROVIDER}"
   },
 
   "postCreateCommand": "bash .devcontainer/post-create.sh",

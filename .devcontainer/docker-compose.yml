@@ -64,6 +64,12 @@ services:
     environment:
       QDRANT_URL: http://qdrant:6333
       OLLAMA_URL: http://ollama:11434
+      # Optional cloud embeddings — set in Codespaces secrets or your shell.
+      # Auto-detected: if OPENAI_API_KEY (or VOYAGE_API_KEY) is present and
+      # EMBEDDING_PROVIDER is unset, the server switches to that provider.
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
     volumes:
       - paparats_data:/home/nodejs/.paparats
     depends_on:
@@ -84,6 +90,9 @@ services:
       OLLAMA_URL: http://ollama:11434
       CONFIG_DIR: /config
       CRON_FAST: '*/2 * * * *'
+      EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
     volumes:
       - paparats_home:/config
       # Indexer maps each local-path entry to /projects/<name>; the

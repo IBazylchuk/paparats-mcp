@@ -108,6 +108,10 @@ export interface IndexerConfig {
   qdrantApiKey?: string;
   embeddingProvider: CachedEmbeddingProvider;
   dimensions: number;
+  /** Embedding provider id stamped on new collections (default: 'unknown') */
+  embeddingProviderId?: string;
+  /** Embedding model id stamped on new collections (default: provider.model) */
+  embeddingModelId?: string;
   /** Qdrant request timeout in milliseconds (default: 30000) */
   timeout?: number;
   /** Optional Qdrant client for testing (skips creating from qdrantUrl) */
@@ -120,6 +124,47 @@ export interface IndexerConfig {
   telemetry?: Telemetry;
 }
 
+/** Metadata stamped on each Qdrant collection so we can detect provider
+ *  changes that would silently break search (different model/dimensions). */
+export interface CollectionMeta {
+  provider: string;
+  model: string;
+  dimensions: number;
+  createdAt: number;
+  /** Schema version of this metadata record (in case we change fields later). */
+  metaVersion: number;
+}
+
+/** Deterministic UUID for the per-collection metadata sentinel point. */
+const META_SENTINEL_ID = '00000000-0000-7000-8000-000000005ea7';
+const META_SCHEMA_VERSION = 1;
+
+/** Thrown when the current embedding provider doesn't match what stamped the
+ *  Qdrant collection. Indexing or searching against a mismatched collection
+ *  would return garbage, so we fail loudly with a remediation path. */
+export class CollectionMetaMismatchError extends Error {
+  readonly collection: string;
+  readonly existing: CollectionMeta;
+  readonly current: { provider: string; model: string; dimensions: number };
+
+  constructor(
+    collection: string,
+    existing: CollectionMeta,
+    current: { provider: string; model: string; dimensions: number }
+  ) {
+    super(
+      `Embedding mismatch for collection ${collection}: ` +
+        `indexed with ${existing.provider}/${existing.model} (${existing.dimensions}d), ` +
+        `but current process is ${current.provider}/${current.model} (${current.dimensions}d). ` +
+        `Drop the collection and reindex, or run with matching EMBEDDING_PROVIDER/EMBEDDING_MODEL.`
+    );
+    this.name = 'CollectionMetaMismatchError';
+    this.collection = collection;
+    this.existing = existing;
+    this.current = current;
+  }
+}
+
 /** Qdrant timeout in milliseconds (default: 30s) */
 const QDRANT_TIMEOUT_MS = 30_000;
 const QDRANT_MAX_RETRIES = 3;
@@ -129,6 +174,8 @@ export class Indexer {
   private chunkers = new Map<string, Chunker>();
   private provider: CachedEmbeddingProvider;
   private dimensions: number;
+  private providerId: string;
+  private modelId: string;
   private metadataStore: MetadataStore | null;
   private treeSitter: TreeSitterManager | null;
   private telemetry: Telemetry | null;
@@ -144,6 +191,8 @@ export class Indexer {
       });
     this.provider = config.embeddingProvider;
     this.dimensions = config.dimensions;
+    this.providerId = config.embeddingProviderId ?? 'unknown';
+    this.modelId = config.embeddingModelId ?? config.embeddingProvider.model;
     this.metadataStore = config.metadataStore ?? null;
     this.treeSitter = config.treeSitter ?? null;
     this.telemetry = config.telemetry ?? null;
@@ -488,12 +537,16 @@ export class Indexer {
     }));
   }
 
-  /** Ensure group collection exists in Qdrant */
+  /** Ensure group collection exists in Qdrant and that its embedding metadata
+   *  matches the current provider — mismatches mean a silent broken search,
+   *  so we surface them loudly. */
   async ensureCollection(groupName: string): Promise<void> {
     try {
       await this.qdrant.getCollection(this.col(groupName));
+      await this.validateCollectionMeta(groupName);
       return;
-    } catch {
+    } catch (err) {
+      if (err instanceof CollectionMetaMismatchError) throw err;
       // Collection doesn't exist, try to create
     }
 
@@ -506,6 +559,7 @@ export class Indexer {
           },
         })
       );
+      await this.writeCollectionMeta(groupName);
       await this.retryQdrant(() =>
         this.qdrant.createPayloadIndex(this.col(groupName), {
           field_name: 'project',
@@ -584,6 +638,92 @@ export class Indexer {
       } catch {
         throw err;
       }
+    }
+  }
+
+  /** Write the embedding metadata sentinel point. Stored as a zero-vector
+   *  point at a known UUID so search can exclude it via the `__meta` flag. */
+  private async writeCollectionMeta(groupName: string): Promise<void> {
+    const meta: CollectionMeta = {
+      provider: this.providerId,
+      model: this.modelId,
+      dimensions: this.dimensions,
+      createdAt: Date.now(),
+      metaVersion: META_SCHEMA_VERSION,
+    };
+    await this.retryQdrant(() =>
+      this.qdrant.upsert(this.col(groupName), {
+        wait: true,
+        points: [
+          {
+            id: META_SENTINEL_ID,
+            // Zero vector; never returned because all real searches exclude
+            // __meta=true via filter.must_not.
+            vector: new Array(this.dimensions).fill(0),
+            payload: { __meta: true, ...meta },
+          },
+        ],
+      })
+    );
+  }
+
+  /** Read the sentinel metadata. Returns null when missing — older
+   *  collections from before this feature won't have it. */
+  async readCollectionMeta(groupName: string): Promise<CollectionMeta | null> {
+    try {
+      const result = await this.qdrant.retrieve(this.col(groupName), {
+        ids: [META_SENTINEL_ID],
+        with_payload: true,
+        with_vector: false,
+      });
+      const point = result[0];
+      if (!point || !point.payload) return null;
+      const p = point.payload as Record<string, unknown>;
+      if (p['__meta'] !== true) return null;
+      const provider = typeof p['provider'] === 'string' ? p['provider'] : null;
+      const model = typeof p['model'] === 'string' ? p['model'] : null;
+      const dimensions = typeof p['dimensions'] === 'number' ? p['dimensions'] : null;
+      const createdAt = typeof p['createdAt'] === 'number' ? p['createdAt'] : 0;
+      const metaVersion = typeof p['metaVersion'] === 'number' ? p['metaVersion'] : 0;
+      if (!provider || !model || dimensions === null) return null;
+      return { provider, model, dimensions, createdAt, metaVersion };
+    } catch {
+      return null;
+    }
+  }
+
+  /** Throw CollectionMetaMismatchError if the existing collection's recorded
+   *  provider/model/dimensions don't match what we're about to write into it.
+   *  Backfills the sentinel for legacy collections without metadata. */
+  private async validateCollectionMeta(groupName: string): Promise<void> {
+    const existing = await this.readCollectionMeta(groupName);
+    if (!existing) {
+      // Legacy collection (predates sentinel) — backfill, assuming the
+      // running provider matches what indexed it. If that assumption is
+      // wrong, search results will be garbage either way; the warning gives
+      // the operator a chance to spot it.
+      console.warn(
+        `[indexer] Collection ${this.col(groupName)} has no embedding metadata; ` +
+          `stamping current provider (${this.providerId}/${this.modelId}/${this.dimensions}d). ` +
+          `If it was previously indexed with a different provider, drop the collection and reindex.`
+      );
+      try {
+        await this.writeCollectionMeta(groupName);
+      } catch (err) {
+        console.warn(`[indexer] Failed to backfill metadata: ${(err as Error).message}`);
+      }
+      return;
+    }
+    if (
+      existing.provider !== this.providerId ||
+      existing.model !== this.modelId ||
+      existing.dimensions !== this.dimensions
+    ) {
+      throw new CollectionMetaMismatchError(this.col(groupName), existing, {
+        provider: this.providerId,
+        model: this.modelId,
+        dimensions: this.dimensions,
+      });
     }
   }
 

@@ -299,6 +299,239 @@ export class OllamaProvider implements EmbeddingProvider {
   }
 }
 
+// ── Cloud HTTP helpers (shared by OpenAI/Voyage) ───────────────────────────
+
+/** True if the status code shouldn't be retried — bad input or auth. */
+function isCloudClientError(status: number): boolean {
+  // 401/403 = bad key, 402 = no credit, 400 = malformed input.
+  // 404/422 also belong here for completeness.
+  return (
+    status === 400 ||
+    status === 401 ||
+    status === 402 ||
+    status === 403 ||
+    status === 404 ||
+    status === 422
+  );
+}
+
+interface CloudCallConfig {
+  url: string;
+  apiKey: string;
+  body: unknown;
+  timeoutMs: number;
+  maxRetries: number;
+  providerLabel: string;
+}
+
+async function cloudEmbeddingCall<T>(cfg: CloudCallConfig): Promise<T> {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < cfg.maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), cfg.timeoutMs);
+    try {
+      const res = await fetch(cfg.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${cfg.apiKey}`,
+        },
+        body: JSON.stringify(cfg.body),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      if (res.ok) return (await res.json()) as T;
+
+      const errText = await res.text();
+      const err = new Error(`${cfg.providerLabel} error ${res.status}: ${errText}`);
+      if (isCloudClientError(res.status)) {
+        // Don't retry — caller's fault (bad key, no credit, malformed input).
+        throw err;
+      }
+      lastError = err;
+    } catch (err) {
+      clearTimeout(timeoutId);
+      const e = err as Error;
+      if (e.name === 'AbortError') {
+        lastError = new Error(`${cfg.providerLabel} request timeout after ${cfg.timeoutMs}ms`);
+      } else if (/error 4\d\d/.test(e.message)) {
+        // Surface client errors immediately — already wrapped above.
+        throw e;
+      } else {
+        lastError = e;
+      }
+    }
+
+    if (attempt < cfg.maxRetries - 1) {
+      const delay = Math.min(1000 * 2 ** attempt, 10_000);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      console.warn(
+        `[paparats] ${cfg.providerLabel} request failed, retrying (${attempt + 1}/${cfg.maxRetries})...`
+      );
+    }
+  }
+  throw new Error(
+    `${cfg.providerLabel} failed after ${cfg.maxRetries} retries: ${lastError?.message}`
+  );
+}
+
+// ── OpenAI provider ────────────────────────────────────────────────────────
+
+export interface OpenAIProviderConfig {
+  apiKey: string;
+  model?: string;
+  dimensions?: number;
+  baseUrl?: string;
+}
+
+const OPENAI_TIMEOUT_MS = 60_000;
+const OPENAI_MAX_RETRIES = 3;
+const OPENAI_MAX_INPUTS_PER_BATCH = 2048;
+
+interface OpenAIEmbeddingResponse {
+  data: Array<{ embedding: number[]; index: number }>;
+}
+
+export class OpenAIProvider implements EmbeddingProvider {
+  readonly model: string;
+  readonly dimensions: number;
+  private url: string;
+  private apiKey: string;
+
+  constructor(config: OpenAIProviderConfig) {
+    if (!config.apiKey) throw new Error('OpenAI provider requires apiKey');
+    this.apiKey = config.apiKey;
+    this.model = config.model ?? 'text-embedding-3-small';
+    this.dimensions = config.dimensions ?? 1536;
+    this.url = (config.baseUrl ?? 'https://api.openai.com/v1') + '/embeddings';
+  }
+
+  async embed(text: string): Promise<number[]> {
+    const data = await cloudEmbeddingCall<OpenAIEmbeddingResponse>({
+      url: this.url,
+      apiKey: this.apiKey,
+      body: { model: this.model, input: text, dimensions: this.dimensions },
+      timeoutMs: OPENAI_TIMEOUT_MS,
+      maxRetries: OPENAI_MAX_RETRIES,
+      providerLabel: 'OpenAI',
+    });
+    const emb = data.data[0]?.embedding;
+    if (!emb) throw new Error('OpenAI returned no embeddings');
+    return emb;
+  }
+
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    if (texts.length > OPENAI_MAX_INPUTS_PER_BATCH) {
+      const results: number[][] = [];
+      for (let i = 0; i < texts.length; i += OPENAI_MAX_INPUTS_PER_BATCH) {
+        results.push(...(await this.embedBatch(texts.slice(i, i + OPENAI_MAX_INPUTS_PER_BATCH))));
+      }
+      return results;
+    }
+
+    const data = await cloudEmbeddingCall<OpenAIEmbeddingResponse>({
+      url: this.url,
+      apiKey: this.apiKey,
+      body: { model: this.model, input: texts, dimensions: this.dimensions },
+      timeoutMs: OPENAI_TIMEOUT_MS,
+      maxRetries: OPENAI_MAX_RETRIES,
+      providerLabel: 'OpenAI',
+    });
+    // Sort by index — OpenAI guarantees order but spec says rely on `index`.
+    return data.data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
+  }
+}
+
+// ── Voyage AI provider ─────────────────────────────────────────────────────
+
+export interface VoyageProviderConfig {
+  apiKey: string;
+  model?: string;
+  dimensions?: number;
+  baseUrl?: string;
+}
+
+const VOYAGE_TIMEOUT_MS = 60_000;
+const VOYAGE_MAX_RETRIES = 3;
+// Voyage limit: 128 inputs per request for code models.
+const VOYAGE_MAX_INPUTS_PER_BATCH = 128;
+
+interface VoyageEmbeddingResponse {
+  data: Array<{ embedding: number[]; index: number }>;
+}
+
+export class VoyageProvider implements EmbeddingProvider {
+  readonly model: string;
+  readonly dimensions: number;
+  private url: string;
+  private apiKey: string;
+  private currentInputType: 'query' | 'document' = 'document';
+
+  constructor(config: VoyageProviderConfig) {
+    if (!config.apiKey) throw new Error('Voyage provider requires apiKey');
+    this.apiKey = config.apiKey;
+    this.model = config.model ?? 'voyage-code-3';
+    // voyage-code-3 supports 256/512/1024/2048 via Matryoshka; 1024 is the
+    // documented default and the Pareto sweet spot for code retrieval.
+    this.dimensions = config.dimensions ?? 1024;
+    this.url = (config.baseUrl ?? 'https://api.voyageai.com/v1') + '/embeddings';
+  }
+
+  /**
+   * Sets the input_type for subsequent requests. Voyage code models score
+   * noticeably better when queries vs documents are tagged correctly.
+   */
+  setInputType(type: 'query' | 'document'): void {
+    this.currentInputType = type;
+  }
+
+  private buildBody(input: string | string[]): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      input,
+      input_type: this.currentInputType,
+    };
+    if (this.dimensions !== 1024) body['output_dimension'] = this.dimensions;
+    return body;
+  }
+
+  async embed(text: string): Promise<number[]> {
+    const data = await cloudEmbeddingCall<VoyageEmbeddingResponse>({
+      url: this.url,
+      apiKey: this.apiKey,
+      body: this.buildBody(text),
+      timeoutMs: VOYAGE_TIMEOUT_MS,
+      maxRetries: VOYAGE_MAX_RETRIES,
+      providerLabel: 'Voyage',
+    });
+    const emb = data.data[0]?.embedding;
+    if (!emb) throw new Error('Voyage returned no embeddings');
+    return emb;
+  }
+
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    if (texts.length === 0) return [];
+    if (texts.length > VOYAGE_MAX_INPUTS_PER_BATCH) {
+      const results: number[][] = [];
+      for (let i = 0; i < texts.length; i += VOYAGE_MAX_INPUTS_PER_BATCH) {
+        results.push(...(await this.embedBatch(texts.slice(i, i + VOYAGE_MAX_INPUTS_PER_BATCH))));
+      }
+      return results;
+    }
+    const data = await cloudEmbeddingCall<VoyageEmbeddingResponse>({
+      url: this.url,
+      apiKey: this.apiKey,
+      body: this.buildBody(texts),
+      timeoutMs: VOYAGE_TIMEOUT_MS,
+      maxRetries: VOYAGE_MAX_RETRIES,
+      providerLabel: 'Voyage',
+    });
+    return data.data.sort((a, b) => a.index - b.index).map((d) => d.embedding);
+  }
+}
+
 // ── Cached provider wrapper ────────────────────────────────────────────────
 
 const providerRegistry = new Set<CachedEmbeddingProvider>();
@@ -513,6 +746,7 @@ export function createEmbeddingProvider(config: {
   provider: string;
   model: string;
   dimensions: number;
+  apiKey?: string;
   taskPrefixes?: TaskPrefixConfig;
 }): CachedEmbeddingProvider {
   let base: EmbeddingProvider;
@@ -524,14 +758,108 @@ export function createEmbeddingProvider(config: {
         dimensions: config.dimensions,
       });
       break;
+    case 'openai':
+      if (!config.apiKey) {
+        throw new Error('OpenAI provider requires apiKey (set OPENAI_API_KEY)');
+      }
+      base = new OpenAIProvider({
+        apiKey: config.apiKey,
+        model: config.model,
+        dimensions: config.dimensions,
+      });
+      break;
+    case 'voyage':
+      if (!config.apiKey) {
+        throw new Error('Voyage provider requires apiKey (set VOYAGE_API_KEY)');
+      }
+      base = new VoyageProvider({
+        apiKey: config.apiKey,
+        model: config.model,
+        dimensions: config.dimensions,
+      });
+      break;
     default:
       throw new Error(`Unsupported embedding provider: ${config.provider}`);
   }
 
-  // Auto-enable task prefixes for Jina code embedding models
+  // Auto-enable task prefixes for Jina code embedding models (Ollama).
+  // OpenAI and Voyage handle task differentiation natively; for Voyage we
+  // toggle via setInputType() inside the searcher hot path.
   const taskPrefixes = config.taskPrefixes ?? {
     enabled: config.model.includes('jina-code') || config.model.includes('jina_code'),
   };
 
   return new CachedEmbeddingProvider(base, undefined, taskPrefixes);
+}
+
+/**
+ * Resolve provider config from process.env. Centralises the env-var contract
+ * so server and indexer agree on defaults and the install flow has one place
+ * to mirror.
+ *
+ * Precedence: explicit EMBEDDING_PROVIDER → openai if OPENAI_API_KEY set →
+ * voyage if VOYAGE_API_KEY set → ollama. The auto-detect is intentional: a
+ * user who supplies an OpenAI key but forgets EMBEDDING_PROVIDER almost
+ * certainly meant "use OpenAI", not "use Ollama and ignore my key".
+ */
+export interface ResolvedEmbeddingConfig {
+  provider: 'ollama' | 'openai' | 'voyage';
+  model: string;
+  dimensions: number;
+  apiKey?: string;
+}
+
+export function resolveEmbeddingConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env
+): ResolvedEmbeddingConfig {
+  const explicit = env['EMBEDDING_PROVIDER']?.trim().toLowerCase();
+  const openaiKey = env['OPENAI_API_KEY']?.trim();
+  const voyageKey = env['VOYAGE_API_KEY']?.trim();
+
+  let provider: ResolvedEmbeddingConfig['provider'];
+  if (explicit === 'openai' || explicit === 'voyage' || explicit === 'ollama') {
+    provider = explicit;
+  } else if (openaiKey) {
+    provider = 'openai';
+  } else if (voyageKey) {
+    provider = 'voyage';
+  } else {
+    provider = 'ollama';
+  }
+
+  const modelEnv = env['EMBEDDING_MODEL']?.trim();
+  const dimEnv = env['EMBEDDING_DIMENSIONS']?.trim();
+  const dimEnvParsed = dimEnv ? parseInt(dimEnv, 10) : NaN;
+
+  if (provider === 'openai') {
+    if (!openaiKey) {
+      throw new Error(
+        'EMBEDDING_PROVIDER=openai requires OPENAI_API_KEY (none found in environment)'
+      );
+    }
+    return {
+      provider: 'openai',
+      model: modelEnv || 'text-embedding-3-small',
+      dimensions: Number.isFinite(dimEnvParsed) ? dimEnvParsed : 1536,
+      apiKey: openaiKey,
+    };
+  }
+  if (provider === 'voyage') {
+    if (!voyageKey) {
+      throw new Error(
+        'EMBEDDING_PROVIDER=voyage requires VOYAGE_API_KEY (none found in environment)'
+      );
+    }
+    return {
+      provider: 'voyage',
+      model: modelEnv || 'voyage-code-3',
+      dimensions: Number.isFinite(dimEnvParsed) ? dimEnvParsed : 1024,
+      apiKey: voyageKey,
+    };
+  }
+  return {
+    provider: 'ollama',
+    model: modelEnv || 'jina-code-embeddings',
+    dimensions: Number.isFinite(dimEnvParsed) ? dimEnvParsed : 1536,
+  };
 }

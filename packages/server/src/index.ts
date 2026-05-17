@@ -1,4 +1,4 @@
-import { createEmbeddingProvider } from './embeddings.js';
+import { createEmbeddingProvider, resolveEmbeddingConfigFromEnv } from './embeddings.js';
 import { Indexer, createQdrantClient } from './indexer.js';
 import { Searcher } from './searcher.js';
 import { WatcherManager } from './watcher.js';
@@ -30,11 +30,11 @@ const PAPARATS_PROJECTS = process.env.PAPARATS_PROJECTS
       .filter(Boolean)
   : undefined;
 
-const embeddingProvider = createEmbeddingProvider({
-  provider: 'ollama',
-  model: process.env.EMBEDDING_MODEL ?? 'jina-code-embeddings',
-  dimensions: parseInt(process.env.EMBEDDING_DIMENSIONS ?? '1536', 10),
-});
+const embeddingConfig = resolveEmbeddingConfigFromEnv();
+const embeddingProvider = createEmbeddingProvider(embeddingConfig);
+console.log(
+  `[startup] Embedding provider: ${embeddingConfig.provider} (${embeddingConfig.model}, ${embeddingConfig.dimensions}d)`
+);
 
 if (OLLAMA_URL !== 'http://127.0.0.1:11434') {
   process.env.OLLAMA_URL = OLLAMA_URL;
