@@ -107,34 +107,50 @@ async function defaultRegenerateAndRestart(
   paparatsHome: string = PAPARATS_HOME
 ): Promise<{ composeChanged: boolean }> {
   // Lazy import to avoid pulling install.ts (and its deps) in non-edit code paths.
-  const { regenerateCompose } = await import('../projects-yml.js');
-  // We can't know ollamaMode/qdrantUrl from edit context; re-read the existing compose
-  // to keep the same generator inputs.
+  const { regenerateCompose, readInstallState } = await import('../projects-yml.js');
   const composePath = path.join(paparatsHome, COMPOSE_YML);
   if (!fs.existsSync(composePath)) {
     return { composeChanged: false };
   }
-  // Inspect the existing compose to recover the original Ollama/Qdrant decisions,
-  // so regeneration is a no-op when the project list didn't change.
-  const existing = fs.readFileSync(composePath, 'utf8');
-  const ollamaMode = existing.includes('container_name: paparats-ollama')
-    ? 'docker'
-    : existing.includes('OLLAMA_URL: http://host.docker.internal:11434')
-      ? 'native'
-      : 'external';
-  const externalOllamaMatch = existing.match(/OLLAMA_URL:\s*(http\S+)/);
-  const ollamaUrl =
-    ollamaMode === 'external' && externalOllamaMatch ? externalOllamaMatch[1] : undefined;
-  const externalQdrant = !existing.includes('container_name: paparats-qdrant');
-  const qdrantMatch = existing.match(/QDRANT_URL:\s*(http\S+)/);
-  const qdrantUrl = externalQdrant && qdrantMatch ? qdrantMatch[1] : undefined;
 
-  const { changed } = regenerateCompose({
-    ollamaMode,
-    ...(ollamaUrl !== undefined ? { ollamaUrl } : {}),
-    ...(qdrantUrl !== undefined ? { qdrantUrl } : {}),
-    paparatsHome,
-  });
+  // Prefer install.json — it's the source of truth for embedding provider, ollama mode, etc.
+  // Fall back to parsing the existing compose for installs that predate install.json.
+  const state = readInstallState(paparatsHome);
+  let regenerateOpts: Parameters<typeof regenerateCompose>[0];
+  if (state) {
+    regenerateOpts = {
+      ollamaMode: state.ollamaMode,
+      ...(state.ollamaUrl !== undefined ? { ollamaUrl: state.ollamaUrl } : {}),
+      ...(state.embeddingProvider !== undefined
+        ? { embeddingProvider: state.embeddingProvider }
+        : {}),
+      ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
+      ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
+      ...(state.cron !== undefined ? { cron: state.cron } : {}),
+      paparatsHome,
+    };
+  } else {
+    const existing = fs.readFileSync(composePath, 'utf8');
+    const ollamaMode = existing.includes('container_name: paparats-ollama')
+      ? 'docker'
+      : existing.includes('OLLAMA_URL: http://host.docker.internal:11434')
+        ? 'native'
+        : 'external';
+    const externalOllamaMatch = existing.match(/OLLAMA_URL:\s*(http\S+)/);
+    const ollamaUrl =
+      ollamaMode === 'external' && externalOllamaMatch ? externalOllamaMatch[1] : undefined;
+    const externalQdrant = !existing.includes('container_name: paparats-qdrant');
+    const qdrantMatch = existing.match(/QDRANT_URL:\s*(http\S+)/);
+    const qdrantUrl = externalQdrant && qdrantMatch ? qdrantMatch[1] : undefined;
+    regenerateOpts = {
+      ollamaMode,
+      ...(ollamaUrl !== undefined ? { ollamaUrl } : {}),
+      ...(qdrantUrl !== undefined ? { qdrantUrl } : {}),
+      paparatsHome,
+    };
+  }
+
+  const { changed } = regenerateCompose(regenerateOpts);
   if (!changed) return { composeChanged: false };
 
   const { runRestart } = await import('./lifecycle.js');

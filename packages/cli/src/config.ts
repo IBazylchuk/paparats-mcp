@@ -50,7 +50,7 @@ export interface PaparatsConfig {
     stabilityThreshold?: number;
   };
   embeddings?: {
-    provider?: 'ollama' | 'openai';
+    provider?: 'ollama' | 'openai' | 'voyage';
     model?: string;
     dimensions?: number;
   };
@@ -151,9 +151,14 @@ function validateConfig(config: PaparatsConfig, configPath: string): void {
 
   if (config.embeddings) {
     const emb = config.embeddings;
-    if (emb.provider !== undefined && emb.provider !== 'ollama' && emb.provider !== 'openai') {
+    if (
+      emb.provider !== undefined &&
+      emb.provider !== 'ollama' &&
+      emb.provider !== 'openai' &&
+      emb.provider !== 'voyage'
+    ) {
       throw new Error(
-        `Invalid embeddings.provider in ${configPath}: expected 'ollama' or 'openai'`
+        `Invalid embeddings.provider in ${configPath}: expected 'ollama', 'openai', or 'voyage'`
       );
     }
     if (emb.dimensions !== undefined) {

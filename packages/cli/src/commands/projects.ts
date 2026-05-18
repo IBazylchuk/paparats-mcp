@@ -148,6 +148,9 @@ export async function runAdd(
       const result = regenerateCompose({
         ollamaMode: state.ollamaMode,
         ...(state.ollamaUrl !== undefined ? { ollamaUrl: state.ollamaUrl } : {}),
+        ...(state.embeddingProvider !== undefined
+          ? { embeddingProvider: state.embeddingProvider }
+          : {}),
         ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
         ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
         ...(state.cron !== undefined ? { cron: state.cron } : {}),
@@ -408,6 +411,9 @@ export async function runRemove(
       const result = regenerateCompose({
         ollamaMode: state.ollamaMode,
         ...(state.ollamaUrl !== undefined ? { ollamaUrl: state.ollamaUrl } : {}),
+        ...(state.embeddingProvider !== undefined
+          ? { embeddingProvider: state.embeddingProvider }
+          : {}),
         ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
         ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
         ...(state.cron !== undefined ? { cron: state.cron } : {}),
