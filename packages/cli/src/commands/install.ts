@@ -788,15 +788,17 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
     PAPARATS_HOME
   );
 
-  // 8. .env file — both Qdrant key and the cloud embedding key (when set)
-  const envLines: string[] = [];
-  if (opts.qdrantApiKey) envLines.push(`QDRANT_API_KEY=${opts.qdrantApiKey}`);
+  // 8. .env file — merge our keys into any existing file so user-added entries
+  //    (HTTP_PROXY, custom compose substitutions, …) survive re-runs of install.
+  const updates: Record<string, string> = {};
+  if (opts.qdrantApiKey) updates['QDRANT_API_KEY'] = opts.qdrantApiKey;
   if (embeddingDecision.apiKey && embeddingDecision.provider !== 'ollama') {
-    const envVar = EMBEDDING_KEY_VAR[embeddingDecision.provider];
-    envLines.push(`${envVar}=${embeddingDecision.apiKey}`);
+    updates[EMBEDDING_KEY_VAR[embeddingDecision.provider]] = embeddingDecision.apiKey;
   }
-  if (envLines.length > 0) {
-    deps.writeFileSync(envPath, envLines.join('\n') + '\n');
+  if (Object.keys(updates).length > 0) {
+    const existing = deps.existsSync(envPath) ? deps.readFileSync(envPath, 'utf8') : '';
+    const merged = mergeDotenv(existing, updates);
+    deps.writeFileSync(envPath, merged);
   }
 
   // 9. Bring up the stack
@@ -903,6 +905,35 @@ async function runSupportInstall(
 
 function qdrantHealthUrl(qdrantUrl?: string): string {
   return qdrantUrl ? `${qdrantUrl.replace(/\/$/, '')}/healthz` : 'http://localhost:6333/healthz';
+}
+
+/**
+ * Merge `updates` into an existing dotenv file content. Preserves order,
+ * comments, and blank lines for keys we don't touch; updates matching keys
+ * in place; appends new keys at the end. Quoting follows the input style:
+ * values are written raw (no quoting), matching how the rest of the codebase
+ * reads .env via shell substitution.
+ */
+export function mergeDotenv(existing: string, updates: Record<string, string>): string {
+  const remaining = new Map(Object.entries(updates));
+  const lines = existing === '' ? [] : existing.split('\n');
+  const out: string[] = [];
+  for (const line of lines) {
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (match && remaining.has(match[1]!)) {
+      const key = match[1]!;
+      out.push(`${key}=${remaining.get(key)}`);
+      remaining.delete(key);
+    } else {
+      out.push(line);
+    }
+  }
+  // Drop a trailing empty line so we don't accumulate blank lines on re-runs.
+  while (out.length > 0 && out[out.length - 1] === '') out.pop();
+  for (const [key, value] of remaining) {
+    out.push(`${key}=${value}`);
+  }
+  return out.join('\n') + '\n';
 }
 
 function configureCursorMcp(
