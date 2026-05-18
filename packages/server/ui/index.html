@@ -1,0 +1,416 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>paparats · operator console</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="grain" aria-hidden="true"></div>
+
+    <header class="masthead">
+      <div class="masthead__brand">
+        <span class="brand__mark">▰▰</span>
+        <span class="brand__name">paparats</span>
+        <span class="brand__sub">operator console</span>
+      </div>
+      <div class="masthead__meta">
+        <div class="meta__group">
+          <span class="meta__label">period</span>
+          <div class="period-switch" role="tablist" aria-label="Time period">
+            <button class="period-switch__btn" data-period="24h" aria-selected="true">24h</button>
+            <button class="period-switch__btn" data-period="7d">7d</button>
+            <button class="period-switch__btn" data-period="30d">30d</button>
+          </div>
+        </div>
+        <div class="meta__group">
+          <span class="meta__label">refresh</span>
+          <span id="lastRefresh" class="meta__value">—</span>
+        </div>
+        <div class="meta__group">
+          <span class="meta__label">status</span>
+          <span id="connDot" class="conn-dot" data-state="pending"></span>
+        </div>
+      </div>
+    </header>
+
+    <main class="canvas">
+      <section id="banner" class="banner banner--hidden" role="status"></section>
+
+      <section class="row row--kpis">
+        <article class="tile tile--kpi" data-tile="uptime">
+          <span class="tile__eyebrow">001 / host</span>
+          <span class="tile__value" data-bind="uptime">—</span>
+          <span class="tile__caption" data-bind="uptimeCaption">uptime</span>
+          <span class="tile__sub">
+            <span>cpu <strong data-bind="cpu">—</strong></span>
+            <span>mem <strong data-bind="memory">—</strong></span>
+          </span>
+        </article>
+        <article class="tile tile--kpi" data-tile="groups">
+          <span class="tile__eyebrow">002 / scope</span>
+          <span class="tile__value" data-bind="groups">—</span>
+          <span class="tile__caption" data-bind="projects">— projects</span>
+          <span class="tile__sub">
+            <span>corpus</span>
+            <span><strong data-bind="chunks">—</strong> chunks</span>
+          </span>
+        </article>
+        <article class="tile tile--kpi" data-tile="searches">
+          <span class="tile__eyebrow">003 / queries</span>
+          <span class="tile__value" data-bind="searches">—</span>
+          <span class="tile__caption" data-bind="searchesCaption">searches in period</span>
+          <svg
+            class="sparkline"
+            id="sparkline"
+            viewBox="0 0 200 40"
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <path id="sparklineFetches" class="sparkline__path sparkline__path--fetches" d="" />
+            <path id="sparklineArea" class="sparkline__area" d="" />
+            <path id="sparklinePath" class="sparkline__path" d="" />
+          </svg>
+          <span class="tile__sub">
+            <span>chunks fetched</span>
+            <span><strong data-bind="fetches">—</strong></span>
+          </span>
+        </article>
+        <article class="tile tile--kpi" data-tile="fetchrate">
+          <span class="tile__eyebrow">004 / use rate</span>
+          <span class="tile__value" data-bind="fetchRate">—</span>
+          <span class="tile__caption" data-bind="fetchRateCaption">fetches per search</span>
+          <span class="tile__sub">
+            <span>healthy ≥ 0.40</span>
+            <span data-bind="fetchHealth" class="cell-mute">—</span>
+          </span>
+        </article>
+      </section>
+
+      <section class="row row--roi">
+        <article class="tile tile--roi" data-tile="roi">
+          <div class="roi" id="roi">
+            <div class="roi__hero">
+              <span class="roi__hero-eyebrow">005 / token economics</span>
+              <div class="roi__hero-stack">
+                <span class="roi__hero-value" data-bind="roiPct">—</span>
+                <span class="roi__hero-label" data-bind="roiHeadline"
+                  >savings vs naïve baseline</span
+                >
+              </div>
+              <div class="roi__hero-meta">
+                <span
+                  ><strong data-bind="roiSavedTokens">—</strong> tokens not sent to the LLM</span
+                >
+                <span data-bind="roiSearchesLine">across — searches in period</span>
+              </div>
+            </div>
+
+            <div class="roi__panel">
+              <header class="roi__panel-head">
+                <h2 class="roi__panel-title">Where the tokens went</h2>
+                <span class="roi__panel-saved">
+                  if we'd inlined whole files →
+                  <strong data-bind="roiPanelSaved">—</strong>
+                </span>
+              </header>
+
+              <div class="roi__bars" aria-hidden="true">
+                <div class="roi__bar roi__bar--baseline">
+                  <span class="roi__bar-label">
+                    <span class="roi__bar-label-key">naïve</span>
+                    <span class="roi__bar-label-note">whole-file paste</span>
+                  </span>
+                  <span class="roi__bar-fill" data-bar="baseline"></span>
+                  <span class="roi__bar-value" data-bind="baseline">—</span>
+                </div>
+                <div class="roi__bar roi__bar--search">
+                  <span class="roi__bar-label">
+                    <span class="roi__bar-label-key">search-only</span>
+                    <span class="roi__bar-label-note">just the matched chunks</span>
+                  </span>
+                  <span class="roi__bar-fill" data-bar="search"></span>
+                  <span class="roi__bar-value" data-bind="searchOnly">—</span>
+                </div>
+                <div class="roi__bar roi__bar--realized">
+                  <span class="roi__bar-label">
+                    <span class="roi__bar-label-key">actually used</span>
+                    <span class="roi__bar-label-note">chunks the LLM opened</span>
+                  </span>
+                  <span class="roi__bar-fill" data-bar="consumed"></span>
+                  <span class="roi__bar-value" data-bind="consumed">—</span>
+                </div>
+              </div>
+
+              <p class="roi__legend" data-bind="roiLegend">—</p>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="row row--quality">
+        <article class="tile tile--table" data-tile="slow">
+          <header class="tile__head">
+            <span class="tile__eyebrow">006 / latency</span>
+            <h2 class="tile__title">Slowest searches</h2>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th class="col-rank">#</th>
+                  <th>query</th>
+                  <th class="col-num">ms</th>
+                  <th class="col-num">n</th>
+                </tr>
+              </thead>
+              <tbody id="slowBody">
+                <tr class="data-table__empty">
+                  <td colspan="4">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="tile tile--table" data-tile="top">
+          <header class="tile__head">
+            <span class="tile__eyebrow">007 / demand</span>
+            <h2 class="tile__title">Top queries</h2>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>query</th>
+                  <th class="col-num">×</th>
+                  <th class="col-num">avg ms</th>
+                  <th class="col-num">zero-click</th>
+                </tr>
+              </thead>
+              <tbody id="topBody">
+                <tr class="data-table__empty">
+                  <td colspan="4">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="row row--knowledge">
+        <article class="tile tile--table" data-tile="cross">
+          <header class="tile__head">
+            <span class="tile__eyebrow">008 / knowledge graph</span>
+            <h2 class="tile__title">Cross-project usage</h2>
+            <span class="tile__chip" id="crossChip">—</span>
+          </header>
+          <div class="cross-hint" id="crossHint"></div>
+          <div class="cross-split">
+            <div class="cross-pane">
+              <div class="cross-pane__head">By anchor project</div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>anchor</th>
+                      <th class="col-num">searches</th>
+                      <th class="col-num">off-anchor share</th>
+                      <th class="col-num">used</th>
+                    </tr>
+                  </thead>
+                  <tbody id="crossAnchorBody">
+                    <tr class="data-table__empty">
+                      <td colspan="4">—</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="cross-pane">
+              <div class="cross-pane__head">
+                Knowledge bridges <span class="cross-pane__note">anchor → result project</span>
+              </div>
+              <div class="table-wrap">
+                <table class="data-table">
+                  <thead>
+                    <tr>
+                      <th>bridge</th>
+                      <th class="col-num">results</th>
+                      <th class="col-num">fetched</th>
+                    </tr>
+                  </thead>
+                  <tbody id="crossPairBody">
+                    <tr class="data-table__empty">
+                      <td colspan="3">—</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="tile tile--table" data-tile="users">
+          <header class="tile__head">
+            <span class="tile__eyebrow">009 / who's using it</span>
+            <h2 class="tile__title">Users in period</h2>
+            <span class="tile__chip" id="usersChip">—</span>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>user</th>
+                  <th class="col-num">searches</th>
+                  <th class="col-num">fetched</th>
+                  <th class="col-num">sessions</th>
+                  <th>top anchor</th>
+                  <th>last active</th>
+                </tr>
+              </thead>
+              <tbody id="usersBody">
+                <tr class="data-table__empty">
+                  <td colspan="6">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="row row--indexer">
+        <article class="tile tile--table" data-tile="indexer">
+          <header class="tile__head">
+            <span class="tile__eyebrow">010 / indexer</span>
+            <h2 class="tile__title">Repository status</h2>
+            <span class="tile__chip" id="indexerChip">offline</span>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>repo</th>
+                  <th>status</th>
+                  <th>last run</th>
+                  <th class="col-num">chunks</th>
+                  <th>error</th>
+                </tr>
+              </thead>
+              <tbody id="indexerBody">
+                <tr class="data-table__empty">
+                  <td colspan="5">indexer not reachable</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="tile tile--table" data-tile="errors">
+          <header class="tile__head">
+            <span class="tile__eyebrow">011 / chunking</span>
+            <h2 class="tile__title">Recent failures</h2>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>class</th>
+                  <th>lang</th>
+                  <th class="col-num">count</th>
+                  <th>example</th>
+                </tr>
+              </thead>
+              <tbody id="errBody">
+                <tr class="data-table__empty">
+                  <td colspan="4">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
+      <section class="row row--health">
+        <article class="tile tile--table" data-tile="failed">
+          <header class="tile__head">
+            <span class="tile__eyebrow">012 / search errors</span>
+            <h2 class="tile__title">Failed searches</h2>
+            <span class="tile__chip" id="failedChip">—</span>
+          </header>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>when</th>
+                  <th>user</th>
+                  <th>query</th>
+                  <th>error</th>
+                </tr>
+              </thead>
+              <tbody id="failedBody">
+                <tr class="data-table__empty">
+                  <td colspan="4">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="tile" data-tile="embedding">
+          <header class="tile__head">
+            <span class="tile__eyebrow">013 / embedding</span>
+            <h2 class="tile__title">Embedding provider health</h2>
+            <span class="tile__chip" id="embeddingChip">—</span>
+          </header>
+          <div class="embed-grid">
+            <div class="embed-cell embed-cell--hero">
+              <span class="embed-cell__label">p95 latency</span>
+              <span class="embed-cell__value" data-bind="embP95">—</span>
+              <span class="embed-cell__sub" data-bind="embP95Sub">—</span>
+            </div>
+            <div class="embed-cell">
+              <span class="embed-cell__label">p50</span>
+              <span class="embed-cell__value embed-cell__value--md" data-bind="embP50">—</span>
+            </div>
+            <div class="embed-cell">
+              <span class="embed-cell__label">p99</span>
+              <span class="embed-cell__value embed-cell__value--md" data-bind="embP99">—</span>
+            </div>
+            <div class="embed-cell">
+              <span class="embed-cell__label">calls</span>
+              <span class="embed-cell__value embed-cell__value--md" data-bind="embCalls">—</span>
+            </div>
+            <div class="embed-cell embed-cell--meter">
+              <span class="embed-cell__label">cache hit rate</span>
+              <span class="embed-cell__value embed-cell__value--md" data-bind="embCacheRate"
+                >—</span
+              >
+              <div class="share-bar__track" style="width: 100%; height: 6px; margin-top: 6px">
+                <span class="share-bar__fill" data-bar="embCache"></span>
+              </div>
+              <span class="embed-cell__sub" data-bind="embCacheSub">— hits / — misses</span>
+            </div>
+            <div class="embed-cell">
+              <span class="embed-cell__label">errors</span>
+              <span class="embed-cell__value embed-cell__value--md" data-bind="embErrors">—</span>
+              <span class="embed-cell__sub" data-bind="embTimeouts">— timeouts</span>
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <span class="footer__rule"></span>
+      <span class="footer__text">
+        <code>GET /api/analytics?period=24h</code> · refreshes every 5s ·
+        <a href="/metrics" target="_blank" rel="noopener">/metrics</a> ·
+        <a href="/health" target="_blank" rel="noopener">/health</a>
+      </span>
+    </footer>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
