@@ -8,6 +8,9 @@ import yaml from 'js-yaml';
  */
 export type OllamaMode = 'native' | 'docker' | 'external';
 
+/** Embedding backend selected at install time. */
+export type EmbeddingProvider = 'ollama' | 'openai' | 'voyage';
+
 /** Kept for support-mode compatibility in legacy install code. */
 export type InstallMode = 'developer' | 'server' | 'support';
 
@@ -22,6 +25,8 @@ export interface UnifiedComposeConfig {
   ollamaMode: OllamaMode;
   /** Required when ollamaMode === 'external'. */
   ollamaUrl?: string;
+  /** Embedding backend. Cloud providers skip Ollama entirely. Default: 'ollama'. */
+  embeddingProvider?: EmbeddingProvider;
   /** When set, the dockerized Qdrant service is skipped. */
   qdrantUrl?: string;
   /** Stored in ~/.paparats/.env and referenced as ${QDRANT_API_KEY}. */
@@ -115,7 +120,8 @@ function paparatsService(
   ollamaUrl: string,
   qdrantUrl: string,
   includeQdrantDep: boolean,
-  qdrantApiKey?: string
+  qdrantApiKey: string | undefined,
+  embeddingProvider: EmbeddingProvider
 ): ComposeService {
   const dependsOn: Record<string, { condition: string }> = {};
   if (includeQdrantDep) {
@@ -124,9 +130,15 @@ function paparatsService(
 
   const env: Record<string, string> = {
     QDRANT_URL: qdrantUrl,
-    OLLAMA_URL: ollamaUrl,
-    OLLAMA_BATCH_SIZE: '${OLLAMA_BATCH_SIZE:-5}',
   };
+  if (embeddingProvider === 'ollama') {
+    env['OLLAMA_URL'] = ollamaUrl;
+    env['OLLAMA_BATCH_SIZE'] = '${OLLAMA_BATCH_SIZE:-5}';
+  } else {
+    env['EMBEDDING_PROVIDER'] = embeddingProvider;
+    if (embeddingProvider === 'openai') env['OPENAI_API_KEY'] = '${OPENAI_API_KEY:-}';
+    if (embeddingProvider === 'voyage') env['VOYAGE_API_KEY'] = '${VOYAGE_API_KEY:-}';
+  }
   if (qdrantApiKey) env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
 
   return {
@@ -165,10 +177,11 @@ function indexerService(
   config: UnifiedComposeConfig,
   qdrantUrl: string,
   ollamaUrl: string,
-  port: number
+  port: number,
+  embeddingProvider: EmbeddingProvider
 ): ComposeService {
   const externalQdrant = !!config.qdrantUrl;
-  const dockerOllama = config.ollamaMode === 'docker';
+  const dockerOllama = config.ollamaMode === 'docker' && embeddingProvider === 'ollama';
 
   const dependsOn: Record<string, { condition: string }> = {};
   if (dockerOllama) dependsOn['ollama'] = { condition: 'service_healthy' };
@@ -178,9 +191,15 @@ function indexerService(
     GITHUB_TOKEN: '${GITHUB_TOKEN:-}',
     CRON: `\${CRON:-${config.cron ?? '0 */6 * * *'}}`,
     QDRANT_URL: qdrantUrl,
-    OLLAMA_URL: ollamaUrl,
-    OLLAMA_BATCH_SIZE: '${OLLAMA_BATCH_SIZE:-5}',
   };
+  if (embeddingProvider === 'ollama') {
+    env['OLLAMA_URL'] = ollamaUrl;
+    env['OLLAMA_BATCH_SIZE'] = '${OLLAMA_BATCH_SIZE:-5}';
+  } else {
+    env['EMBEDDING_PROVIDER'] = embeddingProvider;
+    if (embeddingProvider === 'openai') env['OPENAI_API_KEY'] = '${OPENAI_API_KEY:-}';
+    if (embeddingProvider === 'voyage') env['VOYAGE_API_KEY'] = '${VOYAGE_API_KEY:-}';
+  }
   if (config.qdrantApiKey) env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
 
   // Mount the whole ~/.paparats as /config (directory bind-mount, not single file)
@@ -219,11 +238,18 @@ export function generateCompose(config: UnifiedComposeConfig): string {
   const ollamaPort = config.ports?.ollama ?? 11434;
   const indexerPort = config.ports?.indexer ?? 9877;
 
+  const embeddingProvider: EmbeddingProvider = config.embeddingProvider ?? 'ollama';
+  const isCloud = embeddingProvider !== 'ollama';
+
   const externalQdrant = !!config.qdrantUrl;
-  const dockerOllama = config.ollamaMode === 'docker';
+  // Cloud providers don't use Ollama at all — drop the service and depends_on edges.
+  const dockerOllama = !isCloud && config.ollamaMode === 'docker';
 
   const qdrantUrl = externalQdrant ? config.qdrantUrl! : 'http://qdrant:6333';
-  const ollamaUrl = resolveOllamaUrl(config);
+  // For cloud providers the URL is irrelevant (the server reads
+  // EMBEDDING_PROVIDER instead) — pass an empty string so we don't accidentally
+  // wire host.docker.internal when the host has no Ollama running.
+  const ollamaUrl = isCloud ? '' : resolveOllamaUrl(config);
 
   const compose: ComposeFile = {
     services: {
@@ -234,9 +260,16 @@ export function generateCompose(config: UnifiedComposeConfig): string {
         ollamaUrl,
         qdrantUrl,
         !externalQdrant,
-        config.qdrantApiKey
+        config.qdrantApiKey,
+        embeddingProvider
       ),
-      'paparats-indexer': indexerService(config, qdrantUrl, ollamaUrl, indexerPort),
+      'paparats-indexer': indexerService(
+        config,
+        qdrantUrl,
+        ollamaUrl,
+        indexerPort,
+        embeddingProvider
+      ),
     },
     volumes: {
       ...(externalQdrant ? {} : { qdrant_data: null }),

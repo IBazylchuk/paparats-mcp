@@ -1348,11 +1348,16 @@ export class Indexer {
     return total;
   }
 
-  /** Get collection stats for a group */
+  /** Get collection stats for a group. Subtracts the metadata sentinel point
+   *  (one per collection since v0.8.0) so the reported count reflects real
+   *  chunks, not implementation detail. */
   async getGroupStats(groupName: string): Promise<{ points: number; status: string }> {
     try {
       const info = await this.qdrant.getCollection(this.col(groupName));
-      return { points: info.points_count ?? 0, status: String(info.status) };
+      const raw = info.points_count ?? 0;
+      const hasSentinel = (await this.readCollectionMeta(groupName)) !== null;
+      const points = hasSentinel ? Math.max(0, raw - 1) : raw;
+      return { points, status: String(info.status) };
     } catch {
       return { points: 0, status: 'not_indexed' };
     }
@@ -1478,7 +1483,9 @@ export class Indexer {
     }
   }
 
-  /** List all paparats collections (groups), returning logical group names */
+  /** List all paparats collections (groups), returning logical group names.
+   *  Subtracts the metadata sentinel point (one per collection since v0.8.0)
+   *  so reported counts reflect real chunks. */
   async listGroups(): Promise<Record<string, number>> {
     const collections = await this.qdrant.getCollections();
     const paparatsCollections = collections.collections.filter((col) =>
@@ -1487,9 +1494,14 @@ export class Indexer {
     const infos = await Promise.all(
       paparatsCollections.map((col) => this.qdrant.getCollection(col.name))
     );
+    const sentinels = await Promise.all(
+      paparatsCollections.map((col) => this.readCollectionMeta(fromCollectionName(col.name)))
+    );
     const result: Record<string, number> = {};
     paparatsCollections.forEach((col, i) => {
-      result[fromCollectionName(col.name)] = infos[i]!.points_count ?? 0;
+      const raw = infos[i]!.points_count ?? 0;
+      const hasSentinel = sentinels[i] !== null;
+      result[fromCollectionName(col.name)] = hasSentinel ? Math.max(0, raw - 1) : raw;
     });
     return result;
   }
