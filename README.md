@@ -7,6 +7,8 @@
 [![PulseMCP](https://img.shields.io/badge/PulseMCP-listed-01696f)](https://www.pulsemcp.com/servers/paparats-mcp)
 [![MCP Badge](https://lobehub.com/badge/mcp/ibazylchuk-paparats-mcp)](https://lobehub.com/mcp/ibazylchuk-paparats-mcp)
 
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp) &nbsp;<sub>← try the full stack in your browser, no install ([details](#try-it-in-the-browser-no-install))</sub>
+
 **Paparats-kvetka** — a magical flower from Slavic folklore that blooms on Kupala Night
 and grants whoever finds it the power to see hidden things. Likewise, paparats-mcp
 helps your agent see the right code across a sea of repositories.
@@ -19,6 +21,10 @@ a cross-chunk symbol graph — and exposes it through the Model Context Protocol
 by meaning, follow `who-uses-what` through real symbol edges, see who last touched a
 chunk and which ticket it came from — all without your code ever leaving your machine.
 
+<a href="docs/dashboard.png"><img src="docs/dashboard.png" alt="Paparats operator console — ROI, top queries, cross-project usage, indexer health, embedding latency (synthetic data)" width="100%"></a>
+
+<sub>📊 The built-in `/ui` operator console — ROI, query quality, cross-project usage, per-user activity, indexer health. <em>Screenshot uses synthetic data (<code>?demo=1</code>) — no real queries, users, or project names.</em></sub>
+
 - ⚡ **One install, one config.** `paparats install` → `paparats add ~/code/repo` → done.
 - 🌳 **AST-aware chunking and symbol extraction.** Tree-sitter parses every supported
   file once and feeds both chunking and the cross-chunk symbol graph (calls /
@@ -27,8 +33,9 @@ chunk and which ticket it came from — all without your code ever leaving your 
 - 💸 **Saves tokens.** Returns only the chunks that matter, with token-savings telemetry
   to prove it (per-query, per-user, per-anchor-project).
 - 🔭 **Production-ready observability.** Prometheus `/metrics`, OpenTelemetry traces
-  (Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud), local SQLite analytics with six
-  built-in MCP tools for cost reporting.
+  (Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud, **Elastic APM**), local SQLite
+  analytics, and a built-in `/ui` operator console that visualises ROI, query quality,
+  cross-project usage and indexer health in one screen.
 - 🏠 **100% local by default.** Qdrant + Ollama on your machine. No cloud, no API keys,
   no telemetry leaving the box. Bring your own Qdrant Cloud / Ollama URL if you want.
 
@@ -94,7 +101,7 @@ AI coding assistants are smart, but they can only see files you open. They don't
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp)
 
-Click the badge to spin up a full Qdrant + Ollama + paparats stack in a Codespace.
+Spin up a full Qdrant + Ollama + paparats stack in a Codespace.
 A small slice of the repo (`packages/shared/src`) is auto-indexed on first start so
 you can run
 
@@ -821,6 +828,70 @@ Paparats ships with three observability layers that work together:
 1. **Prometheus** (`PAPARATS_METRICS=true`, see above) — scrape `/metrics`.
 2. **Local SQLite analytics store** at `~/.paparats/analytics.db` (default ON) — raw search/tool/indexing events. Six MCP tools query it directly: `token_savings_report`, `top_queries`, `cross_project_share`, `retry_rate`, `slowest_searches`, `failed_chunks`.
 3. **OpenTelemetry** (`PAPARATS_OTEL_ENABLED=true` + `OTEL_EXPORTER_OTLP_ENDPOINT`) — spans for every search, MCP tool call, embedding, indexing run, chunking error. Works with Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud — anything that speaks OTLP/HTTP.
+
+### Operator console (`/ui`)
+
+Open `http://localhost:9876/ui` for a single-screen dashboard ([see screenshot at top of README](#paparats-mcp)) that visualises the analytics store above: ROI, top / slowest queries, cross-project usage, per-user activity, indexer status, embedding p95/p99, and recent failures. Polls every 5 s, no extra services to run.
+
+- Protect it (optional): `PAPARATS_UI_BASIC_AUTH=user:pass` — applies to `/ui` and `/api/analytics` only; `/mcp` and `/api/search` stay open so agents keep working.
+- Show the screenshot view to anyone without touching real data: `PAPARATS_UI_DEMO=true` (or append `?demo=1` to the URL once).
+
+### Pre-built Grafana dashboard
+
+The built-in `/ui` covers the current snapshot. For history (latency p99 over weeks, GC trends, CPU under indexing bursts) wire `/metrics` to Prometheus and import [`docs/grafana/paparats.json`](docs/grafana/paparats.json) — 15 panels across four rows: **Traffic & latency**, **Embeddings**, **Indexing**, **Process health**.
+
+```bash
+# 1. Enable Prometheus surface on the server.
+PAPARATS_METRICS=true paparats up   # or set in your docker-compose.yml
+
+# 2. Point your Prometheus at http://<server>:9876/metrics.
+
+# 3. In Grafana: Dashboards → Import → upload docs/grafana/paparats.json
+#    → pick your Prometheus datasource → Import.
+```
+
+The dashboard uses a `${DS_PROMETHEUS}` variable, so it works with any Prometheus instance (local, Grafana Cloud, Mimir, VictoriaMetrics).
+
+### Sending traces to Elastic APM (or any OTLP backend)
+
+Elastic APM Server accepts OpenTelemetry natively since 7.14 — no agent install, no SDK injection. Set four env vars on the paparats container and restart:
+
+```bash
+PAPARATS_OTEL_ENABLED=true
+OTEL_EXPORTER_OTLP_ENDPOINT=https://your-apm-server:8200
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <apm-secret-token>
+OTEL_SERVICE_NAME=paparats-mcp
+```
+
+Within a minute a new service `paparats-mcp` appears in APM → Services. The same env vars work for Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud Traces — change the endpoint and auth header.
+
+**What gets recorded** — one span per event, with paparats-specific attributes for filtering and grouping:
+
+| Span name                         | Key attributes                                                                       | When                                  |
+| --------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------- |
+| `paparats.search`                 | `tool`, `group`, `query.hash`, `query.length`, `search.duration_ms`, `result_count`, `cache_hit` | every `search_code` / `find_usages`   |
+| `paparats.get_chunk`              | `chunk_id`, `fetch.radius_lines`, `fetch.duration_ms`, `fetch.found`                 | every `get_chunk` call                |
+| `paparats.mcp.tool`               | `tool`, `tool.duration_ms`, `tool.ok`                                                | every MCP tool invocation             |
+| `paparats.embedding`              | `kind`, `batch_size`, `cache_hits`, `cache_miss`, `duration_ms`, `timeout`           | every embedding request               |
+| `paparats.indexing.run`           | `group`, `project`, `trigger`, `status`, `files_total`, `chunks_total`, `errors_total` | every indexer cycle                   |
+| `paparats.indexing.chunking_error`| `group`, `project`, `file`, `language`, `error_class`                                | per-file chunking failure             |
+
+Every span also carries `paparats.user`, `paparats.session`, `paparats.client`, `paparats.request_id`, and (when present) `paparats.anchor_project` from the identity headers above — so you can filter APM by user or correlate spans across a single MCP session.
+
+**What this is good for in Elastic APM:**
+
+- **Errors view** — chunking and embedding failures with stacktrace + file/language/error_class context, aggregated by error class.
+- **Transactions** — `paparats.search` becomes a transaction type. Sort by p95/p99/error rate to find the slow workloads. Filter by `paparats.tool=search_code` or `paparats.group=…` to slice by repo.
+- **Custom queries / metrics** — every paparats attribute is indexed. Build APM queries like `paparats.embedding.cache_miss:true AND duration_ms>500` to find slow cache-miss embeddings, or aggregate `paparats.search.result_count` per `paparats.group`.
+- **Log correlation** — if you ship paparats stdout to Elastic via Filebeat, the `trace.id` field links a log line back to its span.
+
+**What this is _not_ — honest caveats:**
+
+- Spans are flat (one event = one span), not parented. Service Map will show `paparats-mcp` as an isolated node; you won't see a "search → embedding → Qdrant" waterfall. Use the per-span `duration_ms` attributes for stage timing instead.
+- Outbound HTTP to Qdrant / Ollama is not auto-instrumented — to see those as separate dependencies in APM you'd need to enable `@opentelemetry/instrumentation-http` (planned, not shipped). For now, embedding and search latency live on the existing spans.
+- Per-request token-savings, top queries, and cross-project usage stay in the local SQLite store — they're aggregations, not events. View them in the built-in `/ui` console, not in APM.
+
+For pure metrics (CPU, GC, RSS, request rates) Elastic Metricbeat or our Prometheus exporter (above) is a better fit than APM.
 
 ### Identity attribution
 

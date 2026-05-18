@@ -1,5 +1,7 @@
-import express, { type Express } from 'express';
+import express, { type Express, type RequestHandler } from 'express';
 import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { detectLanguageByPath } from '@paparats/shared';
 import { buildProjectConfigFromContent } from './config.js';
 import { Indexer, parseChunkId } from './indexer.js';
@@ -14,6 +16,7 @@ import type { Telemetry } from './telemetry/facade.js';
 import type { AnalyticsStore } from './telemetry/analytics-store.js';
 import { identityMiddleware } from './telemetry/identity-middleware.js';
 import { tctx } from './telemetry/context.js';
+import { buildAnalyticsRouter } from './analytics-api.js';
 
 /** Run a promise with a timeout; reject with Error on timeout */
 export async function withTimeout<T>(
@@ -35,6 +38,24 @@ export async function withTimeout<T>(
 export const SEARCH_TIMEOUT_MS = 30_000;
 export const INDEX_TIMEOUT_MS = 120_000;
 export const FILE_CHANGED_TIMEOUT_MS = 60_000;
+
+/**
+ * Build a basic-auth middleware from an env var "user:pass". Returns undefined
+ * when unset so the caller can mount routes without the guard. Applied only to
+ * /ui and /api/analytics — never the rest of the API.
+ */
+function buildUiBasicAuth(credential: string | undefined): RequestHandler | undefined {
+  if (!credential || !credential.includes(':')) return undefined;
+  const expected = 'Basic ' + Buffer.from(credential).toString('base64');
+  return (req, res, next) => {
+    if (req.headers.authorization === expected) {
+      next();
+      return;
+    }
+    res.set('WWW-Authenticate', 'Basic realm="paparats analytics"');
+    res.status(401).send('Authentication required');
+  };
+}
 
 /** Sanitize user-supplied string for safe logging (prevents log injection) */
 function sanitizeForLog(s: string, maxLen = 200): string {
@@ -571,6 +592,18 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   if (metrics) {
     app.get('/metrics', metrics.getMetricsHandler());
   }
+
+  // ── Analytics UI ──────────────────────────────────────────────────────────
+  // /ui (static dashboard) and /api/analytics (aggregated JSON) are scoped
+  // behind optional basic-auth so the rest of the API and MCP routes stay
+  // open for clients that don't speak HTTP auth.
+
+  const uiAuth = buildUiBasicAuth(process.env['PAPARATS_UI_BASIC_AUTH']);
+  const uiDir = path.resolve(fileURLToPath(import.meta.url), '..', '..', 'ui');
+
+  const uiHandlers: RequestHandler[] = uiAuth ? [uiAuth] : [];
+  app.use('/ui', ...uiHandlers, express.static(uiDir, { extensions: ['html'] }));
+  app.use('/api/analytics', ...uiHandlers, buildAnalyticsRouter({ indexer, analytics }));
 
   // ── MCP transports ─────────────────────────────────────────────────────────
 
