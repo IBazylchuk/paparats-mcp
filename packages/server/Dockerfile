@@ -58,6 +58,7 @@ COPY --from=builder --chown=nodejs:nodejs /app/packages/shared/package.json pack
 COPY --from=builder --chown=nodejs:nodejs /app/packages/shared/dist packages/shared/dist
 COPY --from=builder --chown=nodejs:nodejs /app/packages/server/package.json packages/server/
 COPY --from=builder --chown=nodejs:nodejs /app/packages/server/dist packages/server/dist
+COPY --chown=nodejs:nodejs packages/server/ui packages/server/ui
 COPY --from=builder --chown=nodejs:nodejs /app/node_modules ./node_modules
 
 # Run as root initially; entrypoint chowns volume then drops to nodejs

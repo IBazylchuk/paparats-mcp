@@ -140,6 +140,10 @@ function paparatsService(
     if (embeddingProvider === 'voyage') env['VOYAGE_API_KEY'] = '${VOYAGE_API_KEY:-}';
   }
   if (qdrantApiKey) env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
+  // Resolve indexer over the docker-compose network so the analytics UI's
+  // indexer tile reaches its sibling instead of the host loopback (which has
+  // no service inside the container).
+  env['PAPARATS_INDEXER_URL'] = 'http://paparats-indexer:9877';
 
   return {
     image: 'ibaz/paparats-server:latest',
