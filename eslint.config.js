@@ -26,5 +26,12 @@ export default tseslint.config(
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       'no-console': 'off', // CLI tools output to stdout
     },
+  },
+  {
+    // Browser-side dashboard assets — vanilla JS, no build step.
+    files: ['packages/server/ui/**/*.js'],
+    languageOptions: {
+      globals: { ...globals.browser },
+    },
   }
 );
