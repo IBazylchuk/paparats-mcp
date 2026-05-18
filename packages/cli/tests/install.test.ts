@@ -3,6 +3,7 @@ import {
   detectLegacyInstall,
   decideOllamaMode,
   decideEmbeddingProvider,
+  mergeDotenv,
   upsertMcpServer,
   type InstallOptions,
 } from '../src/commands/install.js';
@@ -218,6 +219,69 @@ describe('decideEmbeddingProvider', () => {
     expect(promptKey).toHaveBeenCalledWith('openai');
     expect(result.provider).toBe('openai');
     expect(result.apiKey).toBe('prompted-key');
+  });
+});
+
+// ── mergeDotenv ─────────────────────────────────────────────────────────────
+
+describe('mergeDotenv', () => {
+  it('writes new keys when the file is empty', () => {
+    expect(mergeDotenv('', { OPENAI_API_KEY: 'sk-x' })).toBe('OPENAI_API_KEY=sk-x\n');
+  });
+
+  it('preserves user-added entries and updates managed ones in place', () => {
+    const existing = `HTTP_PROXY=http://proxy:3128
+QDRANT_API_KEY=old-key
+# my comment
+CUSTOM_VAR=hello
+`;
+    const merged = mergeDotenv(existing, {
+      QDRANT_API_KEY: 'new-key',
+      OPENAI_API_KEY: 'sk-new',
+    });
+    expect(merged).toBe(
+      `HTTP_PROXY=http://proxy:3128
+QDRANT_API_KEY=new-key
+# my comment
+CUSTOM_VAR=hello
+OPENAI_API_KEY=sk-new
+`
+    );
+  });
+
+  it('preserves comments and blank lines unchanged', () => {
+    const existing = `# top comment
+
+QDRANT_API_KEY=old
+# trailing
+`;
+    const merged = mergeDotenv(existing, { QDRANT_API_KEY: 'new' });
+    expect(merged).toBe(`# top comment
+
+QDRANT_API_KEY=new
+# trailing
+`);
+  });
+
+  it('appends keys not present in the existing file', () => {
+    const existing = `HTTP_PROXY=http://proxy:3128\n`;
+    const merged = mergeDotenv(existing, { VOYAGE_API_KEY: 'pa-x' });
+    expect(merged).toBe(`HTTP_PROXY=http://proxy:3128\nVOYAGE_API_KEY=pa-x\n`);
+  });
+
+  it('does not duplicate trailing newlines on re-runs', () => {
+    const round1 = mergeDotenv('', { QDRANT_API_KEY: 'a' });
+    const round2 = mergeDotenv(round1, { QDRANT_API_KEY: 'b' });
+    const round3 = mergeDotenv(round2, { QDRANT_API_KEY: 'c' });
+    expect(round3).toBe('QDRANT_API_KEY=c\n');
+  });
+
+  it('ignores lines that do not look like KEY=value assignments', () => {
+    const existing = `not-a-kv-line
+QDRANT_API_KEY=old
+`;
+    const merged = mergeDotenv(existing, { QDRANT_API_KEY: 'new' });
+    expect(merged).toBe(`not-a-kv-line\nQDRANT_API_KEY=new\n`);
   });
 });
 
