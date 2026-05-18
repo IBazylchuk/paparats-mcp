@@ -182,11 +182,15 @@ async function fetchIndexerHealth(url: string, timeoutMs = 1500): Promise<Indexe
       repos: Array.isArray(body.repos) ? body.repos : [],
     };
   } catch (err) {
+    // node fetch() under AbortController throws DOMException with name="AbortError"
+    // and a noisy default message — surface a clear timeout message instead.
+    const e = err as Error;
+    const message = e.name === 'AbortError' ? `Request timed out after ${timeoutMs}ms` : e.message;
     return {
       reachable: false,
       url,
       repos: [],
-      error: (err as Error).message,
+      error: message,
     };
   } finally {
     clearTimeout(timer);
