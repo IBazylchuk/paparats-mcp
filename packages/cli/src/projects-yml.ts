@@ -5,6 +5,7 @@ import yaml from 'js-yaml';
 import { DEFAULT_GROUP, LANGUAGE_EXCLUDE_DEFAULTS } from '@paparats/shared';
 import {
   generateCompose,
+  type EmbeddingProvider,
   type LocalProjectMount,
   type OllamaMode,
 } from './docker-compose-generator.js';
@@ -46,6 +47,8 @@ export function resolveProjectsFilePath(home: string = PAPARATS_HOME): string | 
 export interface InstallState {
   ollamaMode: OllamaMode;
   ollamaUrl?: string;
+  /** Embedding provider chosen at install time. Absent on legacy installs (treated as 'ollama'). */
+  embeddingProvider?: EmbeddingProvider;
   qdrantUrl?: string;
   qdrantApiKey?: string;
   cron?: string;
@@ -290,6 +293,7 @@ export function localProjectsFor(file: ProjectsFile): LocalProjectMount[] {
 export interface RegenerateOptions {
   ollamaMode: OllamaMode;
   ollamaUrl?: string;
+  embeddingProvider?: EmbeddingProvider;
   qdrantUrl?: string;
   qdrantApiKey?: string;
   cron?: string;
@@ -313,6 +317,7 @@ export function regenerateCompose(opts: RegenerateOptions): RegenerateResult {
   const composeYaml = generateCompose({
     ollamaMode: opts.ollamaMode,
     ...(opts.ollamaUrl !== undefined ? { ollamaUrl: opts.ollamaUrl } : {}),
+    ...(opts.embeddingProvider !== undefined ? { embeddingProvider: opts.embeddingProvider } : {}),
     ...(opts.qdrantUrl !== undefined ? { qdrantUrl: opts.qdrantUrl } : {}),
     ...(opts.qdrantApiKey !== undefined ? { qdrantApiKey: opts.qdrantApiKey } : {}),
     ...(opts.cron !== undefined ? { cron: opts.cron } : {}),

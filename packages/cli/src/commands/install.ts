@@ -8,7 +8,7 @@ import ora from 'ora';
 import { confirm, input, select } from '@inquirer/prompts';
 import { createTimeoutSignal } from '../abort.js';
 import { generateCompose } from '../docker-compose-generator.js';
-import type { OllamaMode, InstallMode } from '../docker-compose-generator.js';
+import type { EmbeddingProvider, OllamaMode, InstallMode } from '../docker-compose-generator.js';
 import {
   PAPARATS_HOME,
   COMPOSE_YML,
@@ -204,6 +204,10 @@ export interface InstallOptions {
   ollamaMode?: OllamaMode;
   /** External Ollama URL — bypasses native and docker Ollama */
   ollamaUrl?: string;
+  /** Embedding backend. 'openai' / 'voyage' skip Ollama entirely. */
+  embeddings?: EmbeddingProvider;
+  /** API key for the cloud embedding provider (only used when embeddings is 'openai' or 'voyage'). */
+  embeddingApiKey?: string;
   /** External Qdrant URL — skip Qdrant Docker container */
   qdrantUrl?: string;
   /** Qdrant API key for authenticated access */
@@ -238,6 +242,10 @@ export interface InstallDeps {
   promptRemoteOllamaUrl?: () => Promise<string>;
   promptOverwriteCompose?: () => Promise<boolean>;
   promptMigrate?: () => Promise<boolean>;
+  promptEmbeddingProvider?: () => Promise<EmbeddingProvider>;
+  promptEmbeddingApiKey?: (provider: EmbeddingProvider) => Promise<string>;
+  /** Read env vars (defaults to process.env). Injected for tests. */
+  env?: NodeJS.ProcessEnv;
   platform?: () => NodeJS.Platform;
   execSync?: (cmd: string, opts?: object) => Buffer | string;
 }
@@ -429,6 +437,9 @@ export interface ResolvedDeps {
   promptRemoteOllamaUrl?: () => Promise<string>;
   promptOverwriteCompose?: () => Promise<boolean>;
   promptMigrate?: () => Promise<boolean>;
+  promptEmbeddingProvider?: () => Promise<EmbeddingProvider>;
+  promptEmbeddingApiKey?: (provider: EmbeddingProvider) => Promise<string>;
+  env: NodeJS.ProcessEnv;
   platform: () => NodeJS.Platform;
   execSync: (cmd: string, opts?: object) => Buffer | string;
   signal?: AbortSignal;
@@ -518,6 +529,81 @@ export async function decideOllamaMode(
   return { mode: 'docker', setupHostOllama: false };
 }
 
+// ── Decide embedding provider ───────────────────────────────────────────────
+
+export interface EmbeddingDecision {
+  provider: EmbeddingProvider;
+  /** Cloud API key. Persisted to ~/.paparats/.env so the compose substitution resolves. */
+  apiKey?: string;
+}
+
+const EMBEDDING_KEY_VAR: Record<Exclude<EmbeddingProvider, 'ollama'>, string> = {
+  openai: 'OPENAI_API_KEY',
+  voyage: 'VOYAGE_API_KEY',
+};
+
+export async function decideEmbeddingProvider(
+  opts: InstallOptions,
+  deps: ResolvedDeps
+): Promise<EmbeddingDecision> {
+  let provider: EmbeddingProvider;
+
+  if (opts.embeddings) {
+    provider = opts.embeddings;
+  } else if (opts.nonInteractive) {
+    provider = 'ollama';
+  } else {
+    provider = deps.promptEmbeddingProvider
+      ? await deps.promptEmbeddingProvider()
+      : await select({
+          message: 'Which embedding provider should Paparats use?',
+          choices: [
+            {
+              name: 'Local Ollama (private, free, ~1.7 GB image, slower on CPU)',
+              value: 'ollama' as EmbeddingProvider,
+            },
+            {
+              name: 'OpenAI text-embedding-3-small (fast, paid, requires API key)',
+              value: 'openai' as EmbeddingProvider,
+            },
+            {
+              name: 'Voyage voyage-code-3 (code-tuned, paid, requires API key)',
+              value: 'voyage' as EmbeddingProvider,
+            },
+          ],
+          default: 'ollama',
+        });
+  }
+
+  if (provider === 'ollama') {
+    return { provider };
+  }
+
+  // Cloud — need an API key. Precedence: explicit flag → env var → prompt.
+  const envVar = EMBEDDING_KEY_VAR[provider];
+  let apiKey = opts.embeddingApiKey?.trim();
+  if (!apiKey) {
+    apiKey = deps.env[envVar]?.trim();
+  }
+  if (!apiKey) {
+    if (opts.nonInteractive) {
+      throw new Error(
+        `--embeddings ${provider} requires an API key. ` +
+          `Pass --embedding-api-key <key> or set ${envVar}.`
+      );
+    }
+    apiKey = deps.promptEmbeddingApiKey
+      ? await deps.promptEmbeddingApiKey(provider)
+      : await input({
+          message: `${envVar}:`,
+          validate: (v: string) => v.trim().length > 0 || 'Key cannot be empty',
+        });
+    apiKey = apiKey.trim();
+  }
+
+  return { provider, apiKey };
+}
+
 // ── Unified install ─────────────────────────────────────────────────────────
 
 async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Promise<void> {
@@ -560,8 +646,21 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
     needsLegacyTeardown = true;
   }
 
-  // 3. Ollama decision
-  const ollamaDecision = await decideOllamaMode(opts, deps);
+  // 3. Embedding provider decision (asked first — cloud providers short-circuit Ollama)
+  const embeddingDecision = await decideEmbeddingProvider(opts, deps);
+  if (embeddingDecision.provider !== 'ollama') {
+    console.log(
+      chalk.green(`✓ Embeddings: ${embeddingDecision.provider} (cloud) — Ollama service skipped\n`)
+    );
+  }
+
+  // 4. Ollama decision (only if we need it). Cloud providers get a dummy decision
+  //    so downstream code that reads ollamaMode still works; the compose generator
+  //    drops the ollama service either way.
+  const ollamaDecision =
+    embeddingDecision.provider === 'ollama'
+      ? await decideOllamaMode(opts, deps)
+      : ({ mode: 'docker', setupHostOllama: false } as OllamaDecision);
 
   // 4. Qdrant decision
   if (!opts.qdrantUrl && !opts.nonInteractive) {
@@ -619,6 +718,7 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
   const newComposeContent = deps.generateCompose({
     ollamaMode: ollamaDecision.mode,
     ...(ollamaDecision.ollamaUrl !== undefined ? { ollamaUrl: ollamaDecision.ollamaUrl } : {}),
+    embeddingProvider: embeddingDecision.provider,
     ...(opts.qdrantUrl !== undefined ? { qdrantUrl: opts.qdrantUrl } : {}),
     ...(opts.qdrantApiKey !== undefined ? { qdrantApiKey: opts.qdrantApiKey } : {}),
     paparatsHome: PAPARATS_HOME,
@@ -681,15 +781,24 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
     {
       ollamaMode: ollamaDecision.mode,
       ...(ollamaDecision.ollamaUrl !== undefined ? { ollamaUrl: ollamaDecision.ollamaUrl } : {}),
+      embeddingProvider: embeddingDecision.provider,
       ...(opts.qdrantUrl !== undefined ? { qdrantUrl: opts.qdrantUrl } : {}),
       ...(opts.qdrantApiKey !== undefined ? { qdrantApiKey: opts.qdrantApiKey } : {}),
     },
     PAPARATS_HOME
   );
 
-  // 8. .env file
-  if (opts.qdrantApiKey) {
-    deps.writeFileSync(envPath, `QDRANT_API_KEY=${opts.qdrantApiKey}\n`);
+  // 8. .env file — merge our keys into any existing file so user-added entries
+  //    (HTTP_PROXY, custom compose substitutions, …) survive re-runs of install.
+  const updates: Record<string, string> = {};
+  if (opts.qdrantApiKey) updates['QDRANT_API_KEY'] = opts.qdrantApiKey;
+  if (embeddingDecision.apiKey && embeddingDecision.provider !== 'ollama') {
+    updates[EMBEDDING_KEY_VAR[embeddingDecision.provider]] = embeddingDecision.apiKey;
+  }
+  if (Object.keys(updates).length > 0) {
+    const existing = deps.existsSync(envPath) ? deps.readFileSync(envPath, 'utf8') : '';
+    const merged = mergeDotenv(existing, updates);
+    deps.writeFileSync(envPath, merged);
   }
 
   // 9. Bring up the stack
@@ -798,6 +907,35 @@ function qdrantHealthUrl(qdrantUrl?: string): string {
   return qdrantUrl ? `${qdrantUrl.replace(/\/$/, '')}/healthz` : 'http://localhost:6333/healthz';
 }
 
+/**
+ * Merge `updates` into an existing dotenv file content. Preserves order,
+ * comments, and blank lines for keys we don't touch; updates matching keys
+ * in place; appends new keys at the end. Quoting follows the input style:
+ * values are written raw (no quoting), matching how the rest of the codebase
+ * reads .env via shell substitution.
+ */
+export function mergeDotenv(existing: string, updates: Record<string, string>): string {
+  const remaining = new Map(Object.entries(updates));
+  const lines = existing === '' ? [] : existing.split('\n');
+  const out: string[] = [];
+  for (const line of lines) {
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (match && remaining.has(match[1]!)) {
+      const key = match[1]!;
+      out.push(`${key}=${remaining.get(key)}`);
+      remaining.delete(key);
+    } else {
+      out.push(line);
+    }
+  }
+  // Drop a trailing empty line so we don't accumulate blank lines on re-runs.
+  while (out.length > 0 && out[out.length - 1] === '') out.pop();
+  for (const [key, value] of remaining) {
+    out.push(`${key}=${value}`);
+  }
+  return out.join('\n') + '\n';
+}
+
 function configureCursorMcp(
   mcpUrl: string,
   deps: Pick<InstallDeps, 'existsSync' | 'readFileSync' | 'writeFileSync' | 'mkdirSync'>,
@@ -847,6 +985,7 @@ export async function runInstall(
     existsSync: deps?.existsSync ?? fs.existsSync.bind(fs),
     unlinkSync: deps?.unlinkSync ?? fs.unlinkSync.bind(fs),
     renameSync: deps?.renameSync ?? fs.renameSync.bind(fs),
+    env: deps?.env ?? process.env,
     platform: deps?.platform ?? (() => process.platform),
     execSync: deps?.execSync ?? (execSync as unknown as ResolvedDeps['execSync']),
     ...(deps?.signal !== undefined ? { signal: deps.signal } : {}),
@@ -867,6 +1006,12 @@ export async function runInstall(
       ? { promptOverwriteCompose: deps.promptOverwriteCompose }
       : {}),
     ...(deps?.promptMigrate !== undefined ? { promptMigrate: deps.promptMigrate } : {}),
+    ...(deps?.promptEmbeddingProvider !== undefined
+      ? { promptEmbeddingProvider: deps.promptEmbeddingProvider }
+      : {}),
+    ...(deps?.promptEmbeddingApiKey !== undefined
+      ? { promptEmbeddingApiKey: deps.promptEmbeddingApiKey }
+      : {}),
   };
 
   const mode = opts.mode ?? 'developer';
@@ -892,19 +1037,42 @@ export const installCommand = new Command('install')
     'Force Ollama mode: native | docker (default: native on macOS, docker elsewhere)'
   )
   .option('--ollama-url <url>', 'External Ollama URL (skips both native and docker Ollama)')
+  .option(
+    '--embeddings <provider>',
+    'Embedding backend: ollama | openai | voyage (default: ollama). ' +
+      'openai/voyage skip the Ollama service entirely.'
+  )
+  .option(
+    '--embedding-api-key <key>',
+    'API key for the chosen cloud embedding provider. ' +
+      'Alternatively set OPENAI_API_KEY / VOYAGE_API_KEY.'
+  )
   .option('--qdrant-url <url>', 'External Qdrant URL (skips Qdrant Docker container)')
   .option('--qdrant-api-key <key>', 'Qdrant API key for authenticated access')
   .option('--server <url>', 'Server URL to connect to (support mode)', 'http://localhost:9876')
   .option('--force', 'Skip overwrite/migration prompts (always overwrite)')
   .option('--non-interactive', 'Fail on any prompt instead of asking')
   .option('-v, --verbose', 'Show detailed output')
-  .action(async (opts: InstallOptions & { ollamaMode?: string }) => {
+  .action(async (opts: InstallOptions & { ollamaMode?: string; embeddings?: string }) => {
     const controller = new AbortController();
     process.on('SIGINT', () => controller.abort());
 
+    if (opts.embeddings && !['ollama', 'openai', 'voyage'].includes(opts.embeddings)) {
+      console.error(
+        chalk.red(
+          `Invalid --embeddings value "${opts.embeddings}". Expected: ollama | openai | voyage.`
+        )
+      );
+      process.exit(1);
+    }
+
     try {
       await runInstall(
-        { ...opts, ollamaMode: opts.ollamaMode as OllamaMode | undefined },
+        {
+          ...opts,
+          ollamaMode: opts.ollamaMode as OllamaMode | undefined,
+          embeddings: opts.embeddings as EmbeddingProvider | undefined,
+        },
         { signal: controller.signal }
       );
     } catch (err) {
