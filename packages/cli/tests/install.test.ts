@@ -2,9 +2,11 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   detectLegacyInstall,
   decideOllamaMode,
+  decideEmbeddingProvider,
   upsertMcpServer,
   type InstallOptions,
 } from '../src/commands/install.js';
+import type { EmbeddingProvider } from '../src/docker-compose-generator.js';
 
 describe('detectLegacyInstall', () => {
   it('returns null for null content', () => {
@@ -59,6 +61,7 @@ function makeDeps(overrides: Partial<Parameters<typeof decideOllamaMode>[1]> = {
     unlinkSync: vi.fn(),
     platform: vi.fn().mockReturnValue('linux' as NodeJS.Platform),
     execSync: vi.fn(),
+    env: {} as NodeJS.ProcessEnv,
     ...overrides,
   };
 }
@@ -145,6 +148,76 @@ describe('decideOllamaMode', () => {
     const result = await decideOllamaMode({ ollamaMode: 'native' }, deps);
     expect(result.mode).toBe('native');
     expect(result.setupHostOllama).toBe(true);
+  });
+});
+
+// ── decideEmbeddingProvider ────────────────────────────────────────────────
+
+describe('decideEmbeddingProvider', () => {
+  it('returns ollama with no API key when --embeddings ollama', async () => {
+    const deps = makeDeps();
+    const result = await decideEmbeddingProvider({ embeddings: 'ollama' }, deps);
+    expect(result.provider).toBe('ollama');
+    expect(result.apiKey).toBeUndefined();
+  });
+
+  it('returns ollama by default in --non-interactive without --embeddings', async () => {
+    const deps = makeDeps();
+    const result = await decideEmbeddingProvider({ nonInteractive: true }, deps);
+    expect(result.provider).toBe('ollama');
+  });
+
+  it('uses --embedding-api-key when provided', async () => {
+    const deps = makeDeps();
+    const result = await decideEmbeddingProvider(
+      { embeddings: 'openai', embeddingApiKey: '  sk-explicit ' },
+      deps
+    );
+    expect(result.provider).toBe('openai');
+    expect(result.apiKey).toBe('sk-explicit');
+  });
+
+  it('falls back to OPENAI_API_KEY env var when --embedding-api-key absent', async () => {
+    const deps = makeDeps({ env: { OPENAI_API_KEY: 'sk-from-env' } as NodeJS.ProcessEnv });
+    const result = await decideEmbeddingProvider({ embeddings: 'openai' }, deps);
+    expect(result.apiKey).toBe('sk-from-env');
+  });
+
+  it('falls back to VOYAGE_API_KEY env var for voyage', async () => {
+    const deps = makeDeps({ env: { VOYAGE_API_KEY: 'pa-from-env' } as NodeJS.ProcessEnv });
+    const result = await decideEmbeddingProvider({ embeddings: 'voyage' }, deps);
+    expect(result.provider).toBe('voyage');
+    expect(result.apiKey).toBe('pa-from-env');
+  });
+
+  it('--non-interactive + cloud + no key in env or flag → throws clearly', async () => {
+    const deps = makeDeps();
+    await expect(
+      decideEmbeddingProvider({ embeddings: 'openai', nonInteractive: true }, deps)
+    ).rejects.toThrow(/OPENAI_API_KEY/);
+  });
+
+  it('explicit flag wins over env var', async () => {
+    const deps = makeDeps({ env: { OPENAI_API_KEY: 'env-key' } as NodeJS.ProcessEnv });
+    const result = await decideEmbeddingProvider(
+      { embeddings: 'openai', embeddingApiKey: 'flag-key' },
+      deps
+    );
+    expect(result.apiKey).toBe('flag-key');
+  });
+
+  it('interactive prompts when no flag and not non-interactive', async () => {
+    const promptProvider = vi.fn<() => Promise<EmbeddingProvider>>().mockResolvedValue('openai');
+    const promptKey = vi.fn().mockResolvedValue('prompted-key');
+    const deps = makeDeps({
+      promptEmbeddingProvider: promptProvider,
+      promptEmbeddingApiKey: promptKey,
+    });
+    const result = await decideEmbeddingProvider({}, deps);
+    expect(promptProvider).toHaveBeenCalled();
+    expect(promptKey).toHaveBeenCalledWith('openai');
+    expect(result.provider).toBe('openai');
+    expect(result.apiKey).toBe('prompted-key');
   });
 });
 

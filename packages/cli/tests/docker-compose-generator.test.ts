@@ -164,4 +164,87 @@ describe('generateCompose', () => {
     const env = compose.services['paparats-indexer']!['environment'] as Record<string, string>;
     expect(env['CRON']).toContain('*/15 * * * *');
   });
+
+  describe('embeddingProvider', () => {
+    it('skips the ollama service entirely for embeddingProvider=openai', () => {
+      const out = generateCompose({
+        ollamaMode: 'docker',
+        embeddingProvider: 'openai',
+        paparatsHome: HOME,
+      });
+      const compose = parseCompose(out);
+
+      expect(compose.services['ollama']).toBeUndefined();
+      expect(compose.volumes['ollama_data']).toBeUndefined();
+
+      const paparatsDeps = compose.services['paparats']!['depends_on'] as Record<string, unknown>;
+      expect(paparatsDeps['ollama']).toBeUndefined();
+
+      const indexerDeps = compose.services['paparats-indexer']!['depends_on'] as Record<
+        string,
+        unknown
+      >;
+      expect(indexerDeps['ollama']).toBeUndefined();
+    });
+
+    it('sets EMBEDDING_PROVIDER and OPENAI_API_KEY on both services for openai', () => {
+      const out = generateCompose({
+        ollamaMode: 'docker',
+        embeddingProvider: 'openai',
+        paparatsHome: HOME,
+      });
+      const compose = parseCompose(out);
+      const paparatsEnv = compose.services['paparats']!['environment'] as Record<string, string>;
+      const indexerEnv = compose.services['paparats-indexer']!['environment'] as Record<
+        string,
+        string
+      >;
+
+      expect(paparatsEnv['EMBEDDING_PROVIDER']).toBe('openai');
+      expect(paparatsEnv['OPENAI_API_KEY']).toBe('${OPENAI_API_KEY:-}');
+      expect(paparatsEnv['OLLAMA_URL']).toBeUndefined();
+
+      expect(indexerEnv['EMBEDDING_PROVIDER']).toBe('openai');
+      expect(indexerEnv['OPENAI_API_KEY']).toBe('${OPENAI_API_KEY:-}');
+      expect(indexerEnv['OLLAMA_URL']).toBeUndefined();
+    });
+
+    it('sets EMBEDDING_PROVIDER and VOYAGE_API_KEY for voyage', () => {
+      const out = generateCompose({
+        ollamaMode: 'native',
+        embeddingProvider: 'voyage',
+        paparatsHome: HOME,
+      });
+      const compose = parseCompose(out);
+      const paparatsEnv = compose.services['paparats']!['environment'] as Record<string, string>;
+
+      expect(paparatsEnv['EMBEDDING_PROVIDER']).toBe('voyage');
+      expect(paparatsEnv['VOYAGE_API_KEY']).toBe('${VOYAGE_API_KEY:-}');
+      expect(paparatsEnv['OPENAI_API_KEY']).toBeUndefined();
+      expect(compose.services['ollama']).toBeUndefined();
+    });
+
+    it('keeps OLLAMA_URL when embeddingProvider is unset (default = ollama)', () => {
+      const out = generateCompose({ ollamaMode: 'native', paparatsHome: HOME });
+      const compose = parseCompose(out);
+      const env = compose.services['paparats']!['environment'] as Record<string, string>;
+
+      expect(env['EMBEDDING_PROVIDER']).toBeUndefined();
+      expect(env['OLLAMA_URL']).toBe('http://host.docker.internal:11434');
+    });
+
+    it('cloud provider still keeps qdrant and bind-mounts intact', () => {
+      const out = generateCompose({
+        ollamaMode: 'native',
+        embeddingProvider: 'openai',
+        paparatsHome: HOME,
+        localProjects: [{ name: 'web', hostPath: '/Users/x/web' }],
+      });
+      const compose = parseCompose(out);
+
+      expect(compose.services['qdrant']).toBeDefined();
+      const volumes = compose.services['paparats-indexer']!['volumes'] as string[];
+      expect(volumes).toContain('/Users/x/web:/projects/web:ro');
+    });
+  });
 });

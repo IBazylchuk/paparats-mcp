@@ -865,4 +865,65 @@ describe('Indexer collection metadata sentinel', () => {
     const meta = await indexer.readCollectionMeta('legacy');
     expect(meta?.provider).toBe('ollama');
   });
+
+  it('getGroupStats subtracts the sentinel point from points_count', async () => {
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      embeddingProviderId: 'ollama',
+      embeddingModelId: 'jina-code-embeddings',
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    // Bootstraps the collection + writes a sentinel via real Indexer code.
+    await indexer.ensureCollection('counts');
+    mockQdrant.client.getCollection.mockResolvedValueOnce({ points_count: 43, status: 'green' });
+
+    const stats = await indexer.getGroupStats('counts');
+    expect(stats).toEqual({ points: 42, status: 'green' });
+  });
+
+  it('getGroupStats does not subtract on legacy collections without a sentinel', async () => {
+    // Pre-create the collection with no sentinel — simulates pre-0.8.0.
+    mockQdrant.collections.set(toCollectionName('legacy-counts'), new Map());
+    mockQdrant.client.getCollection.mockResolvedValueOnce({ points_count: 7, status: 'green' });
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      embeddingProviderId: 'ollama',
+      embeddingModelId: 'jina-code-embeddings',
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const stats = await indexer.getGroupStats('legacy-counts');
+    expect(stats).toEqual({ points: 7, status: 'green' });
+  });
+
+  it('listGroups subtracts the sentinel per collection', async () => {
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      embeddingProviderId: 'ollama',
+      embeddingModelId: 'jina-code-embeddings',
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    await indexer.ensureCollection('a');
+    await indexer.ensureCollection('b');
+    // Both collections have the sentinel (written by ensureCollection above).
+    mockQdrant.client.getCollection.mockImplementation((name: string) => {
+      if (name === toCollectionName('a')) {
+        return Promise.resolve({ points_count: 11, status: 'green' });
+      }
+      return Promise.resolve({ points_count: 1, status: 'green' });
+    });
+
+    const groups = await indexer.listGroups();
+    expect(groups['a']).toBe(10);
+    expect(groups['b']).toBe(0);
+  });
 });
