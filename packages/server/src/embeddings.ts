@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import type { EmbeddingProvider } from './types.js';
 import { prefixQuery, prefixPassage, type TaskPrefixConfig } from './task-prefixes.js';
 import type { Telemetry } from './telemetry/facade.js';
+import type { MetricsRegistry } from './metrics.js';
 
 // ── SQLite embedding cache ─────────────────────────────────────────────────
 
@@ -571,6 +572,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
   private embedCalls = 0;
   private taskPrefixConfig: TaskPrefixConfig;
   private telemetry: Telemetry | null = null;
+  private metrics: MetricsRegistry | null = null;
 
   get dimensions(): number {
     return this.provider.dimensions;
@@ -605,6 +607,11 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     this.telemetry = telemetry;
   }
 
+  /** Attach Prometheus metrics for embedding_duration histogram. Optional. */
+  attachMetrics(metrics: MetricsRegistry): void {
+    this.metrics = metrics;
+  }
+
   /** Cache stats for monitoring */
   getCacheStats(): CacheStats {
     const stats = this.cache.getStats();
@@ -630,7 +637,9 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
         return cached;
       }
       cacheMiss = 1;
+      const providerStart = performance.now();
       const vector = await this.provider.embed(text);
+      this.metrics?.observeEmbeddingDuration((performance.now() - providerStart) / 1000);
       this.cache.set(hash, this.model, vector);
       return vector;
     } catch (err) {
@@ -678,10 +687,18 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
 
       if (uncachedTexts.length > 0) {
         let vectors: number[][];
+        const providerStart = performance.now();
         if (typeof this.provider.embedBatch === 'function') {
           vectors = await this.provider.embedBatch(uncachedTexts);
         } else {
           vectors = await Promise.all(uncachedTexts.map((t) => this.provider.embed(t)));
+        }
+        const elapsedSec = (performance.now() - providerStart) / 1000;
+        if (uncachedTexts.length > 0 && this.metrics) {
+          const perItem = elapsedSec / uncachedTexts.length;
+          for (let i = 0; i < uncachedTexts.length; i++) {
+            this.metrics.observeEmbeddingDuration(perItem);
+          }
         }
         if (vectors.length !== uncachedTexts.length) {
           throw new Error(

@@ -12,6 +12,7 @@ import {
   autoProjectConfig,
   resolveProject,
   detectLanguages,
+  createMetrics,
 } from '@paparats/server';
 import type { TreeSitterManager, ProjectConfig, PaparatsConfig } from '@paparats/server';
 import { DEFAULT_GROUP, normalizeExcludePatterns } from '@paparats/shared';
@@ -89,6 +90,9 @@ console.log(
   `[indexer] Embedding provider: ${embeddingConfig.provider} (${embeddingConfig.model}, ${embeddingConfig.dimensions}d)`
 );
 
+const metrics = await createMetrics();
+embeddingProvider.attachMetrics(metrics);
+
 const metadataStore = new MetadataStore();
 const qdrantClient = createQdrantClient({ url: QDRANT_URL, apiKey: QDRANT_API_KEY });
 
@@ -109,6 +113,7 @@ const indexer = new Indexer({
   metadataStore,
   treeSitter,
   qdrantClient,
+  metrics,
 });
 
 const stateStore = new StateStore(STATE_DB_PATH);
@@ -482,6 +487,10 @@ app.post('/trigger', async (req, res) => {
   }
 });
 
+if (metrics.enabled) {
+  app.get('/metrics', metrics.getMetricsHandler());
+}
+
 app.get('/health', (_req, res) => {
   const health: HealthResponse = {
     status: globalStatus,
@@ -507,6 +516,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[indexer] Ollama: ${OLLAMA_URL}`);
   if (PAPARATS_GROUP) {
     console.log(`[indexer] Shared group: ${PAPARATS_GROUP} (all repos → one collection)`);
+  }
+  if (metrics.enabled) {
+    console.log(`[indexer] Metrics: http://localhost:${PORT}/metrics`);
   }
 });
 
