@@ -694,7 +694,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
           vectors = await Promise.all(uncachedTexts.map((t) => this.provider.embed(t)));
         }
         const elapsedSec = (performance.now() - providerStart) / 1000;
-        if (uncachedTexts.length > 0 && this.metrics) {
+        if (this.metrics) {
           const perItem = elapsedSec / uncachedTexts.length;
           for (let i = 0; i < uncachedTexts.length; i++) {
             this.metrics.observeEmbeddingDuration(perItem);
