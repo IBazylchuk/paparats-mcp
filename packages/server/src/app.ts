@@ -39,6 +39,39 @@ export const SEARCH_TIMEOUT_MS = 30_000;
 export const INDEX_TIMEOUT_MS = 120_000;
 export const FILE_CHANGED_TIMEOUT_MS = 60_000;
 
+export interface RefreshGaugeMetricsOptions {
+  metrics: MetricsRegistry;
+  indexer: Indexer;
+  searcher: Searcher;
+  embeddingProvider: CachedEmbeddingProvider;
+}
+
+export interface GaugeSnapshot {
+  groups: Record<string, number>;
+  cacheStats: ReturnType<CachedEmbeddingProvider['getCacheStats']>;
+  queryCacheStats: ReturnType<Searcher['getQueryCacheStats']>;
+}
+
+/** Push cache + collection counts into Prometheus gauges; returns the snapshot so /api/stats can reuse it. */
+export async function refreshGaugeMetrics(
+  opts: RefreshGaugeMetricsOptions
+): Promise<GaugeSnapshot> {
+  const { metrics, indexer, searcher, embeddingProvider } = opts;
+  const groups = await indexer.listGroups();
+  const cacheStats = embeddingProvider.getCacheStats();
+  const queryCacheStats = searcher.getQueryCacheStats();
+
+  metrics.setEmbeddingCacheSize(cacheStats.size);
+  metrics.setEmbeddingCacheHitRate(cacheStats.hitRate);
+  if (queryCacheStats) {
+    metrics.setQueryCacheSize(queryCacheStats.size);
+    metrics.setQueryCacheHitRate(queryCacheStats.hitRate);
+  }
+  metrics.setQdrantCollections(Object.keys(groups).length);
+
+  return { groups, cacheStats, queryCacheStats };
+}
+
 /**
  * Build a basic-auth middleware from an env var "user:pass". Returns undefined
  * when unset so the caller can mount routes without the guard. Applied only to
@@ -542,23 +575,26 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
   app.get('/api/stats', async (_req, res) => {
     try {
-      const groups = await indexer.listGroups();
-      const usage = searcher.getUsageStats();
-      const cacheStats = embeddingProvider.getCacheStats();
       const watcherStats = watcherManager.getStats();
-      const queryCacheStats = searcher.getQueryCacheStats();
+      const usage = searcher.getUsageStats();
 
-      // Update metrics gauges
+      let groups: Record<string, number>;
+      let cacheStats: ReturnType<CachedEmbeddingProvider['getCacheStats']>;
+      let queryCacheStats: ReturnType<Searcher['getQueryCacheStats']>;
       if (metrics) {
-        if (cacheStats) {
-          metrics.setEmbeddingCacheSize(cacheStats.size);
-          metrics.setEmbeddingCacheHitRate(cacheStats.hitRate);
-        }
-        if (queryCacheStats) {
-          metrics.setQueryCacheSize(queryCacheStats.size);
-          metrics.setQueryCacheHitRate(queryCacheStats.hitRate);
-        }
-        metrics.setQdrantCollections(Object.keys(groups).length);
+        const snapshot = await refreshGaugeMetrics({
+          metrics,
+          indexer,
+          searcher,
+          embeddingProvider,
+        });
+        groups = snapshot.groups;
+        cacheStats = snapshot.cacheStats;
+        queryCacheStats = snapshot.queryCacheStats;
+      } else {
+        groups = await indexer.listGroups();
+        cacheStats = embeddingProvider.getCacheStats();
+        queryCacheStats = searcher.getQueryCacheStats();
       }
 
       const ident = tctx.getOrAnonymous();

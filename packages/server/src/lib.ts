@@ -75,8 +75,13 @@ export type { ExtractGitMetadataOptions, ExtractGitMetadataResult } from './git-
 export { ProjectWatcher, WatcherManager } from './watcher.js';
 export type { WatcherCallbacks, ProjectWatcherOptions, WatcherStats } from './watcher.js';
 
-export { createApp, withTimeout } from './app.js';
-export type { CreateAppOptions, CreateAppResult } from './app.js';
+export { createApp, withTimeout, refreshGaugeMetrics } from './app.js';
+export type {
+  CreateAppOptions,
+  CreateAppResult,
+  RefreshGaugeMetricsOptions,
+  GaugeSnapshot,
+} from './app.js';
 
 export { QueryCache } from './query-cache.js';
 export type { QueryCacheConfig, QueryCacheStats } from './query-cache.js';
