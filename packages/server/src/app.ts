@@ -61,10 +61,8 @@ export async function refreshGaugeMetrics(
   const cacheStats = embeddingProvider.getCacheStats();
   const queryCacheStats = searcher.getQueryCacheStats();
 
-  if (cacheStats) {
-    metrics.setEmbeddingCacheSize(cacheStats.size);
-    metrics.setEmbeddingCacheHitRate(cacheStats.hitRate);
-  }
+  metrics.setEmbeddingCacheSize(cacheStats.size);
+  metrics.setEmbeddingCacheHitRate(cacheStats.hitRate);
   if (queryCacheStats) {
     metrics.setQueryCacheSize(queryCacheStats.size);
     metrics.setQueryCacheHitRate(queryCacheStats.hitRate);
