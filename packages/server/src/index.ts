@@ -6,7 +6,7 @@ import { MetadataStore } from './metadata-db.js';
 import { createTreeSitterManager } from './tree-sitter-parser.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
 import type { ProjectConfig } from './types.js';
-import { createApp } from './app.js';
+import { createApp, refreshGaugeMetrics } from './app.js';
 import { QueryCache } from './query-cache.js';
 import { createMetrics } from './metrics.js';
 import { buildTelemetry } from './telemetry/factory.js';
@@ -57,6 +57,7 @@ const queryCache = new QueryCache();
 const metrics = await createMetrics();
 const { telemetry, analytics } = await buildTelemetry();
 embeddingProvider.attachTelemetry(telemetry);
+embeddingProvider.attachMetrics(metrics);
 const stopRetention = analytics ? scheduleRetention(analytics) : null;
 
 const indexer = new Indexer({
@@ -67,6 +68,7 @@ const indexer = new Indexer({
   treeSitter,
   qdrantClient,
   telemetry,
+  metrics,
 });
 
 const searcher = new Searcher({
@@ -110,6 +112,17 @@ const { app, mcpHandler, setShuttingDown, getShuttingDown, stopGroupPoll } = cre
   telemetry,
   analytics: analytics ?? undefined,
 });
+
+const GAUGE_REFRESH_INTERVAL_MS = 15_000;
+let gaugeRefreshTimer: NodeJS.Timeout | undefined;
+if (metrics.enabled) {
+  gaugeRefreshTimer = setInterval(() => {
+    refreshGaugeMetrics({ metrics, indexer, searcher, embeddingProvider }).catch((err) => {
+      console.warn(`[metrics] gauge refresh failed (non-fatal): ${(err as Error).message}`);
+    });
+  }, GAUGE_REFRESH_INTERVAL_MS);
+  gaugeRefreshTimer.unref();
+}
 
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`paparats-mcp listening on http://0.0.0.0:${PORT}`);
@@ -166,6 +179,7 @@ async function shutdown(): Promise<void> {
     setTimeout(resolve, 5000);
   });
 
+  if (gaugeRefreshTimer) clearInterval(gaugeRefreshTimer);
   stopGroupPoll();
   mcpHandler.destroy();
   await watcherManager.stopAll();

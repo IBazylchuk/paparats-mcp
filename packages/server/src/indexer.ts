@@ -18,6 +18,8 @@ import { buildSymbolEdges } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
 import type { ChunkResult, ProjectConfig, IndexerStats } from './types.js';
 import type { Telemetry } from './telemetry/facade.js';
+import type { MetricsRegistry } from './metrics.js';
+import { NoOpMetrics } from './metrics.js';
 
 // ── Collection name helpers ──────────────────────────────────────────────────
 
@@ -122,6 +124,8 @@ export interface IndexerConfig {
   treeSitter?: TreeSitterManager;
   /** Optional telemetry façade for analytics + tracing */
   telemetry?: Telemetry;
+  /** Optional Prometheus metrics registry. NoOp by default. */
+  metrics?: MetricsRegistry;
 }
 
 /** Metadata stamped on each Qdrant collection so we can detect provider
@@ -179,6 +183,7 @@ export class Indexer {
   private metadataStore: MetadataStore | null;
   private treeSitter: TreeSitterManager | null;
   private telemetry: Telemetry | null;
+  private metrics: MetricsRegistry;
   stats: IndexerStats;
 
   constructor(config: IndexerConfig) {
@@ -196,6 +201,7 @@ export class Indexer {
     this.metadataStore = config.metadataStore ?? null;
     this.treeSitter = config.treeSitter ?? null;
     this.telemetry = config.telemetry ?? null;
+    this.metrics = config.metrics ?? new NoOpMetrics();
     this.stats = { files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 };
   }
 
@@ -816,6 +822,9 @@ export class Indexer {
       indexedAt: Date.now(),
     });
 
+    this.metrics.incIndexFilesTotal(groupName, 1);
+    if (points.length > 0) this.metrics.incIndexChunksTotal(groupName, points.length);
+
     return points.length;
   }
 
@@ -866,6 +875,7 @@ export class Indexer {
           }
         } catch (err) {
           this.stats.errors++;
+          this.metrics.incIndexErrorsTotal(groupName, 1);
           const rel = path.relative(project.path, file);
           console.error(`  Error indexing ${rel}:`);
           console.error(`    ${(err as Error).message}`);
@@ -1198,6 +1208,8 @@ export class Indexer {
         totalChunks += points.length;
         this.stats.files++;
         this.stats.chunks += points.length;
+        this.metrics.incIndexFilesTotal(groupName, 1);
+        if (points.length > 0) this.metrics.incIndexChunksTotal(groupName, points.length);
       })
     );
 
@@ -1293,6 +1305,10 @@ export class Indexer {
     console.log(
       `[indexer] Updated ${groupName}/${projectName}/${relPath} (${points.length} chunks)`
     );
+
+    this.metrics.incIndexFilesTotal(groupName, 1);
+    if (points.length > 0) this.metrics.incIndexChunksTotal(groupName, points.length);
+
     return points.length;
   }
 

@@ -64,7 +64,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 
 | Module             | Responsibility                                                                                                                                          |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `index.ts`           | Entry point — Express mini-server + dual cron scheduler bootstrap (fast change-check + slow safety-net), uses `Indexer` from `@paparats/server` |
+| `index.ts`           | Entry point — Express mini-server + dual cron scheduler bootstrap (fast change-check + slow safety-net), uses `Indexer` from `@paparats/server`. Exposes its own `GET /metrics` on port 9877 when `PAPARATS_METRICS=true` — Prometheus must scrape both endpoints (server `:9876/metrics` + indexer `:9877/metrics`) to see indexing counters |
 | `config-loader.ts`   | `loadIndexerConfig()`, `tryLoadIndexerConfig()` — parses `projects.yml`, merges per-repo overrides with defaults, returns `RepoConfig[]` + cron + cron_fast |
 | `repo-manager.ts`    | `parseReposEnv()`, `cloneOrPull()` using simple-git — clone/pull repos to local filesystem                                                              |
 | `scheduler.ts`       | `startScheduler()` — node-cron wrapper for scheduled index cycles                                                                                       |
