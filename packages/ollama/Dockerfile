@@ -5,7 +5,7 @@
 #   1. Uses official ollama/ollama to download and register the model
 #   2. Copies model data into alpine/ollama (~70 MB, CPU-only)
 #
-# Final image: ~1.7 GB (70 MB base + 1.6 GB model) instead of ~5+ GB
+# Final image: ~2.3 GB (70 MB base + 1.6 GB code model + ~600 MB bge-m3)
 
 # ── Stage 1: register model using official ollama ─────────────────────────
 FROM ollama/ollama:latest AS builder
@@ -19,6 +19,7 @@ RUN ollama serve & \
     printf 'FROM /tmp/jina.gguf\nPARAMETER num_ctx 8192\n' > /tmp/Modelfile && \
     ollama create jina-code-embeddings -f /tmp/Modelfile && \
     rm /tmp/jina.gguf /tmp/Modelfile && \
+    ollama pull bge-m3 && \
     pkill ollama
 
 # ── Stage 2: copy model into lightweight alpine/ollama ────────────────────
@@ -32,5 +33,5 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=60s --retries=5 \
   CMD ollama list >/dev/null 2>&1 || exit 1
 
 LABEL org.opencontainers.image.title="paparats-ollama"
-LABEL org.opencontainers.image.description="Ollama with pre-baked Jina Code Embeddings 1.5B for Paparats MCP"
+LABEL org.opencontainers.image.description="Ollama with pre-baked Jina Code Embeddings 1.5B and BGE-M3 for Paparats MCP"
 LABEL org.opencontainers.image.source="https://github.com/ibaz/paparats-mcp"

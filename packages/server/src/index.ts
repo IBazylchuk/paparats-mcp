@@ -1,5 +1,7 @@
 import { createEmbeddingProvider, resolveEmbeddingConfigFromEnv } from './embeddings.js';
 import { Indexer, createQdrantClient } from './indexer.js';
+import { ArchStore } from './arch/store.js';
+import { createArchEmbeddingProvider, resolveArchEmbeddingConfig } from './arch/text-embeddings.js';
 import { Searcher } from './searcher.js';
 import { WatcherManager } from './watcher.js';
 import { MetadataStore } from './metadata-db.js';
@@ -71,6 +73,18 @@ const indexer = new Indexer({
   metrics,
 });
 
+const archEmbeddingConfig = resolveArchEmbeddingConfig(process.env);
+const archEmbeddingProvider = createArchEmbeddingProvider(archEmbeddingConfig);
+console.log(
+  `[startup] Arch embedding provider: ${archEmbeddingConfig.provider} (${archEmbeddingConfig.model}, ${archEmbeddingConfig.dimensions}d)`
+);
+archEmbeddingProvider.attachTelemetry(telemetry);
+archEmbeddingProvider.attachMetrics(metrics);
+const archStore = new ArchStore({
+  qdrant: qdrantClient,
+  provider: archEmbeddingProvider,
+});
+
 const searcher = new Searcher({
   qdrantUrl: QDRANT_URL,
   embeddingProvider,
@@ -111,6 +125,7 @@ const { app, mcpHandler, setShuttingDown, getShuttingDown, stopGroupPoll } = cre
   metrics,
   telemetry,
   analytics: analytics ?? undefined,
+  archStore,
 });
 
 const GAUGE_REFRESH_INTERVAL_MS = 15_000;
@@ -184,6 +199,7 @@ async function shutdown(): Promise<void> {
   mcpHandler.destroy();
   await watcherManager.stopAll();
   embeddingProvider.close();
+  archEmbeddingProvider.close();
   metadataStore.close();
   treeSitter?.close();
   stopRetention?.();

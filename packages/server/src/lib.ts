@@ -60,6 +60,31 @@ export { McpHandler } from './mcp-handler.js';
 export type { McpHandlerConfig } from './mcp-handler.js';
 
 export { MetadataStore } from './metadata-db.js';
+
+// ── Arch layer ─────────────────────────────────────────────────────────────
+export { ArchStore } from './arch/store.js';
+export type { ArchStoreConfig, SearchOpts as ArchSearchOpts } from './arch/store.js';
+export {
+  toArchCollectionName,
+  fromArchCollectionName,
+  isArchCollection,
+  ensureArchCollection,
+  dropArchCollection,
+} from './arch/collection.js';
+export { buildArchContext } from './arch/context.js';
+export { createArchEmbeddingProvider, resolveArchEmbeddingConfig } from './arch/text-embeddings.js';
+export type { ArchEmbeddingConfig } from './arch/text-embeddings.js';
+export type {
+  ArchKind,
+  ArchStatus,
+  ArchScope,
+  ArchSeverity,
+  ArchPoint,
+  ArchComponent,
+  ArchDecision,
+  ArchLesson,
+  ArchContextResult,
+} from './arch/types.js';
 export { createTreeSitterManager } from './tree-sitter-parser.js';
 export type { TreeSitterManager, ParsedFile } from './tree-sitter-parser.js';
 export { extractSymbolsForChunks } from './ast-symbol-extractor.js';

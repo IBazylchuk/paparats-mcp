@@ -30,6 +30,8 @@ import {
   retryRate,
   failedChunks,
 } from './telemetry/queries.js';
+import { ArchStore } from './arch/store.js';
+import { buildArchContext } from './arch/context.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -93,6 +95,8 @@ export interface McpHandlerConfig {
   telemetry?: Telemetry;
   /** Optional analytics store backing the analytics MCP tools */
   analytics?: AnalyticsStore;
+  /** Optional arch-layer store. When unset, arch_* tools are skipped at registration time. */
+  archStore?: ArchStore;
 }
 
 type TransportEntry = {
@@ -113,7 +117,7 @@ const CODING_TOOLS = new Set([
   'list_projects',
 ]);
 
-const SUPPORT_TOOLS = new Set([
+export const SUPPORT_TOOLS = new Set([
   'search_code',
   'get_chunk',
   'find_usages',
@@ -131,6 +135,11 @@ const SUPPORT_TOOLS = new Set([
   'cross_project_share',
   'retry_rate',
   'failed_chunks',
+  // arch tools
+  'arch_context',
+  'arch_record_component',
+  'arch_record_decision',
+  'arch_record_lesson',
 ]);
 
 /** Workflow-prompt names available in each mode. Content lives in prompts.json. */
@@ -152,6 +161,7 @@ export class McpHandler {
   private metadataStore: MetadataStore | null;
   private telemetry: Telemetry | null;
   private analytics: AnalyticsStore | null;
+  private archStore: ArchStore | null;
   private sessionIdentity = new Map<
     string,
     { user: string; session: string | null; client: string | null; anchorProject: string | null }
@@ -174,6 +184,7 @@ export class McpHandler {
     this.metadataStore = config.metadataStore ?? null;
     this.telemetry = config.telemetry ?? null;
     this.analytics = config.analytics ?? null;
+    this.archStore = config.archStore ?? null;
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000);
     this.cleanupInterval.unref(); // Don't hold event loop open
@@ -1999,6 +2010,176 @@ export class McpHandler {
             return renderJson('Failed Chunks', rows);
           }
         );
+    }
+
+    // ── Tool: arch_context ──────────────────────────────────────────────────
+    if (tools.has('arch_context') && this.archStore) {
+      const archStore = this.archStore;
+      server.tool(
+        'arch_context',
+        prompts.tools['arch_context']?.description ??
+          'Retrieve architectural memory relevant to a question or set of touched files.',
+        {
+          question: z.string().describe('Question, or comma-separated list of files being touched'),
+          group: z
+            .string()
+            .optional()
+            .describe('Specific group, or omit to query all known groups'),
+        },
+        async ({ question, group }) => {
+          const groupNames = group ? [group] : this.getGroupNames();
+          if (groupNames.length === 0) {
+            return {
+              content: [
+                { type: 'text' as const, text: 'No groups registered. Index a project first.' },
+              ],
+            };
+          }
+          const sections: string[] = [];
+          let anyEmpty = false;
+          for (const g of groupNames) {
+            const r = await buildArchContext(archStore, g, question);
+            if (r.empty) {
+              anyEmpty = true;
+              continue;
+            }
+            sections.push(`## Group: ${g}`);
+            if (r.components.length) {
+              sections.push('### Components');
+              for (const c of r.components) {
+                const files = c.files.length > 0 ? c.files.join(', ') : '—';
+                sections.push(`- **${c.name}** — ${c.summary} (files: ${files})`);
+              }
+            }
+            if (r.decisions.length) {
+              sections.push('### Decisions');
+              for (const d of r.decisions) {
+                sections.push(`- **${d.title}** — ${d.decision}`);
+              }
+            }
+            if (r.lessons.length) {
+              sections.push('### Lessons');
+              for (const l of r.lessons) {
+                sections.push(`- (${l.severity}) ${l.summary}`);
+              }
+            }
+            sections.push('');
+          }
+          if (sections.length === 0 && anyEmpty) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text:
+                    'No architectural memory recorded yet. Ask the user if you ' +
+                    'should initialise the arch layer: identify 8-20 components by ' +
+                    'domain boundaries and write each via arch_record_component.',
+                },
+              ],
+            };
+          }
+          return { content: [{ type: 'text' as const, text: sections.join('\n') }] };
+        }
+      );
+    }
+
+    // ── Tool: arch_record_component ─────────────────────────────────────────
+    if (tools.has('arch_record_component') && this.archStore) {
+      const archStore = this.archStore;
+      server.tool(
+        'arch_record_component',
+        prompts.tools['arch_record_component']?.description ??
+          'Record or update an architectural component.',
+        {
+          group: z.string().describe('Target group'),
+          name: z.string().describe('Component name (unique within group)'),
+          summary: z.string().describe('1-3 sentence summary of the component'),
+          files: z.array(z.string()).default([]).describe('Files this component spans'),
+          neighbours: z.array(z.string()).default([]).describe('Names of related components'),
+          anchors: z
+            .array(z.string())
+            .default([])
+            .describe('Anchor symbol names (classes, functions) defining the component'),
+        },
+        async ({ group, name, summary, files, neighbours, anchors }) => {
+          const id = await archStore.upsertComponent(group, {
+            name,
+            summary,
+            files,
+            neighbours,
+            anchors,
+          });
+          return {
+            content: [{ type: 'text' as const, text: `Recorded component "${name}" (id=${id}).` }],
+          };
+        }
+      );
+    }
+
+    // ── Tool: arch_record_decision ──────────────────────────────────────────
+    if (tools.has('arch_record_decision') && this.archStore) {
+      const archStore = this.archStore;
+      server.tool(
+        'arch_record_decision',
+        prompts.tools['arch_record_decision']?.description ?? 'Record an architectural decision.',
+        {
+          group: z.string().describe('Target group'),
+          title: z.string().describe('Short decision title'),
+          context: z.string().describe('Why a decision was needed'),
+          decision: z.string().describe('What was decided'),
+          consequences: z.string().describe('Trade-offs and follow-ups'),
+          scope: z.enum(['global', 'component', 'file']).default('global'),
+          supersedes: z
+            .string()
+            .nullable()
+            .optional()
+            .describe('Id of a previous decision this one replaces'),
+        },
+        async ({ group, title, context, decision, consequences, scope, supersedes }) => {
+          const id = await archStore.upsertDecision(group, {
+            title,
+            context,
+            decision,
+            consequences,
+            scope,
+            supersedes: supersedes ?? null,
+          });
+          return {
+            content: [{ type: 'text' as const, text: `Recorded decision "${title}" (id=${id}).` }],
+          };
+        }
+      );
+    }
+
+    // ── Tool: arch_record_lesson ────────────────────────────────────────────
+    if (tools.has('arch_record_lesson') && this.archStore) {
+      const archStore = this.archStore;
+      server.tool(
+        'arch_record_lesson',
+        prompts.tools['arch_record_lesson']?.description ?? 'Record a lesson.',
+        {
+          group: z.string().describe('Target group'),
+          summary: z.string().describe('The lesson in one or two sentences'),
+          scope: z.enum(['global', 'component', 'file']).default('global'),
+          severity: z.enum(['info', 'warning', 'critical']).default('info'),
+          evidence: z
+            .string()
+            .nullable()
+            .optional()
+            .describe('Quote or commit hash supporting the lesson'),
+        },
+        async ({ group, summary, scope, severity, evidence }) => {
+          const id = await archStore.upsertLesson(group, {
+            summary,
+            scope,
+            severity,
+            evidence: evidence ?? null,
+          });
+          return {
+            content: [{ type: 'text' as const, text: `Recorded lesson (id=${id}).` }],
+          };
+        }
+      );
     }
 
     // ── Workflow prompts ─────────────────────────────────────────────────────
