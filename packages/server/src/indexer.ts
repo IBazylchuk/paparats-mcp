@@ -1133,29 +1133,39 @@ export class Indexer {
 
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
     let processed = 0;
+    const yieldIfDue = async (): Promise<void> => {
+      processed++;
+      if (processed % 10 === 0 || processed === files.length) {
+        // Yield to the event loop so /health and /metrics handlers can run
+        // between CPU-heavy tree-sitter parses.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
     const tasks = files.map((file) =>
       queue.add(async () => {
         const { path: relPath, content, language } = file;
         const lang = language ?? detectLanguageByPath(relPath, content) ?? defaultLang;
 
-        processed++;
-        if (processed % 10 === 0) {
-          await new Promise<void>((resolve) => setImmediate(resolve));
+        if (!content.trim()) {
+          await yieldIfDue();
+          return;
         }
-
-        if (!content.trim()) return;
 
         const { chunks, symbolResults } = await this.chunkFile(content, lang, project, {
           groupName,
           file: relPath,
         });
-        if (chunks.length === 0) return;
+        if (chunks.length === 0) {
+          await yieldIfDue();
+          return;
+        }
 
         // Compare chunk hashes to skip unchanged files
         const newHashes = new Set(chunks.map((c) => c.hash));
         const existingHashes = await this.getFileChunkHashes(groupName, project.name, relPath);
         if (this.hashSetsEqual(newHashes, existingHashes)) {
           this.stats.skipped++;
+          await yieldIfDue();
           return;
         }
 
@@ -1221,6 +1231,7 @@ export class Indexer {
         this.stats.chunks += points.length;
         this.metrics.incIndexFilesTotal(groupName, 1);
         if (points.length > 0) this.metrics.incIndexChunksTotal(groupName, points.length);
+        await yieldIfDue();
       })
     );
 
