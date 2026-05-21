@@ -859,6 +859,7 @@ export class Indexer {
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
     let totalChunks = 0;
     let processed = 0;
+    const skippedBefore = this.stats.skipped;
 
     const tasks = files.map((file) =>
       queue.add(async () => {
@@ -872,6 +873,9 @@ export class Indexer {
           if (processed % 10 === 0 || processed === files.length) {
             const pct = Math.round((processed / files.length) * 100);
             console.log(`  [${processed}/${files.length}] ${pct}% — ${totalChunks} chunks`);
+            // Yield to the event loop so /health and /metrics handlers can run
+            // between CPU-heavy tree-sitter parses.
+            await new Promise<void>((resolve) => setImmediate(resolve));
           }
         } catch (err) {
           this.stats.errors++;
@@ -889,8 +893,9 @@ export class Indexer {
     await Promise.all(tasks);
     this.stats.cached = this.provider.cacheHits; // Update once after all tasks complete
 
-    if (this.stats.skipped > 0) {
-      console.log(`  [indexer] Skipped ${this.stats.skipped}/${files.length} files (unchanged)`);
+    const skippedThisProject = this.stats.skipped - skippedBefore;
+    if (skippedThisProject > 0) {
+      console.log(`  [indexer] Skipped ${skippedThisProject}/${files.length} files (unchanged)`);
     }
 
     // Clean up orphaned chunks (files deleted from disk but still in Qdrant)
@@ -1127,24 +1132,40 @@ export class Indexer {
     let totalChunks = 0;
 
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
+    let processed = 0;
+    const yieldIfDue = async (): Promise<void> => {
+      processed++;
+      if (processed % 10 === 0 || processed === files.length) {
+        // Yield to the event loop so /health and /metrics handlers can run
+        // between CPU-heavy tree-sitter parses.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
     const tasks = files.map((file) =>
       queue.add(async () => {
         const { path: relPath, content, language } = file;
         const lang = language ?? detectLanguageByPath(relPath, content) ?? defaultLang;
 
-        if (!content.trim()) return;
+        if (!content.trim()) {
+          await yieldIfDue();
+          return;
+        }
 
         const { chunks, symbolResults } = await this.chunkFile(content, lang, project, {
           groupName,
           file: relPath,
         });
-        if (chunks.length === 0) return;
+        if (chunks.length === 0) {
+          await yieldIfDue();
+          return;
+        }
 
         // Compare chunk hashes to skip unchanged files
         const newHashes = new Set(chunks.map((c) => c.hash));
         const existingHashes = await this.getFileChunkHashes(groupName, project.name, relPath);
         if (this.hashSetsEqual(newHashes, existingHashes)) {
           this.stats.skipped++;
+          await yieldIfDue();
           return;
         }
 
@@ -1210,6 +1231,7 @@ export class Indexer {
         this.stats.chunks += points.length;
         this.metrics.incIndexFilesTotal(groupName, 1);
         if (points.length > 0) this.metrics.incIndexChunksTotal(groupName, points.length);
+        await yieldIfDue();
       })
     );
 

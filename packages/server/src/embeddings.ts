@@ -34,9 +34,11 @@ export class EmbeddingCache {
     this.db = new Database(p);
     try {
       this.db.pragma('journal_mode = WAL');
+      this.db.pragma('synchronous = NORMAL');
     } catch {
       console.warn('[paparats] WAL mode not supported, using default journal mode');
     }
+    this.db.pragma('busy_timeout = 5000');
 
     // Migrate from old schema (Float64, single PK) if needed
     const tableInfo = this.db.prepare('PRAGMA table_info(embeddings)').all() as { name: string }[];

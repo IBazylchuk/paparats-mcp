@@ -79,6 +79,7 @@ export class AnalyticsStore implements TelemetrySink {
     } catch {
       // continue with defaults
     }
+    this.db.pragma('busy_timeout = 5000');
 
     this.runMigrations();
     this.prepareStatements();
