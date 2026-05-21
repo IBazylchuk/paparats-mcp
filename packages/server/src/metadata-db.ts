@@ -43,9 +43,11 @@ export class MetadataStore {
     this.db = new Database(p);
     try {
       this.db.pragma('journal_mode = WAL');
+      this.db.pragma('synchronous = NORMAL');
     } catch {
       // WAL not supported, continue with default
     }
+    this.db.pragma('busy_timeout = 5000');
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS chunk_commits (
