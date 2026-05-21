@@ -25,12 +25,7 @@ function isLesson(p: ArchPoint): p is ArchLesson {
   return p.kind === 'lesson';
 }
 
-export async function buildArchContext(
-  store: ArchStore,
-  group: string,
-  question: string
-): Promise<ArchContextResult> {
-  const hits = await store.search(group, question, { limit: SEARCH_LIMIT });
+function bucket(hits: ArchPoint[]): ArchContextResult {
   const components = hits.filter(isComponent).slice(0, PER_BUCKET_LIMIT);
   const decisions = hits.filter(isDecision).slice(0, PER_BUCKET_LIMIT);
   const lessons = hits.filter(isLesson).slice(0, PER_BUCKET_LIMIT);
@@ -42,4 +37,26 @@ export async function buildArchContext(
     empty,
     hint: empty ? INIT_HINT : null,
   };
+}
+
+export async function buildArchContext(
+  store: ArchStore,
+  group: string,
+  question: string
+): Promise<ArchContextResult> {
+  const hits = await store.search(group, question, { limit: SEARCH_LIMIT });
+  return bucket(hits);
+}
+
+/**
+ * Same as `buildArchContext` but reuses a pre-computed query vector so callers
+ * fanning out across many groups embed the question once.
+ */
+export async function buildArchContextWithVector(
+  store: ArchStore,
+  group: string,
+  vector: number[]
+): Promise<ArchContextResult> {
+  const hits = await store.searchWithVector(group, vector, { limit: SEARCH_LIMIT });
+  return bucket(hits);
 }

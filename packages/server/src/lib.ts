@@ -71,7 +71,7 @@ export {
   ensureArchCollection,
   dropArchCollection,
 } from './arch/collection.js';
-export { buildArchContext } from './arch/context.js';
+export { buildArchContext, buildArchContextWithVector } from './arch/context.js';
 export { createArchEmbeddingProvider, resolveArchEmbeddingConfig } from './arch/text-embeddings.js';
 export type { ArchEmbeddingConfig } from './arch/text-embeddings.js';
 export type {

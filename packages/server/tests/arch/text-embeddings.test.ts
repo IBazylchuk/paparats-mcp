@@ -35,6 +35,21 @@ describe('resolveArchEmbeddingConfig', () => {
       /OPENAI_API_KEY/
     );
   });
+
+  it('uses VOYAGE_API_KEY when TEXT_EMBEDDING_PROVIDER=voyage', () => {
+    const cfg = resolveArchEmbeddingConfig({
+      TEXT_EMBEDDING_PROVIDER: 'voyage',
+      VOYAGE_API_KEY: 'vk-test',
+    });
+    expect(cfg.provider).toBe('voyage');
+    expect(cfg.apiKey).toBe('vk-test');
+  });
+
+  it('throws when voyage requested without an API key', () => {
+    expect(() => resolveArchEmbeddingConfig({ TEXT_EMBEDDING_PROVIDER: 'voyage' })).toThrow(
+      /VOYAGE_API_KEY/
+    );
+  });
 });
 
 describe('createArchEmbeddingProvider', () => {

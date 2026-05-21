@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { buildArchContext } from '../../src/arch/context.js';
+import { buildArchContext, buildArchContextWithVector } from '../../src/arch/context.js';
 import type { ArchStore } from '../../src/arch/store.js';
 import type { ArchComponent, ArchDecision, ArchLesson } from '../../src/arch/types.js';
 
@@ -71,5 +71,16 @@ describe('buildArchContext', () => {
     const store = { search: vi.fn().mockResolvedValue(many) } as unknown as ArchStore;
     const res = await buildArchContext(store, 'my-app', 'q');
     expect(res.components).toHaveLength(5);
+  });
+});
+
+describe('buildArchContextWithVector', () => {
+  it('delegates to searchWithVector and skips re-embedding', async () => {
+    const searchWithVector = vi.fn().mockResolvedValue([comp('A')]);
+    const store = { searchWithVector } as unknown as ArchStore;
+    const vector = [0.1, 0.2, 0.3];
+    const res = await buildArchContextWithVector(store, 'my-app', vector);
+    expect(searchWithVector).toHaveBeenCalledWith('my-app', vector, { limit: 20 });
+    expect(res.components.map((c) => c.name)).toEqual(['A']);
   });
 });
