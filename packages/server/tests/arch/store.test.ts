@@ -79,6 +79,35 @@ describe('ArchStore.upsertComponent', () => {
     });
     expect(id).toBe('existing-uuid');
   });
+
+  it('preserves createdAt when re-upserting an existing component', async () => {
+    const originalCreatedAt = 1700000000000;
+    qdrant.scroll = vi.fn().mockResolvedValue({
+      points: [
+        {
+          id: 'existing-uuid',
+          payload: {
+            arch_kind: 'component',
+            name: 'X',
+            createdAt: originalCreatedAt,
+            updatedAt: originalCreatedAt,
+          },
+        },
+      ],
+    });
+    await store.upsertComponent('my-app', {
+      name: 'X',
+      summary: 'updated summary',
+      files: [],
+      neighbours: [],
+      anchors: [],
+    });
+    const point = (
+      qdrant.upsert.mock.calls[0]![1] as { points: Array<{ payload: Record<string, unknown> }> }
+    ).points[0]!;
+    expect(point.payload['createdAt']).toBe(originalCreatedAt);
+    expect(point.payload['updatedAt']).not.toBe(originalCreatedAt);
+  });
 });
 
 describe('ArchStore.upsertDecision', () => {
@@ -206,6 +235,24 @@ describe('ArchStore.search', () => {
     if (searchArgs.filter && searchArgs.filter.must_not) {
       expect(JSON.stringify(searchArgs.filter.must_not)).not.toContain('superseded');
     }
+  });
+});
+
+describe('ArchStore.searchWithVector', () => {
+  it('skips embedding when caller supplies a pre-computed vector', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([]);
+    const provider = fakeProvider();
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider,
+    });
+    const vector = Array(512).fill(0.5);
+    await store.searchWithVector('my-app', vector, { limit: 3 });
+    expect(provider.embed).not.toHaveBeenCalled();
+    const searchArgs = qdrant.search.mock.calls[0]![1] as { vector: number[]; limit: number };
+    expect(searchArgs.vector).toBe(vector);
+    expect(searchArgs.limit).toBe(3);
   });
 });
 

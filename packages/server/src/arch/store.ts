@@ -51,11 +51,16 @@ export class ArchStore {
     this.provider = config.provider;
   }
 
-  /** Idempotent by name: a component with the same name reuses its id. */
+  /** Embed an arbitrary query — exposed so callers can fan a single embedding across groups. */
+  async embedQuestion(question: string): Promise<number[]> {
+    return this.provider.embed(question);
+  }
+
+  /** Idempotent by name: a component with the same name reuses its id and createdAt. */
   async upsertComponent(group: string, input: UpsertComponentInput): Promise<string> {
     await ensureArchCollection(this.qdrant, group, this.provider.dimensions);
-    const existingId = await this.findByName(group, 'component', input.name);
-    const id = existingId ?? uuidv7();
+    const existing = await this.findByName(group, 'component', input.name);
+    const id = existing?.id ?? uuidv7();
     const now = Date.now();
     const text = `Component: ${input.name}\n\n${input.summary}\n\nFiles: ${input.files.join(
       ', '
@@ -72,9 +77,9 @@ export class ArchStore {
       anchors: input.anchors,
       status: 'accepted',
       scope: 'global',
+      createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     };
-    if (!existingId) payload['createdAt'] = now;
     await this.qdrant.upsert(toArchCollectionName(group), {
       wait: true,
       points: [{ id, vector, payload }],
@@ -158,7 +163,11 @@ export class ArchStore {
     });
   }
 
-  async findByName(group: string, kind: ArchKind, name: string): Promise<string | null> {
+  async findByName(
+    group: string,
+    kind: ArchKind,
+    name: string
+  ): Promise<{ id: string; createdAt?: number } | null> {
     try {
       const res = await this.qdrant.scroll(toArchCollectionName(group), {
         filter: {
@@ -167,22 +176,38 @@ export class ArchStore {
             { key: 'name', match: { value: name } },
           ],
         },
-        with_payload: false,
+        with_payload: true,
         with_vector: false,
         limit: 1,
       });
-      const id = res.points[0]?.id;
-      if (typeof id === 'string') return id;
-      if (typeof id === 'number') return String(id);
-      return null;
+      const point = res.points[0];
+      if (!point) return null;
+      const rawId = point.id;
+      const id =
+        typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : null;
+      if (!id) return null;
+      const createdAt = (point.payload as { createdAt?: unknown } | undefined)?.createdAt;
+      return typeof createdAt === 'number' ? { id, createdAt } : { id };
     } catch {
       return null;
     }
   }
 
   async search(group: string, query: string, opts: SearchOpts = {}): Promise<ArchPoint[]> {
-    const limit = opts.limit ?? 8;
     const vector = await this.provider.embed(query);
+    return this.searchWithVector(group, vector, opts);
+  }
+
+  /**
+   * Same as `search`, but accepts a pre-computed query vector — lets callers
+   * embed once and fan out across multiple groups without re-embedding.
+   */
+  async searchWithVector(
+    group: string,
+    vector: number[],
+    opts: SearchOpts = {}
+  ): Promise<ArchPoint[]> {
+    const limit = opts.limit ?? 8;
     const must: unknown[] = [];
     if (opts.kinds && opts.kinds.length > 0) {
       must.push({ key: 'arch_kind', match: { any: opts.kinds } });

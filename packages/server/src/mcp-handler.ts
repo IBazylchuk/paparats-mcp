@@ -31,7 +31,7 @@ import {
   failedChunks,
 } from './telemetry/queries.js';
 import { ArchStore } from './arch/store.js';
-import { buildArchContext } from './arch/context.js';
+import { buildArchContextWithVector } from './arch/context.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -2035,10 +2035,18 @@ export class McpHandler {
               ],
             };
           }
+          // Embed the question once, then fan out across groups in parallel —
+          // each call hits its own Qdrant collection, so they don't contend.
+          const vector = await archStore.embedQuestion(question);
+          const results = await Promise.all(
+            groupNames.map(async (g) => ({
+              group: g,
+              ctx: await buildArchContextWithVector(archStore, g, vector),
+            }))
+          );
           const sections: string[] = [];
           let anyEmpty = false;
-          for (const g of groupNames) {
-            const r = await buildArchContext(archStore, g, question);
+          for (const { group: g, ctx: r } of results) {
             if (r.empty) {
               anyEmpty = true;
               continue;

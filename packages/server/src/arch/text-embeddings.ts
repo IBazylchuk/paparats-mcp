@@ -25,6 +25,13 @@ export function resolveArchEmbeddingConfig(
     }
     return { provider: 'openai', model, dimensions, apiKey: openaiKey };
   }
+  if (explicit === 'voyage') {
+    const voyageKey = env['VOYAGE_API_KEY']?.trim();
+    if (!voyageKey) {
+      throw new Error('TEXT_EMBEDDING_PROVIDER=voyage requires VOYAGE_API_KEY');
+    }
+    return { provider: 'voyage', model, dimensions, apiKey: voyageKey };
+  }
   return { provider: 'ollama', model, dimensions };
 }
 
