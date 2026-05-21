@@ -120,6 +120,8 @@ export interface CreateAppOptions {
   telemetry?: Telemetry;
   /** Optional analytics store (used for direct read access in MCP analytics tools) */
   analytics?: AnalyticsStore;
+  /** Optional arch-layer store. Pass to enable the arch_* MCP tools. */
+  archStore?: import('./arch/store.js').ArchStore;
 }
 
 export interface CreateAppResult {
@@ -144,6 +146,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     metrics,
     telemetry,
     analytics,
+    archStore,
   } = options;
 
   // ── Group discovery from Qdrant ───────────────────────────────────────────
@@ -653,6 +656,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     metadataStore,
     telemetry,
     analytics,
+    archStore,
   });
   mcpHandler.mount(app);
 

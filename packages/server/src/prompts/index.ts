@@ -34,6 +34,10 @@ export interface Prompts {
     recent_changes: { description: string };
     impact_analysis: { description: string };
     list_projects: { description: string };
+    arch_context: { description: string };
+    arch_record_component: { description: string };
+    arch_record_decision: { description: string };
+    arch_record_lesson: { description: string };
   };
   resources: {
     projectOverview: {
@@ -84,6 +88,10 @@ function validatePrompts(data: unknown): Prompts {
     'recent_changes',
     'impact_analysis',
     'list_projects',
+    'arch_context',
+    'arch_record_component',
+    'arch_record_decision',
+    'arch_record_lesson',
   ]) {
     const t = tools[name];
     if (!t || typeof t !== 'object') {
