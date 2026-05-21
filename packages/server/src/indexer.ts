@@ -859,6 +859,7 @@ export class Indexer {
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
     let totalChunks = 0;
     let processed = 0;
+    const skippedBefore = this.stats.skipped;
 
     const tasks = files.map((file) =>
       queue.add(async () => {
@@ -872,6 +873,9 @@ export class Indexer {
           if (processed % 10 === 0 || processed === files.length) {
             const pct = Math.round((processed / files.length) * 100);
             console.log(`  [${processed}/${files.length}] ${pct}% — ${totalChunks} chunks`);
+            // Yield to the event loop so /health and /metrics handlers can run
+            // between CPU-heavy tree-sitter parses.
+            await new Promise<void>((resolve) => setImmediate(resolve));
           }
         } catch (err) {
           this.stats.errors++;
@@ -889,8 +893,9 @@ export class Indexer {
     await Promise.all(tasks);
     this.stats.cached = this.provider.cacheHits; // Update once after all tasks complete
 
-    if (this.stats.skipped > 0) {
-      console.log(`  [indexer] Skipped ${this.stats.skipped}/${files.length} files (unchanged)`);
+    const skippedThisProject = this.stats.skipped - skippedBefore;
+    if (skippedThisProject > 0) {
+      console.log(`  [indexer] Skipped ${skippedThisProject}/${files.length} files (unchanged)`);
     }
 
     // Clean up orphaned chunks (files deleted from disk but still in Qdrant)
@@ -1127,10 +1132,16 @@ export class Indexer {
     let totalChunks = 0;
 
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
+    let processed = 0;
     const tasks = files.map((file) =>
       queue.add(async () => {
         const { path: relPath, content, language } = file;
         const lang = language ?? detectLanguageByPath(relPath, content) ?? defaultLang;
+
+        processed++;
+        if (processed % 10 === 0) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
 
         if (!content.trim()) return;
 
