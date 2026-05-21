@@ -161,7 +161,7 @@ function parsePeriod(raw: unknown): PeriodLabel {
   return '24h';
 }
 
-async function fetchIndexerHealth(url: string, timeoutMs = 1500): Promise<IndexerSection> {
+async function fetchIndexerHealth(url: string, timeoutMs = 5000): Promise<IndexerSection> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
