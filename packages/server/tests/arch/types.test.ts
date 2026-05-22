@@ -27,13 +27,14 @@ describe('arch types', () => {
     expectTypeOf(c.kind).toEqualTypeOf<'component'>();
   });
 
-  it('ArchDecision has status union and supersedes link', () => {
+  it('ArchDecision has status union, supersedes link, and alternativesRejected', () => {
     const d: ArchDecision = {
       id: 'uuid',
       kind: 'decision',
       title: 't',
       context: 'c',
       decision: 'd',
+      alternativesRejected: '',
       consequences: 'q',
       status: 'accepted',
       supersedes: null,
@@ -42,13 +43,16 @@ describe('arch types', () => {
       updatedAt: 0,
     };
     expectTypeOf(d.status).toEqualTypeOf<'proposed' | 'accepted' | 'superseded' | 'deprecated'>();
+    expectTypeOf(d.alternativesRejected).toEqualTypeOf<string>();
   });
 
-  it('ArchLesson has scope union and severity', () => {
+  it('ArchLesson has rule/why/when, scope union, and severity', () => {
     const l: ArchLesson = {
       id: 'uuid',
       kind: 'lesson',
-      summary: 's',
+      rule: 'r',
+      why: 'because',
+      when: 'situation',
       scope: 'global',
       evidence: null,
       severity: 'info',
@@ -57,6 +61,8 @@ describe('arch types', () => {
       updatedAt: 0,
     };
     expectTypeOf(l.severity).toEqualTypeOf<'info' | 'warning' | 'critical'>();
+    expectTypeOf(l.rule).toEqualTypeOf<string>();
+    expectTypeOf(l.when).toEqualTypeOf<string>();
   });
 
   it('ArchContextResult separates components, decisions, lessons', () => {

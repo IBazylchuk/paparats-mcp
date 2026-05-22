@@ -51,14 +51,15 @@ describe('ArchStore wiring sanity', () => {
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
     });
-    const id = await store.upsertComponent('my-app', {
+    const result = await store.upsertComponent('my-app', {
       name: 'X',
       summary: 's',
       files: [],
       neighbours: [],
       anchors: [],
     });
-    expect(typeof id).toBe('string');
+    expect(typeof result.id).toBe('string');
+    expect(result.status).toBe('created');
     expect(qdrant.upsert).toHaveBeenCalled();
   });
 });

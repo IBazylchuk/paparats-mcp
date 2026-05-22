@@ -23,6 +23,7 @@ function dec(title: string): ArchDecision {
     title,
     context: 'c',
     decision: 'd',
+    alternativesRejected: '',
     consequences: 'q',
     status: 'accepted',
     supersedes: null,
@@ -31,11 +32,13 @@ function dec(title: string): ArchDecision {
     updatedAt: 0,
   };
 }
-function les(summary: string): ArchLesson {
+function les(rule: string): ArchLesson {
   return {
     id: 'l',
     kind: 'lesson',
-    summary,
+    rule,
+    why: 'reason',
+    when: 'situation',
     scope: 'global',
     evidence: null,
     severity: 'info',
@@ -63,7 +66,7 @@ describe('buildArchContext', () => {
     expect(res.hint).toBeNull();
     expect(res.components.map((c) => c.name)).toEqual(['A', 'D']);
     expect(res.decisions.map((d) => d.title)).toEqual(['B']);
-    expect(res.lessons.map((l) => l.summary)).toEqual(['C']);
+    expect(res.lessons.map((l) => l.rule)).toEqual(['C']);
   });
 
   it('caps each bucket at 5 by default', async () => {

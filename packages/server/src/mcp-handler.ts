@@ -32,6 +32,7 @@ import {
 } from './telemetry/queries.js';
 import { ArchStore } from './arch/store.js';
 import { buildArchContextWithVector } from './arch/context.js';
+import type { ArchWriteResult } from './arch/types.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -76,6 +77,71 @@ function resolveChunkLocation(payload: Record<string, unknown>): ChunkLocation {
     boundedContext:
       typeof payload['bounded_context'] === 'string' ? payload['bounded_context'] : null,
   };
+}
+
+/**
+ * Render a unix-ms timestamp as a short "updated N units ago" label.
+ * Coarse on purpose — the agent's decision is "fresh enough vs. potentially stale",
+ * not a precise duration.
+ */
+function formatAge(ts: number | undefined): string {
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return 'updated ?';
+  const diffMs = Date.now() - ts;
+  if (diffMs < 60 * 1000) return 'updated just now';
+  const minutes = Math.floor(diffMs / (60 * 1000));
+  if (minutes < 60) return `updated ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `updated ${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `updated ${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `updated ${months}mo ago`;
+  return `updated ${Math.floor(months / 12)}y ago`;
+}
+
+/**
+ * Render an arch_record_* result as an explicit, agent-actionable message.
+ * The `status` field is what tells the agent what to do next:
+ *  - `created` / `updated` — the new card landed, nothing more to do.
+ *  - `duplicate`           — for lessons we already bumped updatedAt; for
+ *                            decisions the caller should ask the user why
+ *                            they didn't discover the existing one first.
+ *  - `similar`             — nothing was written; the caller decides between
+ *                            "update the existing card" (re-call with the
+ *                            same key) and "replace it" (decision: pass
+ *                            `supersedes`; lesson: refine and re-call).
+ */
+function formatWriteResult(
+  kind: 'decision' | 'lesson',
+  label: string,
+  result: ArchWriteResult
+): string {
+  const id = result.id;
+  const sim = result.similarity !== undefined ? ` similarity=${result.similarity.toFixed(2)}` : '';
+  const matched = result.matchedLabel ? ` matched="${result.matchedLabel}"` : '';
+  switch (result.status) {
+    case 'created':
+      return `Recorded ${kind} "${label}" (id=${id}).`;
+    case 'updated':
+      // Lesson duplicates land here — the existing card's updatedAt was bumped.
+      return (
+        `Found a duplicate ${kind} (id=${id}${matched}${sim}). Bumped updatedAt instead of writing a new card. ` +
+        `If your wording was meant to refine the existing lesson, refine the existing one rather than retrying.`
+      );
+    case 'duplicate':
+      return (
+        `A ${kind} that is nearly identical already exists (id=${id}${matched}${sim}). ` +
+        `Nothing was written. Ask the user: why did arch_context not surface this earlier? ` +
+        `Then either skip this write or refine the wording so it adds new information.`
+      );
+    case 'similar':
+      return (
+        `A similar ${kind} already exists (id=${id}${matched}${sim}). Nothing was written. ` +
+        (kind === 'decision'
+          ? 'If you intend to replace it, re-call with `supersedes` set to that id. Otherwise sharpen the wording so the similarity drops.'
+          : 'Decide whether to refine the existing lesson or write a clearly distinct one — and re-call accordingly.')
+      );
+  }
 }
 
 export interface McpHandlerConfig {
@@ -2056,19 +2122,21 @@ export class McpHandler {
               sections.push('### Components');
               for (const c of r.components) {
                 const files = c.files.length > 0 ? c.files.join(', ') : '—';
-                sections.push(`- **${c.name}** — ${c.summary} (files: ${files})`);
+                sections.push(
+                  `- **${c.name}** (${formatAge(c.updatedAt)}) — ${c.summary} (files: ${files})`
+                );
               }
             }
             if (r.decisions.length) {
               sections.push('### Decisions');
               for (const d of r.decisions) {
-                sections.push(`- **${d.title}** — ${d.decision}`);
+                sections.push(`- **${d.title}** (${formatAge(d.updatedAt)}) — ${d.decision}`);
               }
             }
             if (r.lessons.length) {
               sections.push('### Lessons');
               for (const l of r.lessons) {
-                sections.push(`- (${l.severity}) ${l.summary}`);
+                sections.push(`- (${l.severity}, ${formatAge(l.updatedAt)}) ${l.rule}`);
               }
             }
             sections.push('');
@@ -2100,25 +2168,55 @@ export class McpHandler {
           'Record or update an architectural component.',
         {
           group: z.string().describe('Target group'),
-          name: z.string().describe('Component name (unique within group)'),
-          summary: z.string().describe('1-3 sentence summary of the component'),
-          files: z.array(z.string()).default([]).describe('Files this component spans'),
-          neighbours: z.array(z.string()).default([]).describe('Names of related components'),
+          name: z
+            .string()
+            .describe(
+              'Component name, unique within the group. Stable, refactor-resistant — e.g. "file indexer", not "Indexer (in indexer.ts)".'
+            ),
+          summary: z
+            .string()
+            .describe(
+              'Markdown with four sections, each one or two short lines:\n' +
+                '- **Does:** what it does\n' +
+                '- **Owns:** state / DB tables / external IO it controls\n' +
+                '- **Does not:** one or two things it explicitly does NOT do (boundary)\n' +
+                '- **Touched when:** what kind of change forces editing this component'
+            ),
+          files: z
+            .array(z.string())
+            .default([])
+            .describe(
+              'Repository paths the component spans (e.g. packages/server/src/indexer.ts).'
+            ),
+          neighbours: z
+            .array(z.string())
+            .default([])
+            .describe(
+              'Names of related components (matches `name` of other arch_record_component entries).'
+            ),
           anchors: z
             .array(z.string())
             .default([])
-            .describe('Anchor symbol names (classes, functions) defining the component'),
+            .describe(
+              'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code.'
+            ),
         },
         async ({ group, name, summary, files, neighbours, anchors }) => {
-          const id = await archStore.upsertComponent(group, {
+          const result = await archStore.upsertComponent(group, {
             name,
             summary,
             files,
             neighbours,
             anchors,
           });
+          const verb = result.status === 'updated' ? 'Updated' : 'Recorded';
           return {
-            content: [{ type: 'text' as const, text: `Recorded component "${name}" (id=${id}).` }],
+            content: [
+              {
+                type: 'text' as const,
+                text: `${verb} component "${name}" (id=${result.id}, status=${result.status}).`,
+              },
+            ],
           };
         }
       );
@@ -2132,28 +2230,57 @@ export class McpHandler {
         prompts.tools['arch_record_decision']?.description ?? 'Record an architectural decision.',
         {
           group: z.string().describe('Target group'),
-          title: z.string().describe('Short decision title'),
-          context: z.string().describe('Why a decision was needed'),
-          decision: z.string().describe('What was decided'),
-          consequences: z.string().describe('Trade-offs and follow-ups'),
+          title: z
+            .string()
+            .describe('Short imperative title — e.g. "Use bge-m3 for arch-layer text embeddings".'),
+          context: z.string().describe('One sentence: the problem that forced the decision.'),
+          decision: z.string().describe('One sentence: what was chosen.'),
+          alternatives_rejected: z
+            .string()
+            .default('')
+            .describe(
+              'Markdown bullet list, one per rejected alternative:\n' +
+                '- **<option name>:** why rejected (one sentence)\n' +
+                '- **<option name>:** why rejected (one sentence)\n' +
+                'Use an empty string only if no real alternatives were considered.'
+            ),
+          consequences: z
+            .string()
+            .describe(
+              'Markdown bullet list, 2-5 items. Each item is one sentence: a consequence, a trade-off, or a required follow-up.'
+            ),
           scope: z.enum(['global', 'component', 'file']).default('global'),
           supersedes: z
             .string()
             .nullable()
             .optional()
-            .describe('Id of a previous decision this one replaces'),
+            .describe(
+              'Id of a previous decision this one replaces. Bypasses the duplicate gate — pass only when you are deliberately replacing a known prior decision.'
+            ),
         },
-        async ({ group, title, context, decision, consequences, scope, supersedes }) => {
-          const id = await archStore.upsertDecision(group, {
+        async ({
+          group,
+          title,
+          context,
+          decision,
+          alternatives_rejected,
+          consequences,
+          scope,
+          supersedes,
+        }) => {
+          const result = await archStore.upsertDecision(group, {
             title,
             context,
             decision,
+            alternativesRejected: alternatives_rejected,
             consequences,
             scope,
             supersedes: supersedes ?? null,
           });
           return {
-            content: [{ type: 'text' as const, text: `Recorded decision "${title}" (id=${id}).` }],
+            content: [
+              { type: 'text' as const, text: formatWriteResult('decision', title, result) },
+            ],
           };
         }
       );
@@ -2167,24 +2294,40 @@ export class McpHandler {
         prompts.tools['arch_record_lesson']?.description ?? 'Record a lesson.',
         {
           group: z.string().describe('Target group'),
-          summary: z.string().describe('The lesson in one or two sentences'),
+          rule: z
+            .string()
+            .describe(
+              'One imperative sentence — the rule itself. E.g. "Always preserve createdAt on re-upsert."'
+            ),
+          why: z
+            .string()
+            .describe(
+              '1-3 sentences. The incident or reason. Quote the user verbatim if they corrected you.'
+            ),
+          when: z
+            .string()
+            .describe(
+              'One sentence describing the situation in which this rule applies. Future-you must be able to recognise it.'
+            ),
           scope: z.enum(['global', 'component', 'file']).default('global'),
           severity: z.enum(['info', 'warning', 'critical']).default('info'),
           evidence: z
             .string()
             .nullable()
             .optional()
-            .describe('Quote or commit hash supporting the lesson'),
+            .describe('Optional commit hash, PR link, or short quote backing the lesson.'),
         },
-        async ({ group, summary, scope, severity, evidence }) => {
-          const id = await archStore.upsertLesson(group, {
-            summary,
+        async ({ group, rule, why, when, scope, severity, evidence }) => {
+          const result = await archStore.upsertLesson(group, {
+            rule,
+            why,
+            when,
             scope,
             severity,
             evidence: evidence ?? null,
           });
           return {
-            content: [{ type: 'text' as const, text: `Recorded lesson (id=${id}).` }],
+            content: [{ type: 'text' as const, text: formatWriteResult('lesson', rule, result) }],
           };
         }
       );
