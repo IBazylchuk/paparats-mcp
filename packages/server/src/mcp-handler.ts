@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { v7 as uuidv7 } from 'uuid';
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../package.json') as { version: string };
@@ -31,8 +31,9 @@ import {
   failedChunks,
 } from './telemetry/queries.js';
 import { ArchStore } from './arch/store.js';
-import { buildArchContextWithVector } from './arch/context.js';
+import { buildArchContextWithVector, DEFAULT_MIN_SCORE } from './arch/context.js';
 import type { ArchWriteResult } from './arch/types.js';
+import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -163,6 +164,8 @@ export interface McpHandlerConfig {
   analytics?: AnalyticsStore;
   /** Optional arch-layer store. When unset, arch_* tools are skipped at registration time. */
   archStore?: ArchStore;
+  /** Optional metrics registry. NoOp by default — see metrics.ts. */
+  metrics?: MetricsRegistry;
 }
 
 type TransportEntry = {
@@ -181,6 +184,9 @@ const CODING_TOOLS = new Set([
   'health_check',
   'delete_project',
   'list_projects',
+  // Read-only architectural memory in coding mode too — refactors need to know
+  // about prior decisions. Write tools (arch_record_*) stay support-only.
+  'arch_context',
 ]);
 
 export const SUPPORT_TOOLS = new Set([
@@ -209,12 +215,22 @@ export const SUPPORT_TOOLS = new Set([
 ]);
 
 /** Workflow-prompt names available in each mode. Content lives in prompts.json. */
-const CODING_PROMPTS = ['find_implementation', 'trace_callers', 'onboard_to_project'];
+const CODING_PROMPTS = [
+  'find_implementation',
+  'trace_callers',
+  'onboard_to_project',
+  // arch workflows that only read
+  'audit_architecture',
+];
 const SUPPORT_PROMPTS = [
   'triage_incident',
   'prepare_release_notes',
   'assess_change_impact',
   'onboard_to_project',
+  // arch workflows (read + write)
+  'init_arch_memory',
+  'audit_architecture',
+  'record_lesson_from_correction',
 ];
 
 export class McpHandler {
@@ -228,6 +244,7 @@ export class McpHandler {
   private telemetry: Telemetry | null;
   private analytics: AnalyticsStore | null;
   private archStore: ArchStore | null;
+  private metrics: MetricsRegistry;
   private sessionIdentity = new Map<
     string,
     { user: string; session: string | null; client: string | null; anchorProject: string | null }
@@ -251,6 +268,7 @@ export class McpHandler {
     this.telemetry = config.telemetry ?? null;
     this.analytics = config.analytics ?? null;
     this.archStore = config.archStore ?? null;
+    this.metrics = config.metrics ?? new NoOpMetrics();
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000);
     this.cleanupInterval.unref(); // Don't hold event loop open
@@ -459,6 +477,82 @@ export class McpHandler {
         };
       }
     });
+
+    // ── Resource: arch://schema (static) ────────────────────────────────────
+    server.resource('arch-schema', 'arch://schema', async () => ({
+      contents: [
+        {
+          uri: 'arch://schema',
+          mimeType: 'text/markdown',
+          text: prompts.resources.archSchema.body,
+        },
+      ],
+    }));
+
+    // ── Resource: arch://stats/{group} ──────────────────────────────────────
+    // Live stats for one group; the agent dereferences arch://stats/<group>
+    // and gets total + breakdown by kind/status + age window. Also pushed
+    // to Prometheus so operators can chart it.
+    if (this.archStore) {
+      const archStore = this.archStore;
+      const metrics = this.metrics;
+      server.resource(
+        'arch-stats',
+        new ResourceTemplate('arch://stats/{group}', { list: undefined }),
+        async (uri, vars) => {
+          const groupRaw = (vars as { group?: string | string[] }).group;
+          const group = Array.isArray(groupRaw) ? groupRaw[0] : groupRaw;
+          if (!group) {
+            return {
+              contents: [
+                {
+                  uri: uri.href,
+                  mimeType: 'text/plain',
+                  text: 'Bad URI. Expected arch://stats/<group>.',
+                },
+              ],
+            };
+          }
+          const stats = await archStore.stats(group);
+          // Push the snapshot to the gauge so it survives in Prometheus too.
+          for (const kind of ['component', 'decision', 'lesson'] as const) {
+            metrics.setArchCollectionSize(group, kind, 'all', stats.byKind[kind]);
+          }
+          for (const status of ['proposed', 'accepted', 'superseded', 'deprecated'] as const) {
+            metrics.setArchCollectionSize(group, 'all', status, stats.byStatus[status]);
+          }
+          const oldest = stats.oldestUpdatedAt
+            ? new Date(stats.oldestUpdatedAt).toISOString()
+            : 'n/a';
+          const newest = stats.newestUpdatedAt
+            ? new Date(stats.newestUpdatedAt).toISOString()
+            : 'n/a';
+          const text = [
+            `# Architectural memory — group ${group}`,
+            '',
+            `**Total cards:** ${stats.total}`,
+            '',
+            '## By kind',
+            `- components: ${stats.byKind.component}`,
+            `- decisions:  ${stats.byKind.decision}`,
+            `- lessons:    ${stats.byKind.lesson}`,
+            '',
+            '## By status',
+            `- proposed:   ${stats.byStatus.proposed}`,
+            `- accepted:   ${stats.byStatus.accepted}`,
+            `- superseded: ${stats.byStatus.superseded}`,
+            `- deprecated: ${stats.byStatus.deprecated}`,
+            '',
+            '## Age window',
+            `- oldest updatedAt: ${oldest}`,
+            `- newest updatedAt: ${newest}`,
+          ].join('\n');
+          return {
+            contents: [{ uri: uri.href, mimeType: 'text/markdown', text }],
+          };
+        }
+      );
+    }
 
     // ── Tool: search_code ───────────────────────────────────────────────────
     if (tools.has('search_code'))
@@ -2081,6 +2175,7 @@ export class McpHandler {
     // ── Tool: arch_context ──────────────────────────────────────────────────
     if (tools.has('arch_context') && this.archStore) {
       const archStore = this.archStore;
+      const metrics = this.metrics;
       server.tool(
         'arch_context',
         prompts.tools['arch_context']?.description ??
@@ -2091,8 +2186,16 @@ export class McpHandler {
             .string()
             .optional()
             .describe('Specific group, or omit to query all known groups'),
+          min_score: z
+            .number()
+            .min(0)
+            .max(1)
+            .optional()
+            .describe(
+              `Drop hits whose cosine similarity is below this threshold. Default ${DEFAULT_MIN_SCORE}. Lower it (e.g. 0.30) when the arch memory is sparse and you want broader recall; raise it (e.g. 0.60) when you only want high-confidence matches.`
+            ),
         },
-        async ({ question, group }) => {
+        async ({ question, group, min_score }) => {
           const groupNames = group ? [group] : this.getGroupNames();
           if (groupNames.length === 0) {
             return {
@@ -2105,16 +2208,23 @@ export class McpHandler {
           // each call hits its own Qdrant collection, so they don't contend.
           const vector = await archStore.embedQuestion(question);
           const results = await Promise.all(
-            groupNames.map(async (g) => ({
-              group: g,
-              ctx: await buildArchContextWithVector(archStore, g, vector),
-            }))
+            groupNames.map(async (g) => {
+              metrics.incArchContextCallsTotal(g);
+              return {
+                group: g,
+                ctx: await buildArchContextWithVector(archStore, g, vector, {
+                  ...(typeof min_score === 'number' ? { minScore: min_score } : {}),
+                }),
+              };
+            })
           );
           const sections: string[] = [];
           let anyEmpty = false;
+          let lastHint: string | null = null;
           for (const { group: g, ctx: r } of results) {
             if (r.empty) {
               anyEmpty = true;
+              lastHint = r.hint;
               continue;
             }
             sections.push(`## Group: ${g}`);
@@ -2122,21 +2232,28 @@ export class McpHandler {
               sections.push('### Components');
               for (const c of r.components) {
                 const files = c.files.length > 0 ? c.files.join(', ') : '—';
+                metrics.observeArchSearchScore(c.score);
                 sections.push(
-                  `- **${c.name}** (${formatAge(c.updatedAt)}) — ${c.summary} (files: ${files})`
+                  `- **${c.name}** (${formatAge(c.updatedAt)}, score ${c.score.toFixed(2)}) — ${c.summary} (files: ${files})`
                 );
               }
             }
             if (r.decisions.length) {
               sections.push('### Decisions');
               for (const d of r.decisions) {
-                sections.push(`- **${d.title}** (${formatAge(d.updatedAt)}) — ${d.decision}`);
+                metrics.observeArchSearchScore(d.score);
+                sections.push(
+                  `- **${d.title}** (${formatAge(d.updatedAt)}, score ${d.score.toFixed(2)}) — ${d.decision}`
+                );
               }
             }
             if (r.lessons.length) {
               sections.push('### Lessons');
               for (const l of r.lessons) {
-                sections.push(`- (${l.severity}, ${formatAge(l.updatedAt)}) ${l.rule}`);
+                metrics.observeArchSearchScore(l.score);
+                sections.push(
+                  `- (${l.severity}, ${formatAge(l.updatedAt)}, score ${l.score.toFixed(2)}) ${l.rule}`
+                );
               }
             }
             sections.push('');
@@ -2147,9 +2264,10 @@ export class McpHandler {
                 {
                   type: 'text' as const,
                   text:
+                    lastHint ??
                     'No architectural memory recorded yet. Ask the user if you ' +
-                    'should initialise the arch layer: identify 8-20 components by ' +
-                    'domain boundaries and write each via arch_record_component.',
+                      'should initialise the arch layer: identify 8-20 components by ' +
+                      'domain boundaries and write each via arch_record_component.',
                 },
               ],
             };
@@ -2162,6 +2280,7 @@ export class McpHandler {
     // ── Tool: arch_record_component ─────────────────────────────────────────
     if (tools.has('arch_record_component') && this.archStore) {
       const archStore = this.archStore;
+      const metrics = this.metrics;
       server.tool(
         'arch_record_component',
         prompts.tools['arch_record_component']?.description ??
@@ -2209,6 +2328,7 @@ export class McpHandler {
             neighbours,
             anchors,
           });
+          metrics.incArchWriteTotal('component', result.status);
           const verb = result.status === 'updated' ? 'Updated' : 'Recorded';
           return {
             content: [
@@ -2225,6 +2345,7 @@ export class McpHandler {
     // ── Tool: arch_record_decision ──────────────────────────────────────────
     if (tools.has('arch_record_decision') && this.archStore) {
       const archStore = this.archStore;
+      const metrics = this.metrics;
       server.tool(
         'arch_record_decision',
         prompts.tools['arch_record_decision']?.description ?? 'Record an architectural decision.',
@@ -2277,6 +2398,7 @@ export class McpHandler {
             scope,
             supersedes: supersedes ?? null,
           });
+          metrics.incArchWriteTotal('decision', result.status);
           return {
             content: [
               { type: 'text' as const, text: formatWriteResult('decision', title, result) },
@@ -2289,6 +2411,7 @@ export class McpHandler {
     // ── Tool: arch_record_lesson ────────────────────────────────────────────
     if (tools.has('arch_record_lesson') && this.archStore) {
       const archStore = this.archStore;
+      const metrics = this.metrics;
       server.tool(
         'arch_record_lesson',
         prompts.tools['arch_record_lesson']?.description ?? 'Record a lesson.',
@@ -2326,6 +2449,7 @@ export class McpHandler {
             severity,
             evidence: evidence ?? null,
           });
+          metrics.incArchWriteTotal('lesson', result.status);
           return {
             content: [{ type: 'text' as const, text: formatWriteResult('lesson', rule, result) }],
           };

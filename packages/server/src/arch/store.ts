@@ -50,7 +50,12 @@ export interface SearchOpts {
   /** Include superseded/deprecated. Default false. */
   includeHistory?: boolean;
   limit?: number;
+  /** Drop hits whose cosine similarity is below this threshold. 0..1. */
+  minScore?: number;
 }
+
+/** Search hit — the stored card payload plus the cosine similarity from the vector search. */
+export type ArchSearchHit = ArchPoint & { score: number };
 
 // ── Similarity gate thresholds ─────────────────────────────────────────────
 // Calibrated on bge-m3 against a labelled probe set (offline measurement) and
@@ -329,7 +334,7 @@ export class ArchStore {
     }
   }
 
-  async search(group: string, query: string, opts: SearchOpts = {}): Promise<ArchPoint[]> {
+  async search(group: string, query: string, opts: SearchOpts = {}): Promise<ArchSearchHit[]> {
     const vector = await this.provider.embed(query);
     return this.searchWithVector(group, vector, opts);
   }
@@ -342,7 +347,7 @@ export class ArchStore {
     group: string,
     vector: number[],
     opts: SearchOpts = {}
-  ): Promise<ArchPoint[]> {
+  ): Promise<ArchSearchHit[]> {
     const limit = opts.limit ?? 8;
     const must: unknown[] = [];
     if (opts.kinds && opts.kinds.length > 0) {
@@ -365,11 +370,83 @@ export class ArchStore {
         with_payload: true,
         ...(Object.keys(filter).length > 0 ? { filter } : {}),
       });
-      return hits.map((h) => h.payload as unknown as ArchPoint);
+      const minScore = typeof opts.minScore === 'number' ? opts.minScore : 0;
+      return hits
+        .filter((h) => h.score >= minScore)
+        .map((h) => ({ ...(h.payload as unknown as ArchPoint), score: h.score }));
     } catch {
       return [];
     }
   }
+
+  /**
+   * Count points per `arch_kind` and `status`, plus min/avg/max `updatedAt`.
+   * Drives the `arch://stats/{group}` resource and the Prometheus
+   * `paparats_arch_collection_size` gauge.
+   */
+  async stats(group: string): Promise<ArchStats> {
+    const out: ArchStats = {
+      group,
+      total: 0,
+      byKind: { component: 0, decision: 0, lesson: 0 },
+      byStatus: { proposed: 0, accepted: 0, superseded: 0, deprecated: 0 },
+      oldestUpdatedAt: null,
+      newestUpdatedAt: null,
+    };
+    let offset: string | number | Record<string, unknown> | undefined | null = undefined;
+    try {
+      // Scroll the whole collection. Arch collections are tiny (< low thousands),
+      // so scan-all is fine — no need for cardinality estimators.
+      while (true) {
+        const page = await this.qdrant.scroll(toArchCollectionName(group), {
+          limit: 256,
+          with_payload: true,
+          with_vector: false,
+          ...(offset !== undefined && offset !== null ? { offset } : {}),
+        });
+        for (const p of page.points) {
+          const pl = p.payload ?? {};
+          out.total += 1;
+          const kind = pl['arch_kind'] ?? pl['kind'];
+          if (kind === 'component' || kind === 'decision' || kind === 'lesson') {
+            out.byKind[kind] += 1;
+          }
+          const status = pl['status'];
+          if (
+            status === 'proposed' ||
+            status === 'accepted' ||
+            status === 'superseded' ||
+            status === 'deprecated'
+          ) {
+            out.byStatus[status] += 1;
+          }
+          const updatedAt = pl['updatedAt'];
+          if (typeof updatedAt === 'number') {
+            if (out.oldestUpdatedAt === null || updatedAt < out.oldestUpdatedAt) {
+              out.oldestUpdatedAt = updatedAt;
+            }
+            if (out.newestUpdatedAt === null || updatedAt > out.newestUpdatedAt) {
+              out.newestUpdatedAt = updatedAt;
+            }
+          }
+        }
+        if (!page.next_page_offset) break;
+        offset = page.next_page_offset;
+      }
+    } catch {
+      // Collection doesn't exist yet (or transient error) — leave zeros.
+    }
+    return out;
+  }
+}
+
+export interface ArchStats {
+  group: string;
+  total: number;
+  byKind: Record<ArchKind, number>;
+  byStatus: Record<ArchStatus, number>;
+  oldestUpdatedAt: number | null;
+  newestUpdatedAt: number | null;
 }
 
 // ── Embedding text renderers ───────────────────────────────────────────────

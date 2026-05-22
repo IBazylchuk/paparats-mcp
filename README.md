@@ -32,9 +32,12 @@ chunk and which ticket it came from — all without your code ever leaving your 
   Go, Rust, Java, Ruby, C, C++, C#.
 - 🧠 **Architectural memory that the agent maintains itself.** A second vector store
   per group holds **components, decisions (ADRs) and lessons learned** — your agent
-  writes them as it works and reads them before answering. Server-side similarity gate
-  prevents duplicates, supersedes links replace stale decisions, and every card carries
-  an "updated N ago" stamp so the agent knows when memory is going stale.
+  writes them as it works and reads them before answering. Bootstrap on day one with
+  the `init_arch_memory` MCP prompt (the `/init` of architectural memory). Server-side
+  similarity gate prevents duplicates, supersedes links replace stale decisions, a
+  `min_score` threshold gates low-confidence reads, every card carries an
+  "updated N ago" stamp, and Prometheus metrics tell you whether your memory is
+  actually being used.
 - 💸 **Saves tokens.** Returns only the chunks that matter, with token-savings telemetry
   to prove it (per-query, per-user, per-anchor-project).
 - 🔭 **Production-ready observability.** Prometheus `/metrics`, OpenTelemetry traces
@@ -487,8 +490,51 @@ so it disappears from default search but remains in history.
 - 🚦 **No memory rot** — similarity gate kills duplicates, supersedes link replaces
   stale decisions, age stamps trigger verification against code.
 
-Lives in a separate Qdrant collection per group (`paparats_<group>_arch`). Available
-on the **support endpoint** (`/support/mcp`) — see [MCP Tools Reference](#mcp-tools-reference).
+Lives in a separate Qdrant collection per group (`paparats_<group>_arch`). Reading
+(`arch_context`) is available on **both** endpoints — coding agents need to know
+about prior decisions before refactoring. Writing (`arch_record_*`) is **support-only**:
+recording belongs to the architectural-review workflow, not to every line edit.
+
+**`arch_context` accepts a `min_score` parameter** (default `0.45`, cosine over
+[bge-m3](https://ollama.com/library/bge-m3)). Lower it to broaden recall on a sparse
+arch memory; raise it to demand only high-confidence cards. The tool also emits an
+explicit low-confidence hint when the question matched nothing above the threshold,
+so the agent knows to either rephrase or lower `min_score` instead of inventing
+context.
+
+**Initialise the arch layer on day one.** Two purpose-built MCP **workflow prompts**
+make the boring scaffolding work disappear:
+
+- **`init_arch_memory`** — the `/init` of architectural memory. Walks the repo,
+  identifies 8-20 components by domain boundary, writes them, and captures any
+  obvious decisions inferable from comments or README. Run it once per group, right
+  after installing.
+- **`audit_architecture`** — sweeps the memory of one group, flags cards older than
+  90 days, verifies anchors against the live code, and surfaces a punch list of
+  updates / supersedes for your approval.
+- **`record_lesson_from_correction`** — converts a user correction into a structured
+  lesson card (rule / why / when) without overrecording typos.
+
+**MCP resources for live introspection:**
+
+- **`arch://schema`** — the full card-schema reference (fields, similarity-gate
+  thresholds, write semantics). Cite it from the agent when explaining the model.
+- **`arch://stats/{group}`** — live counts (total / by kind / by status) and the
+  oldest/newest `updatedAt` per group. The same numbers are also pushed to
+  Prometheus.
+
+**Observability built in.** When `PAPARATS_METRICS=true`, every read/write hits a
+counter and the cosine score of returned cards lands in a histogram:
+
+- `paparats_arch_context_calls_total{group}` — calls per group
+- `paparats_arch_write_total{kind, status}` — writes by card kind and gate outcome
+- `paparats_arch_search_score` — histogram of cosine scores in `arch_context`
+  results (post `min_score`)
+- `paparats_arch_collection_size{group, kind, status}` — gauge updated whenever
+  `arch://stats/{group}` is read
+
+These let you spot a memory that's not being written to, a similarity gate that's
+too aggressive, or a sparse group where every query returns low-confidence hits.
 
 ---
 
@@ -634,14 +680,15 @@ own tool set and system instructions.
 For developers using Claude Code, Cursor, etc. Focus: search code, read chunks, follow
 the cross-chunk symbol graph, manage projects.
 
-| Tool             | Description                                                                                       |
-| :--------------- | :------------------------------------------------------------------------------------------------ |
-| `search_code`    | Semantic search across indexed projects. Returns chunks with symbol info and confidence scores.   |
-| `get_chunk`      | Retrieve a chunk by ID with optional surrounding context.                                         |
-| `find_usages`    | Walk the symbol graph from a `chunk_id` — `incoming` (callers/references in), `outgoing` (calls/references out), or `both`. |
-| `list_projects`  | List indexed projects with chunk counts and detected languages.                                   |
-| `delete_project` | Wipe Qdrant chunks + SQLite metadata for a project (CLI's `paparats remove` calls it).            |
-| `health_check`   | Indexing status, chunks per group, running jobs.                                                  |
+| Tool             | Description                                                                                                                  |
+| :--------------- | :--------------------------------------------------------------------------------------------------------------------------- |
+| `search_code`    | Semantic search across indexed projects. Returns chunks with symbol info and confidence scores.                              |
+| `get_chunk`      | Retrieve a chunk by ID with optional surrounding context.                                                                    |
+| `find_usages`    | Walk the symbol graph from a `chunk_id` — `incoming` (callers/references in), `outgoing` (calls/references out), or `both`.  |
+| `list_projects`  | List indexed projects with chunk counts and detected languages.                                                              |
+| `delete_project` | Wipe Qdrant chunks + SQLite metadata for a project (CLI's `paparats remove` calls it).                                       |
+| `health_check`   | Indexing status, chunks per group, running jobs.                                                                             |
+| `arch_context`   | Read-only architectural memory. Returns components, decisions, and lessons relevant to the query with `updated N ago` stamps and a `min_score` cutoff. |
 
 ### Support endpoint (`/support/mcp`)
 
@@ -660,7 +707,7 @@ change history, cost reporting — all in plain language.
 | `explain_feature`      | Comprehensive feature analysis: locations + recent changes for a question.            |
 | `recent_changes`       | Timeline grouped by date with commits, tickets, affected files. `since` filter.       |
 | `impact_analysis`      | Cross-chunk impact for a `chunk_id` — symbol graph traversal + cross-project blast radius. |
-| `arch_context`         | Read the architectural memory for a group — top-matching components, decisions and lessons, each stamped with "updated N ago". Call before any architectural answer. |
+| `arch_context`         | Read the architectural memory for a group — top-matching components, decisions and lessons, each stamped with "updated N ago" and a cosine score. Accepts a `min_score` parameter (default 0.45) to gate low-confidence hits. Call before any architectural answer. **Also available on `/mcp`.** |
 | `arch_record_component` | Record a component with `Does / Owns / Does not / Touched when` fields. Idempotent by `name`. |
 | `arch_record_decision` | Record an ADR-style decision (`context / decision / alternatives_rejected / consequences`). Server-side similarity gate refuses duplicates and surfaces near-matches; `supersedes` links replace prior decisions. |
 | `arch_record_lesson`   | Record a lesson as `rule / why / when`. Duplicates bump `updatedAt` (Reflexion confirmation) instead of overwriting. |

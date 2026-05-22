@@ -417,3 +417,84 @@ describe('ArchStore.bumpUpdatedAt', () => {
     });
   });
 });
+
+// ── min_score filter ───────────────────────────────────────────────────────
+
+describe('ArchStore.searchWithVector min_score filter', () => {
+  it('drops hits below the minScore threshold and attaches the score to survivors', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([
+      {
+        id: 'hi',
+        score: 0.8,
+        payload: { kind: 'component', name: 'hi', files: [], neighbours: [], anchors: [] },
+      },
+      {
+        id: 'mid',
+        score: 0.55,
+        payload: { kind: 'component', name: 'mid', files: [], neighbours: [], anchors: [] },
+      },
+      {
+        id: 'lo',
+        score: 0.3,
+        payload: { kind: 'component', name: 'lo', files: [], neighbours: [], anchors: [] },
+      },
+    ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const out = await store.searchWithVector('my-app', Array(512).fill(0), { minScore: 0.5 });
+    expect(out.map((h) => h.name)).toEqual(['hi', 'mid']);
+    expect(out.map((h) => h.score)).toEqual([0.8, 0.55]);
+  });
+});
+
+// ── stats() ────────────────────────────────────────────────────────────────
+
+describe('ArchStore.stats', () => {
+  it('aggregates kind/status counts and oldest/newest updatedAt across pages', async () => {
+    const qdrant = fakeQdrant();
+    // First page returns 2 points + an offset; second page returns 1 point and no offset.
+    let calls = 0;
+    qdrant.scroll = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return {
+          points: [
+            { id: '1', payload: { arch_kind: 'component', status: 'accepted', updatedAt: 100 } },
+            { id: '2', payload: { arch_kind: 'decision', status: 'superseded', updatedAt: 200 } },
+          ],
+          next_page_offset: 'page-2',
+        };
+      }
+      return {
+        points: [{ id: '3', payload: { arch_kind: 'lesson', status: 'accepted', updatedAt: 50 } }],
+      };
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const stats = await store.stats('my-app');
+    expect(stats.total).toBe(3);
+    expect(stats.byKind).toEqual({ component: 1, decision: 1, lesson: 1 });
+    expect(stats.byStatus.accepted).toBe(2);
+    expect(stats.byStatus.superseded).toBe(1);
+    expect(stats.oldestUpdatedAt).toBe(50);
+    expect(stats.newestUpdatedAt).toBe(200);
+  });
+
+  it('returns zeros when scroll throws (collection missing)', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll = vi.fn().mockRejectedValue(new Error('no such collection'));
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const stats = await store.stats('empty-group');
+    expect(stats.total).toBe(0);
+    expect(stats.byKind).toEqual({ component: 0, decision: 0, lesson: 0 });
+    expect(stats.oldestUpdatedAt).toBeNull();
+  });
+});
