@@ -23,6 +23,7 @@ export interface ArchDecision extends ArchBase {
   title: string;
   context: string;
   decision: string;
+  alternativesRejected: string;
   consequences: string;
   status: ArchStatus;
   supersedes: string | null;
@@ -31,7 +32,9 @@ export interface ArchDecision extends ArchBase {
 
 export interface ArchLesson extends ArchBase {
   kind: 'lesson';
-  summary: string;
+  rule: string;
+  why: string;
+  when: string;
   scope: ArchScope;
   evidence: string | null;
   severity: ArchSeverity;
@@ -46,4 +49,29 @@ export interface ArchContextResult {
   lessons: ArchLesson[];
   empty: boolean;
   hint: string | null;
+}
+
+/**
+ * Result of a write that goes through the similarity gate.
+ * - `created`   : no near match — a new point was written.
+ * - `updated`   : component matched an existing one by name OR lesson was a
+ *                 duplicate and we bumped updatedAt instead of writing again.
+ * - `duplicate` : decision/lesson with similarity >= DUPLICATE_THRESHOLD.
+ *                 For lessons the existing card's updatedAt is bumped.
+ *                 For decisions nothing is written — the caller is asked to
+ *                 explain why they didn't find it first.
+ * - `similar`   : near match in the SIMILAR..DUPLICATE band.
+ *                 Nothing is written; the caller is invited to update the
+ *                 existing card (lesson) or supersede it (decision).
+ */
+export type ArchWriteStatus = 'created' | 'updated' | 'duplicate' | 'similar';
+
+export interface ArchWriteResult {
+  status: ArchWriteStatus;
+  /** Id of the newly written point (created/updated) or the matched point (duplicate/similar). */
+  id: string;
+  /** Cosine similarity of the matched point. Present for duplicate/similar. */
+  similarity?: number;
+  /** Short label of the matched point — name/title/rule — to help the agent decide. */
+  matchedLabel?: string;
 }
