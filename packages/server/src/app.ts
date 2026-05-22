@@ -657,6 +657,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     telemetry,
     analytics,
     archStore,
+    ...(metrics ? { metrics } : {}),
   });
   mcpHandler.mount(app);
 

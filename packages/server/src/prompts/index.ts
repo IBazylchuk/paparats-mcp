@@ -47,6 +47,8 @@ export interface Prompts {
       scoreInterpretation: string;
       searchFirstNote: string;
     };
+    archSchema: { title: string; description: string; body: string };
+    archStats: { title: string; uriPattern: string; description: string };
   };
   workflows: Record<string, WorkflowPrompt>;
 }
@@ -119,6 +121,30 @@ function validatePrompts(data: unknown): Prompts {
     typeof projectOverview.searchFirstNote !== 'string'
   ) {
     throw new Error('prompts.resources.projectOverview has invalid structure');
+  }
+  const archSchemaRaw = (resources as Record<string, unknown>).archSchema;
+  if (!archSchemaRaw || typeof archSchemaRaw !== 'object') {
+    throw new Error('prompts.resources.archSchema must exist');
+  }
+  const archSchema = archSchemaRaw as Record<string, unknown>;
+  if (
+    typeof archSchema.title !== 'string' ||
+    typeof archSchema.description !== 'string' ||
+    typeof archSchema.body !== 'string'
+  ) {
+    throw new Error('prompts.resources.archSchema has invalid structure');
+  }
+  const archStatsRaw = (resources as Record<string, unknown>).archStats;
+  if (!archStatsRaw || typeof archStatsRaw !== 'object') {
+    throw new Error('prompts.resources.archStats must exist');
+  }
+  const archStats = archStatsRaw as Record<string, unknown>;
+  if (
+    typeof archStats.title !== 'string' ||
+    typeof archStats.uriPattern !== 'string' ||
+    typeof archStats.description !== 'string'
+  ) {
+    throw new Error('prompts.resources.archStats has invalid structure');
   }
   const workflows = p.workflows;
   if (!workflows || typeof workflows !== 'object') {

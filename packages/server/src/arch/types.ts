@@ -44,9 +44,9 @@ export interface ArchLesson extends ArchBase {
 export type ArchPoint = ArchComponent | ArchDecision | ArchLesson;
 
 export interface ArchContextResult {
-  components: ArchComponent[];
-  decisions: ArchDecision[];
-  lessons: ArchLesson[];
+  components: Array<ArchComponent & { score: number }>;
+  decisions: Array<ArchDecision & { score: number }>;
+  lessons: Array<ArchLesson & { score: number }>;
   empty: boolean;
   hint: string | null;
 }

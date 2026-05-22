@@ -6,13 +6,16 @@ import {
 } from '../src/prompts/index.js';
 
 describe('workflow prompts', () => {
-  it('loads all six workflows from prompts.json', () => {
+  it('loads all workflows from prompts.json', () => {
     const names = Object.keys(prompts.workflows).sort();
     expect(names).toEqual([
       'assess_change_impact',
+      'audit_architecture',
       'find_implementation',
+      'init_arch_memory',
       'onboard_to_project',
       'prepare_release_notes',
+      'record_lesson_from_correction',
       'trace_callers',
       'triage_incident',
     ]);
