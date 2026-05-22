@@ -30,6 +30,11 @@ chunk and which ticket it came from — all without your code ever leaving your 
   file once and feeds both chunking and the cross-chunk symbol graph (calls /
   called_by / references / referenced_by) — 11 languages including TypeScript, Python,
   Go, Rust, Java, Ruby, C, C++, C#.
+- 🧠 **Architectural memory that the agent maintains itself.** A second vector store
+  per group holds **components, decisions (ADRs) and lessons learned** — your agent
+  writes them as it works and reads them before answering. Server-side similarity gate
+  prevents duplicates, supersedes links replace stale decisions, and every card carries
+  an "updated N ago" stamp so the agent knows when memory is going stale.
 - 💸 **Saves tokens.** Returns only the chunks that matter, with token-savings telemetry
   to prove it (per-query, per-user, per-anchor-project).
 - 🔭 **Production-ready observability.** Prometheus `/metrics`, OpenTelemetry traces
@@ -52,6 +57,7 @@ chunk and which ticket it came from — all without your code ever leaving your 
 - [How It Works](#how-it-works)
 - [Key Features](#key-features)
 - [Use Cases](#use-cases)
+- [Architectural memory](#architectural-memory-agent-maintained-adrs-components-lessons)
 - [Configuration](#configuration)
 - [MCP Tools Reference](#mcp-tools-reference)
 - [Connecting MCP](#connecting-mcp)
@@ -82,6 +88,7 @@ AI coding assistants are smart, but they can only see files you open. They don't
 - **AST-aware chunking** — code split by AST nodes (functions/classes) via tree-sitter, not arbitrary character counts (TypeScript, JavaScript, TSX, Python, Go, Rust, Java, Ruby, C, C++, C#; regex fallback for Terraform)
 - **Rich metadata** — each chunk knows its symbol name (from tree-sitter AST), service, domain context, and tags from directory structure
 - **Git history per chunk** — see who last modified a chunk, when, and which tickets (Jira, GitHub) are linked to it
+- **Architectural memory** — a living knowledge base of components, decisions (ADRs) and lessons learned, written by the agent as it learns, deduplicated server-side by vector similarity, and consulted on every support query so the agent stays consistent across sessions
 
 ### Who benefits
 
@@ -296,8 +303,10 @@ The installer verifies the server is reachable, then wires Cursor MCP
 (`~/.cursor/mcp.json`) and Claude Code MCP (`~/.claude/mcp.json`) to the support
 endpoint. Tools available on `/support/mcp`: `search_code`, `get_chunk`, `find_usages`,
 `list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`,
-`recent_changes`, `impact_analysis`, plus the analytics tools described in
-**Observability** below.
+`recent_changes`, `impact_analysis`, **`arch_context`**, **`arch_record_component`**,
+**`arch_record_decision`**, **`arch_record_lesson`** (architectural memory — see
+[Key Features](#architectural-memory-agent-maintained-adrs-components-lessons)), plus
+the analytics tools described in **Observability** below.
 
 ---
 
@@ -436,6 +445,51 @@ materializes edges into SQLite — `calls`, `called_by`, `references`, `referenc
 graph without re-searching. Because extraction is AST-driven, function locals don't
 pollute the graph.
 
+### Architectural memory (agent-maintained ADRs, components, lessons)
+
+Code search tells the agent **what the code does**. Architectural memory tells it
+**why** — and the agent maintains that knowledge itself, across sessions, without you
+authoring a single doc.
+
+**Three card kinds, structured by design:**
+
+| Kind          | Captures                                                                                  | Fields                                                            |
+| :------------ | :---------------------------------------------------------------------------------------- | :---------------------------------------------------------------- |
+| **Component** | A unit with a clear responsibility (service, module, subsystem)                           | `name`, `summary` with `Does / Owns / Does not / Touched when`    |
+| **Decision**  | An architectural choice (ADR-style)                                                       | `title`, `context`, `decision`, `alternatives_rejected`, `consequences` |
+| **Lesson**    | A rule learned from an incident, a code review, a bug, or a user correction (Reflexion-style) | `rule`, `why`, `when`                                             |
+
+The agent reads them via **`arch_context`** before any architectural answer, and
+writes them via **`arch_record_component`**, **`arch_record_decision`**, and
+**`arch_record_lesson`** whenever it discovers something new or learns from a
+correction. Each card carries an `updated N ago` stamp in the read tool so the agent
+can spot stale memory and verify against current code.
+
+**Server-side similarity gate** (cosine over [bge-m3](https://ollama.com/library/bge-m3)
+text embeddings, 1024d):
+
+- `≥ 0.85` is a **duplicate** — decisions are refused (the agent must reconcile or
+  supersede); lessons bump `updatedAt` (Reflexion-style "rule confirmed").
+- `0.70 – 0.85` is **similar** — surfaced to the agent so it can refine the wording
+  or chain a supersede.
+- `< 0.70` is **new** — accepted as a fresh card.
+
+`supersedes` links bypass the gate and mark the prior decision as `status=superseded`
+so it disappears from default search but remains in history.
+
+**Why this matters:**
+
+- 🧠 **Cross-session continuity** — what the agent learned last week, today's agent
+  still knows.
+- 📝 **ADRs without the ceremony** — no markdown files to maintain, no review process,
+  no doc drift. The agent writes when it learns.
+- 🔄 **Reflexion built in** — corrections become lessons; repeated mistakes get caught.
+- 🚦 **No memory rot** — similarity gate kills duplicates, supersedes link replaces
+  stale decisions, age stamps trigger verification against code.
+
+Lives in a separate Qdrant collection per group (`paparats_<group>_arch`). Available
+on the **support endpoint** (`/support/mcp`) — see [MCP Tools Reference](#mcp-tools-reference).
+
 ---
 
 ## Use Cases
@@ -456,13 +510,15 @@ Connect via the **coding endpoint** (`/mcp`):
 
 Connect via the **support endpoint** (`/support/mcp`):
 
-| Use Case              | How                                                                    |
-| --------------------- | ---------------------------------------------------------------------- |
-| **Explain a feature** | `explain_feature "rate limiting"` → code locations + changes          |
-| **Recent changes**    | `recent_changes "auth" --since 2024-01-01` → timeline with tickets     |
-| **Trace usages**      | `find_usages {chunk_id}` → who calls/references this chunk             |
-| **Change history**    | `get_chunk_meta <chunk_id>` → authors, dates, linked tickets           |
-| **Blast radius**      | `impact_analysis <chunk_id>` → cross-chunk + cross-project impact      |
+| Use Case                       | How                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| **Explain a feature**          | `explain_feature "rate limiting"` → code locations + changes          |
+| **Recent changes**             | `recent_changes "auth" --since 2024-01-01` → timeline with tickets     |
+| **Trace usages**               | `find_usages {chunk_id}` → who calls/references this chunk             |
+| **Change history**             | `get_chunk_meta <chunk_id>` → authors, dates, linked tickets           |
+| **Blast radius**               | `impact_analysis <chunk_id>` → cross-chunk + cross-project impact      |
+| **Architectural Q&A**          | `arch_context "why X"` → components / decisions / lessons (with age)   |
+| **Capture decisions & lessons**| `arch_record_decision` / `arch_record_lesson` — agent writes as it learns, server-side dedup |
 
 **Support chatbot example:**
 
@@ -604,6 +660,10 @@ change history, cost reporting — all in plain language.
 | `explain_feature`      | Comprehensive feature analysis: locations + recent changes for a question.            |
 | `recent_changes`       | Timeline grouped by date with commits, tickets, affected files. `since` filter.       |
 | `impact_analysis`      | Cross-chunk impact for a `chunk_id` — symbol graph traversal + cross-project blast radius. |
+| `arch_context`         | Read the architectural memory for a group — top-matching components, decisions and lessons, each stamped with "updated N ago". Call before any architectural answer. |
+| `arch_record_component` | Record a component with `Does / Owns / Does not / Touched when` fields. Idempotent by `name`. |
+| `arch_record_decision` | Record an ADR-style decision (`context / decision / alternatives_rejected / consequences`). Server-side similarity gate refuses duplicates and surfaces near-matches; `supersedes` links replace prior decisions. |
+| `arch_record_lesson`   | Record a lesson as `rule / why / when`. Duplicates bump `updatedAt` (Reflexion confirmation) instead of overwriting. |
 | `token_savings_report` | Aggregate token-savings stats (naive baseline vs search-only vs actually consumed).   |
 | `top_queries`          | Most frequent queries by user/session/project anchor.                                  |
 | `slowest_searches`     | Top-N slowest searches with timing + chunk counts.                                    |
@@ -627,6 +687,18 @@ change history, cost reporting — all in plain language.
 1. explain_feature "How does authentication work?"   → locations + recent changes
 2. recent_changes "auth" --since 2024-01-01          → timeline with tickets
 3. token_savings_report                              → cost report for the last 7 days
+```
+
+**Architectural memory (support agent):**
+
+```
+1. arch_context "why do we use bge-m3 for the arch layer?"
+                                                     → top components / decisions / lessons,
+                                                       each with an "updated N ago" stamp
+2. arch_record_decision { title, context, decision, alternatives_rejected, consequences }
+                                                     → status=created | duplicate | similar
+                                                       (gate refuses duplicates server-side)
+3. arch_record_lesson   { rule, why, when }          → status=created | updated (Reflexion bump)
 ```
 
 ---
@@ -978,6 +1050,12 @@ paparats-mcp/
 │   │   │   ├── ticket-extractor.ts   # Jira/GitHub/custom ticket parsing
 │   │   │   ├── mcp-handler.ts        # MCP protocol — dual-mode (coding /mcp + support /support/mcp)
 │   │   │   ├── watcher.ts            # File watcher (chokidar)
+│   │   │   ├── arch/                 # Architectural memory layer (components, decisions, lessons)
+│   │   │   │   ├── types.ts          # ArchComponent, ArchDecision, ArchLesson, ArchWriteResult
+│   │   │   │   ├── collection.ts     # Per-group Qdrant collection (`paparats_<group>_arch`) lifecycle
+│   │   │   │   ├── text-embeddings.ts # bge-m3 text embedder (1024d, mean-pooled, Ollama)
+│   │   │   │   ├── store.ts          # CRUD + server-side similarity gate (cosine 0.85 / 0.70)
+│   │   │   │   └── context.ts        # `arch_context` query — top-N across kinds with age stamps
 │   │   │   └── types.ts              # Shared types
 │   │   └── Dockerfile
 │   ├── indexer/         # Automated repo indexer (Docker image: ibaz/paparats-indexer)
@@ -1011,8 +1089,8 @@ paparats-mcp/
 
 ## Stack
 
-- **Qdrant** — vector database (1 collection per group with `paparats_` prefix, cosine similarity, payload filtering)
-- **Ollama** — local embeddings via Jina Code Embeddings 1.5B with task-specific prefixes
+- **Qdrant** — vector database (1 collection per group with `paparats_` prefix for code, plus a separate `paparats_<group>_arch` collection per group for the architectural memory layer; cosine similarity, payload filtering)
+- **Ollama** — local embeddings via Jina Code Embeddings 1.5B for code (task-specific prefixes) **and bge-m3 for the architectural memory layer** (1024d, mean-pooled, multilingual)
 - **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata + symbol edges store (`~/.paparats/metadata.db`)
 - **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
 - **TypeScript** monorepo with Yarn workspaces
@@ -1183,13 +1261,14 @@ Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
 
 #### AI Integration
 
-| Feature           | Paparats | Vexify | SeaGOAT |  Augment   | Sourcegraph | Greptile | Bloop |
-| :---------------- | :------: | :----: | :-----: | :--------: | :---------: | :------: | :---: |
-| MCP native        |    ✅    |   ✅   |   ❌    |     ✅     |     ❌      |  ⚠️ API  |  ❌   |
-| Symbol graph      |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
-| Token metrics     |    ✅    |   ❌   |   ❌    | ⚠️ Partial |     ❌      |    ❌    |  ❌   |
-| Git history       |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
-| Ticket extraction |    ✅    |   ❌   |   ❌    |     ❌     |     ❌      |    ❌    |  ❌   |
+| Feature                | Paparats | Vexify | SeaGOAT |  Augment   | Sourcegraph | Greptile | Bloop |
+| :--------------------- | :------: | :----: | :-----: | :--------: | :---------: | :------: | :---: |
+| MCP native             |    ✅    |   ✅   |   ❌    |     ✅     |     ❌      |  ⚠️ API  |  ❌   |
+| Symbol graph           |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
+| Token metrics          |    ✅    |   ❌   |   ❌    | ⚠️ Partial |     ❌      |    ❌    |  ❌   |
+| Git history            |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
+| Ticket extraction      |    ✅    |   ❌   |   ❌    |     ❌     |     ❌      |    ❌    |  ❌   |
+| Architectural memory 7 |  ✅ ADRs |   ❌   |   ❌    |     ❌     |     ❌      |    ❌    |  ❌   |
 
 #### Pricing
 
@@ -1206,6 +1285,7 @@ Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
 4. Vexify supports Ollama models but limited to specific embeddings (jina-embeddings-2-base-code, nomic-embed-text)
 5. SeaGOAT locked to all-MiniLM-L6-v2 (384 dims, general-purpose)
 6. Abbreviations, case variants, plurals, filler word removal
+7. Agent-maintained components / decisions (ADRs) / lessons in a second Qdrant collection per group; server-side similarity gate deduplicates writes, `supersedes` links replace stale decisions, every card carries an "updated N ago" stamp on read
 
 </details>
 

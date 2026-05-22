@@ -8,6 +8,7 @@ CLI for [Paparats MCP](https://github.com/IBazylchuk/paparats-mcp) - semantic co
 - **Symbol graph** - cross-chunk call/reference relationships
 - **Vector search** powered by Qdrant + Ollama (Jina Code Embeddings)
 - **Git metadata** - commit history and ticket references per chunk
+- **Architectural memory** - agent-maintained components / decisions (ADRs) / lessons learned with server-side similarity-gate deduplication (see [main README](https://github.com/IBazylchuk/paparats-mcp#architectural-memory-agent-maintained-adrs-components-lessons))
 - **Dual MCP endpoints** - coding mode and support mode with different tool sets
 - **Docker-based deployment** - one command setup with Qdrant, Ollama, and MCP server
 
