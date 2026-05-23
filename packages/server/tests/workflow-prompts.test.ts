@@ -4,6 +4,7 @@ import {
   buildWorkflowArgsSchema,
   interpolateWorkflowMessage,
 } from '../src/prompts/index.js';
+import { CODING_PROMPTS, SUPPORT_PROMPTS } from '../src/mcp-handler.js';
 
 describe('workflow prompts', () => {
   it('loads all workflows from prompts.json', () => {
@@ -32,6 +33,33 @@ describe('workflow prompts', () => {
         expect(arg.required).toBeTypeOf('boolean');
       }
     }
+  });
+
+  // Arch workflows that write (init_arch_memory, record_lesson_from_correction)
+  // live in coding mode — support is read-only. audit_architecture only reads,
+  // so it stays in both. Tests below pin that invariant by inspecting both the
+  // mode-routing list in mcp-handler.ts and the instructions in prompts.json:
+  // any change to who writes arch memory should land here too.
+  it('arch write-workflows are routed to coding mode only', () => {
+    expect(CODING_PROMPTS).toContain('init_arch_memory');
+    expect(CODING_PROMPTS).toContain('record_lesson_from_correction');
+    expect(SUPPORT_PROMPTS).not.toContain('init_arch_memory');
+    expect(SUPPORT_PROMPTS).not.toContain('record_lesson_from_correction');
+    // audit_architecture is read-only — must remain in both.
+    expect(CODING_PROMPTS).toContain('audit_architecture');
+    expect(SUPPORT_PROMPTS).toContain('audit_architecture');
+  });
+
+  it('arch write-workflows are only referenced by codingInstructions', () => {
+    const coding = prompts.codingInstructions;
+    const support = prompts.supportInstructions;
+    for (const tool of ['arch_record_component', 'arch_record_decision', 'arch_record_lesson']) {
+      expect(coding, `${tool} should be mentioned in codingInstructions`).toContain(tool);
+      expect(support, `${tool} must not appear in supportInstructions`).not.toContain(tool);
+    }
+    // arch_context is read-only — must remain in both.
+    expect(coding).toContain('arch_context');
+    expect(support).toContain('arch_context');
   });
 });
 
