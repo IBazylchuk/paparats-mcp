@@ -4,6 +4,14 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [0.10.1] - 2026-05-23
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- @paparats/shared@0.10.1
+
 ## [0.10.0] - 2026-05-23
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
