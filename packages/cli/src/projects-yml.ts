@@ -298,6 +298,12 @@ export interface RegenerateOptions {
   qdrantApiKey?: string;
   cron?: string;
   paparatsHome?: string;
+  /**
+   * When true, the existing compose is copied to docker-compose.yml.bak before
+   * being overwritten — but only if its contents actually change. Used by
+   * `paparats update` so hand-edits aren't silently lost across CLI upgrades.
+   */
+  backupOnChange?: boolean;
 }
 
 export interface RegenerateResult {
@@ -305,6 +311,8 @@ export interface RegenerateResult {
   changed: boolean;
   /** The new compose contents (whether or not the file changed). */
   composeYaml: string;
+  /** Absolute path to the backup written when `backupOnChange` is set and contents changed. */
+  backupPath?: string;
 }
 
 /**
@@ -328,6 +336,11 @@ export function regenerateCompose(opts: RegenerateOptions): RegenerateResult {
   const prior = fs.existsSync(composePath) ? fs.readFileSync(composePath, 'utf8') : null;
   if (prior === composeYaml) return { changed: false, composeYaml };
   fs.mkdirSync(home, { recursive: true });
+  let backupPath: string | undefined;
+  if (opts.backupOnChange && prior !== null) {
+    backupPath = `${composePath}.bak`;
+    fs.writeFileSync(backupPath, prior);
+  }
   fs.writeFileSync(composePath, composeYaml);
-  return { changed: true, composeYaml };
+  return backupPath ? { changed: true, composeYaml, backupPath } : { changed: true, composeYaml };
 }

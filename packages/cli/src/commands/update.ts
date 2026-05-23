@@ -7,6 +7,12 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { getDockerComposeCommand } from './install.js';
 import { waitForHealth } from './install.js';
+import {
+  readInstallState,
+  regenerateCompose,
+  type RegenerateOptions,
+  type RegenerateResult,
+} from '../projects-yml.js';
 
 const PAPARATS_HOME = path.join(os.homedir(), '.paparats');
 const COMPOSE_FILE = path.join(PAPARATS_HOME, 'docker-compose.yml');
@@ -24,6 +30,8 @@ export interface UpdateDeps {
   waitForHealth?: (url: string, label: string) => Promise<boolean>;
   existsSync?: (path: string) => boolean;
   readFileSync?: (path: string, encoding: BufferEncoding) => string;
+  readInstallState?: typeof readInstallState;
+  regenerateCompose?: (opts: RegenerateOptions) => RegenerateResult;
 }
 
 /** Check if a service is defined in the compose file */
@@ -39,6 +47,8 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
   const waitHealth = deps?.waitForHealth ?? waitForHealth;
   const exists = deps?.existsSync ?? fs.existsSync.bind(fs);
   const readFile = deps?.readFileSync ?? fs.readFileSync.bind(fs);
+  const readInstall = deps?.readInstallState ?? readInstallState;
+  const regenerate = deps?.regenerateCompose ?? regenerateCompose;
 
   console.log(chalk.bold('\npaparats update\n'));
 
@@ -68,6 +78,48 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
       console.log(chalk.yellow(`  Docker compose not found at ${COMPOSE_FILE}`));
       console.log(chalk.dim('  Run `paparats install` first to set up Docker.'));
     } else {
+      // Regenerate compose from install.json + projects.yml so any new service
+      // fields shipped with this CLI version land in the on-disk file. Without
+      // this, `docker compose up -d` runs against the previous template and
+      // can collide on container names or miss new env/volume settings.
+      const regenSpinner = ora('Refreshing docker-compose.yml...').start();
+      const state = readInstall(PAPARATS_HOME);
+      if (!state) {
+        regenSpinner.warn(
+          `install.json missing — skipping compose refresh. Run \`paparats install\` to record install settings.`
+        );
+      } else {
+        try {
+          const result = regenerate({
+            ollamaMode: state.ollamaMode,
+            ...(state.ollamaUrl !== undefined ? { ollamaUrl: state.ollamaUrl } : {}),
+            ...(state.embeddingProvider !== undefined
+              ? { embeddingProvider: state.embeddingProvider }
+              : {}),
+            ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
+            ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
+            ...(state.cron !== undefined ? { cron: state.cron } : {}),
+            paparatsHome: PAPARATS_HOME,
+            backupOnChange: true,
+          });
+          if (result.changed) {
+            regenSpinner.succeed('docker-compose.yml refreshed');
+            if (result.backupPath) {
+              console.log(
+                chalk.dim(
+                  `  Previous compose backed up to ${result.backupPath} (hand-edits, if any, are preserved there).`
+                )
+              );
+            }
+          } else {
+            regenSpinner.succeed('docker-compose.yml already up to date');
+          }
+        } catch (err) {
+          regenSpinner.fail('Failed to refresh docker-compose.yml');
+          throw err;
+        }
+      }
+
       const composeContent = readFile(COMPOSE_FILE, 'utf8');
       const hasQdrant = composeHasService(composeContent, 'qdrant');
       const composeCmd = getCompose();
@@ -87,7 +139,7 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
 
       const upSpinner = ora('Restarting Docker containers...').start();
       try {
-        exec(`${composeCmd} ${composeArg} up -d`, {
+        exec(`${composeCmd} ${composeArg} up -d --remove-orphans`, {
           stdio: opts.verbose ? 'inherit' : ['pipe', 'pipe', 'pipe'],
           timeout: 120_000,
         });
