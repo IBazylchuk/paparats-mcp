@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { SUPPORT_TOOLS } from '../../src/mcp-handler.js';
+import { SUPPORT_TOOLS, CODING_TOOLS } from '../../src/mcp-handler.js';
 import { ArchStore } from '../../src/arch/store.js';
 import type { CachedEmbeddingProvider } from '../../src/embeddings.js';
 import type { QdrantClient } from '@qdrant/js-client-rest';
@@ -35,12 +35,19 @@ function fakeQdrant() {
   };
 }
 
-describe('SUPPORT_TOOLS', () => {
-  it('includes the four arch tools', () => {
+describe('arch tool exposure per mode', () => {
+  it('coding mode exposes the full arch toolkit (read + write)', () => {
+    expect(CODING_TOOLS.has('arch_context')).toBe(true);
+    expect(CODING_TOOLS.has('arch_record_component')).toBe(true);
+    expect(CODING_TOOLS.has('arch_record_decision')).toBe(true);
+    expect(CODING_TOOLS.has('arch_record_lesson')).toBe(true);
+  });
+
+  it('support mode is read-only — only arch_context, no arch_record_*', () => {
     expect(SUPPORT_TOOLS.has('arch_context')).toBe(true);
-    expect(SUPPORT_TOOLS.has('arch_record_component')).toBe(true);
-    expect(SUPPORT_TOOLS.has('arch_record_decision')).toBe(true);
-    expect(SUPPORT_TOOLS.has('arch_record_lesson')).toBe(true);
+    expect(SUPPORT_TOOLS.has('arch_record_component')).toBe(false);
+    expect(SUPPORT_TOOLS.has('arch_record_decision')).toBe(false);
+    expect(SUPPORT_TOOLS.has('arch_record_lesson')).toBe(false);
   });
 });
 
