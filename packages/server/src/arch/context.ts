@@ -12,7 +12,7 @@ const INIT_HINT =
   'if you should initialise the arch layer: walk the repository, identify 8-20 ' +
   'components by domain boundaries, and write each via arch_record_component.';
 
-const LOW_CONFIDENCE_HINT =
+export const LOW_CONFIDENCE_HINT =
   'No high-confidence cards matched (cosine >= min_score). Either the question ' +
   'is off-topic for this group, the arch memory is incomplete, or min_score is ' +
   'too strict — try lowering it or rephrasing the question.';
