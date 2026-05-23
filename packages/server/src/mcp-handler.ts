@@ -31,7 +31,11 @@ import {
   failedChunks,
 } from './telemetry/queries.js';
 import { ArchStore } from './arch/store.js';
-import { buildArchContextWithVector, DEFAULT_MIN_SCORE } from './arch/context.js';
+import {
+  buildArchContextWithVector,
+  DEFAULT_MIN_SCORE,
+  LOW_CONFIDENCE_HINT,
+} from './arch/context.js';
 import type { ArchWriteResult } from './arch/types.js';
 import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
 
@@ -176,17 +180,54 @@ type TransportEntry = {
 
 export type McpMode = 'coding' | 'support';
 
-/** Tool names available in each mode */
-const CODING_TOOLS = new Set([
+/**
+ * Pick the user-visible text when `arch_context` returns no sections.
+ *
+ * Two distinct empty states from `arch/context.ts`:
+ *   - `LOW_CONFIDENCE_HINT` — cards exist, just nothing above min_score.
+ *     Neutral text, safe in both modes.
+ *   - `INIT_HINT` — no cards in the group at all. The default wording names
+ *     `arch_record_component`, which support mode can't reach — swap to a
+ *     support-appropriate alternative there.
+ *
+ * Identity compare against `LOW_CONFIDENCE_HINT` (not regex on the text) so
+ * the routing doesn't silently drift if the hint wording changes.
+ */
+export function pickArchContextEmptyText(lastHint: string | null, mode: McpMode): string {
+  if (lastHint === LOW_CONFIDENCE_HINT) return LOW_CONFIDENCE_HINT;
+  if (mode === 'support') {
+    return (
+      'No architectural memory recorded yet for this group. Ask whoever ' +
+      'maintains the codebase to bootstrap it from coding mode.'
+    );
+  }
+  return (
+    lastHint ??
+    'No architectural memory recorded yet. Ask the user if you ' +
+      'should initialise the arch layer: identify 8-20 components by ' +
+      'domain boundaries and write each via arch_record_component.'
+  );
+}
+
+/** Tool names available in each mode.
+ *
+ * Architectural-memory split: write tools (`arch_record_*`) live in coding mode
+ * only — that's where the agent is making changes and observing what's
+ * non-obvious. Support mode is strictly read-only: it's used by non-coders
+ * (support staff, on-call) who consume the memory but do not author it.
+ */
+export const CODING_TOOLS = new Set([
   'search_code',
   'get_chunk',
   'find_usages',
   'health_check',
   'delete_project',
   'list_projects',
-  // Read-only architectural memory in coding mode too — refactors need to know
-  // about prior decisions. Write tools (arch_record_*) stay support-only.
+  // arch memory — read + write, since coding mode is the one doing the work.
   'arch_context',
+  'arch_record_component',
+  'arch_record_decision',
+  'arch_record_lesson',
 ]);
 
 export const SUPPORT_TOOLS = new Set([
@@ -207,30 +248,27 @@ export const SUPPORT_TOOLS = new Set([
   'cross_project_share',
   'retry_rate',
   'failed_chunks',
-  // arch tools
+  // arch memory — read only.
   'arch_context',
-  'arch_record_component',
-  'arch_record_decision',
-  'arch_record_lesson',
 ]);
 
 /** Workflow-prompt names available in each mode. Content lives in prompts.json. */
-const CODING_PROMPTS = [
+export const CODING_PROMPTS = [
   'find_implementation',
   'trace_callers',
   'onboard_to_project',
-  // arch workflows that only read
+  // arch workflows — read + write (init + record live here, where edits happen)
+  'init_arch_memory',
   'audit_architecture',
+  'record_lesson_from_correction',
 ];
-const SUPPORT_PROMPTS = [
+export const SUPPORT_PROMPTS = [
   'triage_incident',
   'prepare_release_notes',
   'assess_change_impact',
   'onboard_to_project',
-  // arch workflows (read + write)
-  'init_arch_memory',
+  // arch workflows — read only.
   'audit_architecture',
-  'record_lesson_from_correction',
 ];
 
 export class McpHandler {
@@ -2260,16 +2298,7 @@ export class McpHandler {
           }
           if (sections.length === 0 && anyEmpty) {
             return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text:
-                    lastHint ??
-                    'No architectural memory recorded yet. Ask the user if you ' +
-                      'should initialise the arch layer: identify 8-20 components by ' +
-                      'domain boundaries and write each via arch_record_component.',
-                },
-              ],
+              content: [{ type: 'text' as const, text: pickArchContextEmptyText(lastHint, mode) }],
             };
           }
           return { content: [{ type: 'text' as const, text: sections.join('\n') }] };
