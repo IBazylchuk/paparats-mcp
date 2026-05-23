@@ -19,6 +19,16 @@ export interface MetricsRegistry {
   setQueryCacheHitRate(value: number): void;
   setQdrantCollections(value: number): void;
 
+  // ── Architectural memory ─────────────────────────────────────────────────
+  /** A write call landed on the arch store. Counts by card kind and gate outcome. */
+  incArchWriteTotal(kind: string, status: string): void;
+  /** `arch_context` was called for a group. */
+  incArchContextCallsTotal(group: string): void;
+  /** Cosine score of a hit returned by `arch_context` (post-min_score filter). */
+  observeArchSearchScore(score: number): void;
+  /** Snapshot of how many points the arch collection holds, by kind and status. */
+  setArchCollectionSize(group: string, kind: string, status: string, value: number): void;
+
   getMetricsHandler(): RequestHandler;
 }
 
@@ -39,6 +49,10 @@ class NoOpMetrics implements MetricsRegistry {
   setQueryCacheSize(_value: number): void {}
   setQueryCacheHitRate(_value: number): void {}
   setQdrantCollections(_value: number): void {}
+  incArchWriteTotal(_kind: string, _status: string): void {}
+  incArchContextCallsTotal(_group: string): void {}
+  observeArchSearchScore(_score: number): void {}
+  setArchCollectionSize(_group: string, _kind: string, _status: string, _value: number): void {}
 
   getMetricsHandler(): RequestHandler {
     return (_req, res) => {
@@ -135,6 +149,34 @@ async function createPrometheusMetrics(): Promise<MetricsRegistry> {
     registers: [registry],
   });
 
+  const archWriteTotal = new prom.Counter({
+    name: 'paparats_arch_write_total',
+    help: 'Architectural-memory write calls by card kind and similarity-gate outcome',
+    labelNames: ['kind', 'status'] as const,
+    registers: [registry],
+  });
+
+  const archContextCallsTotal = new prom.Counter({
+    name: 'paparats_arch_context_calls_total',
+    help: 'Number of arch_context calls per group',
+    labelNames: ['group'] as const,
+    registers: [registry],
+  });
+
+  const archSearchScore = new prom.Histogram({
+    name: 'paparats_arch_search_score',
+    help: 'Cosine similarity of hits returned by arch_context (post min_score filter)',
+    buckets: [0.3, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 1.0],
+    registers: [registry],
+  });
+
+  const archCollectionSize = new prom.Gauge({
+    name: 'paparats_arch_collection_size',
+    help: 'Architectural-memory card count by group, kind, and status',
+    labelNames: ['group', 'kind', 'status'] as const,
+    registers: [registry],
+  });
+
   return {
     enabled: true,
 
@@ -173,6 +215,18 @@ async function createPrometheusMetrics(): Promise<MetricsRegistry> {
     },
     setQdrantCollections(value: number) {
       qdrantCollections.set(value);
+    },
+    incArchWriteTotal(kind: string, status: string) {
+      archWriteTotal.inc({ kind, status });
+    },
+    incArchContextCallsTotal(group: string) {
+      archContextCallsTotal.inc({ group });
+    },
+    observeArchSearchScore(score: number) {
+      archSearchScore.observe(score);
+    },
+    setArchCollectionSize(group: string, kind: string, status: string, value: number) {
+      archCollectionSize.set({ group, kind, status }, value);
     },
 
     getMetricsHandler(): RequestHandler {

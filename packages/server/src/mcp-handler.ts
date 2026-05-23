@@ -2,7 +2,7 @@ import { createRequire } from 'node:module';
 import { v7 as uuidv7 } from 'uuid';
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../package.json') as { version: string };
@@ -30,6 +30,10 @@ import {
   retryRate,
   failedChunks,
 } from './telemetry/queries.js';
+import { ArchStore } from './arch/store.js';
+import { buildArchContextWithVector, DEFAULT_MIN_SCORE } from './arch/context.js';
+import type { ArchWriteResult } from './arch/types.js';
+import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -76,6 +80,71 @@ function resolveChunkLocation(payload: Record<string, unknown>): ChunkLocation {
   };
 }
 
+/**
+ * Render a unix-ms timestamp as a short "updated N units ago" label.
+ * Coarse on purpose — the agent's decision is "fresh enough vs. potentially stale",
+ * not a precise duration.
+ */
+function formatAge(ts: number | undefined): string {
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return 'updated ?';
+  const diffMs = Date.now() - ts;
+  if (diffMs < 60 * 1000) return 'updated just now';
+  const minutes = Math.floor(diffMs / (60 * 1000));
+  if (minutes < 60) return `updated ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `updated ${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `updated ${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `updated ${months}mo ago`;
+  return `updated ${Math.floor(months / 12)}y ago`;
+}
+
+/**
+ * Render an arch_record_* result as an explicit, agent-actionable message.
+ * The `status` field is what tells the agent what to do next:
+ *  - `created` / `updated` — the new card landed, nothing more to do.
+ *  - `duplicate`           — for lessons we already bumped updatedAt; for
+ *                            decisions the caller should ask the user why
+ *                            they didn't discover the existing one first.
+ *  - `similar`             — nothing was written; the caller decides between
+ *                            "update the existing card" (re-call with the
+ *                            same key) and "replace it" (decision: pass
+ *                            `supersedes`; lesson: refine and re-call).
+ */
+function formatWriteResult(
+  kind: 'decision' | 'lesson',
+  label: string,
+  result: ArchWriteResult
+): string {
+  const id = result.id;
+  const sim = result.similarity !== undefined ? ` similarity=${result.similarity.toFixed(2)}` : '';
+  const matched = result.matchedLabel ? ` matched="${result.matchedLabel}"` : '';
+  switch (result.status) {
+    case 'created':
+      return `Recorded ${kind} "${label}" (id=${id}).`;
+    case 'updated':
+      // Lesson duplicates land here — the existing card's updatedAt was bumped.
+      return (
+        `Found a duplicate ${kind} (id=${id}${matched}${sim}). Bumped updatedAt instead of writing a new card. ` +
+        `If your wording was meant to refine the existing lesson, refine the existing one rather than retrying.`
+      );
+    case 'duplicate':
+      return (
+        `A ${kind} that is nearly identical already exists (id=${id}${matched}${sim}). ` +
+        `Nothing was written. Ask the user: why did arch_context not surface this earlier? ` +
+        `Then either skip this write or refine the wording so it adds new information.`
+      );
+    case 'similar':
+      return (
+        `A similar ${kind} already exists (id=${id}${matched}${sim}). Nothing was written. ` +
+        (kind === 'decision'
+          ? 'If you intend to replace it, re-call with `supersedes` set to that id. Otherwise sharpen the wording so the similarity drops.'
+          : 'Decide whether to refine the existing lesson or write a clearly distinct one — and re-call accordingly.')
+      );
+  }
+}
+
 export interface McpHandlerConfig {
   searcher: Searcher;
   indexer: Indexer;
@@ -93,6 +162,10 @@ export interface McpHandlerConfig {
   telemetry?: Telemetry;
   /** Optional analytics store backing the analytics MCP tools */
   analytics?: AnalyticsStore;
+  /** Optional arch-layer store. When unset, arch_* tools are skipped at registration time. */
+  archStore?: ArchStore;
+  /** Optional metrics registry. NoOp by default — see metrics.ts. */
+  metrics?: MetricsRegistry;
 }
 
 type TransportEntry = {
@@ -111,9 +184,12 @@ const CODING_TOOLS = new Set([
   'health_check',
   'delete_project',
   'list_projects',
+  // Read-only architectural memory in coding mode too — refactors need to know
+  // about prior decisions. Write tools (arch_record_*) stay support-only.
+  'arch_context',
 ]);
 
-const SUPPORT_TOOLS = new Set([
+export const SUPPORT_TOOLS = new Set([
   'search_code',
   'get_chunk',
   'find_usages',
@@ -131,15 +207,30 @@ const SUPPORT_TOOLS = new Set([
   'cross_project_share',
   'retry_rate',
   'failed_chunks',
+  // arch tools
+  'arch_context',
+  'arch_record_component',
+  'arch_record_decision',
+  'arch_record_lesson',
 ]);
 
 /** Workflow-prompt names available in each mode. Content lives in prompts.json. */
-const CODING_PROMPTS = ['find_implementation', 'trace_callers', 'onboard_to_project'];
+const CODING_PROMPTS = [
+  'find_implementation',
+  'trace_callers',
+  'onboard_to_project',
+  // arch workflows that only read
+  'audit_architecture',
+];
 const SUPPORT_PROMPTS = [
   'triage_incident',
   'prepare_release_notes',
   'assess_change_impact',
   'onboard_to_project',
+  // arch workflows (read + write)
+  'init_arch_memory',
+  'audit_architecture',
+  'record_lesson_from_correction',
 ];
 
 export class McpHandler {
@@ -152,6 +243,8 @@ export class McpHandler {
   private metadataStore: MetadataStore | null;
   private telemetry: Telemetry | null;
   private analytics: AnalyticsStore | null;
+  private archStore: ArchStore | null;
+  private metrics: MetricsRegistry;
   private sessionIdentity = new Map<
     string,
     { user: string; session: string | null; client: string | null; anchorProject: string | null }
@@ -174,6 +267,8 @@ export class McpHandler {
     this.metadataStore = config.metadataStore ?? null;
     this.telemetry = config.telemetry ?? null;
     this.analytics = config.analytics ?? null;
+    this.archStore = config.archStore ?? null;
+    this.metrics = config.metrics ?? new NoOpMetrics();
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000);
     this.cleanupInterval.unref(); // Don't hold event loop open
@@ -382,6 +477,82 @@ export class McpHandler {
         };
       }
     });
+
+    // ── Resource: arch://schema (static) ────────────────────────────────────
+    server.resource('arch-schema', 'arch://schema', async () => ({
+      contents: [
+        {
+          uri: 'arch://schema',
+          mimeType: 'text/markdown',
+          text: prompts.resources.archSchema.body,
+        },
+      ],
+    }));
+
+    // ── Resource: arch://stats/{group} ──────────────────────────────────────
+    // Live stats for one group; the agent dereferences arch://stats/<group>
+    // and gets total + breakdown by kind/status + age window. Also pushed
+    // to Prometheus so operators can chart it.
+    if (this.archStore) {
+      const archStore = this.archStore;
+      const metrics = this.metrics;
+      server.resource(
+        'arch-stats',
+        new ResourceTemplate('arch://stats/{group}', { list: undefined }),
+        async (uri, vars) => {
+          const groupRaw = (vars as { group?: string | string[] }).group;
+          const group = Array.isArray(groupRaw) ? groupRaw[0] : groupRaw;
+          if (!group) {
+            return {
+              contents: [
+                {
+                  uri: uri.href,
+                  mimeType: 'text/plain',
+                  text: 'Bad URI. Expected arch://stats/<group>.',
+                },
+              ],
+            };
+          }
+          const stats = await archStore.stats(group);
+          // Push the snapshot to the gauge so it survives in Prometheus too.
+          for (const kind of ['component', 'decision', 'lesson'] as const) {
+            metrics.setArchCollectionSize(group, kind, 'all', stats.byKind[kind]);
+          }
+          for (const status of ['proposed', 'accepted', 'superseded', 'deprecated'] as const) {
+            metrics.setArchCollectionSize(group, 'all', status, stats.byStatus[status]);
+          }
+          const oldest = stats.oldestUpdatedAt
+            ? new Date(stats.oldestUpdatedAt).toISOString()
+            : 'n/a';
+          const newest = stats.newestUpdatedAt
+            ? new Date(stats.newestUpdatedAt).toISOString()
+            : 'n/a';
+          const text = [
+            `# Architectural memory — group ${group}`,
+            '',
+            `**Total cards:** ${stats.total}`,
+            '',
+            '## By kind',
+            `- components: ${stats.byKind.component}`,
+            `- decisions:  ${stats.byKind.decision}`,
+            `- lessons:    ${stats.byKind.lesson}`,
+            '',
+            '## By status',
+            `- proposed:   ${stats.byStatus.proposed}`,
+            `- accepted:   ${stats.byStatus.accepted}`,
+            `- superseded: ${stats.byStatus.superseded}`,
+            `- deprecated: ${stats.byStatus.deprecated}`,
+            '',
+            '## Age window',
+            `- oldest updatedAt: ${oldest}`,
+            `- newest updatedAt: ${newest}`,
+          ].join('\n');
+          return {
+            contents: [{ uri: uri.href, mimeType: 'text/markdown', text }],
+          };
+        }
+      );
+    }
 
     // ── Tool: search_code ───────────────────────────────────────────────────
     if (tools.has('search_code'))
@@ -1999,6 +2170,291 @@ export class McpHandler {
             return renderJson('Failed Chunks', rows);
           }
         );
+    }
+
+    // ── Tool: arch_context ──────────────────────────────────────────────────
+    if (tools.has('arch_context') && this.archStore) {
+      const archStore = this.archStore;
+      const metrics = this.metrics;
+      server.tool(
+        'arch_context',
+        prompts.tools['arch_context']?.description ??
+          'Retrieve architectural memory relevant to a question or set of touched files.',
+        {
+          question: z.string().describe('Question, or comma-separated list of files being touched'),
+          group: z
+            .string()
+            .optional()
+            .describe('Specific group, or omit to query all known groups'),
+          min_score: z
+            .number()
+            .min(0)
+            .max(1)
+            .optional()
+            .describe(
+              `Drop hits whose cosine similarity is below this threshold. Default ${DEFAULT_MIN_SCORE}. Lower it (e.g. 0.30) when the arch memory is sparse and you want broader recall; raise it (e.g. 0.60) when you only want high-confidence matches.`
+            ),
+        },
+        async ({ question, group, min_score }) => {
+          const groupNames = group ? [group] : this.getGroupNames();
+          if (groupNames.length === 0) {
+            return {
+              content: [
+                { type: 'text' as const, text: 'No groups registered. Index a project first.' },
+              ],
+            };
+          }
+          // Embed the question once, then fan out across groups in parallel —
+          // each call hits its own Qdrant collection, so they don't contend.
+          const vector = await archStore.embedQuestion(question);
+          const results = await Promise.all(
+            groupNames.map(async (g) => {
+              metrics.incArchContextCallsTotal(g);
+              return {
+                group: g,
+                ctx: await buildArchContextWithVector(archStore, g, vector, {
+                  ...(typeof min_score === 'number' ? { minScore: min_score } : {}),
+                }),
+              };
+            })
+          );
+          const sections: string[] = [];
+          let anyEmpty = false;
+          let lastHint: string | null = null;
+          for (const { group: g, ctx: r } of results) {
+            if (r.empty) {
+              anyEmpty = true;
+              lastHint = r.hint;
+              continue;
+            }
+            sections.push(`## Group: ${g}`);
+            if (r.components.length) {
+              sections.push('### Components');
+              for (const c of r.components) {
+                const files = c.files.length > 0 ? c.files.join(', ') : '—';
+                metrics.observeArchSearchScore(c.score);
+                sections.push(
+                  `- **${c.name}** (${formatAge(c.updatedAt)}, score ${c.score.toFixed(2)}) — ${c.summary} (files: ${files})`
+                );
+              }
+            }
+            if (r.decisions.length) {
+              sections.push('### Decisions');
+              for (const d of r.decisions) {
+                metrics.observeArchSearchScore(d.score);
+                sections.push(
+                  `- **${d.title}** (${formatAge(d.updatedAt)}, score ${d.score.toFixed(2)}) — ${d.decision}`
+                );
+              }
+            }
+            if (r.lessons.length) {
+              sections.push('### Lessons');
+              for (const l of r.lessons) {
+                metrics.observeArchSearchScore(l.score);
+                sections.push(
+                  `- (${l.severity}, ${formatAge(l.updatedAt)}, score ${l.score.toFixed(2)}) ${l.rule}`
+                );
+              }
+            }
+            sections.push('');
+          }
+          if (sections.length === 0 && anyEmpty) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text:
+                    lastHint ??
+                    'No architectural memory recorded yet. Ask the user if you ' +
+                      'should initialise the arch layer: identify 8-20 components by ' +
+                      'domain boundaries and write each via arch_record_component.',
+                },
+              ],
+            };
+          }
+          return { content: [{ type: 'text' as const, text: sections.join('\n') }] };
+        }
+      );
+    }
+
+    // ── Tool: arch_record_component ─────────────────────────────────────────
+    if (tools.has('arch_record_component') && this.archStore) {
+      const archStore = this.archStore;
+      const metrics = this.metrics;
+      server.tool(
+        'arch_record_component',
+        prompts.tools['arch_record_component']?.description ??
+          'Record or update an architectural component.',
+        {
+          group: z.string().describe('Target group'),
+          name: z
+            .string()
+            .describe(
+              'Component name, unique within the group. Stable, refactor-resistant — e.g. "file indexer", not "Indexer (in indexer.ts)".'
+            ),
+          summary: z
+            .string()
+            .describe(
+              'Markdown with four sections, each one or two short lines:\n' +
+                '- **Does:** what it does\n' +
+                '- **Owns:** state / DB tables / external IO it controls\n' +
+                '- **Does not:** one or two things it explicitly does NOT do (boundary)\n' +
+                '- **Touched when:** what kind of change forces editing this component'
+            ),
+          files: z
+            .array(z.string())
+            .default([])
+            .describe(
+              'Repository paths the component spans (e.g. packages/server/src/indexer.ts).'
+            ),
+          neighbours: z
+            .array(z.string())
+            .default([])
+            .describe(
+              'Names of related components (matches `name` of other arch_record_component entries).'
+            ),
+          anchors: z
+            .array(z.string())
+            .default([])
+            .describe(
+              'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code.'
+            ),
+        },
+        async ({ group, name, summary, files, neighbours, anchors }) => {
+          const result = await archStore.upsertComponent(group, {
+            name,
+            summary,
+            files,
+            neighbours,
+            anchors,
+          });
+          metrics.incArchWriteTotal('component', result.status);
+          const verb = result.status === 'updated' ? 'Updated' : 'Recorded';
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `${verb} component "${name}" (id=${result.id}, status=${result.status}).`,
+              },
+            ],
+          };
+        }
+      );
+    }
+
+    // ── Tool: arch_record_decision ──────────────────────────────────────────
+    if (tools.has('arch_record_decision') && this.archStore) {
+      const archStore = this.archStore;
+      const metrics = this.metrics;
+      server.tool(
+        'arch_record_decision',
+        prompts.tools['arch_record_decision']?.description ?? 'Record an architectural decision.',
+        {
+          group: z.string().describe('Target group'),
+          title: z
+            .string()
+            .describe('Short imperative title — e.g. "Use bge-m3 for arch-layer text embeddings".'),
+          context: z.string().describe('One sentence: the problem that forced the decision.'),
+          decision: z.string().describe('One sentence: what was chosen.'),
+          alternatives_rejected: z
+            .string()
+            .default('')
+            .describe(
+              'Markdown bullet list, one per rejected alternative:\n' +
+                '- **<option name>:** why rejected (one sentence)\n' +
+                '- **<option name>:** why rejected (one sentence)\n' +
+                'Use an empty string only if no real alternatives were considered.'
+            ),
+          consequences: z
+            .string()
+            .describe(
+              'Markdown bullet list, 2-5 items. Each item is one sentence: a consequence, a trade-off, or a required follow-up.'
+            ),
+          scope: z.enum(['global', 'component', 'file']).default('global'),
+          supersedes: z
+            .string()
+            .nullable()
+            .optional()
+            .describe(
+              'Id of a previous decision this one replaces. Bypasses the duplicate gate — pass only when you are deliberately replacing a known prior decision.'
+            ),
+        },
+        async ({
+          group,
+          title,
+          context,
+          decision,
+          alternatives_rejected,
+          consequences,
+          scope,
+          supersedes,
+        }) => {
+          const result = await archStore.upsertDecision(group, {
+            title,
+            context,
+            decision,
+            alternativesRejected: alternatives_rejected,
+            consequences,
+            scope,
+            supersedes: supersedes ?? null,
+          });
+          metrics.incArchWriteTotal('decision', result.status);
+          return {
+            content: [
+              { type: 'text' as const, text: formatWriteResult('decision', title, result) },
+            ],
+          };
+        }
+      );
+    }
+
+    // ── Tool: arch_record_lesson ────────────────────────────────────────────
+    if (tools.has('arch_record_lesson') && this.archStore) {
+      const archStore = this.archStore;
+      const metrics = this.metrics;
+      server.tool(
+        'arch_record_lesson',
+        prompts.tools['arch_record_lesson']?.description ?? 'Record a lesson.',
+        {
+          group: z.string().describe('Target group'),
+          rule: z
+            .string()
+            .describe(
+              'One imperative sentence — the rule itself. E.g. "Always preserve createdAt on re-upsert."'
+            ),
+          why: z
+            .string()
+            .describe(
+              '1-3 sentences. The incident or reason. Quote the user verbatim if they corrected you.'
+            ),
+          when: z
+            .string()
+            .describe(
+              'One sentence describing the situation in which this rule applies. Future-you must be able to recognise it.'
+            ),
+          scope: z.enum(['global', 'component', 'file']).default('global'),
+          severity: z.enum(['info', 'warning', 'critical']).default('info'),
+          evidence: z
+            .string()
+            .nullable()
+            .optional()
+            .describe('Optional commit hash, PR link, or short quote backing the lesson.'),
+        },
+        async ({ group, rule, why, when, scope, severity, evidence }) => {
+          const result = await archStore.upsertLesson(group, {
+            rule,
+            why,
+            when,
+            scope,
+            severity,
+            evidence: evidence ?? null,
+          });
+          metrics.incArchWriteTotal('lesson', result.status);
+          return {
+            content: [{ type: 'text' as const, text: formatWriteResult('lesson', rule, result) }],
+          };
+        }
+      );
     }
 
     // ── Workflow prompts ─────────────────────────────────────────────────────
