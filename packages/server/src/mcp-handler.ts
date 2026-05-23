@@ -31,7 +31,11 @@ import {
   failedChunks,
 } from './telemetry/queries.js';
 import { ArchStore } from './arch/store.js';
-import { buildArchContextWithVector, DEFAULT_MIN_SCORE } from './arch/context.js';
+import {
+  buildArchContextWithVector,
+  DEFAULT_MIN_SCORE,
+  LOW_CONFIDENCE_HINT,
+} from './arch/context.js';
 import type { ArchWriteResult } from './arch/types.js';
 import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
 
@@ -175,6 +179,35 @@ type TransportEntry = {
 };
 
 export type McpMode = 'coding' | 'support';
+
+/**
+ * Pick the user-visible text when `arch_context` returns no sections.
+ *
+ * Two distinct empty states from `arch/context.ts`:
+ *   - `LOW_CONFIDENCE_HINT` — cards exist, just nothing above min_score.
+ *     Neutral text, safe in both modes.
+ *   - `INIT_HINT` — no cards in the group at all. The default wording names
+ *     `arch_record_component`, which support mode can't reach — swap to a
+ *     support-appropriate alternative there.
+ *
+ * Identity compare against `LOW_CONFIDENCE_HINT` (not regex on the text) so
+ * the routing doesn't silently drift if the hint wording changes.
+ */
+export function pickArchContextEmptyText(lastHint: string | null, mode: McpMode): string {
+  if (lastHint === LOW_CONFIDENCE_HINT) return LOW_CONFIDENCE_HINT;
+  if (mode === 'support') {
+    return (
+      'No architectural memory recorded yet for this group. Ask whoever ' +
+      'maintains the codebase to bootstrap it from coding mode.'
+    );
+  }
+  return (
+    lastHint ??
+    'No architectural memory recorded yet. Ask the user if you ' +
+      'should initialise the arch layer: identify 8-20 components by ' +
+      'domain boundaries and write each via arch_record_component.'
+  );
+}
 
 /** Tool names available in each mode.
  *
@@ -2264,23 +2297,8 @@ export class McpHandler {
             sections.push('');
           }
           if (sections.length === 0 && anyEmpty) {
-            // The default INIT_HINT from arch/context.ts names arch_record_component,
-            // which is fine in coding mode but misleading in support (no write tools).
-            // Swap to a support-appropriate fallback in that case.
-            const fallback =
-              mode === 'support'
-                ? 'No architectural memory recorded yet for this group. Ask whoever ' +
-                  'maintains the codebase to bootstrap it from coding mode.'
-                : 'No architectural memory recorded yet. Ask the user if you ' +
-                  'should initialise the arch layer: identify 8-20 components by ' +
-                  'domain boundaries and write each via arch_record_component.';
             return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: mode === 'support' ? fallback : (lastHint ?? fallback),
-                },
-              ],
+              content: [{ type: 'text' as const, text: pickArchContextEmptyText(lastHint, mode) }],
             };
           }
           return { content: [{ type: 'text' as const, text: sections.join('\n') }] };
