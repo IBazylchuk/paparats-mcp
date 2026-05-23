@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { runUpdate } from '../src/commands/update.js';
+import type { RegenerateOptions, RegenerateResult } from '../src/projects-yml.js';
 
 const COMPOSE_WITH_QDRANT = `services:
   qdrant:
@@ -14,6 +15,14 @@ const COMPOSE_WITHOUT_QDRANT = `services:
   ollama:
     image: ibaz/paparats-ollama:latest
 `;
+
+const STUB_INSTALL_STATE = { ollamaMode: 'native' as const };
+
+function stubRegenerate(
+  override?: Partial<RegenerateResult>
+): (opts: RegenerateOptions) => RegenerateResult {
+  return () => ({ changed: false, composeYaml: COMPOSE_WITH_QDRANT, ...override });
+}
 
 describe('update', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
@@ -41,6 +50,8 @@ describe('update', () => {
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
           readFileSync: () => COMPOSE_WITH_QDRANT,
+          readInstallState: () => STUB_INSTALL_STATE,
+          regenerateCompose: stubRegenerate(),
         }
       );
 
@@ -54,7 +65,7 @@ describe('update', () => {
         expect.any(Object)
       );
       expect(execMock).toHaveBeenCalledWith(
-        expect.stringMatching(/docker compose -f .* up -d/),
+        expect.stringMatching(/docker compose -f .* up -d --remove-orphans/),
         expect.any(Object)
       );
     });
@@ -68,6 +79,8 @@ describe('update', () => {
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
           readFileSync: () => COMPOSE_WITH_QDRANT,
+          readInstallState: () => STUB_INSTALL_STATE,
+          regenerateCompose: stubRegenerate(),
         }
       );
 
@@ -122,6 +135,8 @@ describe('update', () => {
           waitForHealth: healthMock,
           existsSync: () => true,
           readFileSync: () => COMPOSE_WITHOUT_QDRANT,
+          readInstallState: () => STUB_INSTALL_STATE,
+          regenerateCompose: stubRegenerate({ composeYaml: COMPOSE_WITHOUT_QDRANT }),
         }
       );
 
@@ -144,6 +159,8 @@ describe('update', () => {
           waitForHealth: healthMock,
           existsSync: () => true,
           readFileSync: () => COMPOSE_WITH_QDRANT,
+          readInstallState: () => STUB_INSTALL_STATE,
+          regenerateCompose: stubRegenerate(),
         }
       );
 
@@ -155,6 +172,66 @@ describe('update', () => {
       expect(healthMock).toHaveBeenCalledWith(
         expect.stringContaining('9876/health'),
         expect.any(String)
+      );
+    });
+
+    it('regenerates compose, reports the backup path, and tears down orphans', async () => {
+      const regenerate = vi.fn(
+        (_opts: RegenerateOptions): RegenerateResult => ({
+          changed: true,
+          composeYaml: COMPOSE_WITH_QDRANT,
+          backupPath: '/tmp/docker-compose.yml.bak',
+        })
+      );
+
+      await runUpdate(
+        { skipCli: true },
+        {
+          execSync: execMock,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          existsSync: () => true,
+          readFileSync: () => COMPOSE_WITH_QDRANT,
+          readInstallState: () => STUB_INSTALL_STATE,
+          regenerateCompose: regenerate,
+        }
+      );
+
+      expect(regenerate).toHaveBeenCalledWith(
+        expect.objectContaining({ backupOnChange: true, ollamaMode: 'native' })
+      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('/tmp/docker-compose.yml.bak'));
+      expect(execMock).toHaveBeenCalledWith(
+        expect.stringMatching(/docker compose -f .* up -d --remove-orphans/),
+        expect.any(Object)
+      );
+    });
+
+    it('skips compose regeneration when install.json is missing', async () => {
+      const regenerate = vi.fn(stubRegenerate());
+
+      await runUpdate(
+        { skipCli: true },
+        {
+          execSync: execMock,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          existsSync: () => true,
+          readFileSync: () => COMPOSE_WITH_QDRANT,
+          readInstallState: () => null,
+          regenerateCompose: regenerate,
+        }
+      );
+
+      expect(regenerate).not.toHaveBeenCalled();
+      // Pull + up still run — we don't want missing install.json to stop the update.
+      expect(execMock).toHaveBeenCalledWith(
+        expect.stringMatching(/docker compose -f .* pull/),
+        expect.any(Object)
+      );
+      expect(execMock).toHaveBeenCalledWith(
+        expect.stringMatching(/docker compose -f .* up -d --remove-orphans/),
+        expect.any(Object)
       );
     });
   });
