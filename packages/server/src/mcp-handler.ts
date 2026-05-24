@@ -2232,14 +2232,14 @@ export class McpHandler {
             .describe(
               `Drop hits whose cosine similarity is below this threshold. Default ${DEFAULT_MIN_SCORE}. Lower it (e.g. 0.30) when the arch memory is sparse and you want broader recall; raise it (e.g. 0.60) when you only want high-confidence matches.`
             ),
-          path_prefixes: z
-            .array(z.string())
+          project: z
+            .string()
             .optional()
             .describe(
-              'Restrict component hits to cards whose files start with one of these prefixes (e.g. ["backend/"]). Match is literal `string.startsWith` — no glob, no regex, no leading-slash normalization; pass the exact prefix you want matched. Decisions and lessons pass through (they have no files[]), so a prefixed call still returns globally-scoped guidance.'
+              'Scope results to a single project inside the group (same value the indexer uses as `payload.project` on code chunks). Components are filtered hard — a component without `project=X` is dropped. Decisions and lessons are filtered soft — cards with `project=X` OR no `project` field pass through, so globally-scoped guidance still surfaces. Omit to query the whole group.'
             ),
         },
-        async ({ question, group, min_score, path_prefixes }) => {
+        async ({ question, group, min_score, project }) => {
           const groupNames = group ? [group] : this.getGroupNames();
           if (groupNames.length === 0) {
             return {
@@ -2258,9 +2258,7 @@ export class McpHandler {
                 group: g,
                 ctx: await buildArchContextWithVector(archStore, g, vector, {
                   ...(typeof min_score === 'number' ? { minScore: min_score } : {}),
-                  ...(Array.isArray(path_prefixes) && path_prefixes.length > 0
-                    ? { pathPrefixes: path_prefixes }
-                    : {}),
+                  ...(typeof project === 'string' && project.length > 0 ? { project } : {}),
                 }),
               };
             })
@@ -2325,10 +2323,15 @@ export class McpHandler {
           'Record or update an architectural component.',
         {
           group: z.string().describe('Target group'),
+          project: z
+            .string()
+            .describe(
+              'Required. Project the component belongs to — the same value the indexer writes as `payload.project` on code chunks (typically the repo directory basename). Components in the same group with the same name but different projects coexist independently.'
+            ),
           name: z
             .string()
             .describe(
-              'Component name, unique within the group. Stable, refactor-resistant — e.g. "file indexer", not "Indexer (in indexer.ts)".'
+              'Component name, unique per (group, project). Stable, refactor-resistant — e.g. "file indexer", not "Indexer (in indexer.ts)".'
             ),
           summary: z
             .string()
@@ -2358,8 +2361,9 @@ export class McpHandler {
               'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code.'
             ),
         },
-        async ({ group, name, summary, files, neighbours, anchors }) => {
+        async ({ group, project, name, summary, files, neighbours, anchors }) => {
           const result = await archStore.upsertComponent(group, {
+            project,
             name,
             summary,
             files,
@@ -2389,6 +2393,12 @@ export class McpHandler {
         prompts.tools['arch_record_decision']?.description ?? 'Record an architectural decision.',
         {
           group: z.string().describe('Target group'),
+          project: z
+            .string()
+            .optional()
+            .describe(
+              'Optional. Project this decision is scoped to (same value the indexer uses in `payload.project`). Omit for decisions that apply across all projects in the group.'
+            ),
           title: z
             .string()
             .describe('Short imperative title — e.g. "Use bge-m3 for arch-layer text embeddings".'),
@@ -2419,6 +2429,7 @@ export class McpHandler {
         },
         async ({
           group,
+          project,
           title,
           context,
           decision,
@@ -2428,6 +2439,7 @@ export class McpHandler {
           supersedes,
         }) => {
           const result = await archStore.upsertDecision(group, {
+            ...(project !== undefined ? { project } : {}),
             title,
             context,
             decision,
@@ -2455,6 +2467,12 @@ export class McpHandler {
         prompts.tools['arch_record_lesson']?.description ?? 'Record a lesson.',
         {
           group: z.string().describe('Target group'),
+          project: z
+            .string()
+            .optional()
+            .describe(
+              'Optional. Project this lesson is scoped to (same value the indexer uses in `payload.project`). Omit for lessons that apply across all projects in the group.'
+            ),
           rule: z
             .string()
             .describe(
@@ -2478,8 +2496,9 @@ export class McpHandler {
             .optional()
             .describe('Optional commit hash, PR link, or short quote backing the lesson.'),
         },
-        async ({ group, rule, why, when, scope, severity, evidence }) => {
+        async ({ group, project, rule, why, when, scope, severity, evidence }) => {
           const result = await archStore.upsertLesson(group, {
+            ...(project !== undefined ? { project } : {}),
             rule,
             why,
             when,

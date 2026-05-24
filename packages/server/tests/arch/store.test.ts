@@ -48,8 +48,9 @@ describe('ArchStore.upsertComponent', () => {
     });
   });
 
-  it('writes a component point and returns status=created', async () => {
+  it('writes a component point with project in payload and returns status=created', async () => {
     const result = await store.upsertComponent('my-app', {
+      project: 'my-app',
       name: 'indexer pipeline',
       summary: '**Does:** indexes files.',
       files: ['packages/server/src/indexer.ts'],
@@ -64,13 +65,17 @@ describe('ArchStore.upsertComponent', () => {
     ).points[0]!;
     expect(point.payload['arch_kind']).toBe('component');
     expect(point.payload['name']).toBe('indexer pipeline');
+    expect(point.payload['project']).toBe('my-app');
   });
 
-  it('reuses id and returns status=updated when component with same name exists', async () => {
+  it('reuses id and returns status=updated when component with same (name, project) exists', async () => {
     qdrant.scroll = vi.fn().mockResolvedValue({
-      points: [{ id: 'existing-uuid', payload: { arch_kind: 'component', name: 'X' } }],
+      points: [
+        { id: 'existing-uuid', payload: { arch_kind: 'component', name: 'X', project: 'my-app' } },
+      ],
     });
-    const result = await store.upsertComponent('my-app', {
+    const result = await store.upsertComponent('shared', {
+      project: 'my-app',
       name: 'X',
       summary: 's',
       files: [],
@@ -79,6 +84,30 @@ describe('ArchStore.upsertComponent', () => {
     });
     expect(result.status).toBe('updated');
     expect(result.id).toBe('existing-uuid');
+  });
+
+  it('isolates components by project: same name in different projects does not collide', async () => {
+    // Scroll filter must include project — when it doesn't match, findByName
+    // returns null and upsert creates a fresh card instead of overwriting.
+    qdrant.scroll = vi.fn().mockResolvedValue({ points: [] });
+    const result = await store.upsertComponent('shared', {
+      project: 'app-b',
+      name: 'indexer',
+      summary: 's',
+      files: [],
+      neighbours: [],
+      anchors: [],
+    });
+    expect(result.status).toBe('created');
+    // Verify the scroll filter actually included project=app-b.
+    const scrollFilter = (
+      qdrant.scroll.mock.calls[0]![1] as {
+        filter: { must: Array<{ key: string; match: { value: unknown } }> };
+      }
+    ).filter.must;
+    const projectClause = scrollFilter.find((c) => c.key === 'project');
+    expect(projectClause).toBeDefined();
+    expect(projectClause!.match.value).toBe('app-b');
   });
 
   it('preserves createdAt when re-upserting an existing component', async () => {
@@ -90,6 +119,7 @@ describe('ArchStore.upsertComponent', () => {
           payload: {
             arch_kind: 'component',
             name: 'X',
+            project: 'my-app',
             createdAt: originalCreatedAt,
             updatedAt: originalCreatedAt,
           },
@@ -97,6 +127,7 @@ describe('ArchStore.upsertComponent', () => {
       ],
     });
     await store.upsertComponent('my-app', {
+      project: 'my-app',
       name: 'X',
       summary: 'updated summary',
       files: [],
@@ -217,6 +248,150 @@ describe('ArchStore.upsertDecision', () => {
       wait: true,
     });
   });
+
+  it('writes project to payload when provided, omits the field when not', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    await store.upsertDecision('shared', {
+      project: 'app-a',
+      title: 'Scoped',
+      context: 'c',
+      decision: 'd',
+      alternativesRejected: '',
+      consequences: '-',
+      scope: 'global',
+    });
+    const withProject = (
+      qdrant.upsert.mock.calls[0]![1] as { points: Array<{ payload: Record<string, unknown> }> }
+    ).points[0]!.payload;
+    expect(withProject['project']).toBe('app-a');
+
+    await store.upsertDecision('shared', {
+      title: 'Global',
+      context: 'c',
+      decision: 'd',
+      alternativesRejected: '',
+      consequences: '-',
+      scope: 'global',
+    });
+    const withoutProject = (
+      qdrant.upsert.mock.calls[1]![1] as { points: Array<{ payload: Record<string, unknown> }> }
+    ).points[0]!.payload;
+    expect('project' in withoutProject).toBe(false);
+  });
+
+  it('similarity gate is scoped: identical decision in another project does not block the write', async () => {
+    // Qdrant returns a duplicate-score hit but it belongs to project=app-b.
+    // The gate must skip it and let the app-a write through.
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([
+      {
+        id: 'b-prior',
+        score: 0.95,
+        payload: { arch_kind: 'decision', title: 'Same idea (app-b)', project: 'app-b' },
+      },
+    ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const result = await store.upsertDecision('shared', {
+      project: 'app-a',
+      title: 'Same idea (app-a)',
+      context: 'c',
+      decision: 'd',
+      alternativesRejected: '',
+      consequences: 'q',
+      scope: 'global',
+    });
+    expect(result.status).toBe('created');
+    expect(qdrant.upsert).toHaveBeenCalled();
+  });
+
+  it('similarity gate visible scope: same-project duplicate still blocks, global duplicate also blocks a project write', async () => {
+    // Two visible cases for an app-a write:
+    //   1. duplicate already in app-a → block (already covered by base test, repeated here for clarity)
+    //   2. duplicate sitting at global scope (no project field) → also block,
+    //      because globals are visible to every project query.
+    const qdrantSameProject = fakeQdrant();
+    qdrantSameProject.search = vi.fn().mockResolvedValue([
+      {
+        id: 'a-prior',
+        score: 0.92,
+        payload: { arch_kind: 'decision', title: 'Prior', project: 'app-a' },
+      },
+    ]);
+    const storeA = new ArchStore({
+      qdrant: qdrantSameProject as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const sameProjectResult = await storeA.upsertDecision('shared', {
+      project: 'app-a',
+      title: 'Same again',
+      context: 'c',
+      decision: 'd',
+      alternativesRejected: '',
+      consequences: 'q',
+      scope: 'global',
+    });
+    expect(sameProjectResult.status).toBe('duplicate');
+    expect(qdrantSameProject.upsert).not.toHaveBeenCalled();
+
+    const qdrantGlobal = fakeQdrant();
+    qdrantGlobal.search = vi.fn().mockResolvedValue([
+      {
+        id: 'global-prior',
+        score: 0.92,
+        payload: { arch_kind: 'decision', title: 'Cross-cutting prior' },
+      },
+    ]);
+    const storeB = new ArchStore({
+      qdrant: qdrantGlobal as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const globalVisibleResult = await storeB.upsertDecision('shared', {
+      project: 'app-a',
+      title: 'Same again',
+      context: 'c',
+      decision: 'd',
+      alternativesRejected: '',
+      consequences: 'q',
+      scope: 'global',
+    });
+    expect(globalVisibleResult.status).toBe('duplicate');
+    expect(qdrantGlobal.upsert).not.toHaveBeenCalled();
+  });
+
+  it('global write does not get blocked by a project-scoped near-match', async () => {
+    // Writing without project (global) and Qdrant returns a project-scoped
+    // near-match. Gate must skip it; the global write proceeds.
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([
+      {
+        id: 'a-prior',
+        score: 0.95,
+        payload: { arch_kind: 'decision', title: 'app-a only', project: 'app-a' },
+      },
+    ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const result = await store.upsertDecision('shared', {
+      title: 'Cross-cutting',
+      context: 'c',
+      decision: 'd',
+      alternativesRejected: '',
+      consequences: 'q',
+      scope: 'global',
+    });
+    expect(result.status).toBe('created');
+    expect(qdrant.upsert).toHaveBeenCalled();
+  });
 });
 
 // ── ArchStore.upsertLesson (similarity gate; duplicates bump updatedAt) ────
@@ -298,6 +473,70 @@ describe('ArchStore.upsertLesson', () => {
     expect(result.status).toBe('similar');
     expect(result.id).toBe('lesson-uuid');
     expect(qdrant.upsert).not.toHaveBeenCalled();
+    expect(qdrant.setPayload).not.toHaveBeenCalled();
+  });
+
+  it('writes project to payload when provided, omits the field when not', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    await store.upsertLesson('shared', {
+      project: 'app-a',
+      rule: 'Always X.',
+      why: 'because',
+      when: 'when Y',
+      scope: 'global',
+      severity: 'info',
+    });
+    const withProject = (
+      qdrant.upsert.mock.calls[0]![1] as { points: Array<{ payload: Record<string, unknown> }> }
+    ).points[0]!.payload;
+    expect(withProject['project']).toBe('app-a');
+
+    await store.upsertLesson('shared', {
+      rule: 'Global rule.',
+      why: 'because',
+      when: 'when Y',
+      scope: 'global',
+      severity: 'info',
+    });
+    const withoutProject = (
+      qdrant.upsert.mock.calls[1]![1] as { points: Array<{ payload: Record<string, unknown> }> }
+    ).points[0]!.payload;
+    expect('project' in withoutProject).toBe(false);
+  });
+
+  it('similarity gate is scoped: identical lesson in another project does not bump or block', async () => {
+    // Top-1 hit belongs to project=app-b. Writing the same rule in project=app-a
+    // must create a fresh lesson — and crucially must NOT bumpUpdatedAt on
+    // app-b's lesson.
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([
+      {
+        id: 'b-lesson',
+        score: 0.95,
+        payload: { arch_kind: 'lesson', rule: 'Same rule', project: 'app-b' },
+      },
+    ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const result = await store.upsertLesson('shared', {
+      project: 'app-a',
+      rule: 'Same rule',
+      why: 'app-a context',
+      when: 'app-a situation',
+      scope: 'global',
+      severity: 'info',
+    });
+    expect(result.status).toBe('created');
+    expect(qdrant.upsert).toHaveBeenCalled();
+    // bumpUpdatedAt for the duplicate path calls setPayload with updatedAt.
+    // The cross-project hit must NOT trigger this.
     expect(qdrant.setPayload).not.toHaveBeenCalled();
   });
 });
@@ -450,10 +689,10 @@ describe('ArchStore.searchWithVector min_score filter', () => {
   });
 });
 
-// ── pathPrefixes filter ────────────────────────────────────────────────────
+// ── project filter ─────────────────────────────────────────────────────────
 
-describe('ArchStore.searchWithVector pathPrefixes filter', () => {
-  it('keeps only components whose files start with one of the prefixes, and lets non-file kinds through', async () => {
+describe('ArchStore.searchWithVector project filter', () => {
+  it('hard-filters components to project=X and lets decisions/lessons (project=X or no project) pass', async () => {
     const qdrant = fakeQdrant();
     qdrant.search = vi.fn().mockResolvedValue([
       {
@@ -462,7 +701,8 @@ describe('ArchStore.searchWithVector pathPrefixes filter', () => {
         payload: {
           kind: 'component',
           name: 'a-comp',
-          files: ['service-a/src/x.ts'],
+          project: 'app-a',
+          files: [],
           neighbours: [],
           anchors: [],
         },
@@ -473,7 +713,19 @@ describe('ArchStore.searchWithVector pathPrefixes filter', () => {
         payload: {
           kind: 'component',
           name: 'b-comp',
-          files: ['service-b/src/y.ts'],
+          project: 'app-b',
+          files: [],
+          neighbours: [],
+          anchors: [],
+        },
+      },
+      {
+        id: 'no-proj-comp',
+        score: 0.77,
+        payload: {
+          kind: 'component',
+          name: 'no-proj-comp',
+          files: [],
           neighbours: [],
           anchors: [],
         },
@@ -482,6 +734,16 @@ describe('ArchStore.searchWithVector pathPrefixes filter', () => {
         id: 'global-decision',
         score: 0.75,
         payload: { kind: 'decision', title: 'cross-cutting', scope: 'global' },
+      },
+      {
+        id: 'a-decision',
+        score: 0.74,
+        payload: { kind: 'decision', title: 'app-a decision', project: 'app-a', scope: 'global' },
+      },
+      {
+        id: 'b-decision',
+        score: 0.73,
+        payload: { kind: 'decision', title: 'app-b decision', project: 'app-b', scope: 'global' },
       },
       {
         id: 'rule',
@@ -494,16 +756,19 @@ describe('ArchStore.searchWithVector pathPrefixes filter', () => {
       provider: fakeProvider(),
     });
     const out = await store.searchWithVector('shared', Array(512).fill(0), {
-      pathPrefixes: ['service-a/'],
+      project: 'app-a',
     });
-    const names = out.map((h) => {
+    const labels = out.map((h) => {
       const p = h as { name?: string; title?: string; rule?: string };
       return p.name ?? p.title ?? p.rule;
     });
-    expect(names).toEqual(['a-comp', 'cross-cutting', 'r']);
+    // Components: only app-a survives. no-proj-comp is dropped (hard filter).
+    // Decisions: cross-cutting (no project) and app-a's pass; app-b's is dropped.
+    // Lessons: rule has no project — passes.
+    expect(labels).toEqual(['a-comp', 'cross-cutting', 'app-a decision', 'r']);
   });
 
-  it('overfetches when a prefix is set so the post-filter does not return short', async () => {
+  it('overfetches when project is set so the post-filter does not return short', async () => {
     const qdrant = fakeQdrant();
     qdrant.search = vi.fn().mockResolvedValue([]);
     const store = new ArchStore({
@@ -512,13 +777,13 @@ describe('ArchStore.searchWithVector pathPrefixes filter', () => {
     });
     await store.searchWithVector('shared', Array(512).fill(0), {
       limit: 5,
-      pathPrefixes: ['service-a/'],
+      project: 'app-a',
     });
     const searchArgs = qdrant.search.mock.calls[0]![1] as { limit: number };
     expect(searchArgs.limit).toBeGreaterThanOrEqual(15);
   });
 
-  it('returns full limit-sized list when no prefix is set (no overfetch)', async () => {
+  it('returns full limit-sized list when no project is set (no overfetch)', async () => {
     const qdrant = fakeQdrant();
     qdrant.search = vi.fn().mockResolvedValue([]);
     const store = new ArchStore({
@@ -530,8 +795,8 @@ describe('ArchStore.searchWithVector pathPrefixes filter', () => {
     expect(searchArgs.limit).toBe(5);
   });
 
-  it('is best-effort: when the prefix filter leaves fewer hits than limit, returns the short list with a single Qdrant call (no recursive top-up)', async () => {
-    // Overfetched 30 hits, only 2 match the prefix. We return those 2 — we
+  it('is best-effort: when the project filter leaves fewer hits than limit, returns the short list with a single Qdrant call (no recursive top-up)', async () => {
+    // Overfetched 30 hits, only 2 match project=app-a. We return those 2 — we
     // do NOT issue a second qdrant.search to top up. Pin this behaviour so
     // nobody adds a recursive fetch loop under the hood later.
     const hits = Array.from({ length: 30 }, (_, i) => ({
@@ -540,7 +805,8 @@ describe('ArchStore.searchWithVector pathPrefixes filter', () => {
       payload: {
         kind: 'component',
         name: `c-${i}`,
-        files: [i < 2 ? 'service-a/src/x.ts' : 'service-b/src/y.ts'],
+        project: i < 2 ? 'app-a' : 'app-b',
+        files: [],
         neighbours: [],
         anchors: [],
       },
@@ -553,7 +819,7 @@ describe('ArchStore.searchWithVector pathPrefixes filter', () => {
     });
     const out = await store.searchWithVector('shared', Array(512).fill(0), {
       limit: 10,
-      pathPrefixes: ['service-a/'],
+      project: 'app-a',
     });
     expect(out).toHaveLength(2);
     expect(qdrant.search).toHaveBeenCalledTimes(1);
