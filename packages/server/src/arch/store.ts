@@ -298,6 +298,11 @@ export class ArchStore {
    * then a `delete` for the found set. Arch collections are tiny so the extra
    * round-trip is cheap, and the explicit `notFound` list lets callers detect
    * stale id lists (e.g. when running a migration script twice).
+   *
+   * A missing arch collection (first-run-of-a-migration) is caught explicitly
+   * and treated as "every id not found". Any other Qdrant error propagates —
+   * we don't want a transient network glitch to silently report "deleted 0,
+   * not found N" when the collection actually exists.
    */
   async deletePoints(
     group: string,
@@ -305,27 +310,26 @@ export class ArchStore {
   ): Promise<{ deleted: string[]; notFound: string[] }> {
     if (ids.length === 0) return { deleted: [], notFound: [] };
     const collection = toArchCollectionName(group);
-    let foundIds: string[];
     try {
-      const points = await this.qdrant.retrieve(collection, {
-        ids,
-        with_payload: false,
-        with_vector: false,
-      });
-      const foundSet = new Set<string>();
-      for (const p of points) {
-        const raw = p.id;
-        const asStr = typeof raw === 'string' ? raw : typeof raw === 'number' ? String(raw) : null;
-        if (asStr) foundSet.add(asStr);
-      }
-      foundIds = ids.filter((id) => foundSet.has(id));
+      await this.qdrant.getCollection(collection);
     } catch {
-      // Collection doesn't exist (or transient error) — treat every requested
-      // id as not-found rather than throwing. Callers can then safely retry
-      // without special-casing "first run of a migration".
+      // Collection doesn't exist yet — first run of a migration. Treat every
+      // requested id as not-found so the call is safe to retry.
       return { deleted: [], notFound: [...ids] };
     }
-    const notFound = ids.filter((id) => !foundIds.includes(id));
+    const points = await this.qdrant.retrieve(collection, {
+      ids,
+      with_payload: false,
+      with_vector: false,
+    });
+    const foundSet = new Set<string>();
+    for (const p of points) {
+      const raw = p.id;
+      const asStr = typeof raw === 'string' ? raw : typeof raw === 'number' ? String(raw) : null;
+      if (asStr) foundSet.add(asStr);
+    }
+    const foundIds = ids.filter((id) => foundSet.has(id));
+    const notFound = ids.filter((id) => !foundSet.has(id));
     if (foundIds.length === 0) return { deleted: [], notFound };
     await this.qdrant.delete(collection, { points: foundIds, wait: true });
     return { deleted: foundIds, notFound };

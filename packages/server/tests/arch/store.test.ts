@@ -927,8 +927,10 @@ describe('ArchStore.deletePoints', () => {
 
   it('treats a missing collection as "every id not found" — never throws', async () => {
     // First-run-of-a-migration safety: the arch collection may not exist yet.
+    // We detect that via getCollection rather than catching retrieve, so
+    // transient retrieve failures aren't silently swallowed.
     const qdrant = fakeQdrant();
-    qdrant.retrieve = vi.fn().mockRejectedValue(new Error('collection not found'));
+    qdrant.getCollection = vi.fn().mockRejectedValue(new Error('collection not found'));
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -936,6 +938,22 @@ describe('ArchStore.deletePoints', () => {
     const result = await store.deletePoints('missing-group', ['a', 'b']);
     expect(result.deleted).toEqual([]);
     expect(result.notFound).toEqual(['a', 'b']);
+    expect(qdrant.retrieve).not.toHaveBeenCalled();
+    expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+
+  it('propagates retrieve errors when the collection exists — does not silently report "not found"', async () => {
+    // If getCollection succeeds but retrieve throws (e.g. network glitch), we
+    // must NOT report `{deleted: [], notFound: ids}` — that would let a caller
+    // believe the cards are gone (or were never there) when in fact the call
+    // failed mid-flight. Propagate the error so the caller can retry.
+    const qdrant = fakeQdrant();
+    qdrant.retrieve = vi.fn().mockRejectedValue(new Error('connection reset'));
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    await expect(store.deletePoints('my-app', ['a'])).rejects.toThrow('connection reset');
     expect(qdrant.delete).not.toHaveBeenCalled();
   });
 
@@ -947,6 +965,7 @@ describe('ArchStore.deletePoints', () => {
     });
     const result = await store.deletePoints('my-app', []);
     expect(result).toEqual({ deleted: [], notFound: [] });
+    expect(qdrant.getCollection).not.toHaveBeenCalled();
     expect(qdrant.retrieve).not.toHaveBeenCalled();
     expect(qdrant.delete).not.toHaveBeenCalled();
   });
