@@ -4,6 +4,8 @@ import {
   CODING_TOOLS,
   pickArchContextEmptyText,
   renderArchContextSection,
+  STALE_THRESHOLD_MS,
+  isStale,
 } from '../../src/mcp-handler.js';
 import type { ArchContextResult } from '../../src/arch/types.js';
 import { LOW_CONFIDENCE_HINT } from '../../src/arch/context.js';
@@ -136,6 +138,150 @@ describe('renderArchContextSection', () => {
       hint: 'whatever',
     };
     expect(renderArchContextSection('my-app', ctx)).toEqual([]);
+  });
+
+  // Why/when carry the incident context — without them an agent sees only the
+  // rule and loses the signal that tells it when the rule actually applies.
+  it('includes lesson why and when as indented continuation bullets', () => {
+    const ctx: ArchContextResult = {
+      components: [],
+      decisions: [],
+      lessons: [
+        {
+          kind: 'lesson',
+          id: 'les-uuid',
+          rule: 'Always preserve createdAt on re-upsert.',
+          why: 'cohort report keyed on createdAt and silently broke',
+          when: 're-upserting an existing arch card',
+          scope: 'global',
+          evidence: null,
+          severity: 'warning',
+          status: 'accepted',
+          createdAt: 0,
+          updatedAt: Date.now(),
+          score: 0.7,
+        },
+      ],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx).join('\n');
+    expect(rendered).toContain('**why:** cohort report keyed on createdAt and silently broke');
+    expect(rendered).toContain('**when:** re-upserting an existing arch card');
+  });
+
+  // Stale marker — agents/humans need a visible signal to not act on >90d
+  // cards without verifying.
+  it('prefixes stale cards (>90d) with ⚠ stale across all three kinds', () => {
+    const staleTs = Date.now() - STALE_THRESHOLD_MS - 1000;
+    const ctx: ArchContextResult = {
+      components: [
+        {
+          kind: 'component',
+          id: 'comp-stale',
+          project: 'my-app',
+          name: 'old indexer',
+          summary: 'legacy',
+          files: [],
+          neighbours: [],
+          anchors: [],
+          createdAt: 0,
+          updatedAt: staleTs,
+          score: 0.5,
+        },
+      ],
+      decisions: [
+        {
+          kind: 'decision',
+          id: 'dec-stale',
+          title: 'old decision',
+          context: 'c',
+          decision: 'd',
+          alternativesRejected: '',
+          consequences: '',
+          status: 'accepted',
+          supersedes: null,
+          scope: 'global',
+          createdAt: 0,
+          updatedAt: staleTs,
+          score: 0.5,
+        },
+      ],
+      lessons: [
+        {
+          kind: 'lesson',
+          id: 'les-stale',
+          rule: 'old rule',
+          why: '',
+          when: '',
+          scope: 'global',
+          evidence: null,
+          severity: 'info',
+          status: 'accepted',
+          createdAt: 0,
+          updatedAt: staleTs,
+          score: 0.5,
+        },
+      ],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx).join('\n');
+    expect(rendered).toContain('⚠ stale **old indexer**');
+    expect(rendered).toContain('⚠ stale **old decision**');
+    expect(rendered).toContain('⚠ stale (id `les-stale`');
+  });
+
+  it('does not prefix fresh (<90d) cards with the stale marker', () => {
+    const ctx: ArchContextResult = {
+      components: [
+        {
+          kind: 'component',
+          id: 'comp-fresh',
+          project: 'my-app',
+          name: 'fresh indexer',
+          summary: 's',
+          files: [],
+          neighbours: [],
+          anchors: [],
+          createdAt: 0,
+          updatedAt: Date.now(),
+          score: 0.5,
+        },
+      ],
+      decisions: [],
+      lessons: [],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx).join('\n');
+    expect(rendered).not.toContain('⚠ stale');
+  });
+});
+
+describe('isStale', () => {
+  it('returns true for timestamps older than the 90-day threshold', () => {
+    expect(isStale(Date.now() - STALE_THRESHOLD_MS - 1000)).toBe(true);
+  });
+  it('returns false for fresh timestamps', () => {
+    expect(isStale(Date.now())).toBe(false);
+  });
+  it('returns false for missing/non-finite timestamps (unknown ≠ stale)', () => {
+    expect(isStale(undefined)).toBe(false);
+    expect(isStale(NaN)).toBe(false);
+    expect(isStale(Infinity)).toBe(false);
+  });
+});
+
+describe('arch_delete description warning', () => {
+  // Defensive UX: deletes silently miss when the LLM uses ids from earlier in
+  // the conversation (a re-upsert allocates a fresh UUID). Description must
+  // tell the LLM to re-fetch ids first.
+  it('warns about stale ids by directing the caller to re-fetch from arch_context', async () => {
+    const { prompts } = await import('../../src/prompts/index.js');
+    const desc = prompts.tools.arch_delete.description;
+    expect(desc).toMatch(/re-fetch/i);
+    expect(desc).toContain('arch_context');
   });
 });
 
