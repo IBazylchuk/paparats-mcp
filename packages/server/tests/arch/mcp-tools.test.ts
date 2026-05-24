@@ -285,6 +285,34 @@ describe('arch_delete description warning', () => {
   });
 });
 
+describe('memory-layer dichotomy in instructions', () => {
+  // Agents kept writing workflow / collaboration rules to arch_record_lesson
+  // when those belong in agent-side memory (auto-memory / CLAUDE.md). The
+  // distinction has to be spelled out in both the per-tool description and
+  // the top-level coding instructions, otherwise the agent only sees it on
+  // the surface that happens to be in context at the moment.
+  it('arch_record_lesson description distinguishes arch from agent-side memory', async () => {
+    const { prompts } = await import('../../src/prompts/index.js');
+    const desc = prompts.tools.arch_record_lesson.description;
+    expect(desc).toMatch(/arch/i);
+    expect(desc).toMatch(/auto-memory|CLAUDE\.md|AGENTS\.md/);
+    expect(desc).toMatch(/code|codebase/i);
+  });
+
+  it('codingInstructions has a Memory layers block pointing at agent-side memory for workflow rules', async () => {
+    const { prompts } = await import('../../src/prompts/index.js');
+    expect(prompts.codingInstructions).toMatch(/Memory layers/);
+    expect(prompts.codingInstructions).toMatch(/agent-side memory|auto-memory/);
+  });
+
+  it('record_lesson_from_correction workflow flags workflow rules as belonging elsewhere', async () => {
+    const { prompts } = await import('../../src/prompts/index.js');
+    const message = prompts.workflows['record_lesson_from_correction']?.message ?? '';
+    expect(message).toMatch(/workflow|collaboration/i);
+    expect(message).toMatch(/agent-side memory|auto-memory|CLAUDE\.md/);
+  });
+});
+
 describe('arch tool exposure per mode', () => {
   it('coding mode exposes the full arch toolkit (read + write + delete)', () => {
     expect(CODING_TOOLS.has('arch_context')).toBe(true);
