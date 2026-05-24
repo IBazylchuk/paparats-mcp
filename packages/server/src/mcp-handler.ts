@@ -193,6 +193,22 @@ export type McpMode = 'coding' | 'support';
  * Identity compare against `LOW_CONFIDENCE_HINT` (not regex on the text) so
  * the routing doesn't silently drift if the hint wording changes.
  */
+export function pickArchContextEmptyText(lastHint: string | null, mode: McpMode): string {
+  if (lastHint === LOW_CONFIDENCE_HINT) return LOW_CONFIDENCE_HINT;
+  if (mode === 'support') {
+    return (
+      'No architectural memory recorded yet for this group. Ask whoever ' +
+      'maintains the codebase to bootstrap it from coding mode.'
+    );
+  }
+  return (
+    lastHint ??
+    'No architectural memory recorded yet. Ask the user if you ' +
+      'should initialise the arch layer: identify 8-20 components by ' +
+      'domain boundaries and write each via arch_record_component.'
+  );
+}
+
 /**
  * Render the markdown section for a single group's arch_context result.
  * Each card line includes the card id so a caller (LLM or human) can pass it
@@ -230,22 +246,6 @@ export function renderArchContextSection(group: string, ctx: ArchContextResult):
   }
   lines.push('');
   return lines;
-}
-
-export function pickArchContextEmptyText(lastHint: string | null, mode: McpMode): string {
-  if (lastHint === LOW_CONFIDENCE_HINT) return LOW_CONFIDENCE_HINT;
-  if (mode === 'support') {
-    return (
-      'No architectural memory recorded yet for this group. Ask whoever ' +
-      'maintains the codebase to bootstrap it from coding mode.'
-    );
-  }
-  return (
-    lastHint ??
-    'No architectural memory recorded yet. Ask the user if you ' +
-      'should initialise the arch layer: identify 8-20 components by ' +
-      'domain boundaries and write each via arch_record_component.'
-  );
 }
 
 /** Tool names available in each mode.
