@@ -450,6 +450,116 @@ describe('ArchStore.searchWithVector min_score filter', () => {
   });
 });
 
+// ── pathPrefixes filter ────────────────────────────────────────────────────
+
+describe('ArchStore.searchWithVector pathPrefixes filter', () => {
+  it('keeps only components whose files start with one of the prefixes, and lets non-file kinds through', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([
+      {
+        id: 'a-comp',
+        score: 0.8,
+        payload: {
+          kind: 'component',
+          name: 'a-comp',
+          files: ['service-a/src/x.ts'],
+          neighbours: [],
+          anchors: [],
+        },
+      },
+      {
+        id: 'b-comp',
+        score: 0.78,
+        payload: {
+          kind: 'component',
+          name: 'b-comp',
+          files: ['service-b/src/y.ts'],
+          neighbours: [],
+          anchors: [],
+        },
+      },
+      {
+        id: 'global-decision',
+        score: 0.75,
+        payload: { kind: 'decision', title: 'cross-cutting', scope: 'global' },
+      },
+      {
+        id: 'rule',
+        score: 0.7,
+        payload: { kind: 'lesson', rule: 'r', scope: 'global', severity: 'info' },
+      },
+    ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const out = await store.searchWithVector('shared', Array(512).fill(0), {
+      pathPrefixes: ['service-a/'],
+    });
+    const names = out.map((h) => {
+      const p = h as { name?: string; title?: string; rule?: string };
+      return p.name ?? p.title ?? p.rule;
+    });
+    expect(names).toEqual(['a-comp', 'cross-cutting', 'r']);
+  });
+
+  it('overfetches when a prefix is set so the post-filter does not return short', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    await store.searchWithVector('shared', Array(512).fill(0), {
+      limit: 5,
+      pathPrefixes: ['service-a/'],
+    });
+    const searchArgs = qdrant.search.mock.calls[0]![1] as { limit: number };
+    expect(searchArgs.limit).toBeGreaterThanOrEqual(15);
+  });
+
+  it('returns full limit-sized list when no prefix is set (no overfetch)', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    await store.searchWithVector('shared', Array(512).fill(0), { limit: 5 });
+    const searchArgs = qdrant.search.mock.calls[0]![1] as { limit: number };
+    expect(searchArgs.limit).toBe(5);
+  });
+
+  it('is best-effort: when the prefix filter leaves fewer hits than limit, returns the short list with a single Qdrant call (no recursive top-up)', async () => {
+    // Overfetched 30 hits, only 2 match the prefix. We return those 2 — we
+    // do NOT issue a second qdrant.search to top up. Pin this behaviour so
+    // nobody adds a recursive fetch loop under the hood later.
+    const hits = Array.from({ length: 30 }, (_, i) => ({
+      id: `c-${i}`,
+      score: 0.8 - i * 0.01,
+      payload: {
+        kind: 'component',
+        name: `c-${i}`,
+        files: [i < 2 ? 'service-a/src/x.ts' : 'service-b/src/y.ts'],
+        neighbours: [],
+        anchors: [],
+      },
+    }));
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue(hits);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const out = await store.searchWithVector('shared', Array(512).fill(0), {
+      limit: 10,
+      pathPrefixes: ['service-a/'],
+    });
+    expect(out).toHaveLength(2);
+    expect(qdrant.search).toHaveBeenCalledTimes(1);
+  });
+});
+
 // ── stats() ────────────────────────────────────────────────────────────────
 
 describe('ArchStore.stats', () => {
