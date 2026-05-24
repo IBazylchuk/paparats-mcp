@@ -232,6 +232,81 @@ describe('renderArchContextSection', () => {
     expect(rendered).toContain('⚠ stale (id `les-stale`');
   });
 
+  // The `summary` field is documented as multi-section markdown. Putting it
+  // on the same line as the header truncated the bullet at the first newline,
+  // stranding the rest of the summary outside the list. Now rendered as an
+  // indented block beneath the header.
+  it('renders multi-line component summary as an indented block under the header', () => {
+    const ctx: ArchContextResult = {
+      components: [
+        {
+          kind: 'component',
+          id: 'comp-uuid',
+          project: 'my-app',
+          name: 'file indexer',
+          summary:
+            '**Does:** indexes files\n**Owns:** indexer.db\n**Does not:** embed code\n**Touched when:** the chunking strategy changes',
+          files: ['packages/server/src/indexer.ts'],
+          neighbours: [],
+          anchors: [],
+          createdAt: 0,
+          updatedAt: Date.now(),
+          score: 0.7,
+        },
+      ],
+      decisions: [],
+      lessons: [],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx);
+    // Header line carries id, age, score, files — but NOT the summary text.
+    const headerIdx = rendered.findIndex((l) => l.startsWith('- **file indexer**'));
+    expect(headerIdx).toBeGreaterThan(-1);
+    expect(rendered[headerIdx]).toContain('files: packages/server/src/indexer.ts');
+    expect(rendered[headerIdx]).not.toContain('**Does:**');
+    // Every line of the summary lives on its own indented row beneath the header.
+    expect(rendered[headerIdx + 1]).toBe('  **Does:** indexes files');
+    expect(rendered[headerIdx + 2]).toBe('  **Owns:** indexer.db');
+    expect(rendered[headerIdx + 3]).toBe('  **Does not:** embed code');
+    expect(rendered[headerIdx + 4]).toBe('  **Touched when:** the chunking strategy changes');
+  });
+
+  // Multi-line `why` / `when` used to break the sub-bullet — subsequent
+  // lines escaped the list. Embedded newlines are now re-indented to four
+  // spaces so wrapped lines stay aligned under the two-space sub-bullet.
+  it('re-indents multi-line lesson why/when so wrapped lines stay under the sub-bullet', () => {
+    const ctx: ArchContextResult = {
+      components: [],
+      decisions: [],
+      lessons: [
+        {
+          kind: 'lesson',
+          id: 'les-uuid',
+          rule: 'Always preserve createdAt on re-upsert.',
+          why: 'cohort report keyed on createdAt.\nIt silently broke after the migration.',
+          when: 're-upserting an arch card.\nApplies to every card kind.',
+          scope: 'global',
+          evidence: null,
+          severity: 'warning',
+          status: 'accepted',
+          createdAt: 0,
+          updatedAt: Date.now(),
+          score: 0.7,
+        },
+      ],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx).join('\n');
+    expect(rendered).toContain(
+      '  - **why:** cohort report keyed on createdAt.\n    It silently broke after the migration.'
+    );
+    expect(rendered).toContain(
+      '  - **when:** re-upserting an arch card.\n    Applies to every card kind.'
+    );
+  });
+
   it('does not prefix fresh (<90d) cards with the stale marker', () => {
     const ctx: ArchContextResult = {
       components: [
