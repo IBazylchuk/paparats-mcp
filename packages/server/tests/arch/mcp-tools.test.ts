@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { SUPPORT_TOOLS, CODING_TOOLS, pickArchContextEmptyText } from '../../src/mcp-handler.js';
+import {
+  SUPPORT_TOOLS,
+  CODING_TOOLS,
+  pickArchContextEmptyText,
+  renderArchContextSection,
+} from '../../src/mcp-handler.js';
+import type { ArchContextResult } from '../../src/arch/types.js';
 import { LOW_CONFIDENCE_HINT } from '../../src/arch/context.js';
 import { ArchStore } from '../../src/arch/store.js';
 import type { CachedEmbeddingProvider } from '../../src/embeddings.js';
@@ -55,6 +61,81 @@ describe('pickArchContextEmptyText', () => {
 
     const fromHint = 'Custom init hint with arch_record_component reference.';
     expect(pickArchContextEmptyText(fromHint, 'coding')).toBe(fromHint);
+  });
+});
+
+describe('renderArchContextSection', () => {
+  // Every card line must surface the card's id verbatim — without it, a caller
+  // who wants to call arch_delete has no way to obtain the id from the
+  // formatted tool output.
+  it('prints the id of every component, decision, and lesson in the rendered output', () => {
+    const ctx: ArchContextResult = {
+      components: [
+        {
+          kind: 'component',
+          id: 'comp-uuid',
+          project: 'my-app',
+          name: 'file indexer',
+          summary: 'Indexes files.',
+          files: ['packages/server/src/indexer.ts'],
+          neighbours: [],
+          anchors: [],
+          createdAt: 0,
+          updatedAt: 0,
+          score: 0.62,
+        },
+      ],
+      decisions: [
+        {
+          kind: 'decision',
+          id: 'dec-uuid',
+          title: 'Use jina-code-embeddings',
+          context: 'c',
+          decision: 'use jina',
+          alternativesRejected: '',
+          consequences: '',
+          status: 'accepted',
+          supersedes: null,
+          scope: 'global',
+          createdAt: 0,
+          updatedAt: 0,
+          score: 0.7,
+        },
+      ],
+      lessons: [
+        {
+          kind: 'lesson',
+          id: 'les-uuid',
+          rule: 'Always preserve createdAt on re-upsert.',
+          why: 'because',
+          when: 'when re-upserting',
+          scope: 'global',
+          evidence: null,
+          severity: 'info',
+          status: 'accepted',
+          createdAt: 0,
+          updatedAt: 0,
+          score: 0.55,
+        },
+      ],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx).join('\n');
+    expect(rendered).toContain('id `comp-uuid`');
+    expect(rendered).toContain('id `dec-uuid`');
+    expect(rendered).toContain('id `les-uuid`');
+  });
+
+  it('returns an empty array for an empty result so the caller can render an init/low-confidence hint instead', () => {
+    const ctx: ArchContextResult = {
+      components: [],
+      decisions: [],
+      lessons: [],
+      empty: true,
+      hint: 'whatever',
+    };
+    expect(renderArchContextSection('my-app', ctx)).toEqual([]);
   });
 });
 
