@@ -52,6 +52,14 @@ export interface SearchOpts {
   limit?: number;
   /** Drop hits whose cosine similarity is below this threshold. 0..1. */
   minScore?: number;
+  /**
+   * Restrict component hits to cards whose `files[]` payload contains at
+   * least one entry that starts with one of these prefixes. Cards without a
+   * `files` array (decisions, lessons) always pass — they aren't scoped to a
+   * project path. Used to silence cross-project noise in shared groups that
+   * hold more than one project under a common collection.
+   */
+  pathPrefixes?: string[];
 }
 
 /** Search hit — the stored card payload plus the cosine similarity from the vector search. */
@@ -363,17 +371,26 @@ export class ArchStore {
     const filter: Record<string, unknown> = {};
     if (must.length > 0) filter['must'] = must;
     if (must_not.length > 0) filter['must_not'] = must_not;
+    // When pathPrefixes is set, components without a matching path will be
+    // dropped post-fetch. Overfetch so we don't return an artificially short
+    // list when the prefix filters most components out. Arch collections are
+    // tiny (low thousands), so 3x is cheap and bounded.
+    const fetchLimit =
+      opts.pathPrefixes && opts.pathPrefixes.length > 0 ? Math.max(limit * 3, limit) : limit;
     try {
       const hits = await this.qdrant.search(toArchCollectionName(group), {
         vector,
-        limit,
+        limit: fetchLimit,
         with_payload: true,
         ...(Object.keys(filter).length > 0 ? { filter } : {}),
       });
       const minScore = typeof opts.minScore === 'number' ? opts.minScore : 0;
-      return hits
+      const matchesPrefix = makePrefixPredicate(opts.pathPrefixes);
+      const filtered = hits
         .filter((h) => h.score >= minScore)
-        .map((h) => ({ ...(h.payload as unknown as ArchPoint), score: h.score }));
+        .map((h) => ({ ...(h.payload as unknown as ArchPoint), score: h.score }))
+        .filter(matchesPrefix);
+      return filtered.slice(0, limit);
     } catch {
       return [];
     }
@@ -479,6 +496,24 @@ function renderDecisionForEmbedding(input: UpsertDecisionInput): string {
 
 function renderLessonForEmbedding(input: UpsertLessonInput): string {
   return [`Lesson: ${input.rule}`, '', `Why: ${input.why}`, '', `When: ${input.when}`].join('\n');
+}
+
+/**
+ * Build a predicate that keeps a hit when either:
+ *   - the card has no `files[]` (decisions, lessons — not path-scoped), or
+ *   - at least one of its files starts with one of the supplied prefixes.
+ * Returns a pass-everything predicate when `prefixes` is empty/undefined so
+ * callers can apply it unconditionally.
+ */
+export function makePrefixPredicate(prefixes: string[] | undefined): (point: ArchPoint) => boolean {
+  if (!prefixes || prefixes.length === 0) return () => true;
+  return (point) => {
+    const files = (point as { files?: unknown }).files;
+    if (!Array.isArray(files) || files.length === 0) return true;
+    return files.some(
+      (f) => typeof f === 'string' && prefixes.some((prefix) => f.startsWith(prefix))
+    );
+  };
 }
 
 function labelFromPayload(payload: unknown): string {
