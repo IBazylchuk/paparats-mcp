@@ -33,11 +33,12 @@ export interface BuildArchContextOpts {
   /** Drop hits below this cosine score. Defaults to DEFAULT_MIN_SCORE. */
   minScore?: number;
   /**
-   * Restrict component hits to cards whose files start with one of these
-   * prefixes. Decisions and lessons (no files array) pass through. Use this
-   * to scope a multi-project group like `default` to a single project.
+   * Scope results to a single project inside the group.
+   * Components are filtered hard (project must match); decisions and lessons
+   * are filtered soft (project=X or no project field both pass) so globally
+   * scoped guidance still surfaces.
    */
-  pathPrefixes?: string[];
+  project?: string;
 }
 
 export async function buildArchContext(
@@ -50,7 +51,7 @@ export async function buildArchContext(
   const hits = await store.search(group, question, {
     limit: SEARCH_LIMIT,
     minScore,
-    ...(opts.pathPrefixes ? { pathPrefixes: opts.pathPrefixes } : {}),
+    ...(opts.project !== undefined ? { project: opts.project } : {}),
   });
   const hasAnyCards = hits.length > 0 || (await groupHasAnyCards(store, group));
   return bucket(hits, hasAnyCards);
@@ -70,7 +71,7 @@ export async function buildArchContextWithVector(
   const hits = await store.searchWithVector(group, vector, {
     limit: SEARCH_LIMIT,
     minScore,
-    ...(opts.pathPrefixes ? { pathPrefixes: opts.pathPrefixes } : {}),
+    ...(opts.project !== undefined ? { project: opts.project } : {}),
   });
   const hasAnyCards = hits.length > 0 || (await groupHasAnyCards(store, group));
   return bucket(hits, hasAnyCards);

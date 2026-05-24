@@ -151,19 +151,17 @@ describe('buildArchContextWithVector', () => {
     });
   });
 
-  it('forwards pathPrefixes to the underlying search', async () => {
+  it('forwards project to the underlying search', async () => {
     const searchWithVector = vi.fn().mockResolvedValue([]);
     const store = {
       searchWithVector,
       stats: vi.fn().mockResolvedValue(emptyStats),
     } as unknown as ArchStore;
-    await buildArchContextWithVector(store, 'default', [0, 0], {
-      pathPrefixes: ['service-a/'],
-    });
+    await buildArchContextWithVector(store, 'default', [0, 0], { project: 'app-a' });
     expect(searchWithVector).toHaveBeenCalledWith('default', [0, 0], {
       limit: 20,
       minScore: 0.45,
-      pathPrefixes: ['service-a/'],
+      project: 'app-a',
     });
   });
 });

@@ -61,6 +61,18 @@ describe('workflow prompts', () => {
     expect(coding).toContain('arch_context');
     expect(support).toContain('arch_context');
   });
+
+  it('init_arch_memory requires project — arch_record_component cannot be called without it', () => {
+    // arch_record_component requires `project`. The init workflow that drives
+    // those calls must therefore force the user to supply a project up front.
+    const init = prompts.workflows.init_arch_memory;
+    expect(init).toBeDefined();
+    expect(init!.args.project).toBeDefined();
+    expect(init!.args.project!.required).toBe(true);
+    // The instructions must spell out the required field in the example call.
+    expect(init!.message).toMatch(/project/);
+    expect(init!.message).toMatch(/required/i);
+  });
 });
 
 describe('buildWorkflowArgsSchema', () => {
