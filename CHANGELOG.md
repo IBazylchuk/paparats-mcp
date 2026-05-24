@@ -4,6 +4,28 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [0.11.0] - 2026-05-24
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- bf2b580: arch_context: add optional `path_prefixes` to scope component hits in shared groups
+
+  `arch_context` accepts a new `path_prefixes: string[]` parameter. Each entry is matched against component cards via `string.startsWith` on every value in `files[]` — no glob, no regex, no leading-slash normalization. A component passes when at least one of its files starts with at least one of the supplied prefixes. **Decisions and lessons (which carry no `files[]`) always pass through**, so a prefixed call still returns globally-scoped guidance alongside the scoped components.
+
+  Use it to silence cross-project noise in groups that hold more than one project under a common collection (single-project groups don't need it).
+
+  Implementation notes:
+  - Filtering is applied post-fetch in `ArchStore.searchWithVector` rather than via a Qdrant payload filter — `match.value` / `match.any` don't express prefix matches, and arch collections are tiny (low thousands), so the post-filter has bounded cost.
+  - When a prefix is set the underlying Qdrant `limit` is overfetched 3× before filtering, so the result list isn't artificially short. Best-effort only: if the prefix still leaves fewer than `limit` hits, the short list is returned — there is no recursive top-up.
+
+  Backwards-compatible: when `path_prefixes` is omitted the tool behaves as before.
+
+### Patch Changes
+
+- @paparats/shared@0.11.0
+
 ## [0.10.2] - 2026-05-23
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -236,7 +258,7 @@
 
 ### Patch Changes
 
-## [0.7.0] - 2026-05-23
+## [0.7.0] - 2026-05-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -283,7 +305,7 @@
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-05-23
+## [0.5.0] - 2026-05-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -376,7 +398,7 @@
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-05-23
+## [0.3.0] - 2026-05-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
