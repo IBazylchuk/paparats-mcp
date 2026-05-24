@@ -4,6 +4,17 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [1.0.2] - 2026-05-24
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- bfa9231: arch_context: surface card id in every result line
+
+  The formatted `arch_context` tool output now includes the card id next to each component, decision, and lesson, e.g. `**file indexer** (id ` + "`" + `01926abc-...` + "`" + `, 4d ago, score 0.62) — Indexes files...`. Without this, a caller had no way to obtain ids from the tool output and could not invoke `arch_delete`. The renderer is extracted into `renderArchContextSection` so the contract is regression-tested.
+  - @paparats/shared@1.0.2
+
 ## [1.0.1] - 2026-05-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer

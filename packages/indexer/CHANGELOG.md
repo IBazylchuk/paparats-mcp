@@ -1,5 +1,13 @@
 # @paparats/indexer
 
+## 1.0.2
+
+### Patch Changes
+
+- Updated dependencies [bfa9231]
+  - @paparats/server@1.0.2
+  - @paparats/shared@1.0.2
+
 ## 1.0.1
 
 ### Patch Changes
