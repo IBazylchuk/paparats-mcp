@@ -50,6 +50,9 @@
     },
     "arch_record_lesson": {
       "description": "Record a lesson — a rule the agent should follow next time. Use when the user corrects a non-obvious mistake of yours, OR when you accept an unusual approach that would surprise a future reader. Skip typos, parser errors, and facts trivially visible in code. Three fields, each markdown:\n- `rule`: one imperative sentence (the rule).\n- `why`: 1-3 sentences with the incident — quote the user verbatim when possible.\n- `when`: one sentence describing the situation in which the rule applies.\nThe server runs a similarity gate; possible outcomes:\n- `created`: a new lesson was written.\n- `updated`: a near-duplicate already existed — its updatedAt was bumped (confirmation signal). Refine the existing card if your wording was better.\n- `similar`: a related lesson exists — nothing is written. Decide whether to refine the existing or write a clearly distinct one."
+    },
+    "arch_delete": {
+      "description": "Hard-delete one or more arch cards by id. **No undo, no audit trail** — the cards are gone from Qdrant. Use for: cleaning up obsolete cards left over from a refactor, dropping cards for a removed feature, migrating away from old payload schemas. Idempotent: ids that no longer exist are reported in `notFound` but do not fail the call. Get ids from `arch_context` results. Prefer `supersedes` on `arch_record_decision` when you have a replacement decision; use `arch_delete` only when there is no replacement."
     }
   },
   "workflows": {

@@ -38,6 +38,7 @@ export interface Prompts {
     arch_record_component: { description: string };
     arch_record_decision: { description: string };
     arch_record_lesson: { description: string };
+    arch_delete: { description: string };
   };
   resources: {
     projectOverview: {

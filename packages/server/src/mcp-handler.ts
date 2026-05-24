@@ -228,6 +228,7 @@ export const CODING_TOOLS = new Set([
   'arch_record_component',
   'arch_record_decision',
   'arch_record_lesson',
+  'arch_delete',
 ]);
 
 export const SUPPORT_TOOLS = new Set([
@@ -2514,6 +2515,32 @@ export class McpHandler {
           return {
             content: [{ type: 'text' as const, text: formatWriteResult('lesson', rule, result) }],
           };
+        }
+      );
+    }
+
+    // ── Tool: arch_delete ───────────────────────────────────────────────────
+    if (tools.has('arch_delete') && this.archStore) {
+      const archStore = this.archStore;
+      server.tool(
+        'arch_delete',
+        prompts.tools['arch_delete']?.description ?? 'Hard-delete arch cards by id.',
+        {
+          group: z.string().min(1).describe('Group the cards live in.'),
+          ids: z
+            .array(z.string().min(1))
+            .min(1)
+            .describe(
+              'Card ids to delete. Idempotent: ids that no longer exist are reported in `notFound` but do not fail the call.'
+            ),
+        },
+        async ({ group, ids }) => {
+          const { deleted, notFound } = await archStore.deletePoints(group, ids);
+          const lines: string[] = [`Deleted ${deleted.length} card(s) from group \`${group}\`.`];
+          if (notFound.length > 0) {
+            lines.push(`Not found (already removed?): ${notFound.join(', ')}.`);
+          }
+          return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
         }
       );
     }

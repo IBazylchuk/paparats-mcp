@@ -31,6 +31,8 @@ function fakeQdrant() {
     scroll: vi.fn().mockResolvedValue({ points: [] }),
     search: vi.fn().mockResolvedValue([]),
     setPayload: vi.fn().mockResolvedValue(undefined),
+    retrieve: vi.fn().mockResolvedValue([]),
+    delete: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -872,5 +874,80 @@ describe('ArchStore.stats', () => {
     expect(stats.total).toBe(0);
     expect(stats.byKind).toEqual({ component: 0, decision: 0, lesson: 0 });
     expect(stats.oldestUpdatedAt).toBeNull();
+  });
+});
+
+// ── ArchStore.deletePoints ─────────────────────────────────────────────────
+
+describe('ArchStore.deletePoints', () => {
+  it('deletes every requested id when all are present and reports zero missing', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.retrieve = vi.fn().mockResolvedValue([{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const result = await store.deletePoints('my-app', ['a', 'b', 'c']);
+    expect(result.deleted).toEqual(['a', 'b', 'c']);
+    expect(result.notFound).toEqual([]);
+    expect(qdrant.delete).toHaveBeenCalledWith('paparats_my-app_arch', {
+      points: ['a', 'b', 'c'],
+      wait: true,
+    });
+  });
+
+  it('partitions missing ids into notFound and only deletes the found ones', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.retrieve = vi.fn().mockResolvedValue([{ id: 'a' }, { id: 'c' }]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const result = await store.deletePoints('my-app', ['a', 'b', 'c', 'd']);
+    expect(result.deleted).toEqual(['a', 'c']);
+    expect(result.notFound).toEqual(['b', 'd']);
+    expect(qdrant.delete).toHaveBeenCalledWith('paparats_my-app_arch', {
+      points: ['a', 'c'],
+      wait: true,
+    });
+  });
+
+  it('does not call qdrant.delete when every id is missing', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.retrieve = vi.fn().mockResolvedValue([]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const result = await store.deletePoints('my-app', ['x', 'y']);
+    expect(result.deleted).toEqual([]);
+    expect(result.notFound).toEqual(['x', 'y']);
+    expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+
+  it('treats a missing collection as "every id not found" — never throws', async () => {
+    // First-run-of-a-migration safety: the arch collection may not exist yet.
+    const qdrant = fakeQdrant();
+    qdrant.retrieve = vi.fn().mockRejectedValue(new Error('collection not found'));
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const result = await store.deletePoints('missing-group', ['a', 'b']);
+    expect(result.deleted).toEqual([]);
+    expect(result.notFound).toEqual(['a', 'b']);
+    expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+
+  it('returns immediately for an empty id list and makes no Qdrant calls', async () => {
+    const qdrant = fakeQdrant();
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const result = await store.deletePoints('my-app', []);
+    expect(result).toEqual({ deleted: [], notFound: [] });
+    expect(qdrant.retrieve).not.toHaveBeenCalled();
+    expect(qdrant.delete).not.toHaveBeenCalled();
   });
 });
