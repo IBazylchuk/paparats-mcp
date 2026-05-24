@@ -375,8 +375,7 @@ export class ArchStore {
     // dropped post-fetch. Overfetch so we don't return an artificially short
     // list when the prefix filters most components out. Arch collections are
     // tiny (low thousands), so 3x is cheap and bounded.
-    const fetchLimit =
-      opts.pathPrefixes && opts.pathPrefixes.length > 0 ? Math.max(limit * 3, limit) : limit;
+    const fetchLimit = opts.pathPrefixes?.length ? limit * 3 : limit;
     try {
       const hits = await this.qdrant.search(toArchCollectionName(group), {
         vector,
