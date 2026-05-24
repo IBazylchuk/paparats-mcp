@@ -36,7 +36,7 @@ import {
   DEFAULT_MIN_SCORE,
   LOW_CONFIDENCE_HINT,
 } from './arch/context.js';
-import type { ArchWriteResult } from './arch/types.js';
+import type { ArchContextResult, ArchWriteResult } from './arch/types.js';
 import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
@@ -193,6 +193,45 @@ export type McpMode = 'coding' | 'support';
  * Identity compare against `LOW_CONFIDENCE_HINT` (not regex on the text) so
  * the routing doesn't silently drift if the hint wording changes.
  */
+/**
+ * Render the markdown section for a single group's arch_context result.
+ * Each card line includes the card id so a caller (LLM or human) can pass it
+ * to `arch_delete` without going back for a separate lookup. Returns an empty
+ * array when the result has nothing to show — the empty-fallback text comes
+ * from `pickArchContextEmptyText`.
+ */
+export function renderArchContextSection(group: string, ctx: ArchContextResult): string[] {
+  if (ctx.empty) return [];
+  const lines: string[] = [`## Group: ${group}`];
+  if (ctx.components.length) {
+    lines.push('### Components');
+    for (const c of ctx.components) {
+      const files = c.files.length > 0 ? c.files.join(', ') : '—';
+      lines.push(
+        `- **${c.name}** (id \`${c.id}\`, ${formatAge(c.updatedAt)}, score ${c.score.toFixed(2)}) — ${c.summary} (files: ${files})`
+      );
+    }
+  }
+  if (ctx.decisions.length) {
+    lines.push('### Decisions');
+    for (const d of ctx.decisions) {
+      lines.push(
+        `- **${d.title}** (id \`${d.id}\`, ${formatAge(d.updatedAt)}, score ${d.score.toFixed(2)}) — ${d.decision}`
+      );
+    }
+  }
+  if (ctx.lessons.length) {
+    lines.push('### Lessons');
+    for (const l of ctx.lessons) {
+      lines.push(
+        `- (id \`${l.id}\`, ${l.severity}, ${formatAge(l.updatedAt)}, score ${l.score.toFixed(2)}) ${l.rule}`
+      );
+    }
+  }
+  lines.push('');
+  return lines;
+}
+
 export function pickArchContextEmptyText(lastHint: string | null, mode: McpMode): string {
   if (lastHint === LOW_CONFIDENCE_HINT) return LOW_CONFIDENCE_HINT;
   if (mode === 'support') {
@@ -2274,36 +2313,10 @@ export class McpHandler {
               lastHint = r.hint;
               continue;
             }
-            sections.push(`## Group: ${g}`);
-            if (r.components.length) {
-              sections.push('### Components');
-              for (const c of r.components) {
-                const files = c.files.length > 0 ? c.files.join(', ') : '—';
-                metrics.observeArchSearchScore(c.score);
-                sections.push(
-                  `- **${c.name}** (${formatAge(c.updatedAt)}, score ${c.score.toFixed(2)}) — ${c.summary} (files: ${files})`
-                );
-              }
-            }
-            if (r.decisions.length) {
-              sections.push('### Decisions');
-              for (const d of r.decisions) {
-                metrics.observeArchSearchScore(d.score);
-                sections.push(
-                  `- **${d.title}** (${formatAge(d.updatedAt)}, score ${d.score.toFixed(2)}) — ${d.decision}`
-                );
-              }
-            }
-            if (r.lessons.length) {
-              sections.push('### Lessons');
-              for (const l of r.lessons) {
-                metrics.observeArchSearchScore(l.score);
-                sections.push(
-                  `- (${l.severity}, ${formatAge(l.updatedAt)}, score ${l.score.toFixed(2)}) ${l.rule}`
-                );
-              }
-            }
-            sections.push('');
+            for (const c of r.components) metrics.observeArchSearchScore(c.score);
+            for (const d of r.decisions) metrics.observeArchSearchScore(d.score);
+            for (const l of r.lessons) metrics.observeArchSearchScore(l.score);
+            sections.push(...renderArchContextSection(g, r));
           }
           if (sections.length === 0 && anyEmpty) {
             return {
