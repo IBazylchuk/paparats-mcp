@@ -289,6 +289,48 @@ export class ArchStore {
     });
   }
 
+  /**
+   * Hard-delete one or more arch points by id. Idempotent: ids that aren't
+   * present in the collection are reported in `notFound` rather than failing
+   * the call. No status change, no audit trail — the points are gone.
+   *
+   * Two round-trips: one `retrieve` to split requested ids into found/missing,
+   * then a `delete` for the found set. Arch collections are tiny so the extra
+   * round-trip is cheap, and the explicit `notFound` list lets callers detect
+   * stale id lists (e.g. when running a migration script twice).
+   */
+  async deletePoints(
+    group: string,
+    ids: string[]
+  ): Promise<{ deleted: string[]; notFound: string[] }> {
+    if (ids.length === 0) return { deleted: [], notFound: [] };
+    const collection = toArchCollectionName(group);
+    let foundIds: string[];
+    try {
+      const points = await this.qdrant.retrieve(collection, {
+        ids,
+        with_payload: false,
+        with_vector: false,
+      });
+      const foundSet = new Set<string>();
+      for (const p of points) {
+        const raw = p.id;
+        const asStr = typeof raw === 'string' ? raw : typeof raw === 'number' ? String(raw) : null;
+        if (asStr) foundSet.add(asStr);
+      }
+      foundIds = ids.filter((id) => foundSet.has(id));
+    } catch {
+      // Collection doesn't exist (or transient error) — treat every requested
+      // id as not-found rather than throwing. Callers can then safely retry
+      // without special-casing "first run of a migration".
+      return { deleted: [], notFound: [...ids] };
+    }
+    const notFound = ids.filter((id) => !foundIds.includes(id));
+    if (foundIds.length === 0) return { deleted: [], notFound };
+    await this.qdrant.delete(collection, { points: foundIds, wait: true });
+    return { deleted: foundIds, notFound };
+  }
+
   async findByName(
     group: string,
     kind: ArchKind,
