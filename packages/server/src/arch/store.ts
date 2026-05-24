@@ -17,6 +17,8 @@ export interface ArchStoreConfig {
 }
 
 interface UpsertComponentInput {
+  /** Required. Same value the indexer uses in code-chunk `payload.project`. */
+  project: string;
   name: string;
   summary: string;
   files: string[];
@@ -25,6 +27,8 @@ interface UpsertComponentInput {
 }
 
 interface UpsertDecisionInput {
+  /** Optional. Omit for decisions that apply across all projects in the group. */
+  project?: string;
   title: string;
   context: string;
   decision: string;
@@ -36,6 +40,8 @@ interface UpsertDecisionInput {
 }
 
 interface UpsertLessonInput {
+  /** Optional. Omit for lessons that apply across all projects in the group. */
+  project?: string;
   rule: string;
   why: string;
   when: string;
@@ -53,13 +59,16 @@ export interface SearchOpts {
   /** Drop hits whose cosine similarity is below this threshold. 0..1. */
   minScore?: number;
   /**
-   * Restrict component hits to cards whose `files[]` payload contains at
-   * least one entry that starts with one of these prefixes. Cards without a
-   * `files` array (decisions, lessons) always pass — they aren't scoped to a
-   * project path. Used to silence cross-project noise in shared groups that
-   * hold more than one project under a common collection.
+   * Scope results to a single project inside the group.
+   *
+   * Components are filtered hard: a component card without `project=X` is
+   * dropped. Decisions and lessons are filtered soft: cards with `project=X`
+   * OR no `project` field at all pass through, so globally-scoped guidance
+   * still surfaces alongside project-scoped components.
+   *
+   * Omit to query the whole group.
    */
-  pathPrefixes?: string[];
+  project?: string;
 }
 
 /** Search hit — the stored card payload plus the cosine similarity from the vector search. */
@@ -103,7 +112,7 @@ export class ArchStore {
    */
   async upsertComponent(group: string, input: UpsertComponentInput): Promise<ArchWriteResult> {
     await ensureArchCollection(this.qdrant, group, this.provider.dimensions);
-    const existing = await this.findByName(group, 'component', input.name);
+    const existing = await this.findByName(group, 'component', input.name, input.project);
     const id = existing?.id ?? uuidv7();
     const now = Date.now();
     const text = renderComponentForEmbedding(input);
@@ -112,6 +121,7 @@ export class ArchStore {
       arch_kind: 'component',
       kind: 'component',
       id,
+      project: input.project,
       name: input.name,
       summary: input.summary,
       files: input.files,
@@ -147,7 +157,7 @@ export class ArchStore {
     const vector = await this.provider.embed(text);
 
     if (!input.supersedes) {
-      const match = await this.findNearest(group, 'decision', vector);
+      const match = await this.findNearest(group, 'decision', vector, input.project);
       if (match && match.score >= DUPLICATE_THRESHOLD) {
         return {
           status: 'duplicate',
@@ -179,6 +189,7 @@ export class ArchStore {
             arch_kind: 'decision',
             kind: 'decision',
             id,
+            ...(input.project !== undefined ? { project: input.project } : {}),
             title: input.title,
             context: input.context,
             decision: input.decision,
@@ -213,7 +224,7 @@ export class ArchStore {
     const text = renderLessonForEmbedding(input);
     const vector = await this.provider.embed(text);
 
-    const match = await this.findNearest(group, 'lesson', vector);
+    const match = await this.findNearest(group, 'lesson', vector, input.project);
     if (match && match.score >= DUPLICATE_THRESHOLD) {
       await this.bumpUpdatedAt(group, match.id);
       return {
@@ -244,6 +255,7 @@ export class ArchStore {
             arch_kind: 'lesson',
             kind: 'lesson',
             id,
+            ...(input.project !== undefined ? { project: input.project } : {}),
             rule: input.rule,
             why: input.why,
             when: input.when,
@@ -280,16 +292,22 @@ export class ArchStore {
   async findByName(
     group: string,
     kind: ArchKind,
-    name: string
+    name: string,
+    /** Scope the lookup to a single project. Required to keep component idempotency
+     *  per-project: two projects in the same group may legitimately have a
+     *  component with the same name (e.g. "indexer"). */
+    project?: string
   ): Promise<{ id: string; createdAt?: number } | null> {
     try {
+      const must: unknown[] = [
+        { key: 'arch_kind', match: { value: kind } },
+        { key: 'name', match: { value: name } },
+      ];
+      if (project !== undefined) {
+        must.push({ key: 'project', match: { value: project } });
+      }
       const res = await this.qdrant.scroll(toArchCollectionName(group), {
-        filter: {
-          must: [
-            { key: 'arch_kind', match: { value: kind } },
-            { key: 'name', match: { value: name } },
-          ],
-        },
+        filter: { must },
         with_payload: true,
         with_vector: false,
         limit: 1,
@@ -309,18 +327,35 @@ export class ArchStore {
 
   /**
    * Find the single nearest accepted point of the given kind to the supplied
-   * vector. Superseded/deprecated points are excluded so we don't ever treat
-   * an obsolete card as "duplicate" of a new write.
+   * vector — scoped to the same set of cards that would be visible to a
+   * `searchWithVector` call with the same `project`. Superseded/deprecated
+   * points are excluded so we don't ever treat an obsolete card as "duplicate"
+   * of a new write.
+   *
+   * Project scoping rules (mirror `makeProjectPredicate`):
+   *  - `project=X` passed → match cards with `project=X` OR no `project` field.
+   *    A same-text card in `project=Y` is invisible to the gate, so writing
+   *    "use UUIDv7" in app-a is never blocked by an identical card in app-b.
+   *  - `project` undefined → only consider cards without a `project` field.
+   *    A new global card isn't blocked by a project-scoped near-match, and a
+   *    project-scoped card's `updatedAt` is never bumped by a global write.
+   *
+   * Filtering is post-fetch: Qdrant `must`/`should` semantics with absent-key
+   * detection are awkward to express cleanly, and the gate fetches a tiny
+   * overfetch (10 hits) so the cost is bounded.
    */
   private async findNearest(
     group: string,
     kind: ArchKind,
-    vector: number[]
+    vector: number[],
+    project: string | undefined
   ): Promise<{ id: string; score: number; label: string } | null> {
     try {
       const hits = await this.qdrant.search(toArchCollectionName(group), {
         vector,
-        limit: 1,
+        // Overfetch so the post-filter has candidates if the top-1 is in a
+        // different project. Arch collections are tiny — 10 is cheap.
+        limit: 10,
         with_payload: true,
         filter: {
           must: [{ key: 'arch_kind', match: { value: kind } }],
@@ -330,13 +365,25 @@ export class ArchStore {
           ],
         },
       });
-      const hit = hits[0];
-      if (!hit) return null;
-      const rawId = hit.id;
-      const id =
-        typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : null;
-      if (!id) return null;
-      return { id, score: hit.score, label: labelFromPayload(hit.payload) };
+      for (const hit of hits) {
+        const payload = (hit.payload ?? {}) as { project?: unknown };
+        const hitProject = payload.project;
+        if (project === undefined) {
+          // Global write: only consider cards without a project field.
+          if (hitProject !== undefined && hitProject !== null) continue;
+        } else {
+          // Project-scoped write: same project OR no project field.
+          if (hitProject !== undefined && hitProject !== null && hitProject !== project) {
+            continue;
+          }
+        }
+        const rawId = hit.id;
+        const id =
+          typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : null;
+        if (!id) continue;
+        return { id, score: hit.score, label: labelFromPayload(hit.payload) };
+      }
+      return null;
     } catch {
       return null;
     }
@@ -371,11 +418,12 @@ export class ArchStore {
     const filter: Record<string, unknown> = {};
     if (must.length > 0) filter['must'] = must;
     if (must_not.length > 0) filter['must_not'] = must_not;
-    // When pathPrefixes is set, components without a matching path will be
-    // dropped post-fetch. Overfetch so we don't return an artificially short
-    // list when the prefix filters most components out. Arch collections are
-    // tiny (low thousands), so 3x is cheap and bounded.
-    const fetchLimit = opts.pathPrefixes?.length ? limit * 3 : limit;
+    // When `project` is set the project filter is applied post-fetch (Qdrant
+    // can't express "hard match for components, soft match for decisions/
+    // lessons" in a single filter cleanly). Overfetch so the post-filter
+    // doesn't return an artificially short list. Arch collections are tiny
+    // (low thousands), so 3x is cheap and bounded.
+    const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
     try {
       const hits = await this.qdrant.search(toArchCollectionName(group), {
         vector,
@@ -384,11 +432,11 @@ export class ArchStore {
         ...(Object.keys(filter).length > 0 ? { filter } : {}),
       });
       const minScore = typeof opts.minScore === 'number' ? opts.minScore : 0;
-      const matchesPrefix = makePrefixPredicate(opts.pathPrefixes);
+      const matchesProject = makeProjectPredicate(opts.project);
       const filtered = hits
         .filter((h) => h.score >= minScore)
         .map((h) => ({ ...(h.payload as unknown as ArchPoint), score: h.score }))
-        .filter(matchesPrefix);
+        .filter(matchesProject);
       return filtered.slice(0, limit);
     } catch {
       return [];
@@ -498,20 +546,24 @@ function renderLessonForEmbedding(input: UpsertLessonInput): string {
 }
 
 /**
- * Build a predicate that keeps a hit when either:
- *   - the card has no `files[]` (decisions, lessons — not path-scoped), or
- *   - at least one of its files starts with one of the supplied prefixes.
- * Returns a pass-everything predicate when `prefixes` is empty/undefined so
- * callers can apply it unconditionally.
+ * Build a predicate that scopes hits to a single project:
+ *   - components: kept only when their `project` matches (hard filter — a
+ *     component with no project, or a project ≠ the target, is dropped).
+ *   - decisions / lessons: kept when their `project` matches OR is absent
+ *     (soft filter — globally-scoped cards still surface).
+ * Returns a pass-everything predicate when `project` is undefined, so callers
+ * can apply it unconditionally.
  */
-export function makePrefixPredicate(prefixes: string[] | undefined): (point: ArchPoint) => boolean {
-  if (!prefixes || prefixes.length === 0) return () => true;
+export function makeProjectPredicate(project: string | undefined): (point: ArchPoint) => boolean {
+  if (project === undefined) return () => true;
   return (point) => {
-    const files = (point as { files?: unknown }).files;
-    if (!Array.isArray(files) || files.length === 0) return true;
-    return files.some(
-      (f) => typeof f === 'string' && prefixes.some((prefix) => f.startsWith(prefix))
-    );
+    const cardProject = (point as { project?: unknown }).project;
+    if (point.kind === 'component') {
+      return typeof cardProject === 'string' && cardProject === project;
+    }
+    // decisions / lessons: project=X passes, no project field also passes
+    if (cardProject === undefined || cardProject === null) return true;
+    return typeof cardProject === 'string' && cardProject === project;
   };
 }
 

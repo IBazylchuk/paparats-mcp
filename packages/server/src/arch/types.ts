@@ -11,6 +11,8 @@ interface ArchBase {
 
 export interface ArchComponent extends ArchBase {
   kind: 'component';
+  /** Required. Use the same project name the indexer registers in payload.project of code chunks. */
+  project: string;
   name: string;
   summary: string;
   files: string[];
@@ -20,6 +22,8 @@ export interface ArchComponent extends ArchBase {
 
 export interface ArchDecision extends ArchBase {
   kind: 'decision';
+  /** Optional. Omit for decisions that apply across all projects in the group. */
+  project?: string;
   title: string;
   context: string;
   decision: string;
@@ -32,6 +36,8 @@ export interface ArchDecision extends ArchBase {
 
 export interface ArchLesson extends ArchBase {
   kind: 'lesson';
+  /** Optional. Omit for lessons that apply across all projects in the group. */
+  project?: string;
   rule: string;
   why: string;
   when: string;
