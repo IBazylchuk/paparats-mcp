@@ -2232,8 +2232,14 @@ export class McpHandler {
             .describe(
               `Drop hits whose cosine similarity is below this threshold. Default ${DEFAULT_MIN_SCORE}. Lower it (e.g. 0.30) when the arch memory is sparse and you want broader recall; raise it (e.g. 0.60) when you only want high-confidence matches.`
             ),
+          path_prefixes: z
+            .array(z.string())
+            .optional()
+            .describe(
+              'Restrict component hits to cards whose files start with one of these prefixes (e.g. ["backend/"]). Match is literal `string.startsWith` — no glob, no regex, no leading-slash normalization; pass the exact prefix you want matched. Decisions and lessons pass through (they have no files[]), so a prefixed call still returns globally-scoped guidance.'
+            ),
         },
-        async ({ question, group, min_score }) => {
+        async ({ question, group, min_score, path_prefixes }) => {
           const groupNames = group ? [group] : this.getGroupNames();
           if (groupNames.length === 0) {
             return {
@@ -2252,6 +2258,9 @@ export class McpHandler {
                 group: g,
                 ctx: await buildArchContextWithVector(archStore, g, vector, {
                   ...(typeof min_score === 'number' ? { minScore: min_score } : {}),
+                  ...(Array.isArray(path_prefixes) && path_prefixes.length > 0
+                    ? { pathPrefixes: path_prefixes }
+                    : {}),
                 }),
               };
             })
