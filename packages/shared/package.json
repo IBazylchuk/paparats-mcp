@@ -1,6 +1,6 @@
 {
   "name": "@paparats/shared",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "type": "module",
   "description": "Shared utilities for Paparats MCP - path validation, gitignore filtering, language-aware exclude patterns",
   "license": "MIT",
