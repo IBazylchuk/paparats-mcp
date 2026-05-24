@@ -1,5 +1,13 @@
 # @paparats/indexer
 
+## 0.11.0
+
+### Patch Changes
+
+- Updated dependencies [bf2b580]
+  - @paparats/server@0.11.0
+  - @paparats/shared@0.11.0
+
 ## 0.10.2
 
 ### Patch Changes
