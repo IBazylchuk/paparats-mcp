@@ -2234,6 +2234,7 @@ export class McpHandler {
             ),
           project: z
             .string()
+            .min(1)
             .optional()
             .describe(
               'Scope results to a single project inside the group (same value the indexer uses as `payload.project` on code chunks). Components are filtered hard — a component without `project=X` is dropped. Decisions and lessons are filtered soft — cards with `project=X` OR no `project` field pass through, so globally-scoped guidance still surfaces. Omit to query the whole group.'
@@ -2258,7 +2259,7 @@ export class McpHandler {
                 group: g,
                 ctx: await buildArchContextWithVector(archStore, g, vector, {
                   ...(typeof min_score === 'number' ? { minScore: min_score } : {}),
-                  ...(typeof project === 'string' && project.length > 0 ? { project } : {}),
+                  ...(project !== undefined ? { project } : {}),
                 }),
               };
             })
@@ -2325,6 +2326,7 @@ export class McpHandler {
           group: z.string().describe('Target group'),
           project: z
             .string()
+            .min(1)
             .describe(
               'Required. Project the component belongs to — the same value the indexer writes as `payload.project` on code chunks (typically the repo directory basename). Components in the same group with the same name but different projects coexist independently.'
             ),
@@ -2395,6 +2397,7 @@ export class McpHandler {
           group: z.string().describe('Target group'),
           project: z
             .string()
+            .min(1)
             .optional()
             .describe(
               'Optional. Project this decision is scoped to (same value the indexer uses in `payload.project`). Omit for decisions that apply across all projects in the group.'
@@ -2469,6 +2472,7 @@ export class McpHandler {
           group: z.string().describe('Target group'),
           project: z
             .string()
+            .min(1)
             .optional()
             .describe(
               'Optional. Project this lesson is scoped to (same value the indexer uses in `payload.project`). Omit for lessons that apply across all projects in the group.'

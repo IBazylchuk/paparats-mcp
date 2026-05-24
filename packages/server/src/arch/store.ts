@@ -423,7 +423,7 @@ export class ArchStore {
     // lessons" in a single filter cleanly). Overfetch so the post-filter
     // doesn't return an artificially short list. Arch collections are tiny
     // (low thousands), so 3x is cheap and bounded.
-    const fetchLimit = opts.project ? limit * 3 : limit;
+    const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
     try {
       const hits = await this.qdrant.search(toArchCollectionName(group), {
         vector,
