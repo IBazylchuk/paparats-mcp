@@ -85,6 +85,23 @@ function resolveChunkLocation(payload: Record<string, unknown>): ChunkLocation {
 }
 
 /**
+ * Cards older than this are flagged with a visible "stale" marker in
+ * `arch_context` output. Matches the 90-day threshold the prompts already
+ * mention — having a visual prefix means the agent/human can't miss it.
+ */
+export const STALE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * Returns true when `updatedAt` is older than {@link STALE_THRESHOLD_MS}.
+ * Returns false for missing / non-finite timestamps — "unknown age" is not
+ * the same as "known to be stale".
+ */
+export function isStale(updatedAt: number | undefined): boolean {
+  if (typeof updatedAt !== 'number' || !Number.isFinite(updatedAt)) return false;
+  return Date.now() - updatedAt > STALE_THRESHOLD_MS;
+}
+
+/**
  * Render a unix-ms timestamp as a short "updated N units ago" label.
  * Coarse on purpose — the agent's decision is "fresh enough vs. potentially stale",
  * not a precise duration.
@@ -223,25 +240,48 @@ export function renderArchContextSection(group: string, ctx: ArchContextResult):
     lines.push('### Components');
     for (const c of ctx.components) {
       const files = c.files.length > 0 ? c.files.join(', ') : '—';
+      const stale = isStale(c.updatedAt) ? '⚠ stale ' : '';
       lines.push(
-        `- **${c.name}** (id \`${c.id}\`, ${formatAge(c.updatedAt)}, score ${c.score.toFixed(2)}) — ${c.summary} (files: ${files})`
+        `- ${stale}**${c.name}** (id \`${c.id}\`, ${formatAge(c.updatedAt)}, score ${c.score.toFixed(2)}, files: ${files})`
       );
+      // `summary` is structured markdown with four sections, typically
+      // multi-line. Render it as an indented block beneath the header so
+      // every line of the summary stays inside the bullet.
+      if (c.summary) {
+        for (const line of c.summary.split('\n')) lines.push(`  ${line}`);
+      }
     }
   }
   if (ctx.decisions.length) {
     lines.push('### Decisions');
     for (const d of ctx.decisions) {
+      const stale = isStale(d.updatedAt) ? '⚠ stale ' : '';
+      // `decision` is documented as one sentence, but defensively re-indent
+      // newlines in case a caller wrote a multi-line value — keeps the bullet
+      // structure intact either way.
+      const decision = d.decision.replace(/\n/g, '\n  ');
       lines.push(
-        `- **${d.title}** (id \`${d.id}\`, ${formatAge(d.updatedAt)}, score ${d.score.toFixed(2)}) — ${d.decision}`
+        `- ${stale}**${d.title}** (id \`${d.id}\`, ${formatAge(d.updatedAt)}, score ${d.score.toFixed(2)}) — ${decision}`
       );
     }
   }
   if (ctx.lessons.length) {
     lines.push('### Lessons');
     for (const l of ctx.lessons) {
+      const stale = isStale(l.updatedAt) ? '⚠ stale ' : '';
+      // `rule` is one sentence by contract, but multi-line wording slips in;
+      // keep the bullet intact by re-indenting any embedded newlines.
+      const rule = l.rule.replace(/\n/g, '\n  ');
       lines.push(
-        `- (id \`${l.id}\`, ${l.severity}, ${formatAge(l.updatedAt)}, score ${l.score.toFixed(2)}) ${l.rule}`
+        `- ${stale}(id \`${l.id}\`, ${l.severity}, ${formatAge(l.updatedAt)}, score ${l.score.toFixed(2)}) ${rule}`
       );
+      // why/when give the incident context behind the rule — often more
+      // load-bearing than the rule itself, since they tell the agent when
+      // the rule actually applies. Render as indented continuation bullets.
+      // Re-indent newlines to four spaces so wrapped lines stay aligned under
+      // the two-space sub-bullet.
+      if (l.why) lines.push(`  - **why:** ${l.why.replace(/\n/g, '\n    ')}`);
+      if (l.when) lines.push(`  - **when:** ${l.when.replace(/\n/g, '\n    ')}`);
     }
   }
   lines.push('');

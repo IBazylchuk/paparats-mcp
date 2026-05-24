@@ -4,6 +4,8 @@ import {
   CODING_TOOLS,
   pickArchContextEmptyText,
   renderArchContextSection,
+  STALE_THRESHOLD_MS,
+  isStale,
 } from '../../src/mcp-handler.js';
 import type { ArchContextResult } from '../../src/arch/types.js';
 import { LOW_CONFIDENCE_HINT } from '../../src/arch/context.js';
@@ -136,6 +138,253 @@ describe('renderArchContextSection', () => {
       hint: 'whatever',
     };
     expect(renderArchContextSection('my-app', ctx)).toEqual([]);
+  });
+
+  // Why/when carry the incident context — without them an agent sees only the
+  // rule and loses the signal that tells it when the rule actually applies.
+  it('includes lesson why and when as indented continuation bullets', () => {
+    const ctx: ArchContextResult = {
+      components: [],
+      decisions: [],
+      lessons: [
+        {
+          kind: 'lesson',
+          id: 'les-uuid',
+          rule: 'Always preserve createdAt on re-upsert.',
+          why: 'cohort report keyed on createdAt and silently broke',
+          when: 're-upserting an existing arch card',
+          scope: 'global',
+          evidence: null,
+          severity: 'warning',
+          status: 'accepted',
+          createdAt: 0,
+          updatedAt: Date.now(),
+          score: 0.7,
+        },
+      ],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx).join('\n');
+    expect(rendered).toContain('**why:** cohort report keyed on createdAt and silently broke');
+    expect(rendered).toContain('**when:** re-upserting an existing arch card');
+  });
+
+  // Stale marker — agents/humans need a visible signal to not act on >90d
+  // cards without verifying.
+  it('prefixes stale cards (>90d) with ⚠ stale across all three kinds', () => {
+    const staleTs = Date.now() - STALE_THRESHOLD_MS - 1000;
+    const ctx: ArchContextResult = {
+      components: [
+        {
+          kind: 'component',
+          id: 'comp-stale',
+          project: 'my-app',
+          name: 'old indexer',
+          summary: 'legacy',
+          files: [],
+          neighbours: [],
+          anchors: [],
+          createdAt: 0,
+          updatedAt: staleTs,
+          score: 0.5,
+        },
+      ],
+      decisions: [
+        {
+          kind: 'decision',
+          id: 'dec-stale',
+          title: 'old decision',
+          context: 'c',
+          decision: 'd',
+          alternativesRejected: '',
+          consequences: '',
+          status: 'accepted',
+          supersedes: null,
+          scope: 'global',
+          createdAt: 0,
+          updatedAt: staleTs,
+          score: 0.5,
+        },
+      ],
+      lessons: [
+        {
+          kind: 'lesson',
+          id: 'les-stale',
+          rule: 'old rule',
+          why: '',
+          when: '',
+          scope: 'global',
+          evidence: null,
+          severity: 'info',
+          status: 'accepted',
+          createdAt: 0,
+          updatedAt: staleTs,
+          score: 0.5,
+        },
+      ],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx).join('\n');
+    expect(rendered).toContain('⚠ stale **old indexer**');
+    expect(rendered).toContain('⚠ stale **old decision**');
+    expect(rendered).toContain('⚠ stale (id `les-stale`');
+  });
+
+  // The `summary` field is documented as multi-section markdown. Putting it
+  // on the same line as the header truncated the bullet at the first newline,
+  // stranding the rest of the summary outside the list. Now rendered as an
+  // indented block beneath the header.
+  it('renders multi-line component summary as an indented block under the header', () => {
+    const ctx: ArchContextResult = {
+      components: [
+        {
+          kind: 'component',
+          id: 'comp-uuid',
+          project: 'my-app',
+          name: 'file indexer',
+          summary:
+            '**Does:** indexes files\n**Owns:** indexer.db\n**Does not:** embed code\n**Touched when:** the chunking strategy changes',
+          files: ['packages/server/src/indexer.ts'],
+          neighbours: [],
+          anchors: [],
+          createdAt: 0,
+          updatedAt: Date.now(),
+          score: 0.7,
+        },
+      ],
+      decisions: [],
+      lessons: [],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx);
+    // Header line carries id, age, score, files — but NOT the summary text.
+    const headerIdx = rendered.findIndex((l) => l.startsWith('- **file indexer**'));
+    expect(headerIdx).toBeGreaterThan(-1);
+    expect(rendered[headerIdx]).toContain('files: packages/server/src/indexer.ts');
+    expect(rendered[headerIdx]).not.toContain('**Does:**');
+    // Every line of the summary lives on its own indented row beneath the header.
+    expect(rendered[headerIdx + 1]).toBe('  **Does:** indexes files');
+    expect(rendered[headerIdx + 2]).toBe('  **Owns:** indexer.db');
+    expect(rendered[headerIdx + 3]).toBe('  **Does not:** embed code');
+    expect(rendered[headerIdx + 4]).toBe('  **Touched when:** the chunking strategy changes');
+  });
+
+  // Multi-line `why` / `when` used to break the sub-bullet — subsequent
+  // lines escaped the list. Embedded newlines are now re-indented to four
+  // spaces so wrapped lines stay aligned under the two-space sub-bullet.
+  it('re-indents multi-line lesson why/when so wrapped lines stay under the sub-bullet', () => {
+    const ctx: ArchContextResult = {
+      components: [],
+      decisions: [],
+      lessons: [
+        {
+          kind: 'lesson',
+          id: 'les-uuid',
+          rule: 'Always preserve createdAt on re-upsert.',
+          why: 'cohort report keyed on createdAt.\nIt silently broke after the migration.',
+          when: 're-upserting an arch card.\nApplies to every card kind.',
+          scope: 'global',
+          evidence: null,
+          severity: 'warning',
+          status: 'accepted',
+          createdAt: 0,
+          updatedAt: Date.now(),
+          score: 0.7,
+        },
+      ],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx).join('\n');
+    expect(rendered).toContain(
+      '  - **why:** cohort report keyed on createdAt.\n    It silently broke after the migration.'
+    );
+    expect(rendered).toContain(
+      '  - **when:** re-upserting an arch card.\n    Applies to every card kind.'
+    );
+  });
+
+  it('does not prefix fresh (<90d) cards with the stale marker', () => {
+    const ctx: ArchContextResult = {
+      components: [
+        {
+          kind: 'component',
+          id: 'comp-fresh',
+          project: 'my-app',
+          name: 'fresh indexer',
+          summary: 's',
+          files: [],
+          neighbours: [],
+          anchors: [],
+          createdAt: 0,
+          updatedAt: Date.now(),
+          score: 0.5,
+        },
+      ],
+      decisions: [],
+      lessons: [],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('my-app', ctx).join('\n');
+    expect(rendered).not.toContain('⚠ stale');
+  });
+});
+
+describe('isStale', () => {
+  it('returns true for timestamps older than the 90-day threshold', () => {
+    expect(isStale(Date.now() - STALE_THRESHOLD_MS - 1000)).toBe(true);
+  });
+  it('returns false for fresh timestamps', () => {
+    expect(isStale(Date.now())).toBe(false);
+  });
+  it('returns false for missing/non-finite timestamps (unknown ≠ stale)', () => {
+    expect(isStale(undefined)).toBe(false);
+    expect(isStale(NaN)).toBe(false);
+    expect(isStale(Infinity)).toBe(false);
+  });
+});
+
+describe('arch_delete description warning', () => {
+  // Defensive UX: deletes silently miss when the LLM uses ids from earlier in
+  // the conversation (a re-upsert allocates a fresh UUID). Description must
+  // tell the LLM to re-fetch ids first.
+  it('warns about stale ids by directing the caller to re-fetch from arch_context', async () => {
+    const { prompts } = await import('../../src/prompts/index.js');
+    const desc = prompts.tools.arch_delete.description;
+    expect(desc).toMatch(/re-fetch/i);
+    expect(desc).toContain('arch_context');
+  });
+});
+
+describe('memory-layer dichotomy in instructions', () => {
+  // Agents kept writing workflow / collaboration rules to arch_record_lesson
+  // when those belong in agent-side memory (auto-memory / CLAUDE.md). The
+  // distinction has to be spelled out in both the per-tool description and
+  // the top-level coding instructions, otherwise the agent only sees it on
+  // the surface that happens to be in context at the moment.
+  it('arch_record_lesson description distinguishes arch from agent-side memory', async () => {
+    const { prompts } = await import('../../src/prompts/index.js');
+    const desc = prompts.tools.arch_record_lesson.description;
+    expect(desc).toMatch(/arch/i);
+    expect(desc).toMatch(/auto-memory|CLAUDE\.md|AGENTS\.md/);
+    expect(desc).toMatch(/code|codebase/i);
+  });
+
+  it('codingInstructions has a Memory layers block pointing at agent-side memory for workflow rules', async () => {
+    const { prompts } = await import('../../src/prompts/index.js');
+    expect(prompts.codingInstructions).toMatch(/Memory layers/);
+    expect(prompts.codingInstructions).toMatch(/agent-side memory|auto-memory/);
+  });
+
+  it('record_lesson_from_correction workflow flags workflow rules as belonging elsewhere', async () => {
+    const { prompts } = await import('../../src/prompts/index.js');
+    const message = prompts.workflows['record_lesson_from_correction']?.message ?? '';
+    expect(message).toMatch(/workflow|collaboration/i);
+    expect(message).toMatch(/agent-side memory|auto-memory|CLAUDE\.md/);
   });
 });
 
