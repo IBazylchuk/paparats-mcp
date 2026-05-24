@@ -95,6 +95,7 @@ function validatePrompts(data: unknown): Prompts {
     'arch_record_component',
     'arch_record_decision',
     'arch_record_lesson',
+    'arch_delete',
   ]) {
     const t = tools[name];
     if (!t || typeof t !== 'object') {
