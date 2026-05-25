@@ -1122,6 +1122,73 @@ describe('ArchStore.listPoints', () => {
     const { points } = await store.listPoints('g', { project: 'app-a', limit: 10 });
     expect(points).toHaveLength(10);
   });
+
+  // Regression: when the project-filtered loop breaks early (we got `limit`
+  // matches mid-batch), the next-page cursor must be the last point we
+  // actually processed — not Qdrant's `next_page_offset`, which would skip
+  // every unprocessed point in the current batch. Caught by gemini on PR #87.
+  it('uses the last-seen point id as the cursor when breaking early on a project-filtered scroll', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValueOnce({
+      points: Array.from({ length: 30 }, (_v, i) =>
+        pointWith('component', { id: `c${i}`, project: 'app-a', name: `N${i}` })
+      ),
+      next_page_offset: 'qdrant-cursor-past-c29',
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { points, nextOffset } = await store.listPoints('g', {
+      project: 'app-a',
+      limit: 10,
+    });
+    expect(points).toHaveLength(10);
+    // Last accumulated point was c9, not c29 — so the resume cursor must be c9.
+    expect(nextOffset).toBe('c9');
+  });
+
+  // The opposite path: when we exhaust the fetched batch without hitting
+  // `limit`, the resume cursor must be Qdrant's own next_page_offset, since
+  // there's nothing more to read inside the current batch.
+  it('forwards Qdrant next_page_offset when the fetched batch is exhausted without hitting limit', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [
+        pointWith('component', { id: 'c1', project: 'app-a', name: 'X' }),
+        pointWith('component', { id: 'c2', project: 'app-a', name: 'Y' }),
+      ],
+      next_page_offset: 'qdrant-resume',
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { points, nextOffset } = await store.listPoints('g', {
+      project: 'app-a',
+      limit: 10,
+    });
+    expect(points).toHaveLength(2);
+    expect(nextOffset).toBe('qdrant-resume');
+  });
+
+  // Qdrant can emit a structured point id (rare for UUIDv7 collections but
+  // supported by the client). Forwarding it through nextOffset lets callers
+  // resume in those cases instead of seeing the cursor get coerced to null.
+  it('forwards object-form next_page_offset verbatim so pagination keeps working', async () => {
+    const qdrant = fakeQdrant();
+    const objectCursor = { num: 42 };
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [pointWith('component', { id: 'c1', project: 'app-a', name: 'X' })],
+      next_page_offset: objectCursor,
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { nextOffset } = await store.listPoints('g');
+    expect(nextOffset).toEqual(objectCursor);
+  });
 });
 
 // ── Project-scoped retrieval boost ─────────────────────────────────────────
