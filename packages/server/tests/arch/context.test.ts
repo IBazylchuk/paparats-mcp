@@ -141,6 +141,18 @@ describe('buildArchContext', () => {
     const kinds = searchWithVector.mock.calls.map((call) => call[2].kinds[0]);
     expect(kinds.sort()).toEqual(['component', 'decision', 'lesson']);
   });
+
+  // Support mode has no file watcher and no cross-mode invalidation signal,
+  // so any cache layer between buildArchContext and the store would serve
+  // stale cards after a coding-mode write. Lock that in: every call must
+  // hit the store fresh, even with identical args back-to-back.
+  it('does not cache: identical back-to-back calls hit the store again', async () => {
+    const { store, searchWithVector } = storeWithPerKind({ component: [comp('A')] });
+    await buildArchContextWithVector(store, 'my-app', [0, 0]);
+    await buildArchContextWithVector(store, 'my-app', [0, 0]);
+    // 3 kinds × 2 calls = 6 searches. If a cache lands here, this drops to 3.
+    expect(searchWithVector).toHaveBeenCalledTimes(6);
+  });
 });
 
 describe('buildArchContextWithVector — per-kind limits', () => {

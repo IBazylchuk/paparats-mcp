@@ -250,6 +250,7 @@ describe('MetadataStore', () => {
         to_chunk_id: 'g//p//def.ts//1-5//h2',
         relation_type: 'calls',
         symbol_name: 'greet',
+        confidence: 'INFERRED',
       },
     ]);
 
@@ -257,10 +258,205 @@ describe('MetadataStore', () => {
     expect(from).toHaveLength(1);
     expect(from[0]!.symbol_name).toBe('greet');
     expect(from[0]!.to_chunk_id).toBe('g//p//def.ts//1-5//h2');
+    expect(from[0]!.confidence).toBe('INFERRED');
 
     const to = store.getEdgesTo('g//p//def.ts//1-5//h2');
     expect(to).toHaveLength(1);
     expect(to[0]!.from_chunk_id).toBe('g//p//caller.ts//1-5//h1');
+  });
+
+  it('round-trips EXTRACTED/INFERRED/AMBIGUOUS confidence values', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//p//a.ts//1-5//h1',
+        to_chunk_id: 'g//p//a.ts//6-10//h2',
+        relation_type: 'calls',
+        symbol_name: 'localCall',
+        confidence: 'EXTRACTED',
+      },
+      {
+        from_chunk_id: 'g//p//a.ts//1-5//h1',
+        to_chunk_id: 'g//p//b.ts//1-5//h3',
+        relation_type: 'calls',
+        symbol_name: 'crossFile',
+        confidence: 'INFERRED',
+      },
+      {
+        from_chunk_id: 'g//p//a.ts//1-5//h1',
+        to_chunk_id: 'g//p//c.ts//1-5//h4',
+        relation_type: 'calls',
+        symbol_name: 'multiDef',
+        confidence: 'AMBIGUOUS',
+      },
+    ]);
+
+    const all = store.getEdgesFrom('g//p//a.ts//1-5//h1');
+    const byConfidence = Object.fromEntries(all.map((e) => [e.symbol_name, e.confidence]));
+    expect(byConfidence).toEqual({
+      localCall: 'EXTRACTED',
+      crossFile: 'INFERRED',
+      multiDef: 'AMBIGUOUS',
+    });
+  });
+
+  it('defaults legacy edges (written without confidence) to INFERRED', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//p//caller.ts//1-5//h1',
+        to_chunk_id: 'g//p//def.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'greet',
+      },
+    ]);
+
+    const [edge] = store.getEdgesFrom('g//p//caller.ts//1-5//h1');
+    expect(edge?.confidence).toBe('INFERRED');
+  });
+
+  // ── Degree analytics ────────────────────────────────────────────────────
+
+  it('getGroupDegreeSnapshot ranks chunks by incoming degree', () => {
+    const hub = 'g//p//hub.ts//1-5//hub';
+    const edges = [];
+    for (let i = 0; i < 12; i++) {
+      edges.push({
+        from_chunk_id: `g//p//caller${i}.ts//1-5//c${i}`,
+        to_chunk_id: hub,
+        relation_type: 'calls' as const,
+        symbol_name: `s${i}`,
+        confidence: 'INFERRED' as const,
+      });
+    }
+    // One non-hub callee with only 1 incoming edge.
+    edges.push({
+      from_chunk_id: 'g//p//caller0.ts//1-5//c0',
+      to_chunk_id: 'g//p//cold.ts//1-5//cold',
+      relation_type: 'calls',
+      symbol_name: 'rare',
+      confidence: 'INFERRED',
+    });
+    store.upsertSymbolEdges(edges);
+
+    const snap = store.getGroupDegreeSnapshot('g');
+    expect(snap.topInDegree[0]?.chunkId).toBe(hub);
+    expect(snap.topInDegree[0]?.degree).toBe(12);
+    // p95 is floored at 5 so a small graph isn't classified entirely as hubs.
+    expect(snap.inDegreeP95).toBeGreaterThanOrEqual(5);
+  });
+
+  it('getTopByInDegree honors an optional project filter', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//p1//a.ts//1-5//h1',
+        to_chunk_id: 'g//p1//x.ts//1-5//hx',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+        confidence: 'INFERRED',
+      },
+      {
+        from_chunk_id: 'g//p2//b.ts//1-5//h2',
+        to_chunk_id: 'g//p2//y.ts//1-5//hy',
+        relation_type: 'calls',
+        symbol_name: 'bar',
+        confidence: 'INFERRED',
+      },
+    ]);
+
+    const p1 = store.getTopByInDegree('g', 10, 'p1');
+    expect(p1.map((r) => r.chunkId)).toEqual(['g//p1//x.ts//1-5//hx']);
+  });
+
+  it('invalidates degree cache after deleteEdgesByProject', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//p1//a.ts//1-5//h1',
+        to_chunk_id: 'g//p1//x.ts//1-5//hx',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+        confidence: 'INFERRED',
+      },
+    ]);
+    expect(store.getGroupDegreeSnapshot('g').topInDegree).toHaveLength(1);
+
+    store.deleteEdgesByProject('g', 'p1');
+    expect(store.getGroupDegreeSnapshot('g').topInDegree).toHaveLength(0);
+  });
+
+  // Per-PR-89 review (Gemini): upsertSymbolEdges used to clear the entire
+  // degree cache via invalidateDegreeCache(). It must now only drop entries
+  // for groups touched by the incoming edges, so an index pass on one group
+  // doesn't blow away unrelated groups' cached stats.
+  it('upsertSymbolEdges only invalidates the cache of groups touched by the edges', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'groupA//p//a.ts//1-5//h1',
+        to_chunk_id: 'groupA//p//b.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+        confidence: 'INFERRED',
+      },
+      {
+        from_chunk_id: 'groupB//p//c.ts//1-5//h3',
+        to_chunk_id: 'groupB//p//d.ts//1-5//h4',
+        relation_type: 'calls',
+        symbol_name: 'bar',
+        confidence: 'INFERRED',
+      },
+    ]);
+    // Warm the cache for both groups.
+    const beforeB = store.getGroupDegreeSnapshot('groupB');
+    expect(beforeB.topInDegree).toHaveLength(1);
+
+    // Add an edge in groupA only.
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'groupA//p//e.ts//1-5//h5',
+        to_chunk_id: 'groupA//p//b.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'foo2',
+        confidence: 'INFERRED',
+      },
+    ]);
+
+    // groupA stats reflect the new edge (b.ts now has in-degree 2).
+    const afterA = store.getGroupDegreeSnapshot('groupA');
+    expect(afterA.topInDegree[0]?.degree).toBe(2);
+    // groupB cache survived the unrelated write — the cached hubChunkIds
+    // Set is reused (object identity), even though the wrapper object is
+    // re-allocated per call.
+    const afterB = store.getGroupDegreeSnapshot('groupB');
+    expect(afterB.hubChunkIds).toBe(beforeB.hubChunkIds);
+  });
+
+  it('exposes a pre-computed hubChunkIds set so find_usages avoids per-call Set construction', () => {
+    const hub = 'g//p//hub.ts//1-5//hub';
+    const edges = [];
+    // 12 callers of `hub` → in-degree 12, well above the floor of 5.
+    for (let i = 0; i < 12; i++) {
+      edges.push({
+        from_chunk_id: `g//p//caller${i}.ts//1-5//c${i}`,
+        to_chunk_id: hub,
+        relation_type: 'calls' as const,
+        symbol_name: `s${i}`,
+        confidence: 'INFERRED' as const,
+      });
+    }
+    // One cold callee that should NOT be in the hub set.
+    edges.push({
+      from_chunk_id: 'g//p//caller0.ts//1-5//c0',
+      to_chunk_id: 'g//p//cold.ts//1-5//cold',
+      relation_type: 'calls',
+      symbol_name: 'rare',
+      confidence: 'INFERRED',
+    });
+    store.upsertSymbolEdges(edges);
+
+    const snap = store.getGroupDegreeSnapshot('g');
+    expect(snap.hubChunkIds.has(hub)).toBe(true);
+    expect(snap.hubChunkIds.has('g//p//cold.ts//1-5//cold')).toBe(false);
+    // Cached: second call returns the SAME Set reference (object identity).
+    const snap2 = store.getGroupDegreeSnapshot('g');
+    expect(snap2.hubChunkIds).toBe(snap.hubChunkIds);
   });
 
   it('returns empty for unknown chunk edges', () => {

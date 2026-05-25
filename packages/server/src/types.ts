@@ -117,11 +117,30 @@ export interface ChunkResult {
 
 export type RelationType = 'calls' | 'called_by' | 'references' | 'referenced_by';
 
+/**
+ * Confidence label for symbol-graph edges, mirroring the EXTRACTED/INFERRED/
+ * AMBIGUOUS scheme used by graph-style code intelligence tools.
+ *
+ * - `EXTRACTED`: the edge is structurally certain (e.g. caller and definition
+ *   are in the same file, resolved by AST without name lookup).
+ * - `INFERRED`: cross-file edge resolved by name match where exactly one
+ *   chunk defines the symbol — likely correct but not proven.
+ * - `AMBIGUOUS`: name resolved to multiple defining chunks; the caller could
+ *   be hitting any of them. Treat as low-confidence in `find_usages`.
+ */
+export type EdgeConfidence = 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS';
+
 export interface SymbolEdge {
   from_chunk_id: string;
   to_chunk_id: string;
   relation_type: RelationType;
   symbol_name: string;
+  /**
+   * Optional on the way in for backwards compatibility with rows written
+   * before the column existed — readers should default to `'INFERRED'` when
+   * absent, matching the legacy classification.
+   */
+  confidence?: EdgeConfidence;
 }
 
 // ── Search types ───────────────────────────────────────────────────────────
