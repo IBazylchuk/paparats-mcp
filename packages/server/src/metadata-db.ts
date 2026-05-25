@@ -75,12 +75,26 @@ export class MetadataStore {
         to_chunk_id TEXT NOT NULL,
         relation_type TEXT NOT NULL,
         symbol_name TEXT NOT NULL,
+        confidence TEXT NOT NULL DEFAULT 'INFERRED',
         PRIMARY KEY (from_chunk_id, to_chunk_id, symbol_name)
       );
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_from ON symbol_edges(from_chunk_id);
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_to ON symbol_edges(to_chunk_id);
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_symbol ON symbol_edges(symbol_name);
     `);
+
+    // Migrate legacy databases pre-dating the confidence column. Older installs
+    // have a `symbol_edges` table without it; tag existing rows as INFERRED
+    // (the conservative legacy default) so find_usages keeps working until
+    // the next reindex labels edges precisely.
+    const cols = this.db.prepare("PRAGMA table_info('symbol_edges')").all() as Array<{
+      name: string;
+    }>;
+    if (!cols.some((c) => c.name === 'confidence')) {
+      this.db.exec(
+        "ALTER TABLE symbol_edges ADD COLUMN confidence TEXT NOT NULL DEFAULT 'INFERRED'"
+      );
+    }
 
     this.insertCommitStmt = this.db.prepare(
       'INSERT OR REPLACE INTO chunk_commits (chunk_id, commit_hash, committed_at, author_email, message_summary) VALUES (?, ?, ?, ?, ?)'
@@ -105,15 +119,15 @@ export class MetadataStore {
     this.deleteChunkTicketsStmt = this.db.prepare('DELETE FROM chunk_tickets WHERE chunk_id = ?');
 
     this.insertEdgeStmt = this.db.prepare(
-      'INSERT OR REPLACE INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name) VALUES (?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence) VALUES (?, ?, ?, ?, ?)'
     );
     this.deleteEdgesFromStmt = this.db.prepare('DELETE FROM symbol_edges WHERE from_chunk_id = ?');
     this.deleteEdgesToStmt = this.db.prepare('DELETE FROM symbol_edges WHERE to_chunk_id = ?');
     this.getEdgesFromStmt = this.db.prepare(
-      'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name FROM symbol_edges WHERE from_chunk_id = ?'
+      'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence FROM symbol_edges WHERE from_chunk_id = ?'
     );
     this.getEdgesToStmt = this.db.prepare(
-      'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name FROM symbol_edges WHERE to_chunk_id = ?'
+      'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence FROM symbol_edges WHERE to_chunk_id = ?'
     );
     this.deleteChunkEdgesStmt = this.db.prepare(
       'DELETE FROM symbol_edges WHERE from_chunk_id = ? OR to_chunk_id = ?'
@@ -197,10 +211,19 @@ export class MetadataStore {
   upsertSymbolEdges(edges: SymbolEdge[]): void {
     const tx = this.db.transaction(() => {
       for (const e of edges) {
-        this.insertEdgeStmt.run(e.from_chunk_id, e.to_chunk_id, e.relation_type, e.symbol_name);
+        this.insertEdgeStmt.run(
+          e.from_chunk_id,
+          e.to_chunk_id,
+          e.relation_type,
+          e.symbol_name,
+          e.confidence ?? 'INFERRED'
+        );
       }
     });
     tx();
+    // Edges changed → drop the whole degree cache; we don't know which
+    // (group, project) the edges belong to without parsing every chunk_id.
+    this.invalidateDegreeCache();
   }
 
   getEdgesFrom(chunkId: string): SymbolEdge[] {
@@ -231,6 +254,140 @@ export class MetadataStore {
     const prefix = `${escapeLike(group)}//${escapeLike(project)}//`;
     const pattern = `${prefix}%`;
     this.deleteProjectEdgesStmt.run(pattern, pattern);
+    // Edges changed → drop the group's degree cache (per-group scope, since
+    // hub thresholds are computed across the whole group, not per-project).
+    this.invalidateDegreeCache(group);
+  }
+
+  // ── Degree analytics (for hub-threshold filtering + arch suggestions) ─────
+
+  /**
+   * Per-group degree stats. Recomputing scans the whole subgraph, so we
+   * memoise behind a 5-minute TTL and invalidate when the caller writes or
+   * deletes edges in the same group. graphify uses an analogous trick:
+   * compute p99 once per BFS and reuse it. Our threshold is p95 to be a touch
+   * more aggressive — find_usages is a 1-hop tool, not a full traversal.
+   */
+  private degreeCache = new Map<
+    string,
+    {
+      computedAt: number;
+      inDegreeP95: number;
+      outDegreeP95: number;
+      topInDegree: Array<{ chunkId: string; degree: number }>;
+      topOutDegree: Array<{ chunkId: string; degree: number }>;
+    }
+  >();
+  private static readonly DEGREE_CACHE_TTL_MS = 5 * 60 * 1000;
+
+  invalidateDegreeCache(group?: string): void {
+    if (group === undefined) {
+      this.degreeCache.clear();
+      return;
+    }
+    this.degreeCache.delete(group);
+  }
+
+  private computeGroupDegreeStats(group: string): {
+    inDegreeP95: number;
+    outDegreeP95: number;
+    topInDegree: Array<{ chunkId: string; degree: number }>;
+    topOutDegree: Array<{ chunkId: string; degree: number }>;
+  } {
+    const pattern = `${escapeLike(group)}//%`;
+    const inRows = this.db
+      .prepare(
+        "SELECT to_chunk_id AS chunkId, COUNT(*) AS degree FROM symbol_edges WHERE to_chunk_id LIKE ? ESCAPE '\\' GROUP BY to_chunk_id ORDER BY degree DESC"
+      )
+      .all(pattern) as Array<{ chunkId: string; degree: number }>;
+    const outRows = this.db
+      .prepare(
+        "SELECT from_chunk_id AS chunkId, COUNT(*) AS degree FROM symbol_edges WHERE from_chunk_id LIKE ? ESCAPE '\\' GROUP BY from_chunk_id ORDER BY degree DESC"
+      )
+      .all(pattern) as Array<{ chunkId: string; degree: number }>;
+    return {
+      inDegreeP95: percentile(
+        inRows.map((r) => r.degree),
+        0.95
+      ),
+      outDegreeP95: percentile(
+        outRows.map((r) => r.degree),
+        0.95
+      ),
+      topInDegree: inRows,
+      topOutDegree: outRows,
+    };
+  }
+
+  private getGroupDegreeStats(group: string): {
+    inDegreeP95: number;
+    outDegreeP95: number;
+    topInDegree: Array<{ chunkId: string; degree: number }>;
+    topOutDegree: Array<{ chunkId: string; degree: number }>;
+  } {
+    const cached = this.degreeCache.get(group);
+    if (cached && Date.now() - cached.computedAt < MetadataStore.DEGREE_CACHE_TTL_MS) {
+      return {
+        inDegreeP95: cached.inDegreeP95,
+        outDegreeP95: cached.outDegreeP95,
+        topInDegree: cached.topInDegree,
+        topOutDegree: cached.topOutDegree,
+      };
+    }
+    const stats = this.computeGroupDegreeStats(group);
+    this.degreeCache.set(group, { ...stats, computedAt: Date.now() });
+    return stats;
+  }
+
+  /**
+   * Snapshot of per-group degree stats. Returns both top-degree lists and
+   * the p95 thresholds so a caller (e.g. find_usages) can decide hub
+   * membership without making 4 round-trips through the cache layer.
+   */
+  getGroupDegreeSnapshot(group: string): {
+    inDegreeP95: number;
+    outDegreeP95: number;
+    topInDegree: Array<{ chunkId: string; degree: number }>;
+    topOutDegree: Array<{ chunkId: string; degree: number }>;
+  } {
+    const stats = this.getGroupDegreeStats(group);
+    return {
+      inDegreeP95: Math.max(5, stats.inDegreeP95),
+      outDegreeP95: Math.max(5, stats.outDegreeP95),
+      topInDegree: stats.topInDegree,
+      topOutDegree: stats.topOutDegree,
+    };
+  }
+
+  /**
+   * p95 in-degree across all chunks in `group`, floored at 5 so a tiny graph
+   * doesn't flag every node as a hub. `find_usages` uses this to mark or
+   * suppress callers whose own in-degree is above the threshold.
+   */
+  getInDegreeP95(group: string): number {
+    return Math.max(5, this.getGroupDegreeStats(group).inDegreeP95);
+  }
+
+  getOutDegreeP95(group: string): number {
+    return Math.max(5, this.getGroupDegreeStats(group).outDegreeP95);
+  }
+
+  /** Top-N chunks by in-degree across `group`. Optional `project` post-filter. */
+  getTopByInDegree(
+    group: string,
+    limit: number,
+    project?: string
+  ): Array<{ chunkId: string; degree: number }> {
+    const all = this.getGroupDegreeStats(group).topInDegree;
+    if (project === undefined) return all.slice(0, limit);
+    const wanted = `${group}//${project}//`;
+    return all.filter((r) => r.chunkId.startsWith(wanted)).slice(0, limit);
+  }
+
+  /** In-degree for one specific chunk in `group`. */
+  getInDegree(group: string, chunkId: string): number {
+    const entry = this.getGroupDegreeStats(group).topInDegree.find((r) => r.chunkId === chunkId);
+    return entry?.degree ?? 0;
   }
 
   close(): void {
@@ -238,4 +395,12 @@ export class MetadataStore {
     this.closed = true;
     this.db.close();
   }
+}
+
+/** Nearest-rank percentile. Returns 0 for empty input. */
+function percentile(sortedDesc: number[], p: number): number {
+  if (sortedDesc.length === 0) return 0;
+  const sortedAsc = [...sortedDesc].sort((a, b) => a - b);
+  const idx = Math.min(sortedAsc.length - 1, Math.floor(p * sortedAsc.length));
+  return sortedAsc[idx] ?? 0;
 }

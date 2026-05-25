@@ -95,6 +95,24 @@ async function searchOneKind(
   });
 }
 
+/**
+ * `buildArchContext` and `buildArchContextWithVector` intentionally hit Qdrant
+ * on every call — no in-memory cache layer sits between them and the store.
+ *
+ * Why this matters: support mode is read-only and has no file watcher. The
+ * `Searcher` query cache (which does have invalidation hooks driven by the
+ * indexer/watcher) can serve stale snippets when a watcher isn't running, so
+ * any equivalent cache on top of arch_context would behave the same way —
+ * support agents would see arch cards their colleagues just wrote or deleted
+ * from coding mode only after a TTL expires. Until there is a cross-mode
+ * invalidation signal (collection version stamp, change-feed, etc.), keep
+ * the path uncached: arch collections are small and `searchOneKind` runs
+ * three Qdrant queries in parallel — the latency is acceptable.
+ *
+ * If you add a cache here, you must also add a way for `archStore.upsert*`
+ * / `archStore.delete` (which run in coding mode, possibly in a different
+ * process) to notify this layer. Failing that, prefer not caching.
+ */
 export async function buildArchContext(
   store: ArchStore,
   group: string,
