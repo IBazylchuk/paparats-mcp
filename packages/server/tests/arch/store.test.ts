@@ -767,7 +767,12 @@ describe('ArchStore.searchWithVector project filter', () => {
     // Components: only app-a survives. no-proj-comp is dropped (hard filter).
     // Decisions: cross-cutting (no project) and app-a's pass; app-b's is dropped.
     // Lessons: rule has no project — passes.
-    expect(labels).toEqual(['a-comp', 'cross-cutting', 'app-a decision', 'r']);
+    //
+    // Order reflects the project-scoped retrieval boost (+0.05 to project=app-a
+    // cards): a-comp 0.85, app-a decision 0.79, cross-cutting 0.75, rule 0.7.
+    // Boost coverage is in `searchWithVector project boost` — this assertion is
+    // just the visibility membership in post-boost order.
+    expect(labels).toEqual(['a-comp', 'app-a decision', 'cross-cutting', 'r']);
   });
 
   it('overfetches when project is set so the post-filter does not return short', async () => {
@@ -968,5 +973,358 @@ describe('ArchStore.deletePoints', () => {
     expect(qdrant.getCollection).not.toHaveBeenCalled();
     expect(qdrant.retrieve).not.toHaveBeenCalled();
     expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+});
+
+// ── ArchStore.listPoints ───────────────────────────────────────────────────
+// Listing is the audit/dedupe surface: callers who can't rely on the search
+// ranker (decisions starving components, global short text winning on cosine)
+// need to enumerate everything in a stable, kind/project-aware way.
+
+describe('ArchStore.listPoints', () => {
+  function pointWith(
+    kind: 'component' | 'decision' | 'lesson',
+    overrides: Record<string, unknown>
+  ) {
+    return {
+      id: overrides['id'] ?? `${kind}-id`,
+      payload: {
+        arch_kind: kind,
+        kind,
+        status: 'accepted',
+        createdAt: 0,
+        updatedAt: 1,
+        ...overrides,
+      },
+    };
+  }
+
+  it('returns every card the scroll yields when no filters apply', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [
+        pointWith('component', { id: 'c1', project: 'app-a', name: 'X' }),
+        pointWith('decision', { id: 'd1', title: 'D', decision: 'd' }),
+        pointWith('lesson', { id: 'l1', rule: 'R' }),
+      ],
+      next_page_offset: null,
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { points, nextOffset } = await store.listPoints('my-group');
+    expect(points.map((p) => p.id)).toEqual(['c1', 'd1', 'l1']);
+    expect(nextOffset).toBeNull();
+  });
+
+  it('hard-filters components by project but soft-filters decisions and lessons', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [
+        pointWith('component', { id: 'c-match', project: 'app-a', name: 'X' }),
+        pointWith('component', { id: 'c-other', project: 'app-b', name: 'Y' }),
+        pointWith('component', { id: 'c-noproject', name: 'Z' }),
+        pointWith('decision', { id: 'd-match', project: 'app-a', title: 'D1', decision: 'd' }),
+        pointWith('decision', { id: 'd-global', title: 'D2', decision: 'd' }),
+        pointWith('decision', { id: 'd-other', project: 'app-b', title: 'D3', decision: 'd' }),
+        pointWith('lesson', { id: 'l-global', rule: 'R' }),
+      ],
+      next_page_offset: null,
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { points } = await store.listPoints('my-group', { project: 'app-a' });
+    const ids = points.map((p) => p.id);
+    // Components: only the project-matched one survives — global / wrong-project are dropped.
+    expect(ids).toContain('c-match');
+    expect(ids).not.toContain('c-other');
+    expect(ids).not.toContain('c-noproject');
+    // Decisions/lessons: matching project AND globals survive; wrong project drops.
+    expect(ids).toContain('d-match');
+    expect(ids).toContain('d-global');
+    expect(ids).not.toContain('d-other');
+    expect(ids).toContain('l-global');
+  });
+
+  it('excludes superseded and deprecated cards by default and includes them when asked', async () => {
+    const qdrant = fakeQdrant();
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+
+    qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
+    await store.listPoints('g', {});
+    const firstFilter = qdrant.scroll.mock.calls[0]?.[1]?.filter;
+    expect(firstFilter?.must_not).toEqual([
+      { key: 'status', match: { value: 'superseded' } },
+      { key: 'status', match: { value: 'deprecated' } },
+    ]);
+
+    qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
+    await store.listPoints('g', { includeHistory: true });
+    const secondFilter = qdrant.scroll.mock.calls[1]?.[1]?.filter;
+    expect(secondFilter?.must_not).toBeUndefined();
+  });
+
+  it('passes the kind filter through to Qdrant as `arch_kind` match.any', async () => {
+    const qdrant = fakeQdrant();
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
+    await store.listPoints('g', { kinds: ['component', 'decision'] });
+    const filter = qdrant.scroll.mock.calls[0]?.[1]?.filter;
+    expect(filter?.must).toEqual([{ key: 'arch_kind', match: { any: ['component', 'decision'] } }]);
+  });
+
+  it('forwards a string|number next_page_offset from the scroll as-is', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [pointWith('component', { id: 'c1', project: 'a', name: 'X' })],
+      next_page_offset: 'cursor-token',
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { nextOffset } = await store.listPoints('g');
+    expect(nextOffset).toBe('cursor-token');
+  });
+
+  it('returns an empty page when the underlying scroll fails (e.g. collection missing)', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockRejectedValueOnce(new Error('Not found: Collection ... does not exist'));
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const result = await store.listPoints('g');
+    expect(result).toEqual({ points: [], nextOffset: null });
+  });
+
+  it('caps the returned page at `limit` even when the scroll overfetched for the project filter', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValueOnce({
+      points: Array.from({ length: 30 }, (_v, i) =>
+        pointWith('component', { id: `c${i}`, project: 'app-a', name: `N${i}` })
+      ),
+      next_page_offset: null,
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { points } = await store.listPoints('g', { project: 'app-a', limit: 10 });
+    expect(points).toHaveLength(10);
+  });
+
+  // Regression: when the project-filtered loop breaks early (we got `limit`
+  // matches mid-batch), the next-page cursor must be the last point we
+  // actually processed — not Qdrant's `next_page_offset`, which would skip
+  // every unprocessed point in the current batch. Caught by gemini on PR #87.
+  it('uses the last-seen point id as the cursor when breaking early on a project-filtered scroll', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValueOnce({
+      points: Array.from({ length: 30 }, (_v, i) =>
+        pointWith('component', { id: `c${i}`, project: 'app-a', name: `N${i}` })
+      ),
+      next_page_offset: 'qdrant-cursor-past-c29',
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { points, nextOffset } = await store.listPoints('g', {
+      project: 'app-a',
+      limit: 10,
+    });
+    expect(points).toHaveLength(10);
+    // Last accumulated point was c9, not c29 — so the resume cursor must be c9.
+    expect(nextOffset).toBe('c9');
+  });
+
+  // The opposite path: when we exhaust the fetched batch without hitting
+  // `limit`, the resume cursor must be Qdrant's own next_page_offset, since
+  // there's nothing more to read inside the current batch.
+  it('forwards Qdrant next_page_offset when the fetched batch is exhausted without hitting limit', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [
+        pointWith('component', { id: 'c1', project: 'app-a', name: 'X' }),
+        pointWith('component', { id: 'c2', project: 'app-a', name: 'Y' }),
+      ],
+      next_page_offset: 'qdrant-resume',
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { points, nextOffset } = await store.listPoints('g', {
+      project: 'app-a',
+      limit: 10,
+    });
+    expect(points).toHaveLength(2);
+    expect(nextOffset).toBe('qdrant-resume');
+  });
+
+  // Qdrant can emit a structured point id (rare for UUIDv7 collections but
+  // supported by the client). Forwarding it through nextOffset lets callers
+  // resume in those cases instead of seeing the cursor get coerced to null.
+  it('forwards object-form next_page_offset verbatim so pagination keeps working', async () => {
+    const qdrant = fakeQdrant();
+    const objectCursor = { num: 42 };
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [pointWith('component', { id: 'c1', project: 'app-a', name: 'X' })],
+      next_page_offset: objectCursor,
+    });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const { nextOffset } = await store.listPoints('g');
+    expect(nextOffset).toEqual(objectCursor);
+  });
+});
+
+// ── Project-scoped retrieval boost ─────────────────────────────────────────
+// The boost lifts cards whose `project` field matches the caller's project
+// filter, so short generic global cards don't drown out longer project-scoped
+// ones on raw cosine. Boost is +0.05 (one tier of the calibrated bge-m3
+// bands), additive, capped at 1, and only applied when the caller passes a
+// `project`. It's a retrieval-only knob — the similarity gate (findNearest)
+// must continue to compare raw cosines for dedupe correctness.
+
+describe('ArchStore.searchWithVector project boost', () => {
+  function searchableComponent(
+    id: string,
+    project: string | undefined,
+    score: number
+  ): { id: string; score: number; payload: Record<string, unknown> } {
+    return {
+      id,
+      score,
+      payload: {
+        kind: 'component',
+        arch_kind: 'component',
+        id,
+        name: id,
+        ...(project !== undefined ? { project } : {}),
+        summary: '',
+        files: [],
+        neighbours: [],
+        anchors: [],
+        status: 'accepted',
+      },
+    };
+  }
+
+  function searchableDecision(
+    id: string,
+    project: string | undefined,
+    score: number
+  ): { id: string; score: number; payload: Record<string, unknown> } {
+    return {
+      id,
+      score,
+      payload: {
+        kind: 'decision',
+        arch_kind: 'decision',
+        id,
+        title: id,
+        ...(project !== undefined ? { project } : {}),
+        decision: 'd',
+        context: 'c',
+        alternativesRejected: '',
+        consequences: '',
+        status: 'accepted',
+        supersedes: null,
+        scope: 'global',
+      },
+    };
+  }
+
+  it('adds +0.05 to a project-matched card score and leaves global cards untouched', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi
+      .fn()
+      .mockResolvedValue([
+        searchableDecision('global', undefined, 0.7),
+        searchableDecision('matched', 'app-a', 0.7),
+        searchableDecision('other', 'app-b', 0.7),
+      ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const out = await store.searchWithVector('g', Array(512).fill(0), { project: 'app-a' });
+    const scores = Object.fromEntries(out.map((h) => [h.id, h.score]));
+    expect(scores['matched']).toBeCloseTo(0.75, 5);
+    expect(scores['global']).toBeCloseTo(0.7, 5);
+    // app-b decision is filtered out by the project predicate.
+    expect(scores['other']).toBeUndefined();
+  });
+
+  it('re-orders results so a boosted project-scoped card outranks a slightly higher global one', async () => {
+    const qdrant = fakeQdrant();
+    // Raw cosine: global 0.72 > project 0.70. After boost: 0.72 vs 0.75 → flip.
+    qdrant.search = vi
+      .fn()
+      .mockResolvedValue([
+        searchableDecision('global', undefined, 0.72),
+        searchableDecision('matched', 'app-a', 0.7),
+      ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const out = await store.searchWithVector('g', Array(512).fill(0), { project: 'app-a' });
+    expect(out.map((h) => h.id)).toEqual(['matched', 'global']);
+  });
+
+  it('does not boost anyone when no project filter is set', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi
+      .fn()
+      .mockResolvedValue([
+        searchableDecision('app-tagged', 'app-a', 0.7),
+        searchableDecision('global', undefined, 0.7),
+      ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const out = await store.searchWithVector('g', Array(512).fill(0));
+    for (const h of out) expect(h.score).toBeCloseTo(0.7, 5);
+  });
+
+  it('lets a boosted card cross a minScore that the raw cosine alone would have failed', async () => {
+    const qdrant = fakeQdrant();
+    // Raw 0.46 + 0.05 = 0.51, crosses minScore=0.50.
+    qdrant.search = vi.fn().mockResolvedValue([searchableComponent('borderline', 'app-a', 0.46)]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const out = await store.searchWithVector('g', Array(512).fill(0), {
+      project: 'app-a',
+      minScore: 0.5,
+    });
+    expect(out.map((h) => h.id)).toEqual(['borderline']);
+  });
+
+  it('caps boosted score at 1 (no overflow when raw cosine is already very high)', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.search = vi.fn().mockResolvedValue([searchableDecision('top', 'app-a', 0.99)]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const out = await store.searchWithVector('g', Array(512).fill(0), { project: 'app-a' });
+    expect(out[0]!.score).toBe(1);
   });
 });

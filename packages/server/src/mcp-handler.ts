@@ -102,6 +102,25 @@ export function isStale(updatedAt: number | undefined): boolean {
 }
 
 /**
+ * `arch_list` round-trips cursors through the tool surface as strings. When
+ * Qdrant returns a structured point id (rare in our UUIDv7 collection but
+ * supported by the client), we JSON-encode it for the response; this helper
+ * decodes the next-call input. Returns null on parse failure or non-object
+ * payloads so the caller can fall back to treating the input as a raw string.
+ */
+function tryParseObjectOffset(s: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(s);
+    if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Render a unix-ms timestamp as a short "updated N units ago" label.
  * Coarse on purpose — the agent's decision is "fresh enough vs. potentially stale",
  * not a precise duration.
@@ -304,6 +323,7 @@ export const CODING_TOOLS = new Set([
   'list_projects',
   // arch memory — read + write, since coding mode is the one doing the work.
   'arch_context',
+  'arch_list',
   'arch_record_component',
   'arch_record_decision',
   'arch_record_lesson',
@@ -2319,8 +2339,18 @@ export class McpHandler {
             .describe(
               'Scope results to a single project inside the group (same value the indexer uses as `payload.project` on code chunks). Components are filtered hard — a component without `project=X` is dropped. Decisions and lessons are filtered soft — cards with `project=X` OR no `project` field pass through, so globally-scoped guidance still surfaces. Omit to query the whole group.'
             ),
+          limits: z
+            .object({
+              component: z.number().int().min(0).max(50).optional(),
+              decision: z.number().int().min(0).max(50).optional(),
+              lesson: z.number().int().min(0).max(50).optional(),
+            })
+            .optional()
+            .describe(
+              'Per-kind result limits — components, decisions, and lessons each get their own top-N so a verbose decision bucket cannot starve components out of the output. Default is 5 per kind. Set a kind to 0 to suppress it entirely.'
+            ),
         },
-        async ({ question, group, min_score, project }) => {
+        async ({ question, group, min_score, project, limits }) => {
           const groupNames = group ? [group] : this.getGroupNames();
           if (groupNames.length === 0) {
             return {
@@ -2340,6 +2370,7 @@ export class McpHandler {
                 ctx: await buildArchContextWithVector(archStore, g, vector, {
                   ...(typeof min_score === 'number' ? { minScore: min_score } : {}),
                   ...(project !== undefined ? { project } : {}),
+                  ...(limits !== undefined ? { limits } : {}),
                 }),
               };
             })
@@ -2568,6 +2599,99 @@ export class McpHandler {
           return {
             content: [{ type: 'text' as const, text: formatWriteResult('lesson', rule, result) }],
           };
+        }
+      );
+    }
+
+    // ── Tool: arch_list ─────────────────────────────────────────────────────
+    if (tools.has('arch_list') && this.archStore) {
+      const archStore = this.archStore;
+      server.tool(
+        'arch_list',
+        prompts.tools['arch_list']?.description ?? 'List all arch cards in a group.',
+        {
+          group: z.string().min(1).describe('Group to list cards from.'),
+          project: z
+            .string()
+            .min(1)
+            .optional()
+            .describe(
+              'Optional. Restrict to one project. Components must match this project (hard filter); decisions and lessons match this project OR have no project field (soft filter, so group-wide guidance still surfaces).'
+            ),
+          kinds: z
+            .array(z.enum(['component', 'decision', 'lesson']))
+            .optional()
+            .describe('Optional. Restrict to a subset of card kinds.'),
+          include_history: z
+            .boolean()
+            .optional()
+            .describe('Optional. Include superseded/deprecated cards. Default false.'),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(200)
+            .optional()
+            .describe('Optional. Page size, default 50, max 200.'),
+          offset: z
+            .union([z.string(), z.number()])
+            .optional()
+            .describe(
+              'Optional. Resume cursor from a previous call (`next_offset`). Pass the value verbatim — strings that look like JSON (start with `{` or `[`) are parsed back to the structured form Qdrant emits. Omit for the first page.'
+            ),
+        },
+        async ({ group, project, kinds, include_history, limit, offset }) => {
+          // Tool-surface cursors are always strings or numbers. Internally
+          // Qdrant can emit a structured object id; we JSON-encode on output
+          // and decode here on input so the round-trip is transparent.
+          const decodedOffset: string | number | Record<string, unknown> | undefined =
+            typeof offset === 'string' && (offset.startsWith('{') || offset.startsWith('['))
+              ? (tryParseObjectOffset(offset) ?? offset)
+              : offset;
+          const { points, nextOffset } = await archStore.listPoints(group, {
+            project,
+            kinds,
+            includeHistory: include_history,
+            limit,
+            ...(decodedOffset !== undefined ? { offset: decodedOffset } : {}),
+          });
+          if (points.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No cards found in group \`${group}\`${project ? ` for project \`${project}\`` : ''}.`,
+                },
+              ],
+            };
+          }
+          const rows: string[] = [
+            `Group: ${group}${project ? ` · project: ${project}` : ''}`,
+            `Returned ${points.length} card(s)${nextOffset !== null ? ' — more available, pass next_offset to continue' : ''}.`,
+            '',
+          ];
+          for (const p of points) {
+            const stale = isStale(p.updatedAt) ? '⚠ stale ' : '';
+            const cardProject = (p as { project?: unknown }).project;
+            const projectLabel =
+              typeof cardProject === 'string' ? `project=${cardProject}` : 'global';
+            const label =
+              p.kind === 'component' ? p.name : p.kind === 'decision' ? p.title : p.rule;
+            const cardStatus = (p as { status?: unknown }).status;
+            const status = typeof cardStatus === 'string' ? cardStatus : 'accepted';
+            rows.push(
+              `- ${stale}[${p.kind}] **${label}** (id \`${p.id}\`, ${projectLabel}, status=${status}, ${formatAge(p.updatedAt)})`
+            );
+          }
+          if (nextOffset !== null) {
+            rows.push('');
+            const encoded =
+              typeof nextOffset === 'string' || typeof nextOffset === 'number'
+                ? String(nextOffset)
+                : JSON.stringify(nextOffset);
+            rows.push(`next_offset: \`${encoded}\``);
+          }
+          return { content: [{ type: 'text' as const, text: rows.join('\n') }] };
         }
       );
     }
