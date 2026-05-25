@@ -376,9 +376,12 @@ export class ArchStore {
       kinds?: ArchKind[];
       includeHistory?: boolean;
       limit?: number;
-      offset?: string | number;
+      offset?: string | number | Record<string, unknown>;
     } = {}
-  ): Promise<{ points: ArchPoint[]; nextOffset: string | number | null }> {
+  ): Promise<{
+    points: ArchPoint[];
+    nextOffset: string | number | Record<string, unknown> | null;
+  }> {
     const limit = opts.limit ?? 50;
     const collection = toArchCollectionName(group);
     const must: unknown[] = [];
@@ -406,18 +409,41 @@ export class ArchStore {
         ...(Object.keys(filter).length > 0 ? { filter } : {}),
         ...(opts.offset !== undefined ? { offset: opts.offset } : {}),
       });
+      // Cursor correctness on early break.
+      //
+      // With a project filter we overfetch 3x. If `limit` matches accumulate
+      // before the fetched batch is exhausted, `page.next_page_offset` would
+      // skip every unprocessed point in this batch on the next call. Track
+      // the last point we actually saw so we can resume strictly after it.
+      let lastSeenId: string | number | null = null;
       const filtered: ArchPoint[] = [];
       for (const p of page.points) {
+        const rawId = p.id;
+        if (typeof rawId === 'string' || typeof rawId === 'number') {
+          lastSeenId = rawId;
+        }
         if (!p.payload) continue;
         const point = p.payload as unknown as ArchPoint;
         if (!matchesProject(point)) continue;
         filtered.push(point);
         if (filtered.length >= limit) break;
       }
-      // Qdrant returns next_page_offset as string|number|Record|null; only
-      // strings and numbers are useful as a resume cursor across calls.
+      const exhaustedBatch = filtered.length < limit;
+      // Forward Qdrant's cursor verbatim (string | number | object) when we
+      // walked the whole fetched batch. When we broke early, use the last
+      // seen id — Qdrant's scroll treats the offset as "start exclusive of
+      // this id", which is exactly the resume semantics we want.
       const raw = page.next_page_offset;
-      const nextOffset = typeof raw === 'string' || typeof raw === 'number' ? raw : null;
+      let nextOffset: string | number | Record<string, unknown> | null;
+      if (!exhaustedBatch && lastSeenId !== null) {
+        nextOffset = lastSeenId;
+      } else if (typeof raw === 'string' || typeof raw === 'number') {
+        nextOffset = raw;
+      } else if (raw !== null && typeof raw === 'object') {
+        nextOffset = raw as Record<string, unknown>;
+      } else {
+        nextOffset = null;
+      }
       return { points: filtered, nextOffset };
     } catch {
       return { points: [], nextOffset: null };
