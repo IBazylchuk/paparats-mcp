@@ -38,6 +38,7 @@ export interface Prompts {
     arch_record_component: { description: string };
     arch_record_decision: { description: string };
     arch_record_lesson: { description: string };
+    arch_list: { description: string };
     arch_delete: { description: string };
   };
   resources: {
@@ -95,6 +96,7 @@ function validatePrompts(data: unknown): Prompts {
     'arch_record_component',
     'arch_record_decision',
     'arch_record_lesson',
+    'arch_list',
     'arch_delete',
   ]) {
     const t = tools[name];
