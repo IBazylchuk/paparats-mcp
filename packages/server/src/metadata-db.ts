@@ -221,9 +221,17 @@ export class MetadataStore {
       }
     });
     tx();
-    // Edges changed → drop the whole degree cache; we don't know which
-    // (group, project) the edges belong to without parsing every chunk_id.
-    this.invalidateDegreeCache();
+    // Edges changed → drop the degree cache for affected groups only. The
+    // group is the first `//`-delimited segment of a chunk_id; touching one
+    // project must not invalidate cached stats for unrelated groups.
+    const affected = new Set<string>();
+    for (const e of edges) {
+      const g = e.from_chunk_id.split('//')[0];
+      if (g) affected.add(g);
+      const g2 = e.to_chunk_id.split('//')[0];
+      if (g2) affected.add(g2);
+    }
+    for (const g of affected) this.invalidateDegreeCache(g);
   }
 
   getEdgesFrom(chunkId: string): SymbolEdge[] {
@@ -276,6 +284,13 @@ export class MetadataStore {
       outDegreeP95: number;
       topInDegree: Array<{ chunkId: string; degree: number }>;
       topOutDegree: Array<{ chunkId: string; degree: number }>;
+      /**
+       * Pre-computed set of chunks whose in- OR out-degree exceeds the
+       * group p95. Built once when the snapshot is computed and reused for
+       * every `find_usages` call until invalidation, so we don't allocate
+       * fresh Sets per tool invocation.
+       */
+      hubChunkIds: Set<string>;
     }
   >();
   private static readonly DEGREE_CACHE_TTL_MS = 5 * 60 * 1000;
@@ -324,31 +339,42 @@ export class MetadataStore {
     outDegreeP95: number;
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
+    hubChunkIds: Set<string>;
   } {
     const cached = this.degreeCache.get(group);
     if (cached && Date.now() - cached.computedAt < MetadataStore.DEGREE_CACHE_TTL_MS) {
-      return {
-        inDegreeP95: cached.inDegreeP95,
-        outDegreeP95: cached.outDegreeP95,
-        topInDegree: cached.topInDegree,
-        topOutDegree: cached.topOutDegree,
-      };
+      return cached;
     }
     const stats = this.computeGroupDegreeStats(group);
-    this.degreeCache.set(group, { ...stats, computedAt: Date.now() });
-    return stats;
+    // Threshold is `>= max(5, p95)`. Using `>` would never match anything
+    // when p95 sits on the top-degree node itself (which happens often in
+    // small graphs); `>=` reads as "in the top-percentile band". Floor at 5
+    // so a tiny graph doesn't classify every node as a hub.
+    const inFloor = Math.max(5, stats.inDegreeP95);
+    const outFloor = Math.max(5, stats.outDegreeP95);
+    const hubChunkIds = new Set<string>();
+    for (const r of stats.topInDegree) {
+      if (r.degree >= inFloor) hubChunkIds.add(r.chunkId);
+    }
+    for (const r of stats.topOutDegree) {
+      if (r.degree >= outFloor) hubChunkIds.add(r.chunkId);
+    }
+    this.degreeCache.set(group, { ...stats, hubChunkIds, computedAt: Date.now() });
+    return { ...stats, hubChunkIds };
   }
 
   /**
-   * Snapshot of per-group degree stats. Returns both top-degree lists and
-   * the p95 thresholds so a caller (e.g. find_usages) can decide hub
-   * membership without making 4 round-trips through the cache layer.
+   * Snapshot of per-group degree stats. Returns the top-degree lists, p95
+   * thresholds (floored at 5), and a pre-built `hubChunkIds` Set so callers
+   * (e.g. find_usages) can decide hub membership in O(1) without rebuilding
+   * sets on every tool invocation.
    */
   getGroupDegreeSnapshot(group: string): {
     inDegreeP95: number;
     outDegreeP95: number;
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
+    hubChunkIds: Set<string>;
   } {
     const stats = this.getGroupDegreeStats(group);
     return {
@@ -356,6 +382,7 @@ export class MetadataStore {
       outDegreeP95: Math.max(5, stats.outDegreeP95),
       topInDegree: stats.topInDegree,
       topOutDegree: stats.topOutDegree,
+      hubChunkIds: stats.hubChunkIds,
     };
   }
 
@@ -397,10 +424,18 @@ export class MetadataStore {
   }
 }
 
-/** Nearest-rank percentile. Returns 0 for empty input. */
+/**
+ * Nearest-rank percentile on an array that is already sorted descending.
+ * The SQL queries in `computeGroupDegreeStats` emit `ORDER BY degree DESC`,
+ * so we skip the O(N log N) re-sort and index directly. The mapping from
+ * the prior ascending implementation (`asc[floor(p*len)]`) to the
+ * descending one is `desc[len - 1 - floor(p*len)]` — preserves identical
+ * output for every length, including the boundary cases where p*len is an
+ * integer. Returns 0 for empty input.
+ */
 function percentile(sortedDesc: number[], p: number): number {
-  if (sortedDesc.length === 0) return 0;
-  const sortedAsc = [...sortedDesc].sort((a, b) => a - b);
-  const idx = Math.min(sortedAsc.length - 1, Math.floor(p * sortedAsc.length));
-  return sortedAsc[idx] ?? 0;
+  const len = sortedDesc.length;
+  if (len === 0) return 0;
+  const ascIdx = Math.min(len - 1, Math.floor(p * len));
+  return sortedDesc[len - 1 - ascIdx] ?? 0;
 }

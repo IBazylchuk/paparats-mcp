@@ -382,6 +382,83 @@ describe('MetadataStore', () => {
     expect(store.getGroupDegreeSnapshot('g').topInDegree).toHaveLength(0);
   });
 
+  // Per-PR-89 review (Gemini): upsertSymbolEdges used to clear the entire
+  // degree cache via invalidateDegreeCache(). It must now only drop entries
+  // for groups touched by the incoming edges, so an index pass on one group
+  // doesn't blow away unrelated groups' cached stats.
+  it('upsertSymbolEdges only invalidates the cache of groups touched by the edges', () => {
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'groupA//p//a.ts//1-5//h1',
+        to_chunk_id: 'groupA//p//b.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+        confidence: 'INFERRED',
+      },
+      {
+        from_chunk_id: 'groupB//p//c.ts//1-5//h3',
+        to_chunk_id: 'groupB//p//d.ts//1-5//h4',
+        relation_type: 'calls',
+        symbol_name: 'bar',
+        confidence: 'INFERRED',
+      },
+    ]);
+    // Warm the cache for both groups.
+    const beforeB = store.getGroupDegreeSnapshot('groupB');
+    expect(beforeB.topInDegree).toHaveLength(1);
+
+    // Add an edge in groupA only.
+    store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'groupA//p//e.ts//1-5//h5',
+        to_chunk_id: 'groupA//p//b.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'foo2',
+        confidence: 'INFERRED',
+      },
+    ]);
+
+    // groupA stats reflect the new edge (b.ts now has in-degree 2).
+    const afterA = store.getGroupDegreeSnapshot('groupA');
+    expect(afterA.topInDegree[0]?.degree).toBe(2);
+    // groupB cache survived the unrelated write — the cached hubChunkIds
+    // Set is reused (object identity), even though the wrapper object is
+    // re-allocated per call.
+    const afterB = store.getGroupDegreeSnapshot('groupB');
+    expect(afterB.hubChunkIds).toBe(beforeB.hubChunkIds);
+  });
+
+  it('exposes a pre-computed hubChunkIds set so find_usages avoids per-call Set construction', () => {
+    const hub = 'g//p//hub.ts//1-5//hub';
+    const edges = [];
+    // 12 callers of `hub` → in-degree 12, well above the floor of 5.
+    for (let i = 0; i < 12; i++) {
+      edges.push({
+        from_chunk_id: `g//p//caller${i}.ts//1-5//c${i}`,
+        to_chunk_id: hub,
+        relation_type: 'calls' as const,
+        symbol_name: `s${i}`,
+        confidence: 'INFERRED' as const,
+      });
+    }
+    // One cold callee that should NOT be in the hub set.
+    edges.push({
+      from_chunk_id: 'g//p//caller0.ts//1-5//c0',
+      to_chunk_id: 'g//p//cold.ts//1-5//cold',
+      relation_type: 'calls',
+      symbol_name: 'rare',
+      confidence: 'INFERRED',
+    });
+    store.upsertSymbolEdges(edges);
+
+    const snap = store.getGroupDegreeSnapshot('g');
+    expect(snap.hubChunkIds.has(hub)).toBe(true);
+    expect(snap.hubChunkIds.has('g//p//cold.ts//1-5//cold')).toBe(false);
+    // Cached: second call returns the SAME Set reference (object identity).
+    const snap2 = store.getGroupDegreeSnapshot('g');
+    expect(snap2.hubChunkIds).toBe(snap.hubChunkIds);
+  });
+
   it('returns empty for unknown chunk edges', () => {
     expect(store.getEdgesFrom('nonexistent')).toEqual([]);
     expect(store.getEdgesTo('nonexistent')).toEqual([]);
