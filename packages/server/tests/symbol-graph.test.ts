@@ -4,17 +4,39 @@ import { buildSymbolEdges } from '../src/symbol-graph.js';
 describe('buildSymbolEdges', () => {
   it('creates edges from usage to definition', () => {
     const edges = buildSymbolEdges([
-      { chunk_id: 'a', defines_symbols: ['greet'], uses_symbols: [] },
-      { chunk_id: 'b', defines_symbols: [], uses_symbols: ['greet'] },
+      { chunk_id: 'g//p//f1.ts//1-5//h1', defines_symbols: ['greet'], uses_symbols: [] },
+      { chunk_id: 'g//p//f2.ts//1-5//h2', defines_symbols: [], uses_symbols: ['greet'] },
     ]);
 
     expect(edges).toHaveLength(1);
     expect(edges[0]).toEqual({
-      from_chunk_id: 'b',
-      to_chunk_id: 'a',
+      from_chunk_id: 'g//p//f2.ts//1-5//h2',
+      to_chunk_id: 'g//p//f1.ts//1-5//h1',
       relation_type: 'calls',
       symbol_name: 'greet',
+      confidence: 'INFERRED',
     });
+  });
+
+  it('labels intra-file edges as EXTRACTED (same `<group>//<project>//<file>` prefix)', () => {
+    const edges = buildSymbolEdges([
+      { chunk_id: 'g//p//same.ts//1-5//h1', defines_symbols: ['greet'], uses_symbols: [] },
+      { chunk_id: 'g//p//same.ts//6-10//h2', defines_symbols: [], uses_symbols: ['greet'] },
+    ]);
+
+    expect(edges).toHaveLength(1);
+    expect(edges[0]?.confidence).toBe('EXTRACTED');
+  });
+
+  it('labels edges AMBIGUOUS when a symbol resolves to multiple chunks', () => {
+    const edges = buildSymbolEdges([
+      { chunk_id: 'g//p//a.ts//1-5//h1', defines_symbols: ['greet'], uses_symbols: [] },
+      { chunk_id: 'g//p//b.ts//1-5//h2', defines_symbols: ['greet'], uses_symbols: [] },
+      { chunk_id: 'g//p//c.ts//1-5//h3', defines_symbols: [], uses_symbols: ['greet'] },
+    ]);
+
+    expect(edges).toHaveLength(2);
+    expect(edges.every((e) => e.confidence === 'AMBIGUOUS')).toBe(true);
   });
 
   it('creates multiple edges for multiple symbols', () => {
