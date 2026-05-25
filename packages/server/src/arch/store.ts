@@ -90,6 +90,18 @@ export type ArchSearchHit = ArchPoint & { score: number };
 const DUPLICATE_THRESHOLD = 0.85;
 const SIMILAR_THRESHOLD = 0.7;
 
+// ── Project-scoped retrieval boost ─────────────────────────────────────────
+// Additive boost applied to cards whose `project` matches the caller's
+// project filter during `searchWithVector` (i.e. `arch_context`). Designed
+// to break the short-text cosine bias that lets globally-scoped one-line
+// decisions outrank longer project-scoped components.
+//
+// Sized at roughly one tier of the calibrated bge-m3 score bands (the gap
+// between "different topic" and "overlapping topic") so it nudges ranking
+// without rewriting the ordering of genuinely stronger matches. Applies
+// to ranking only; the similarity gate (findNearest) uses raw cosine.
+export const PROJECT_SCORE_BOOST = 0.05;
+
 export class ArchStore {
   private qdrant: QdrantClient;
   private provider: CachedEmbeddingProvider;
@@ -335,6 +347,83 @@ export class ArchStore {
     return { deleted: foundIds, notFound };
   }
 
+  /**
+   * Enumerate all arch cards in a group, optionally filtered by kind and
+   * project. Unlike `search`/`searchWithVector`, this is a *list* — no vector,
+   * no ranking, no similarity threshold. Use it when the caller needs every
+   * card (audit, dedupe, migration), since the search ranker tends to starve
+   * one kind under another and hides long project-scoped cards behind shorter
+   * global ones.
+   *
+   * Pagination is offset-based and stable within a scroll session. The
+   * `nextOffset` field is the Qdrant page cursor verbatim (string | number)
+   * — callers pass it back as `offset` on the next call. `null` means the
+   * scroll is exhausted.
+   *
+   * Project filtering mirrors `makeProjectPredicate`: components are
+   * hard-filtered (only `project=X` passes), decisions and lessons are
+   * soft-filtered (`project=X` OR no project field). Project filtering is
+   * post-fetch so an oversample is fetched to avoid an artificially short
+   * page; arch collections are tiny (low thousands), so 3x is cheap.
+   *
+   * Returns an empty page when the collection doesn't exist yet — first run
+   * of a fresh group.
+   */
+  async listPoints(
+    group: string,
+    opts: {
+      project?: string;
+      kinds?: ArchKind[];
+      includeHistory?: boolean;
+      limit?: number;
+      offset?: string | number;
+    } = {}
+  ): Promise<{ points: ArchPoint[]; nextOffset: string | number | null }> {
+    const limit = opts.limit ?? 50;
+    const collection = toArchCollectionName(group);
+    const must: unknown[] = [];
+    if (opts.kinds && opts.kinds.length > 0) {
+      must.push({ key: 'arch_kind', match: { any: opts.kinds } });
+    }
+    const must_not: unknown[] = [];
+    if (!opts.includeHistory) {
+      must_not.push(
+        { key: 'status', match: { value: 'superseded' } },
+        { key: 'status', match: { value: 'deprecated' } }
+      );
+    }
+    const filter: Record<string, unknown> = {};
+    if (must.length > 0) filter['must'] = must;
+    if (must_not.length > 0) filter['must_not'] = must_not;
+
+    const matchesProject = makeProjectPredicate(opts.project);
+    const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
+    try {
+      const page = await this.qdrant.scroll(collection, {
+        limit: fetchLimit,
+        with_payload: true,
+        with_vector: false,
+        ...(Object.keys(filter).length > 0 ? { filter } : {}),
+        ...(opts.offset !== undefined ? { offset: opts.offset } : {}),
+      });
+      const filtered: ArchPoint[] = [];
+      for (const p of page.points) {
+        if (!p.payload) continue;
+        const point = p.payload as unknown as ArchPoint;
+        if (!matchesProject(point)) continue;
+        filtered.push(point);
+        if (filtered.length >= limit) break;
+      }
+      // Qdrant returns next_page_offset as string|number|Record|null; only
+      // strings and numbers are useful as a resume cursor across calls.
+      const raw = page.next_page_offset;
+      const nextOffset = typeof raw === 'string' || typeof raw === 'number' ? raw : null;
+      return { points: filtered, nextOffset };
+    } catch {
+      return { points: [], nextOffset: null };
+    }
+  }
+
   async findByName(
     group: string,
     kind: ArchKind,
@@ -479,10 +568,43 @@ export class ArchStore {
       });
       const minScore = typeof opts.minScore === 'number' ? opts.minScore : 0;
       const matchesProject = makeProjectPredicate(opts.project);
-      const filtered = hits
+      // Project-scoped retrieval boost.
+      //
+      // bge-m3 cosine systematically favours short generic text — a one-line
+      // global decision often outscores a longer project-scoped component
+      // even when the component is what the caller actually wants. When the
+      // caller asked for a specific project, bias the ranking toward cards
+      // that name that project so they aren't drowned out on cosine alone.
+      //
+      // Only the *ranking* surface boosts. The similarity gate (findNearest)
+      // is intentionally untouched — duplicate detection must compare raw
+      // cosines, otherwise a project-tagged card becomes harder to dedupe.
+      //
+      // The boost is additive (not multiplicative) so a strong global card
+      // (e.g. 0.85) still beats a weak project-scoped one (e.g. 0.45 + 0.05 =
+      // 0.50). 0.05 ≈ one tier in the calibrated bge-m3 score bands — enough
+      // to break ties on short-text bias without rewriting the ordering of
+      // genuinely better matches. minScore is applied AFTER the boost so a
+      // borderline project-scoped card can still surface.
+      const boosted = hits.map((h) => {
+        const point = h.payload as unknown as ArchPoint;
+        const cardProject = (point as { project?: unknown }).project;
+        const boost =
+          opts.project !== undefined &&
+          typeof cardProject === 'string' &&
+          cardProject === opts.project
+            ? PROJECT_SCORE_BOOST
+            : 0;
+        return { point, score: Math.min(1, h.score + boost) };
+      });
+      // Re-sort after the boost — the original `hits` were ordered by raw
+      // cosine, but a freshly-boosted project-scoped card may now outrank an
+      // earlier global one.
+      boosted.sort((a, b) => b.score - a.score);
+      const filtered = boosted
         .filter((h) => h.score >= minScore)
-        .map((h) => ({ ...(h.payload as unknown as ArchPoint), score: h.score }))
-        .filter(matchesProject);
+        .filter((h) => matchesProject(h.point))
+        .map((h) => ({ ...h.point, score: h.score }));
       return filtered.slice(0, limit);
     } catch {
       return [];
