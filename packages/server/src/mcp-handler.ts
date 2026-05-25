@@ -1312,25 +1312,18 @@ export class McpHandler {
             // The seed itself is always kept — even if the user is asking
             // about a hub, the question is "what touches this thing" and we
             // shouldn't silently return nothing.
+            //
+            // `hubChunkIds` is pre-computed inside MetadataStore and lives in
+            // the per-group degree cache, so this is O(1) lookup per edge
+            // without any per-call Set construction.
             const seedGroup = chunk_id.split('//')[0] ?? '';
-            const groupStats = seedGroup
-              ? this.metadataStore.getGroupDegreeSnapshot(seedGroup)
-              : null;
-            const inHubs = new Set(
-              (groupStats?.topInDegree ?? [])
-                .filter((r) => r.degree > (groupStats?.inDegreeP95 ?? Infinity))
-                .map((r) => r.chunkId)
-            );
-            const outHubs = new Set(
-              (groupStats?.topOutDegree ?? [])
-                .filter((r) => r.degree > (groupStats?.outDegreeP95 ?? Infinity))
-                .map((r) => r.chunkId)
-            );
-            const incomingIsHub = (id: string): boolean => inHubs.has(id) || outHubs.has(id);
-            const outgoingIsHub = (id: string): boolean => inHubs.has(id) || outHubs.has(id);
+            const hubChunkIds = seedGroup
+              ? this.metadataStore.getGroupDegreeSnapshot(seedGroup).hubChunkIds
+              : new Set<string>();
+            const isHub = (id: string): boolean => hubChunkIds.has(id);
             if (!include_hubs) {
-              edgesTo = edgesTo.filter((e) => !incomingIsHub(e.from_chunk_id));
-              edgesFrom = edgesFrom.filter((e) => !outgoingIsHub(e.to_chunk_id));
+              edgesTo = edgesTo.filter((e) => !isHub(e.from_chunk_id));
+              edgesFrom = edgesFrom.filter((e) => !isHub(e.to_chunk_id));
             }
 
             edgesTo = edgesTo.slice(0, limit);
@@ -1383,7 +1376,7 @@ export class McpHandler {
                 text += `**\`${symbol}\`** (${entries.length})\n`;
                 for (const { edge, payload: ep } of entries) {
                   const conf = edge.confidence ?? 'INFERRED';
-                  const hub = incomingIsHub(edge.from_chunk_id) ? ' [hub]' : '';
+                  const hub = isHub(edge.from_chunk_id) ? ' [hub]' : '';
                   if (ep) {
                     const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
                     const f = typeof ep['file'] === 'string' ? ep['file'] : 'unknown';
@@ -1421,7 +1414,7 @@ export class McpHandler {
                 text += `**\`${symbol}\`** (${entries.length})\n`;
                 for (const { edge, payload: ep } of entries) {
                   const conf = edge.confidence ?? 'INFERRED';
-                  const hub = outgoingIsHub(edge.to_chunk_id) ? ' [hub]' : '';
+                  const hub = isHub(edge.to_chunk_id) ? ' [hub]' : '';
                   if (ep) {
                     const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
                     const f = typeof ep['file'] === 'string' ? ep['file'] : 'unknown';
