@@ -246,6 +246,42 @@ export function pickArchContextEmptyText(lastHint: string | null, mode: McpMode)
 }
 
 /**
+ * Strip control characters (including ANSI escape introducers and zero-width
+ * code points) from arch-card text before it lands in MCP output. Arch cards
+ * are authored by other agents — possibly from a different conversation, or
+ * by a non-`paparats-mcp` consumer altogether — so the rendered text must be
+ * treated as untrusted. Without this, a malicious or careless author can
+ * smuggle ANSI escapes that look like log lines, hide fake "completed" status
+ * markers, or inject instructions disguised as the user's voice.
+ *
+ * Multi-line fields stay multi-line (newlines are preserved); only control
+ * codes and zero-width separators are stripped. Length capping is left to the
+ * caller — `summary`/`why`/`when` are legitimately long, while inline labels
+ * like `name`/`title` benefit from `sanitizeArchInline`.
+ */
+export function sanitizeArchText(s: string): string {
+  return (
+    String(s)
+      // Strip C0 controls (except \t, \n, \r) and DEL.
+      // eslint-disable-next-line no-control-regex -- intentional: strip control chars
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '')
+      // Strip zero-width, bidi-override, and invisible separator code points
+      // (U+200B..U+200F, U+202A..U+202E, U+2060..U+2069).
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2069]/g, '')
+  );
+}
+
+const ARCH_INLINE_MAX_LEN = 200;
+
+/** Sanitize + cap for short inline labels (name/title/files list entries). */
+export function sanitizeArchInline(s: string): string {
+  const cleaned = sanitizeArchText(s).replace(/\s+/g, ' ').trim();
+  return cleaned.length > ARCH_INLINE_MAX_LEN
+    ? cleaned.slice(0, ARCH_INLINE_MAX_LEN) + '…'
+    : cleaned;
+}
+
+/**
  * Render the markdown section for a single group's arch_context result.
  * Each card line includes the card id so a caller (LLM or human) can pass it
  * to `arch_delete` without going back for a separate lookup. Returns an empty
@@ -254,20 +290,21 @@ export function pickArchContextEmptyText(lastHint: string | null, mode: McpMode)
  */
 export function renderArchContextSection(group: string, ctx: ArchContextResult): string[] {
   if (ctx.empty) return [];
-  const lines: string[] = [`## Group: ${group}`];
+  const lines: string[] = [`## Group: ${sanitizeArchInline(group)}`];
   if (ctx.components.length) {
     lines.push('### Components');
     for (const c of ctx.components) {
-      const files = c.files.length > 0 ? c.files.join(', ') : '—';
+      const files = c.files.length > 0 ? c.files.map((f) => sanitizeArchInline(f)).join(', ') : '—';
       const stale = isStale(c.updatedAt) ? '⚠ stale ' : '';
+      const name = sanitizeArchInline(c.name);
       lines.push(
-        `- ${stale}**${c.name}** (id \`${c.id}\`, ${formatAge(c.updatedAt)}, score ${c.score.toFixed(2)}, files: ${files})`
+        `- ${stale}**${name}** (id \`${c.id}\`, ${formatAge(c.updatedAt)}, score ${c.score.toFixed(2)}, files: ${files})`
       );
       // `summary` is structured markdown with four sections, typically
       // multi-line. Render it as an indented block beneath the header so
       // every line of the summary stays inside the bullet.
       if (c.summary) {
-        for (const line of c.summary.split('\n')) lines.push(`  ${line}`);
+        for (const line of sanitizeArchText(c.summary).split('\n')) lines.push(`  ${line}`);
       }
     }
   }
@@ -275,12 +312,13 @@ export function renderArchContextSection(group: string, ctx: ArchContextResult):
     lines.push('### Decisions');
     for (const d of ctx.decisions) {
       const stale = isStale(d.updatedAt) ? '⚠ stale ' : '';
+      const title = sanitizeArchInline(d.title);
       // `decision` is documented as one sentence, but defensively re-indent
       // newlines in case a caller wrote a multi-line value — keeps the bullet
       // structure intact either way.
-      const decision = d.decision.replace(/\n/g, '\n  ');
+      const decision = sanitizeArchText(d.decision).replace(/\n/g, '\n  ');
       lines.push(
-        `- ${stale}**${d.title}** (id \`${d.id}\`, ${formatAge(d.updatedAt)}, score ${d.score.toFixed(2)}) — ${decision}`
+        `- ${stale}**${title}** (id \`${d.id}\`, ${formatAge(d.updatedAt)}, score ${d.score.toFixed(2)}) — ${decision}`
       );
     }
   }
@@ -290,7 +328,7 @@ export function renderArchContextSection(group: string, ctx: ArchContextResult):
       const stale = isStale(l.updatedAt) ? '⚠ stale ' : '';
       // `rule` is one sentence by contract, but multi-line wording slips in;
       // keep the bullet intact by re-indenting any embedded newlines.
-      const rule = l.rule.replace(/\n/g, '\n  ');
+      const rule = sanitizeArchText(l.rule).replace(/\n/g, '\n  ');
       lines.push(
         `- ${stale}(id \`${l.id}\`, ${l.severity}, ${formatAge(l.updatedAt)}, score ${l.score.toFixed(2)}) ${rule}`
       );
@@ -299,8 +337,8 @@ export function renderArchContextSection(group: string, ctx: ArchContextResult):
       // the rule actually applies. Render as indented continuation bullets.
       // Re-indent newlines to four spaces so wrapped lines stay aligned under
       // the two-space sub-bullet.
-      if (l.why) lines.push(`  - **why:** ${l.why.replace(/\n/g, '\n    ')}`);
-      if (l.when) lines.push(`  - **when:** ${l.when.replace(/\n/g, '\n    ')}`);
+      if (l.why) lines.push(`  - **why:** ${sanitizeArchText(l.why).replace(/\n/g, '\n    ')}`);
+      if (l.when) lines.push(`  - **when:** ${sanitizeArchText(l.when).replace(/\n/g, '\n    ')}`);
     }
   }
   lines.push('');
@@ -327,6 +365,7 @@ export const CODING_TOOLS = new Set([
   'arch_record_component',
   'arch_record_decision',
   'arch_record_lesson',
+  'arch_suggest_components',
   'arch_delete',
 ]);
 
@@ -1220,8 +1259,14 @@ export class McpHandler {
             .optional()
             .describe('Filter by relation types (default: all)'),
           limit: z.coerce.number().min(1).max(50).default(20).describe('Max results per direction'),
+          include_hubs: z
+            .boolean()
+            .default(true)
+            .describe(
+              'When true (default) callers/callees whose own degree is above the group p95 are surfaced with a `[hub]` marker so the agent knows the link is noisy. Set false to drop hub neighbours entirely — useful when probing a specific path through the codebase.'
+            ),
         },
-        async ({ chunk_id, direction, relation_types, limit }) => {
+        async ({ chunk_id, direction, relation_types, limit, include_hubs }) => {
           try {
             if (!this.metadataStore) {
               return {
@@ -1260,6 +1305,32 @@ export class McpHandler {
               const allowed = new Set(relation_types);
               edgesTo = edgesTo.filter((e) => allowed.has(e.relation_type));
               edgesFrom = edgesFrom.filter((e) => allowed.has(e.relation_type));
+            }
+
+            // Hub-threshold filtering: edges whose *other endpoint* is itself
+            // a hub (degree above the group p95) are either marked or dropped.
+            // The seed itself is always kept — even if the user is asking
+            // about a hub, the question is "what touches this thing" and we
+            // shouldn't silently return nothing.
+            const seedGroup = chunk_id.split('//')[0] ?? '';
+            const groupStats = seedGroup
+              ? this.metadataStore.getGroupDegreeSnapshot(seedGroup)
+              : null;
+            const inHubs = new Set(
+              (groupStats?.topInDegree ?? [])
+                .filter((r) => r.degree > (groupStats?.inDegreeP95 ?? Infinity))
+                .map((r) => r.chunkId)
+            );
+            const outHubs = new Set(
+              (groupStats?.topOutDegree ?? [])
+                .filter((r) => r.degree > (groupStats?.outDegreeP95 ?? Infinity))
+                .map((r) => r.chunkId)
+            );
+            const incomingIsHub = (id: string): boolean => inHubs.has(id) || outHubs.has(id);
+            const outgoingIsHub = (id: string): boolean => inHubs.has(id) || outHubs.has(id);
+            if (!include_hubs) {
+              edgesTo = edgesTo.filter((e) => !incomingIsHub(e.from_chunk_id));
+              edgesFrom = edgesFrom.filter((e) => !outgoingIsHub(e.to_chunk_id));
             }
 
             edgesTo = edgesTo.slice(0, limit);
@@ -1311,16 +1382,18 @@ export class McpHandler {
               for (const [symbol, entries] of bySymbol) {
                 text += `**\`${symbol}\`** (${entries.length})\n`;
                 for (const { edge, payload: ep } of entries) {
+                  const conf = edge.confidence ?? 'INFERRED';
+                  const hub = incomingIsHub(edge.from_chunk_id) ? ' [hub]' : '';
                   if (ep) {
                     const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
                     const f = typeof ep['file'] === 'string' ? ep['file'] : 'unknown';
                     const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : 0;
                     const sym = typeof ep['symbol_name'] === 'string' ? ep['symbol_name'] : null;
                     const symInfo = sym ? ` (${sym})` : '';
-                    text += `- **[${p}] ${f}:${sl}**${symInfo} — ${edge.relation_type}\n`;
+                    text += `- **[${p}] ${f}:${sl}**${symInfo}${hub} — ${edge.relation_type} \`${conf}\`\n`;
                     text += `  _chunk: ${edge.from_chunk_id}_\n`;
                   } else {
-                    text += `- _chunk: ${edge.from_chunk_id}_ — ${edge.relation_type}\n`;
+                    text += `- _chunk: ${edge.from_chunk_id}_${hub} — ${edge.relation_type} \`${conf}\`\n`;
                   }
                 }
                 text += '\n';
@@ -1347,16 +1420,18 @@ export class McpHandler {
               for (const [symbol, entries] of bySymbol) {
                 text += `**\`${symbol}\`** (${entries.length})\n`;
                 for (const { edge, payload: ep } of entries) {
+                  const conf = edge.confidence ?? 'INFERRED';
+                  const hub = outgoingIsHub(edge.to_chunk_id) ? ' [hub]' : '';
                   if (ep) {
                     const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
                     const f = typeof ep['file'] === 'string' ? ep['file'] : 'unknown';
                     const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : 0;
                     const sym = typeof ep['symbol_name'] === 'string' ? ep['symbol_name'] : null;
                     const symInfo = sym ? ` (${sym})` : '';
-                    text += `- **[${p}] ${f}:${sl}**${symInfo} — ${edge.relation_type}\n`;
+                    text += `- **[${p}] ${f}:${sl}**${symInfo}${hub} — ${edge.relation_type} \`${conf}\`\n`;
                     text += `  _chunk: ${edge.to_chunk_id}_\n`;
                   } else {
-                    text += `- _chunk: ${edge.to_chunk_id}_ — ${edge.relation_type}\n`;
+                    text += `- _chunk: ${edge.to_chunk_id}_${hub} — ${edge.relation_type} \`${conf}\`\n`;
                   }
                 }
                 text += '\n';
@@ -2674,11 +2749,15 @@ export class McpHandler {
             const stale = isStale(p.updatedAt) ? '⚠ stale ' : '';
             const cardProject = (p as { project?: unknown }).project;
             const projectLabel =
-              typeof cardProject === 'string' ? `project=${cardProject}` : 'global';
-            const label =
+              typeof cardProject === 'string'
+                ? `project=${sanitizeArchInline(cardProject)}`
+                : 'global';
+            const rawLabel =
               p.kind === 'component' ? p.name : p.kind === 'decision' ? p.title : p.rule;
+            const label = sanitizeArchInline(rawLabel);
             const cardStatus = (p as { status?: unknown }).status;
-            const status = typeof cardStatus === 'string' ? cardStatus : 'accepted';
+            const status =
+              typeof cardStatus === 'string' ? sanitizeArchInline(cardStatus) : 'accepted';
             rows.push(
               `- ${stale}[${p.kind}] **${label}** (id \`${p.id}\`, ${projectLabel}, status=${status}, ${formatAge(p.updatedAt)})`
             );
@@ -2690,6 +2769,140 @@ export class McpHandler {
                 ? String(nextOffset)
                 : JSON.stringify(nextOffset);
             rows.push(`next_offset: \`${encoded}\``);
+          }
+          return { content: [{ type: 'text' as const, text: rows.join('\n') }] };
+        }
+      );
+    }
+
+    // ── Tool: arch_suggest_components ───────────────────────────────────────
+    if (tools.has('arch_suggest_components') && this.archStore) {
+      const archStore = this.archStore;
+      server.tool(
+        'arch_suggest_components',
+        prompts.tools['arch_suggest_components']?.description ??
+          'Suggest candidate components to record based on symbol-graph centrality.',
+        {
+          group: z.string().min(1).describe('Group to analyse.'),
+          project: z
+            .string()
+            .min(1)
+            .optional()
+            .describe('Optional. Restrict suggestions to one project in the group.'),
+          limit: z
+            .number()
+            .int()
+            .min(1)
+            .max(50)
+            .optional()
+            .describe('Optional. Max suggestions to return. Default 10.'),
+        },
+        async ({ group, project, limit }) => {
+          if (!this.metadataStore) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: 'Symbol graph is not available. The metadata store is not configured.',
+                },
+              ],
+            };
+          }
+          const max = limit ?? 10;
+          // Overfetch: many top-degree chunks will already be covered by an
+          // existing component card, so we need a buffer before we hit `max`
+          // suggestions. 5x is plenty for normal projects.
+          const candidates = this.metadataStore.getTopByInDegree(group, max * 5, project);
+          if (candidates.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No symbol-graph edges found for group \`${group}\`${project ? ` / project \`${project}\`` : ''}. Index the project first or run \`find_usages\` to verify edges exist.`,
+                },
+              ],
+            };
+          }
+
+          // Pull every existing component once, so we can filter out chunks
+          // whose file is already covered by a card. listPoints paginates;
+          // we follow the cursor to exhaustion. Components are typically a
+          // few dozen per group, so this is cheap.
+          const coveredFiles = new Set<string>();
+          let offset: string | number | Record<string, unknown> | undefined = undefined;
+          for (;;) {
+            const page = await archStore.listPoints(group, {
+              kinds: ['component'],
+              limit: 200,
+              ...(project !== undefined ? { project } : {}),
+              ...(offset !== undefined ? { offset } : {}),
+            });
+            for (const p of page.points) {
+              if (p.kind !== 'component') continue;
+              for (const f of p.files) coveredFiles.add(f);
+            }
+            if (page.nextOffset === null) break;
+            offset = page.nextOffset;
+          }
+
+          // Pair each candidate chunk with its payload (for file + symbol).
+          const payloads = await Promise.all(
+            candidates.map((c) => this.indexer.getChunkById(c.chunkId))
+          );
+          const suggestions: Array<{
+            file: string;
+            project: string;
+            symbol: string;
+            degree: number;
+            chunkId: string;
+          }> = [];
+          const seenFiles = new Set<string>();
+          for (let i = 0; i < candidates.length; i++) {
+            if (suggestions.length >= max) break;
+            const c = candidates[i]!;
+            const p = payloads[i];
+            if (!p) continue;
+            const f = typeof p['file'] === 'string' ? p['file'] : null;
+            if (!f) continue;
+            if (coveredFiles.has(f)) continue;
+            if (seenFiles.has(f)) continue;
+            seenFiles.add(f);
+            const proj = typeof p['project'] === 'string' ? p['project'] : 'unknown';
+            const sym =
+              typeof p['symbol_name'] === 'string' && p['symbol_name'].length > 0
+                ? p['symbol_name']
+                : '(unnamed)';
+            suggestions.push({
+              file: f,
+              project: proj,
+              symbol: sym,
+              degree: c.degree,
+              chunkId: c.chunkId,
+            });
+          }
+
+          if (suggestions.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `All high-degree symbols in group \`${group}\`${project ? ` / project \`${project}\`` : ''} are already covered by component cards. Nothing to suggest.`,
+                },
+              ],
+            };
+          }
+
+          const rows: string[] = [
+            `## Suggested components — group \`${group}\`${project ? `, project \`${project}\`` : ''}`,
+            '',
+            'Ranked by symbol-graph in-degree. These files contain the most-called symbols not yet covered by a component card. Read each, judge whether it represents a meaningful boundary, and write it via `arch_record_component` when appropriate.',
+            '',
+          ];
+          for (const s of suggestions) {
+            rows.push(
+              `- **[${s.project}] ${s.file}** — symbol \`${s.symbol}\`, in-degree ${s.degree}`
+            );
+            rows.push(`  _chunk: ${s.chunkId}_`);
           }
           return { content: [{ type: 'text' as const, text: rows.join('\n') }] };
         }

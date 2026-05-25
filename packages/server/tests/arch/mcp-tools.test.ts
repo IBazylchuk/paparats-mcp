@@ -6,6 +6,8 @@ import {
   renderArchContextSection,
   STALE_THRESHOLD_MS,
   isStale,
+  sanitizeArchText,
+  sanitizeArchInline,
 } from '../../src/mcp-handler.js';
 import type { ArchContextResult } from '../../src/arch/types.js';
 import { LOW_CONFIDENCE_HINT } from '../../src/arch/context.js';
@@ -331,6 +333,75 @@ describe('renderArchContextSection', () => {
     };
     const rendered = renderArchContextSection('my-app', ctx).join('\n');
     expect(rendered).not.toContain('⚠ stale');
+  });
+});
+
+describe('sanitizeArchText / sanitizeArchInline', () => {
+  // Arch cards are authored by other agents — possibly from a different
+  // conversation — so by the time their text lands in MCP output we treat it
+  // as untrusted. Without sanitisation, a malicious or careless author can
+  // smuggle ANSI escapes that look like log lines, hide fake "completed"
+  // markers, or inject instructions disguised as the user's voice.
+  it('strips ANSI escape sequences (ESC + CSI introducer + payload)', () => {
+    const dirty = `clean\x1b[31mRED\x1b[0m text`;
+    // The ESC + CSI bracket bytes survive only as `[31m` and `[0m` literals
+    // — the control byte itself (0x1b) is removed, so a terminal can't
+    // reinterpret it as a colour change.
+    const cleaned = sanitizeArchText(dirty);
+    expect(cleaned).not.toContain('\x1b');
+    expect(cleaned).toContain('clean');
+    expect(cleaned).toContain('RED');
+  });
+
+  it('strips zero-width / bidi-override characters that can disguise intent', () => {
+    // Right-to-left override + zero-width space, both legal Unicode and both
+    // commonly used in homograph attacks.
+    const dirty = 'hello\u202Eworld\u200B!';
+    const cleaned = sanitizeArchText(dirty);
+    expect(cleaned).not.toContain('\u202E');
+    expect(cleaned).not.toContain('\u200B');
+  });
+
+  it('preserves legitimate newlines in multi-line fields', () => {
+    expect(sanitizeArchText('line one\nline two')).toBe('line one\nline two');
+  });
+
+  it('sanitizeArchInline collapses whitespace and caps length', () => {
+    const long = 'a'.repeat(500);
+    const cleaned = sanitizeArchInline(`  spaced\t\tout  ${long}`);
+    expect(cleaned.startsWith('spaced out a')).toBe(true);
+    expect(cleaned.endsWith('…')).toBe(true);
+    expect(cleaned.length).toBeLessThanOrEqual(201);
+  });
+});
+
+describe('renderArchContextSection sanitisation', () => {
+  it('strips ANSI escapes from card text before rendering', () => {
+    const ctx: ArchContextResult = {
+      components: [
+        {
+          kind: 'component',
+          id: 'c1',
+          project: 'p',
+          // ANSI sequence inside the name — a terminal would render `RED`
+          // in red and could repaint downstream output.
+          name: 'normal \x1b[31mname',
+          summary: 'safe\x1b[0m summary',
+          files: ['safe.ts\x1b[1m'],
+          neighbours: [],
+          anchors: [],
+          createdAt: 0,
+          updatedAt: Date.now(),
+          score: 0.7,
+        },
+      ],
+      decisions: [],
+      lessons: [],
+      empty: false,
+      hint: null,
+    };
+    const rendered = renderArchContextSection('grp\x1b[31m', ctx).join('\n');
+    expect(rendered).not.toContain('\x1b');
   });
 });
 
