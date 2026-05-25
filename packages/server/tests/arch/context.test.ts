@@ -1,12 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { buildArchContext, buildArchContextWithVector } from '../../src/arch/context.js';
 import type { ArchStore, ArchSearchHit, ArchStats } from '../../src/arch/store.js';
-import type { ArchComponent, ArchDecision, ArchLesson } from '../../src/arch/types.js';
+import type { ArchComponent, ArchDecision, ArchLesson, ArchKind } from '../../src/arch/types.js';
 
 function comp(name: string, score = 0.9): ArchSearchHit {
   return {
     id: 'c-' + name,
     kind: 'component',
+    project: 'my-app',
     name,
     summary: 'sum-' + name,
     files: ['f.ts'],
@@ -19,7 +20,7 @@ function comp(name: string, score = 0.9): ArchSearchHit {
 }
 function dec(title: string, score = 0.9): ArchSearchHit {
   return {
-    id: 'd',
+    id: 'd-' + title,
     kind: 'decision',
     title,
     context: 'c',
@@ -36,7 +37,7 @@ function dec(title: string, score = 0.9): ArchSearchHit {
 }
 function les(rule: string, score = 0.9): ArchSearchHit {
   return {
-    id: 'l',
+    id: 'l-' + rule,
     kind: 'lesson',
     rule,
     why: 'reason',
@@ -66,12 +67,43 @@ const someStats: ArchStats = {
   byKind: { component: 3, decision: 0, lesson: 0 },
 };
 
+/**
+ * Build a mocked ArchStore whose searchWithVector returns different hits per
+ * requested kind. The kind-routing matches the new per-kind search strategy:
+ * arch_context fans out three calls (one per kind), and each call passes
+ * `kinds: [kind]` so we can dispatch off it.
+ */
+function storeWithPerKind(perKind: {
+  component?: ArchSearchHit[];
+  decision?: ArchSearchHit[];
+  lesson?: ArchSearchHit[];
+  stats?: ArchStats;
+}): {
+  store: ArchStore;
+  searchWithVector: ReturnType<typeof vi.fn>;
+  embedQuestion: ReturnType<typeof vi.fn>;
+} {
+  const searchWithVector = vi.fn(
+    async (_group: string, _vec: number[], opts: { kinds?: ArchKind[] } = {}) => {
+      const k = opts.kinds?.[0];
+      if (k === 'component') return perKind.component ?? [];
+      if (k === 'decision') return perKind.decision ?? [];
+      if (k === 'lesson') return perKind.lesson ?? [];
+      return [];
+    }
+  );
+  const embedQuestion = vi.fn(async () => [0.1, 0.2, 0.3]);
+  const store = {
+    searchWithVector,
+    embedQuestion,
+    stats: vi.fn().mockResolvedValue(perKind.stats ?? emptyStats),
+  } as unknown as ArchStore;
+  return { store, searchWithVector, embedQuestion };
+}
+
 describe('buildArchContext', () => {
   it('returns an empty result with init hint when group is empty', async () => {
-    const store = {
-      search: vi.fn().mockResolvedValue([]),
-      stats: vi.fn().mockResolvedValue(emptyStats),
-    } as unknown as ArchStore;
+    const { store } = storeWithPerKind({});
     const res = await buildArchContext(store, 'my-app', 'where is X');
     expect(res.empty).toBe(true);
     expect(res.hint).toMatch(/initialise/i);
@@ -79,20 +111,18 @@ describe('buildArchContext', () => {
   });
 
   it('returns low-confidence hint when group has cards but nothing matched the question', async () => {
-    const store = {
-      search: vi.fn().mockResolvedValue([]),
-      stats: vi.fn().mockResolvedValue(someStats),
-    } as unknown as ArchStore;
+    const { store } = storeWithPerKind({ stats: someStats });
     const res = await buildArchContext(store, 'my-app', 'completely off-topic');
     expect(res.empty).toBe(true);
     expect(res.hint).toMatch(/high-confidence/i);
   });
 
   it('separates components, decisions and lessons', async () => {
-    const store = {
-      search: vi.fn().mockResolvedValue([comp('A'), dec('B'), les('C'), comp('D')]),
-      stats: vi.fn().mockResolvedValue(emptyStats),
-    } as unknown as ArchStore;
+    const { store } = storeWithPerKind({
+      component: [comp('A'), comp('D')],
+      decision: [dec('B')],
+      lesson: [les('C')],
+    });
     const res = await buildArchContext(store, 'my-app', 'q');
     expect(res.empty).toBe(false);
     expect(res.hint).toBeNull();
@@ -101,67 +131,68 @@ describe('buildArchContext', () => {
     expect(res.lessons.map((l) => l.rule)).toEqual(['C']);
   });
 
-  it('caps each bucket at 5 by default', async () => {
-    const many = Array.from({ length: 12 }, (_, i) => comp(String(i)));
-    const store = {
-      search: vi.fn().mockResolvedValue(many),
-      stats: vi.fn().mockResolvedValue(emptyStats),
-    } as unknown as ArchStore;
-    const res = await buildArchContext(store, 'my-app', 'q');
-    expect(res.components).toHaveLength(5);
-  });
-
-  it('forwards min_score to the underlying search', async () => {
-    const search = vi.fn().mockResolvedValue([]);
-    const store = {
-      search,
-      stats: vi.fn().mockResolvedValue(emptyStats),
-    } as unknown as ArchStore;
-    await buildArchContext(store, 'my-app', 'q', { minScore: 0.6 });
-    expect(search).toHaveBeenCalledWith('my-app', 'q', { limit: 20, minScore: 0.6 });
+  it('embeds the question once and fans the vector across all three kind queries', async () => {
+    const { store, searchWithVector, embedQuestion } = storeWithPerKind({
+      component: [comp('A')],
+    });
+    await buildArchContext(store, 'my-app', 'q');
+    expect(embedQuestion).toHaveBeenCalledTimes(1);
+    expect(searchWithVector).toHaveBeenCalledTimes(3);
+    const kinds = searchWithVector.mock.calls.map((call) => call[2].kinds[0]);
+    expect(kinds.sort()).toEqual(['component', 'decision', 'lesson']);
   });
 });
 
-describe('buildArchContextWithVector', () => {
-  it('delegates to searchWithVector and skips re-embedding', async () => {
-    const searchWithVector = vi.fn().mockResolvedValue([comp('A')]);
-    const store = {
-      searchWithVector,
-      stats: vi.fn().mockResolvedValue(emptyStats),
-    } as unknown as ArchStore;
-    const vector = [0.1, 0.2, 0.3];
-    const res = await buildArchContextWithVector(store, 'my-app', vector);
-    expect(searchWithVector).toHaveBeenCalledWith('my-app', vector, {
-      limit: 20,
-      minScore: 0.45,
-    });
-    expect(res.components.map((c) => c.name)).toEqual(['A']);
+describe('buildArchContextWithVector — per-kind limits', () => {
+  it('passes a default limit of 5 to each kind-scoped search call', async () => {
+    const { store, searchWithVector } = storeWithPerKind({});
+    await buildArchContextWithVector(store, 'my-app', [0, 0]);
+    for (const call of searchWithVector.mock.calls) {
+      expect(call[2].limit).toBe(5);
+    }
   });
 
-  it('respects custom minScore override', async () => {
-    const searchWithVector = vi.fn().mockResolvedValue([]);
-    const store = {
-      searchWithVector,
-      stats: vi.fn().mockResolvedValue(emptyStats),
-    } as unknown as ArchStore;
-    await buildArchContextWithVector(store, 'my-app', [0, 0], { minScore: 0.8 });
-    expect(searchWithVector).toHaveBeenCalledWith('my-app', [0, 0], {
-      limit: 20,
-      minScore: 0.8,
+  // Bug fix: a verbose decision bucket can no longer starve components out of
+  // the result. With one global top-N, 20 decisions in the top-20 left nothing
+  // for components. With per-kind searches, components get their own budget.
+  it('decisions cannot starve components out of the result', async () => {
+    const { store, searchWithVector } = storeWithPerKind({
+      component: [comp('only-comp')],
+      decision: Array.from({ length: 20 }, (_, i) => dec(`d${i}`)),
+      lesson: [],
     });
+    const res = await buildArchContextWithVector(store, 'my-app', [0, 0]);
+    expect(res.components.map((c) => c.name)).toEqual(['only-comp']);
+    // Decisions are still capped at 5 even when many were returned upstream —
+    // the bucket cap is the store-level limit, enforced by the per-kind search.
+    expect(searchWithVector.mock.calls.find((c) => c[2].kinds[0] === 'decision')?.[2].limit).toBe(
+      5
+    );
   });
 
-  it('forwards project to the underlying search', async () => {
-    const searchWithVector = vi.fn().mockResolvedValue([]);
-    const store = {
-      searchWithVector,
-      stats: vi.fn().mockResolvedValue(emptyStats),
-    } as unknown as ArchStore;
-    await buildArchContextWithVector(store, 'default', [0, 0], { project: 'app-a' });
-    expect(searchWithVector).toHaveBeenCalledWith('default', [0, 0], {
-      limit: 20,
-      minScore: 0.45,
+  it('respects per-kind limit overrides and skips searches with limit 0', async () => {
+    const { store, searchWithVector } = storeWithPerKind({});
+    await buildArchContextWithVector(store, 'my-app', [0, 0], {
+      limits: { component: 10, decision: 3, lesson: 0 },
+    });
+    const byKind = Object.fromEntries(
+      searchWithVector.mock.calls.map((call) => [call[2].kinds[0], call[2].limit])
+    );
+    expect(byKind['component']).toBe(10);
+    expect(byKind['decision']).toBe(3);
+    // lesson search must not be issued at all when its limit is 0.
+    expect(byKind['lesson']).toBeUndefined();
+  });
+
+  it('forwards project and minScore to every kind-scoped search', async () => {
+    const { store, searchWithVector } = storeWithPerKind({});
+    await buildArchContextWithVector(store, 'my-app', [0, 0], {
       project: 'app-a',
+      minScore: 0.7,
     });
+    for (const call of searchWithVector.mock.calls) {
+      expect(call[2].project).toBe('app-a');
+      expect(call[2].minScore).toBe(0.7);
+    }
   });
 });

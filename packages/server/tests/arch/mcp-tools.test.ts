@@ -389,16 +389,18 @@ describe('memory-layer dichotomy in instructions', () => {
 });
 
 describe('arch tool exposure per mode', () => {
-  it('coding mode exposes the full arch toolkit (read + write + delete)', () => {
+  it('coding mode exposes the full arch toolkit (read + write + list + delete)', () => {
     expect(CODING_TOOLS.has('arch_context')).toBe(true);
+    expect(CODING_TOOLS.has('arch_list')).toBe(true);
     expect(CODING_TOOLS.has('arch_record_component')).toBe(true);
     expect(CODING_TOOLS.has('arch_record_decision')).toBe(true);
     expect(CODING_TOOLS.has('arch_record_lesson')).toBe(true);
     expect(CODING_TOOLS.has('arch_delete')).toBe(true);
   });
 
-  it('support mode is read-only — only arch_context, no arch_record_*, no arch_delete', () => {
+  it('support mode is read-only — only arch_context, no arch_list / arch_record_* / arch_delete', () => {
     expect(SUPPORT_TOOLS.has('arch_context')).toBe(true);
+    expect(SUPPORT_TOOLS.has('arch_list')).toBe(false);
     expect(SUPPORT_TOOLS.has('arch_record_component')).toBe(false);
     expect(SUPPORT_TOOLS.has('arch_record_decision')).toBe(false);
     expect(SUPPORT_TOOLS.has('arch_record_lesson')).toBe(false);
