@@ -37,22 +37,22 @@
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.0",
     "@eslint/js": "^10.0.1",
-    "eslint": "^10.3.0",
+    "eslint": "^10.4.1",
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.6.0",
     "husky": "^9.1.7",
     "prettier": "^3.8.3",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.59.2",
-    "vite": "^8.0.11"
+    "typescript-eslint": "^8.60.1",
+    "vite": "^8.0.16"
   },
   "resolutions": {
     "picomatch": "^4.0.4",
     "fast-uri": "^3.1.2",
-    "hono": "^4.12.18",
+    "hono": "^4.12.23",
     "ip-address": "^10.2.0",
-    "postcss": "^8.5.14",
-    "protobufjs": "^8.0.2"
+    "postcss": "^8.5.15",
+    "protobufjs": "^8.6.1"
   },
   "dependenciesMeta": {
     "better-sqlite3": {
