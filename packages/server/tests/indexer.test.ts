@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { Indexer, toCollectionName, CollectionMetaMismatchError } from '../src/indexer.js';
+import { toArchCollectionName } from '../src/arch/collection.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { EmbeddingProvider, ProjectConfig } from '../src/types.js';
 
@@ -690,6 +691,32 @@ describe('Indexer', () => {
 
     const groups = await indexer.listGroups();
     expect(groups).toEqual({ g1: 10, g2: 20 });
+  });
+
+  it('listGroups excludes architectural-memory collections', async () => {
+    // The arch collection for group "default" is `paparats_default_arch`, which
+    // also starts with the `paparats_` prefix. It must NOT surface as a phantom
+    // code group "default_arch" — otherwise search_code iterates over it and
+    // runs a code-vector search against the arch collection (Bad Request).
+    const codeCol = toCollectionName('g1');
+    const archCol = toArchCollectionName('default'); // paparats_default_arch
+    mockQdrant.collections.set(codeCol, new Map());
+    mockQdrant.collections.set(archCol, new Map());
+    mockQdrant.client.getCollections.mockResolvedValue({
+      collections: [{ name: codeCol }, { name: archCol }],
+    });
+    mockQdrant.client.getCollection.mockResolvedValue({ points_count: 5, status: 'green' });
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const groups = await indexer.listGroups();
+    expect(Object.keys(groups)).toEqual(['g1']);
+    expect(groups).not.toHaveProperty('default_arch');
   });
 
   it('evicts project chunks from old group when re-indexing under a new group', async () => {
