@@ -20,6 +20,7 @@ import type { ChunkResult, ProjectConfig, IndexerStats } from './types.js';
 import type { Telemetry } from './telemetry/facade.js';
 import type { MetricsRegistry } from './metrics.js';
 import { NoOpMetrics } from './metrics.js';
+import { isArchCollection } from './arch/collection.js';
 
 // ── Collection name helpers ──────────────────────────────────────────────────
 
@@ -1526,8 +1527,12 @@ export class Indexer {
    *  so reported counts reflect real chunks. */
   async listGroups(): Promise<Record<string, number>> {
     const collections = await this.qdrant.getCollections();
-    const paparatsCollections = collections.collections.filter((col) =>
-      col.name.startsWith(COLLECTION_PREFIX)
+    // Arch-memory collections (`paparats_<group>_arch`) also carry the prefix —
+    // exclude them so they never surface as phantom code groups. Otherwise
+    // search_code iterates over a `<group>_arch` name and runs a code-vector
+    // search against the arch collection, which fails with Bad Request.
+    const paparatsCollections = collections.collections.filter(
+      (col) => col.name.startsWith(COLLECTION_PREFIX) && !isArchCollection(col.name)
     );
     const infos = await Promise.all(
       paparatsCollections.map((col) => this.qdrant.getCollection(col.name))
