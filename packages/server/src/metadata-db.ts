@@ -12,6 +12,24 @@ function escapeLike(value: string): string {
   return value.replace(/[%_\\]/g, '\\$&');
 }
 
+export interface GitCachedCommit {
+  hash: string;
+  date: string;
+  email: string;
+  subject: string;
+}
+
+export interface GitCachedHunk {
+  commitHash: string;
+  startLine: number;
+  endLine: number;
+}
+
+export interface GitFileCacheData {
+  commits: GitCachedCommit[];
+  hunks: GitCachedHunk[];
+}
+
 export class MetadataStore {
   private db: Database.Database;
   private closed = false;
@@ -35,6 +53,9 @@ export class MetadataStore {
   private deleteProjectCommitsStmt: Database.Statement;
   private deleteProjectTicketsStmt: Database.Statement;
   private deleteProjectEdgesStmt: Database.Statement;
+  private getGitFileCacheStmt: Database.Statement;
+  private setGitFileCacheStmt: Database.Statement;
+  private deleteProjectGitCacheStmt: Database.Statement;
 
   constructor(dbPath?: string) {
     const p = dbPath ?? DEFAULT_DB_PATH;
@@ -81,6 +102,15 @@ export class MetadataStore {
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_from ON symbol_edges(from_chunk_id);
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_to ON symbol_edges(to_chunk_id);
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_symbol ON symbol_edges(symbol_name);
+
+      CREATE TABLE IF NOT EXISTS git_file_cache (
+        grp TEXT NOT NULL,
+        project TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        head TEXT NOT NULL,
+        data TEXT NOT NULL,
+        PRIMARY KEY (grp, project, file_path)
+      );
     `);
 
     // Migrate legacy databases pre-dating the confidence column. Older installs
@@ -140,6 +170,16 @@ export class MetadataStore {
     );
     this.deleteProjectEdgesStmt = this.db.prepare(
       "DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? ESCAPE '\\' OR to_chunk_id LIKE ? ESCAPE '\\'"
+    );
+
+    this.getGitFileCacheStmt = this.db.prepare(
+      'SELECT data FROM git_file_cache WHERE grp = ? AND project = ? AND file_path = ? AND head = ?'
+    );
+    this.setGitFileCacheStmt = this.db.prepare(
+      'INSERT OR REPLACE INTO git_file_cache (grp, project, file_path, head, data) VALUES (?, ?, ?, ?, ?)'
+    );
+    this.deleteProjectGitCacheStmt = this.db.prepare(
+      'DELETE FROM git_file_cache WHERE grp = ? AND project = ?'
     );
   }
 
@@ -202,8 +242,39 @@ export class MetadataStore {
       this.deleteProjectCommitsStmt.run(pattern);
       this.deleteProjectTicketsStmt.run(pattern);
       this.deleteProjectEdgesStmt.run(pattern, pattern);
+      this.deleteProjectGitCacheStmt.run(group, project);
     });
     tx();
+  }
+
+  // ── Git file cache (parsed `git log` output keyed by repo HEAD) ──────────
+
+  getGitFileCache(
+    group: string,
+    project: string,
+    file: string,
+    head: string
+  ): GitFileCacheData | null {
+    const row = this.getGitFileCacheStmt.get(group, project, file, head) as
+      | { data: string }
+      | undefined;
+    if (!row) return null;
+    try {
+      return JSON.parse(row.data) as GitFileCacheData;
+    } catch {
+      return null;
+    }
+  }
+
+  setGitFileCache(
+    group: string,
+    project: string,
+    file: string,
+    head: string,
+    commits: GitCachedCommit[],
+    hunks: GitCachedHunk[]
+  ): void {
+    this.setGitFileCacheStmt.run(group, project, file, head, JSON.stringify({ commits, hunks }));
   }
 
   // ── Symbol edge methods ─────────────────────────────────────────────────

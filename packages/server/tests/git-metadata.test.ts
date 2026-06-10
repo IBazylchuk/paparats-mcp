@@ -260,3 +260,133 @@ describe('extractGitMetadata', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('extractGitMetadata git cache', () => {
+  let tmpDir: string;
+  let dbDir: string;
+  let store: MetadataStore;
+
+  beforeEach(() => {
+    tmpDir = createTempDir();
+    dbDir = createTempDir();
+    store = new MetadataStore(path.join(dbDir, 'test-metadata.db'));
+  });
+
+  afterEach(() => {
+    store.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(dbDir, { recursive: true, force: true });
+  });
+
+  function currentHead(dir: string): string {
+    return execSync('git rev-parse HEAD', { cwd: dir, encoding: 'utf8' }).trim();
+  }
+
+  function runExtraction(chunksByFile: Map<string, never[]> | Map<string, object[]>) {
+    const mockQdrantClient = { setPayload: vi.fn().mockResolvedValue(undefined) };
+    return extractGitMetadata({
+      projectPath: tmpDir,
+      group: 'g',
+      project: 'p',
+      maxCommitsPerFile: 50,
+      ticketPatterns: [],
+      metadataStore: store,
+      qdrantClient: mockQdrantClient as never,
+      chunksByFile: chunksByFile as never,
+    });
+  }
+
+  const chunkId = 'g//p//src/auth.ts//1-2//h1';
+  const chunksByFile = () =>
+    new Map([['src/auth.ts', [{ chunk_id: chunkId, startLine: 1, endLine: 2 }]]]);
+
+  it('uses cached git data when repo HEAD matches', async () => {
+    gitInit(tmpDir);
+    gitAdd(
+      tmpDir,
+      'src/auth.ts',
+      'export function login() { return true; }\nexport const x = 1;\n'
+    );
+    gitCommit(tmpDir, 'feat: real commit');
+
+    // Seed a fake cache entry at the current HEAD — if the cache is consulted,
+    // the fake commit lands in the store instead of the real one.
+    store.setGitFileCache(
+      'g',
+      'p',
+      'src/auth.ts',
+      currentHead(tmpDir),
+      [
+        {
+          hash: 'cafebabe',
+          date: '2024-01-01T00:00:00Z',
+          email: 'cache@test.com',
+          subject: 'fake: cached',
+        },
+      ],
+      [{ commitHash: 'cafebabe', startLine: 1, endLine: 10 }]
+    );
+
+    await runExtraction(chunksByFile());
+
+    const commits = store.getCommits(chunkId);
+    expect(commits.map((c) => c.commit_hash)).toEqual(['cafebabe']);
+  });
+
+  it('populates the cache after extraction', async () => {
+    gitInit(tmpDir);
+    gitAdd(
+      tmpDir,
+      'src/auth.ts',
+      'export function login() { return true; }\nexport const x = 1;\n'
+    );
+    const realHash = gitCommit(tmpDir, 'feat: real commit');
+
+    await runExtraction(chunksByFile());
+
+    const cached = store.getGitFileCache('g', 'p', 'src/auth.ts', currentHead(tmpDir));
+    expect(cached).not.toBeNull();
+    expect(cached!.commits.map((c) => c.hash)).toContain(realHash);
+  });
+
+  it('ignores stale cache when HEAD changed', async () => {
+    gitInit(tmpDir);
+    gitAdd(
+      tmpDir,
+      'src/auth.ts',
+      'export function login() { return true; }\nexport const x = 1;\n'
+    );
+    gitCommit(tmpDir, 'feat: first');
+    const oldHead = currentHead(tmpDir);
+
+    store.setGitFileCache(
+      'g',
+      'p',
+      'src/auth.ts',
+      oldHead,
+      [
+        {
+          hash: 'cafebabe',
+          date: '2024-01-01T00:00:00Z',
+          email: 'cache@test.com',
+          subject: 'fake: cached',
+        },
+      ],
+      [{ commitHash: 'cafebabe', startLine: 1, endLine: 10 }]
+    );
+
+    gitAdd(
+      tmpDir,
+      'src/auth.ts',
+      'export function login() { return false; }\nexport const x = 2;\n'
+    );
+    const newHash = gitCommit(tmpDir, 'fix: second');
+
+    await runExtraction(chunksByFile());
+
+    const commits = store.getCommits(chunkId);
+    const hashes = commits.map((c) => c.commit_hash);
+    expect(hashes).toContain(newHash);
+    expect(hashes).not.toContain('cafebabe');
+  });
+});
