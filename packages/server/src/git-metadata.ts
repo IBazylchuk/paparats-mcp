@@ -92,6 +92,16 @@ export async function collectIndexedChunks(
 
 // ── Git log parsing ────────────────────────────────────────────────────────
 
+/** Current repo HEAD, or null when not a git repo (disables caching). */
+async function getRepoHead(projectPath: string): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: projectPath });
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 async function getFileCommits(
   projectPath: string,
   filePath: string,
@@ -221,6 +231,7 @@ export async function extractGitMetadata(
   const {
     projectPath,
     group,
+    project,
     maxCommitsPerFile,
     ticketPatterns,
     metadataStore,
@@ -232,11 +243,30 @@ export async function extractGitMetadata(
   let commitsStored = 0;
   let ticketsStored = 0;
 
+  // Commits and hunks only change when HEAD moves, so parsed git output is
+  // cached per file keyed by HEAD — repeated enrichment (e.g. a file edited
+  // without new commits) skips the two git subprocesses entirely.
+  const head = await getRepoHead(projectPath);
+
+  // Not a git repo (or no commits yet) — every per-file git call would fail,
+  // so skip enrichment entirely instead of spawning doomed subprocesses.
+  if (!head) {
+    return { filesProcessed: 0, commitsStored: 0, ticketsStored: 0 };
+  }
+
   for (const [filePath, chunks] of chunksByFile) {
-    const [commits, hunks] = await Promise.all([
-      getFileCommits(projectPath, filePath, maxCommitsPerFile),
-      getFileDiffHunks(projectPath, filePath, maxCommitsPerFile),
-    ]);
+    let commits: CommitInfo[];
+    let hunks: DiffHunk[];
+    const cached = metadataStore.getGitFileCache(group, project, filePath, head);
+    if (cached) {
+      ({ commits, hunks } = cached);
+    } else {
+      [commits, hunks] = await Promise.all([
+        getFileCommits(projectPath, filePath, maxCommitsPerFile),
+        getFileDiffHunks(projectPath, filePath, maxCommitsPerFile),
+      ]);
+      metadataStore.setGitFileCache(group, project, filePath, head, commits, hunks);
+    }
 
     if (commits.length === 0) continue;
     filesProcessed++;

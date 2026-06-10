@@ -862,10 +862,12 @@ export class Indexer {
     let processed = 0;
     const skippedBefore = this.stats.skipped;
 
+    const changedFiles = new Set<string>();
     const tasks = files.map((file) =>
       queue.add(async () => {
         try {
           const n = await this.indexFile(groupName, project, file);
+          if (n > 0) changedFiles.add(path.relative(project.path, file));
           totalChunks += n;
           processed++;
           this.stats.files++;
@@ -916,7 +918,14 @@ export class Indexer {
           !!needsSymbols
         );
 
-        // Git metadata extraction
+        // Git metadata extraction — only for files actually reindexed this
+        // run; skipped-unchanged files keep their existing payload.
+        if (needsGit) {
+          for (const file of chunksByFile.keys()) {
+            if (!changedFiles.has(file)) chunksByFile.delete(file);
+          }
+        }
+
         if (needsGit && chunksByFile.size > 0) {
           try {
             const result = await extractGitMetadata({
