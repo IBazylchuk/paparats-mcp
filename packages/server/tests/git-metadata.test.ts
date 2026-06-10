@@ -390,3 +390,50 @@ describe('extractGitMetadata git cache', () => {
     expect(hashes).not.toContain('cafebabe');
   });
 });
+
+describe('extractGitMetadata on non-git directories', () => {
+  let tmpDir: string;
+  let dbDir: string;
+  let store: MetadataStore;
+
+  beforeEach(() => {
+    tmpDir = createTempDir();
+    dbDir = createTempDir();
+    store = new MetadataStore(path.join(dbDir, 'test-metadata.db'));
+  });
+
+  afterEach(() => {
+    store.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    fs.rmSync(dbDir, { recursive: true, force: true });
+  });
+
+  it('returns early without spawning per-file git processes', async () => {
+    // No gitInit — tmpDir is a plain directory
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const mockQdrantClient = { setPayload: vi.fn().mockResolvedValue(undefined) };
+
+    const chunksByFile = new Map([
+      ['src/a.ts', [{ chunk_id: 'g//p//src/a.ts//1-2//h1', startLine: 1, endLine: 2 }]],
+      ['src/b.ts', [{ chunk_id: 'g//p//src/b.ts//1-2//h1', startLine: 1, endLine: 2 }]],
+    ]);
+
+    const result = await extractGitMetadata({
+      projectPath: tmpDir,
+      group: 'g',
+      project: 'p',
+      maxCommitsPerFile: 50,
+      ticketPatterns: [],
+      metadataStore: store,
+      qdrantClient: mockQdrantClient as never,
+      chunksByFile,
+    });
+
+    expect(result).toEqual({ filesProcessed: 0, commitsStored: 0, ticketsStored: 0 });
+    // Without the early return each file logs a per-file git failure warning
+    expect(warnSpy).not.toHaveBeenCalled();
+    expect(mockQdrantClient.setPayload).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
+});

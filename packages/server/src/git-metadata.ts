@@ -248,10 +248,16 @@ export async function extractGitMetadata(
   // without new commits) skips the two git subprocesses entirely.
   const head = await getRepoHead(projectPath);
 
+  // Not a git repo (or no commits yet) — every per-file git call would fail,
+  // so skip enrichment entirely instead of spawning doomed subprocesses.
+  if (!head) {
+    return { filesProcessed: 0, commitsStored: 0, ticketsStored: 0 };
+  }
+
   for (const [filePath, chunks] of chunksByFile) {
     let commits: CommitInfo[];
     let hunks: DiffHunk[];
-    const cached = head ? metadataStore.getGitFileCache(group, project, filePath, head) : null;
+    const cached = metadataStore.getGitFileCache(group, project, filePath, head);
     if (cached) {
       ({ commits, hunks } = cached);
     } else {
@@ -259,9 +265,7 @@ export async function extractGitMetadata(
         getFileCommits(projectPath, filePath, maxCommitsPerFile),
         getFileDiffHunks(projectPath, filePath, maxCommitsPerFile),
       ]);
-      if (head) {
-        metadataStore.setGitFileCache(group, project, filePath, head, commits, hunks);
-      }
+      metadataStore.setGitFileCache(group, project, filePath, head, commits, hunks);
     }
 
     if (commits.length === 0) continue;
