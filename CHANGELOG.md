@@ -4,6 +4,14 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [1.3.2] - 2026-06-10
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 40bc275: fix(server): make git metadata enrichment incremental — only files actually reindexed in a cycle are re-enriched, instead of re-running `git log`/`git diff` and rewriting Qdrant payloads for every chunk of the project on every cron tick. Parsed git output is additionally cached in the metadata DB keyed by repo HEAD, so repeated enrichment without new commits skips git subprocesses entirely. Fixes constant `POST /points/payload` spam to Qdrant and high indexer CPU on near-no-op cycles.
+
 ## [1.3.1] - 2026-06-08
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -392,7 +400,7 @@
 
 ### Patch Changes
 
-## [0.7.0] - 2026-06-08
+## [0.7.0] - 2026-06-10
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -439,7 +447,7 @@
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-06-08
+## [0.5.0] - 2026-06-10
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -532,7 +540,7 @@
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-06-08
+## [0.3.0] - 2026-06-10
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
