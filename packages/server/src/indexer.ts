@@ -920,8 +920,10 @@ export class Indexer {
 
         // Git metadata extraction — only for files actually reindexed this
         // run; skipped-unchanged files keep their existing payload.
-        for (const file of chunksByFile.keys()) {
-          if (!changedFiles.has(file)) chunksByFile.delete(file);
+        if (needsGit) {
+          for (const file of chunksByFile.keys()) {
+            if (!changedFiles.has(file)) chunksByFile.delete(file);
+          }
         }
 
         if (needsGit && chunksByFile.size > 0) {
