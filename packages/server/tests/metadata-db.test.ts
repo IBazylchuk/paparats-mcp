@@ -631,3 +631,61 @@ describe('MetadataStore', () => {
     expect(() => store.upsertSymbolEdges([])).not.toThrow();
   });
 });
+
+describe('MetadataStore git file cache', () => {
+  let tmpDir: string;
+  let store: MetadataStore;
+
+  const commits = [
+    {
+      hash: 'abc123',
+      date: '2024-01-15T10:00:00Z',
+      email: 'dev@test.com',
+      subject: 'fix: bug PROJ-1',
+    },
+  ];
+  const hunks = [{ commitHash: 'abc123', startLine: 1, endLine: 5 }];
+
+  beforeEach(() => {
+    tmpDir = createTempDir();
+    store = new MetadataStore(path.join(tmpDir, 'test-metadata.db'));
+  });
+
+  afterEach(() => {
+    store.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('roundtrips cached git data for a matching head', () => {
+    store.setGitFileCache('g', 'p', 'src/a.ts', 'head1', commits, hunks);
+    const cached = store.getGitFileCache('g', 'p', 'src/a.ts', 'head1');
+    expect(cached).toEqual({ commits, hunks });
+  });
+
+  it('returns null when head does not match', () => {
+    store.setGitFileCache('g', 'p', 'src/a.ts', 'head1', commits, hunks);
+    expect(store.getGitFileCache('g', 'p', 'src/a.ts', 'head2')).toBeNull();
+  });
+
+  it('returns null for unknown file', () => {
+    expect(store.getGitFileCache('g', 'p', 'src/missing.ts', 'head1')).toBeNull();
+  });
+
+  it('replaces the entry on a new head', () => {
+    store.setGitFileCache('g', 'p', 'src/a.ts', 'head1', commits, hunks);
+    store.setGitFileCache('g', 'p', 'src/a.ts', 'head2', [], []);
+    expect(store.getGitFileCache('g', 'p', 'src/a.ts', 'head1')).toBeNull();
+    expect(store.getGitFileCache('g', 'p', 'src/a.ts', 'head2')).toEqual({
+      commits: [],
+      hunks: [],
+    });
+  });
+
+  it('deleteByProject clears the cache for that project only', () => {
+    store.setGitFileCache('g', 'p', 'src/a.ts', 'head1', commits, hunks);
+    store.setGitFileCache('g', 'other', 'src/a.ts', 'head1', commits, hunks);
+    store.deleteByProject('g', 'p');
+    expect(store.getGitFileCache('g', 'p', 'src/a.ts', 'head1')).toBeNull();
+    expect(store.getGitFileCache('g', 'other', 'src/a.ts', 'head1')).not.toBeNull();
+  });
+});
