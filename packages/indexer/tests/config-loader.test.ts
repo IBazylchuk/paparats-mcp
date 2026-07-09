@@ -177,6 +177,16 @@ repos:
     expect(() => loadIndexerConfig(configPath)).toThrow(/expected YAML object/);
   });
 
+  it('throws a clean error for comment-only YAML', () => {
+    writeConfig('# just a comment\n');
+    expect(() => loadIndexerConfig(configPath)).toThrow(/Invalid config at/);
+  });
+
+  it('throws a clean error for malformed YAML', () => {
+    writeConfig('repos: [unclosed\n');
+    expect(() => loadIndexerConfig(configPath)).toThrow(/Invalid config at/);
+  });
+
   it('single language string in overrides', () => {
     writeConfig(`
 repos:

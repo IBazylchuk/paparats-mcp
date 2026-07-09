@@ -188,14 +188,26 @@ function firstIdentifier(node: Node): Node | null {
   return null;
 }
 
+// Block labels are usually string literals (`resource "aws_instance" "web"`)
+// but HCL also allows bare identifier labels (`resource aws_instance web`).
+// The first identifier is the block type itself, so it's skipped.
 function blockLabels(node: Node): string[] {
   const labels: string[] = [];
+  let skippedBlockType = false;
   for (let i = 0; i < node.namedChildCount; i++) {
     const c = node.namedChild(i);
-    if (!c || c.type !== 'string_lit') continue;
-    for (let j = 0; j < c.namedChildCount; j++) {
-      const t = c.namedChild(j);
-      if (t && t.type === 'template_literal') labels.push(t.text);
+    if (!c) continue;
+    if (c.type === 'identifier') {
+      if (!skippedBlockType) {
+        skippedBlockType = true;
+      } else {
+        labels.push(c.text);
+      }
+    } else if (c.type === 'string_lit') {
+      for (let j = 0; j < c.namedChildCount; j++) {
+        const t = c.namedChild(j);
+        if (t && t.type === 'template_literal') labels.push(t.text);
+      }
     }
   }
   return labels;
@@ -244,18 +256,16 @@ function collectTerraformUses(root: Node): TerraformUse[] {
     if (node.type === 'variable_expr') {
       const rootId = firstIdentifier(node);
       const prefix = rootId?.text ?? '';
-      // The reference is variable_expr followed by sibling get_attr nodes inside
-      // the shared parent expression. Collect the get_attr identifiers in order.
-      const parent = node.parent;
+      // The reference is variable_expr followed by consecutive get_attr siblings
+      // forming the chain (`var.foo.bar`). Stop at the first non-get_attr sibling
+      // so unrelated expressions under the same parent (e.g. `concat(var.x, local.y)`)
+      // aren't collected.
       const attrs: string[] = [];
-      if (parent) {
-        for (let i = 0; i < parent.namedChildCount; i++) {
-          const c = parent.namedChild(i);
-          if (c && c.type === 'get_attr') {
-            const id = firstIdentifier(c);
-            if (id) attrs.push(id.text);
-          }
-        }
+      let sibling = node.nextNamedSibling;
+      while (sibling && sibling.type === 'get_attr') {
+        const id = firstIdentifier(sibling);
+        if (id) attrs.push(id.text);
+        sibling = sibling.nextNamedSibling;
       }
       // `data.<type>.<name>` / `resource.<type>.<name>` address a bare
       // `<type>.<name>` definition — strip the scope prefix. Everything else
