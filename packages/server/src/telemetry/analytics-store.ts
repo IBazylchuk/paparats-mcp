@@ -94,8 +94,7 @@ export class AnalyticsStore implements TelemetrySink {
       );
     `);
     const row = this.db.prepare('SELECT MAX(version) AS v FROM schema_migrations').get() as
-      | { v: number | null }
-      | undefined;
+      { v: number | null } | undefined;
     const current = row?.v ?? 0;
     if (current >= SCHEMA_VERSION) return;
 
@@ -354,8 +353,7 @@ export class AnalyticsStore implements TelemetrySink {
   /** Look up total_lines for a file from the indexer-populated files table. Returns null when unknown. */
   getFileTotalLines(groupName: string, projectName: string, file: string): number | null {
     const row = this.getFileLines.get(groupName, projectName, file) as
-      | { total_lines: number }
-      | undefined;
+      { total_lines: number } | undefined;
     return row?.total_lines ?? null;
   }
 
@@ -534,8 +532,7 @@ export class AnalyticsStore implements TelemetrySink {
     if (this.closed) return null;
     try {
       const row = this.resolvePrecedingStmt.get(user, session, chunkId) as
-        | { id: string }
-        | undefined;
+        { id: string } | undefined;
       return row?.id ?? null;
     } catch {
       return null;

@@ -221,8 +221,7 @@ export class MetadataStore {
     chunkId: string
   ): { commit_hash: string; committed_at: string; author_email: string } | null {
     const row = this.getLatestCommitStmt.get(chunkId) as
-      | { commit_hash: string; committed_at: string; author_email: string }
-      | undefined;
+      { commit_hash: string; committed_at: string; author_email: string } | undefined;
     return row ?? null;
   }
 
@@ -256,8 +255,7 @@ export class MetadataStore {
     head: string
   ): GitFileCacheData | null {
     const row = this.getGitFileCacheStmt.get(group, project, file, head) as
-      | { data: string }
-      | undefined;
+      { data: string } | undefined;
     if (!row) return null;
     try {
       return JSON.parse(row.data) as GitFileCacheData;
