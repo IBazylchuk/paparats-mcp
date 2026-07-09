@@ -104,4 +104,40 @@ describe('extractSymbolsForChunks (terraform)', () => {
     const mod = r.defined_symbols.find((d) => d.name === 'module.network');
     expect(mod?.kind).toBe('module');
   });
+
+  it('resolves bare identifier block labels (no quotes)', () => {
+    const source = `resource aws_instance web {
+  instance_type = "t3.micro"
+}
+`;
+    const tree = parser.parse(source);
+    const lineCount = source.split('\n').length;
+    const [r] = extractSymbolsForChunks(
+      tree!,
+      language,
+      [{ startLine: 0, endLine: lineCount }],
+      'terraform'
+    );
+    tree!.delete();
+    expect(r!.defines_symbols).toContain('aws_instance.web');
+  });
+
+  it('does not collect get_attr from unrelated sibling expressions', () => {
+    const source = `resource "aws_instance" "web" {
+  name = concat(var.region, local.name)
+}
+`;
+    const tree = parser.parse(source);
+    const lineCount = source.split('\n').length;
+    const [r] = extractSymbolsForChunks(
+      tree!,
+      language,
+      [{ startLine: 0, endLine: lineCount }],
+      'terraform'
+    );
+    tree!.delete();
+    // `var.region` must not pick up `.name` from the sibling `local.name` argument.
+    expect(r!.uses_symbols).toContain('var.region');
+    expect(r!.uses_symbols).not.toContain('var.region.name');
+  });
 });

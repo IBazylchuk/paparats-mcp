@@ -113,7 +113,12 @@ injection: !!js/function >
 
     it('rejects invalid YAML structure', () => {
       writeConfig(tmpDir, 'not: valid: yaml: syntax:');
-      expect(() => readConfig(tmpDir)).toThrow();
+      expect(() => readConfig(tmpDir)).toThrow(/Invalid config at/);
+    });
+
+    it('rejects comment-only config with a clean error', () => {
+      writeConfig(tmpDir, '# just a comment\n');
+      expect(() => readConfig(tmpDir)).toThrow(/Invalid config at/);
     });
   });
 

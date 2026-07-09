@@ -237,9 +237,14 @@ export function readConfig(projectDir: string): PaparatsConfig {
     throw new Error(`Config not found: ${configPath}`);
   }
   const raw = fs.readFileSync(configPath, 'utf8');
-  const parsed = (
-    raw.trim() === '' ? undefined : yaml.load(raw, { schema: yaml.JSON_SCHEMA })
-  ) as PaparatsConfig;
+  let parsed: PaparatsConfig;
+  try {
+    parsed = (
+      raw.trim() === '' ? undefined : yaml.load(raw, { schema: yaml.JSON_SCHEMA })
+    ) as PaparatsConfig;
+  } catch (err) {
+    throw new Error(`Invalid config at ${configPath}: ${(err as Error).message}`, { cause: err });
+  }
 
   if (!parsed || typeof parsed !== 'object') {
     throw new Error(`Invalid config at ${configPath}: expected YAML object`);
