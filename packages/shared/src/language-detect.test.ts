@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { detectLanguageByPath } from './language-detect.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { detectLanguageByPath, detectProjectLanguage } from './language-detect.js';
 
 describe('detectLanguageByPath', () => {
   it('detects common extensions', () => {
@@ -15,6 +18,12 @@ describe('detectLanguageByPath', () => {
     expect(detectLanguageByPath('lib.rs')).toBe('rust');
     expect(detectLanguageByPath('App.java')).toBe('java');
     expect(detectLanguageByPath('Program.cs')).toBe('csharp');
+  });
+
+  it('maps terraform extensions', () => {
+    expect(detectLanguageByPath('main.tf')).toBe('terraform');
+    expect(detectLanguageByPath('environments/prod/variables.tf')).toBe('terraform');
+    expect(detectLanguageByPath('config.hcl')).toBe('terraform');
   });
 
   it('maps C/C++ extensions conservatively', () => {
@@ -54,5 +63,27 @@ describe('detectLanguageByPath', () => {
 
   it('handles single-line content without newline', () => {
     expect(detectLanguageByPath('bin/run', '#!/usr/bin/env ruby')).toBe('ruby');
+  });
+});
+
+describe('detectProjectLanguage (terraform)', () => {
+  it('detects terraform from a .tf file in the project root', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paparats-tf-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "aws_s3_bucket" "b" {}\n');
+      expect(detectProjectLanguage(dir)).toBe('terraform');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('detects terraform from a .terraform-version marker', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paparats-tf-'));
+    try {
+      fs.writeFileSync(path.join(dir, '.terraform-version'), '1.14.0\n');
+      expect(detectProjectLanguage(dir)).toBe('terraform');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -167,7 +167,12 @@ export interface LoadConfigResult {
  */
 export function loadIndexerConfig(configPath: string, token?: string): LoadConfigResult {
   const raw = fs.readFileSync(configPath, 'utf8');
-  const parsed = raw.trim() === '' ? undefined : yaml.load(raw, { schema: yaml.JSON_SCHEMA });
+  let parsed: unknown;
+  try {
+    parsed = raw.trim() === '' ? undefined : yaml.load(raw, { schema: yaml.JSON_SCHEMA });
+  } catch (err) {
+    throw new Error(`Invalid config at ${configPath}: ${(err as Error).message}`, { cause: err });
+  }
   validateConfig(parsed);
 
   const repos = parsed.repos.map((entry) => parseRepoEntry(entry, parsed.defaults, token));

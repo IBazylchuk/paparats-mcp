@@ -102,6 +102,18 @@ export const LANGUAGE_EXCLUDE_DEFAULTS: Record<string, string[]> = {
   scala: ['target', '.bsp', '.metals', '.bloop', 'project/target', 'project/project'],
   kotlin: ['build', '.gradle', '.idea', '*.iml', 'out', 'bin'],
   swift: ['.build', '.swiftpm', 'DerivedData', '*.xcodeproj', '*.xcworkspace', 'Pods'],
+  // Secrets/state must be excluded at ANY depth. normalizeExcludePatterns leaves
+  // patterns containing a glob unchanged, so file patterns carry an explicit `**/`
+  // prefix (a bare `*.tfvars` would only match at the scan root).
+  terraform: [
+    '.terraform',
+    '**/*.tfstate',
+    '**/*.tfstate.*',
+    '**/*.tfvars',
+    '**/*.tfvars.json',
+    '**/*.auto.tfvars',
+    '**/*.auto.tfvars.json',
+  ],
   generic: ['node_modules', 'vendor', 'target', '.git', 'build', 'dist'],
 };
 

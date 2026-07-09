@@ -28,6 +28,7 @@
     "@opentelemetry/semantic-conventions": "^1.42.0",
     "@paparats/shared": "*",
     "@qdrant/js-client-rest": "^1.18.0",
+    "@tree-sitter-grammars/tree-sitter-hcl": "^1.2.0",
     "better-sqlite3": "^12.11.1",
     "chokidar": "^5.0.0",
     "cors": "^2.8.6",
