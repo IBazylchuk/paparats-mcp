@@ -176,13 +176,11 @@ describe('update', () => {
     });
 
     it('regenerates compose, reports the backup path, and tears down orphans', async () => {
-      const regenerate = vi.fn(
-        (_opts: RegenerateOptions): RegenerateResult => ({
-          changed: true,
-          composeYaml: COMPOSE_WITH_QDRANT,
-          backupPath: '/tmp/docker-compose.yml.bak',
-        })
-      );
+      const regenerate = vi.fn((_opts: RegenerateOptions): RegenerateResult => ({
+        changed: true,
+        composeYaml: COMPOSE_WITH_QDRANT,
+        backupPath: '/tmp/docker-compose.yml.bak',
+      }));
 
       await runUpdate(
         { skipCli: true },

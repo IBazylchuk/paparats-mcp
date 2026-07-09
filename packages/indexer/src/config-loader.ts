@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import type { RepoConfig, IndexerFileConfig, RepoOverrides } from './types.js';
 
 /** Current name. */
@@ -167,7 +167,7 @@ export interface LoadConfigResult {
  */
 export function loadIndexerConfig(configPath: string, token?: string): LoadConfigResult {
   const raw = fs.readFileSync(configPath, 'utf8');
-  const parsed = yaml.load(raw, { schema: yaml.JSON_SCHEMA });
+  const parsed = raw.trim() === '' ? undefined : yaml.load(raw, { schema: yaml.JSON_SCHEMA });
   validateConfig(parsed);
 
   const repos = parsed.repos.map((entry) => parseRepoEntry(entry, parsed.defaults, token));

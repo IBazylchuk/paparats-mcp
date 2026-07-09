@@ -67,12 +67,7 @@ export interface ChunkingErrorEvent {
   file: string;
   language: string | null;
   errorClass:
-    | 'ast_parse_failed'
-    | 'ast_chunk_zero'
-    | 'regex_fallback'
-    | 'read_error'
-    | 'binary'
-    | 'other';
+    'ast_parse_failed' | 'ast_chunk_zero' | 'regex_fallback' | 'read_error' | 'binary' | 'other';
   message: string | null;
 }
 
