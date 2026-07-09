@@ -1,4 +1,4 @@
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 
 /**
  * Ollama deployment mode in the unified install:
@@ -297,7 +297,7 @@ export function generateCompose(config: UnifiedComposeConfig): string {
 
   return (
     HEADER +
-    yaml.dump(compose, { lineWidth: 120, noRefs: true, quotingType: "'", forceQuotes: false })
+    yaml.dump(compose, { lineWidth: 120, noRefs: true, quoteStyle: 'single', forceQuotes: false })
   );
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { generateCompose } from '../src/docker-compose-generator.js';
 
 interface ComposeFile {

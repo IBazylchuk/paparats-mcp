@@ -1,13 +1,11 @@
 import cron from 'node-cron';
+import type { ScheduledTask } from 'node-cron';
 
 /**
  * Start a cron-based scheduler that runs the given task on the specified schedule.
  * Returns the cron task handle for stopping.
  */
-export function startScheduler(
-  cronExpression: string,
-  task: () => Promise<void>
-): cron.ScheduledTask {
+export function startScheduler(cronExpression: string, task: () => Promise<void>): ScheduledTask {
   if (!cron.validate(cronExpression)) {
     throw new Error(`Invalid cron expression: "${cronExpression}"`);
   }
