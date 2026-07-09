@@ -81,6 +81,11 @@ const LANGUAGE_PROFILES: Record<string, LanguageProfile> = {
     exclude: getExcludeForLanguage('csharp'),
     extensions: ['.cs'],
   },
+  terraform: {
+    patterns: ['**/*.tf', '**/*.hcl'],
+    exclude: getExcludeForLanguage('terraform'),
+    extensions: ['.tf', '.hcl'],
+  },
   generic: {
     patterns: ['**/*'],
     exclude: getExcludeForLanguage('generic'),
@@ -397,6 +402,7 @@ const DETECT_PRIORITY: Array<[string, string]> = [
   ['Rakefile', 'ruby'],
   ['CMakeLists.txt', 'cpp'],
   ['Makefile', 'c'],
+  ['.terraform-version', 'terraform'],
 ];
 
 /**
@@ -422,6 +428,9 @@ export function detectLanguages(projectDir: string): string[] {
       const files = fs.readdirSync(projectDir);
       if (files.some((f) => f.endsWith('.csproj') || f.endsWith('.sln')) && !seen.has('csharp')) {
         detected.push('csharp');
+      }
+      if (files.some((f) => f.endsWith('.tf')) && !seen.has('terraform')) {
+        detected.push('terraform');
       }
     } catch {
       // ignore

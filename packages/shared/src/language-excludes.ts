@@ -102,6 +102,7 @@ export const LANGUAGE_EXCLUDE_DEFAULTS: Record<string, string[]> = {
   scala: ['target', '.bsp', '.metals', '.bloop', 'project/target', 'project/project'],
   kotlin: ['build', '.gradle', '.idea', '*.iml', 'out', 'bin'],
   swift: ['.build', '.swiftpm', 'DerivedData', '*.xcodeproj', '*.xcworkspace', 'Pods'],
+  terraform: ['.terraform', '*.tfstate', '*.tfstate.backup', '*.tfvars'],
   generic: ['node_modules', 'vendor', 'target', '.git', 'build', 'dist'],
 };
 

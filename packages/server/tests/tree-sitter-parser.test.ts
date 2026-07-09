@@ -31,9 +31,11 @@ describe('TreeSitterManager', () => {
     result!.tree.delete();
   });
 
-  it('returns null for unsupported language (terraform)', async () => {
-    const result = await manager.parseFile('resource "aws_s3" {}', 'terraform');
-    expect(result).toBeNull();
+  it('parses Terraform', async () => {
+    const result = await manager.parseFile('resource "aws_s3_bucket" "b" {}', 'terraform');
+    expect(result).not.toBeNull();
+    expect(result!.tree.rootNode.type).toBe('config_file');
+    result!.tree.delete();
   });
 
   it('returns null for unknown language', async () => {
@@ -52,7 +54,7 @@ describe('TreeSitterManager', () => {
     expect(manager.isAvailable('cpp')).toBe(true);
     expect(manager.isAvailable('csharp')).toBe(true);
     expect(manager.isAvailable('tsx')).toBe(true);
-    expect(manager.isAvailable('terraform')).toBe(false);
+    expect(manager.isAvailable('terraform')).toBe(true);
     expect(manager.isAvailable('unknown')).toBe(false);
   });
 });
