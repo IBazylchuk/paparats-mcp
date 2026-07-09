@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { glob } from 'glob';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {
   validateIndexingPaths,
   normalizeExcludePatterns as normalizeExcludeFromShared,
@@ -208,7 +208,7 @@ export function readConfig(projectDir?: string): { config: PaparatsConfig; proje
 
   let parsed: unknown;
   try {
-    parsed = yaml.load(raw, { schema: yaml.JSON_SCHEMA });
+    parsed = raw.trim() === '' ? undefined : yaml.load(raw, { schema: yaml.JSON_SCHEMA });
   } catch (err) {
     throw new Error(
       `Invalid YAML in ${configPath}: ${(err as Error).message}\n` +
@@ -250,7 +250,7 @@ export function writeConfig(projectDir: string, config: PaparatsConfig): void {
     lineWidth: 100,
     noRefs: true,
     sortKeys: false,
-    quotingType: '"',
+    quoteStyle: 'double',
     forceQuotes: false,
   });
 

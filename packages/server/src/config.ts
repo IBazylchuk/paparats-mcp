@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import {
   validateIndexingPaths,
   normalizeExcludePatterns,
@@ -232,7 +232,9 @@ export function readConfig(projectDir: string): PaparatsConfig {
     throw new Error(`Config not found: ${configPath}`);
   }
   const raw = fs.readFileSync(configPath, 'utf8');
-  const parsed = yaml.load(raw, { schema: yaml.JSON_SCHEMA }) as PaparatsConfig;
+  const parsed = (
+    raw.trim() === '' ? undefined : yaml.load(raw, { schema: yaml.JSON_SCHEMA })
+  ) as PaparatsConfig;
 
   if (!parsed || typeof parsed !== 'object') {
     throw new Error(`Invalid config at ${configPath}: expected YAML object`);
