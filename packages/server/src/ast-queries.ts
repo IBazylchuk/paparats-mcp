@@ -145,6 +145,16 @@ const csharpUsages = `
   (variable_declaration type: (identifier) @usage)
 `;
 
+// ── Terraform / HCL ───────────────────────────────────────────────────────
+
+const terraformDefinitions = `
+  (block (identifier) @definition)
+`;
+
+const terraformUsages = `
+  (variable_expr (identifier) @usage)
+`;
+
 // ── Queries map ───────────────────────────────────────────────────────────
 
 export const LANGUAGE_QUERIES: Record<string, LanguageQuerySet> = {
@@ -159,4 +169,5 @@ export const LANGUAGE_QUERIES: Record<string, LanguageQuerySet> = {
   c: { definitions: cDefinitions, usages: cUsages },
   cpp: { definitions: cppDefinitions, usages: cppUsages },
   csharp: { definitions: csharpDefinitions, usages: csharpUsages },
+  terraform: { definitions: terraformDefinitions, usages: terraformUsages },
 };

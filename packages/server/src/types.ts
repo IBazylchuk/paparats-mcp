@@ -10,6 +10,10 @@ export type ChunkKind =
   | 'constant'
   | 'variable'
   | 'module'
+  | 'resource'
+  | 'data'
+  | 'output'
+  | 'provider'
   | 'unknown';
 
 // ── Config types (from .paparats.yml) ──────────────────────────────────────

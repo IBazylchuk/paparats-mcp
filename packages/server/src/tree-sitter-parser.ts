@@ -15,10 +15,13 @@ export interface TreeSitterManager {
 }
 
 /**
- * Map from our language identifiers to tree-sitter-wasms grammar file names.
- * `null` means the language has no WASM grammar available (symbol extraction skipped).
+ * Map from our language identifiers to WASM grammar sources.
+ * A string resolves from tree-sitter-wasms; a `{ pkg, file }` resolves the WASM
+ * from another package. `null` means no WASM grammar (symbol extraction skipped).
  */
-const LANGUAGE_GRAMMAR_MAP: Record<string, string | null> = {
+type GrammarRef = string | { pkg: string; file: string };
+
+const LANGUAGE_GRAMMAR_MAP: Record<string, GrammarRef | null> = {
   typescript: 'typescript',
   javascript: 'javascript',
   tsx: 'tsx',
@@ -30,7 +33,7 @@ const LANGUAGE_GRAMMAR_MAP: Record<string, string | null> = {
   c: 'c',
   cpp: 'cpp',
   csharp: 'c_sharp',
-  terraform: null,
+  terraform: { pkg: '@tree-sitter-grammars/tree-sitter-hcl', file: 'tree-sitter-terraform.wasm' },
 };
 
 export async function createTreeSitterManager(): Promise<TreeSitterManager> {
@@ -51,7 +54,10 @@ export async function createTreeSitterManager(): Promise<TreeSitterManager> {
     }
 
     try {
-      const wasmPath = require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammarName}.wasm`);
+      const wasmPath =
+        typeof grammarName === 'string'
+          ? require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammarName}.wasm`)
+          : require.resolve(`${grammarName.pkg}/${grammarName.file}`);
       const lang = await Language.load(wasmPath);
       languageCache.set(language, lang);
       return lang;
