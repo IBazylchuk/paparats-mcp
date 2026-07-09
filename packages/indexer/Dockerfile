@@ -1,6 +1,6 @@
 # ── Build stage ────────────────────────────────────────────────────────────
-ARG NODE_VERSION=22
-FROM node:${NODE_VERSION}-alpine3.19 AS builder
+ARG NODE_VERSION=24
+FROM node:${NODE_VERSION}-alpine AS builder
 
 WORKDIR /app
 
@@ -39,8 +39,8 @@ RUN yarn workspace @paparats/shared build && \
 RUN yarn workspaces focus --production @paparats/shared @paparats/server @paparats/indexer && yarn cache clean --all
 
 # ── Production stage ───────────────────────────────────────────────────────
-ARG NODE_VERSION=22
-FROM node:${NODE_VERSION}-alpine3.19
+ARG NODE_VERSION=24
+FROM node:${NODE_VERSION}-alpine
 
 WORKDIR /app
 

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import yaml from 'js-yaml';
+import * as yaml from 'js-yaml';
 import { DEFAULT_GROUP, LANGUAGE_EXCLUDE_DEFAULTS } from '@paparats/shared';
 import {
   generateCompose,
@@ -139,7 +139,7 @@ export function writeProjectsFile(
   let body = yaml.dump(file, {
     lineWidth: 120,
     noRefs: true,
-    quotingType: "'",
+    quoteStyle: 'single',
     forceQuotes: false,
   });
   if (opts.hint) {

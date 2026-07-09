@@ -1,7 +1,7 @@
 # ── Build stage ────────────────────────────────────────────────────────────
 # Node 22 LTS: active until April 2027 (Node 20 EOL April 2026)
-ARG NODE_VERSION=22
-FROM node:${NODE_VERSION}-alpine3.19 AS builder
+ARG NODE_VERSION=24
+FROM node:${NODE_VERSION}-alpine AS builder
 
 WORKDIR /app
 
@@ -36,8 +36,8 @@ RUN yarn workspace @paparats/shared build && yarn workspace @paparats/server bui
 RUN yarn workspaces focus --production @paparats/shared @paparats/server && yarn cache clean --all
 
 # ── Production stage ───────────────────────────────────────────────────────
-ARG NODE_VERSION=22
-FROM node:${NODE_VERSION}-alpine3.19
+ARG NODE_VERSION=24
+FROM node:${NODE_VERSION}-alpine
 
 ARG PORT=9876
 

@@ -8,7 +8,7 @@
 # Final image: ~2.3 GB (70 MB base + 1.6 GB code model + ~600 MB bge-m3)
 
 # ── Stage 1: register model using official ollama ─────────────────────────
-FROM ollama/ollama:latest AS builder
+FROM ollama/ollama:0.24.0 AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
@@ -23,7 +23,7 @@ RUN ollama serve & \
     pkill ollama
 
 # ── Stage 2: copy model into lightweight alpine/ollama ────────────────────
-FROM alpine/ollama:latest
+FROM alpine/ollama:0.24.0
 
 COPY --from=builder /root/.ollama /root/.ollama
 
