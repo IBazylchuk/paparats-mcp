@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
+import { Minimatch } from 'minimatch';
 import {
   getDefaultExcludeForLanguages,
   LANGUAGE_EXCLUDE_DEFAULTS,
   COMMON_EXCLUDE,
   DEFAULT_EXCLUDE_BARE,
 } from './language-excludes.js';
+import { normalizeExcludePatterns } from './exclude-patterns.js';
 
 describe('getDefaultExcludeForLanguages', () => {
   it('returns COMMON_EXCLUDE for empty languages', () => {
@@ -53,6 +55,30 @@ describe('LANGUAGE_EXCLUDE_DEFAULTS', () => {
   it('has typescript as default fallback', () => {
     expect(LANGUAGE_EXCLUDE_DEFAULTS.typescript).toBeDefined();
     expect(LANGUAGE_EXCLUDE_DEFAULTS.typescript).toContain('node_modules');
+  });
+});
+
+describe('terraform secret/state excludes', () => {
+  // Mirror the real matching path: normalizeExcludePatterns → Minimatch against
+  // the relative file path (see server watcher/config).
+  const matchers = normalizeExcludePatterns(LANGUAGE_EXCLUDE_DEFAULTS.terraform!).map(
+    (p) => new Minimatch(p)
+  );
+  const isExcluded = (rel: string) => matchers.some((m) => m.match(rel));
+
+  it('excludes secrets and state at any directory depth', () => {
+    expect(isExcluded('prod.tfvars')).toBe(true);
+    expect(isExcluded('environments/prod/secrets.tfvars')).toBe(true);
+    expect(isExcluded('a/b/c/terraform.tfvars.json')).toBe(true);
+    expect(isExcluded('env/prod.auto.tfvars')).toBe(true);
+    expect(isExcluded('deep/nested/terraform.tfstate')).toBe(true);
+    expect(isExcluded('x/terraform.tfstate.backup')).toBe(true);
+    expect(isExcluded('modules/vpc/.terraform/plugin')).toBe(true);
+  });
+
+  it('still indexes terraform source files', () => {
+    expect(isExcluded('environments/prod/main.tf')).toBe(false);
+    expect(isExcluded('variables.tf')).toBe(false);
   });
 });
 

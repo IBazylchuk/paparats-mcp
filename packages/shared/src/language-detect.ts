@@ -37,6 +37,8 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
   '.hh': 'cpp',
   '.cxx': 'cpp',
   '.cs': 'csharp',
+  '.tf': 'terraform',
+  '.hcl': 'terraform',
 };
 
 const SHEBANG_TO_LANGUAGE: Array<{ pattern: RegExp; language: string }> = [
@@ -83,6 +85,7 @@ const PROJECT_MARKERS: Array<[string, string]> = [
   ['Rakefile', 'ruby'],
   ['CMakeLists.txt', 'cpp'],
   ['Makefile', 'c'],
+  ['.terraform-version', 'terraform'],
 ];
 
 /**
@@ -103,6 +106,10 @@ export function detectProjectLanguage(projectDir: string): string | null {
       const files = fs.readdirSync(projectDir);
       if (files.some((f) => f.endsWith('.csproj') || f.endsWith('.sln'))) {
         return 'csharp';
+      }
+      // Terraform fallback: presence of any .tf file.
+      if (files.some((f) => f.endsWith('.tf'))) {
+        return 'terraform';
       }
     } catch {
       // ignore

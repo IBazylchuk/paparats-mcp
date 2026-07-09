@@ -157,6 +157,169 @@ function isNoise(symbol: string): boolean {
   return symbol.length < 2 || NOISE_KEYWORDS.has(symbol);
 }
 
+const TERRAFORM_BLOCK_KIND: Record<string, ChunkKind> = {
+  resource: 'resource',
+  data: 'data',
+  module: 'module',
+  variable: 'variable',
+  output: 'output',
+  provider: 'provider',
+};
+
+// Block types whose definition name carries a scope prefix, matching how they
+// are referenced (`var.region`, `module.network`). resource/data blocks are
+// referenced bare as `<type>.<name>`, so they carry no prefix.
+const TERRAFORM_DEF_PREFIX: Record<string, string> = {
+  variable: 'var',
+  module: 'module',
+  output: 'output',
+  provider: 'provider',
+};
+
+// Reference scope prefixes that address a resource/data block by `<type>.<name>`
+// and so must be stripped for the usage to match the bare definition name.
+const TERRAFORM_STRIP_PREFIXES = new Set(['data', 'resource']);
+
+function firstIdentifier(node: Node): Node | null {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const c = node.namedChild(i);
+    if (c && c.type === 'identifier') return c;
+  }
+  return null;
+}
+
+// Block labels are usually string literals (`resource "aws_instance" "web"`)
+// but HCL also allows bare identifier labels (`resource aws_instance web`).
+// The first identifier is the block type itself, so it's skipped.
+function blockLabels(node: Node): string[] {
+  const labels: string[] = [];
+  let skippedBlockType = false;
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const c = node.namedChild(i);
+    if (!c) continue;
+    if (c.type === 'identifier') {
+      if (!skippedBlockType) {
+        skippedBlockType = true;
+      } else {
+        labels.push(c.text);
+      }
+    } else if (c.type === 'string_lit') {
+      for (let j = 0; j < c.namedChildCount; j++) {
+        const t = c.namedChild(j);
+        if (t && t.type === 'template_literal') labels.push(t.text);
+      }
+    }
+  }
+  return labels;
+}
+
+interface TerraformDef {
+  name: string;
+  kind: ChunkKind;
+  row: number;
+}
+
+function collectTerraformDefs(root: Node): TerraformDef[] {
+  const defs: TerraformDef[] = [];
+  const walk = (node: Node): void => {
+    if (node.type === 'block') {
+      const typeId = firstIdentifier(node);
+      const blockType = typeId?.text ?? '';
+      const kind = TERRAFORM_BLOCK_KIND[blockType];
+      if (kind) {
+        const labels = blockLabels(node);
+        const bare = labels.length > 0 ? labels.join('.') : blockType;
+        const prefix = TERRAFORM_DEF_PREFIX[blockType];
+        const name = prefix ? `${prefix}.${bare}` : bare;
+        if (bare) {
+          defs.push({ name, kind, row: node.startPosition.row });
+        }
+      }
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i);
+      if (c) walk(c);
+    }
+  };
+  walk(root);
+  return defs;
+}
+
+interface TerraformUse {
+  name: string;
+  row: number;
+}
+
+function collectTerraformUses(root: Node): TerraformUse[] {
+  const uses: TerraformUse[] = [];
+  const walk = (node: Node): void => {
+    if (node.type === 'variable_expr') {
+      const rootId = firstIdentifier(node);
+      const prefix = rootId?.text ?? '';
+      // The reference is variable_expr followed by consecutive get_attr siblings
+      // forming the chain (`var.foo.bar`). Stop at the first non-get_attr sibling
+      // so unrelated expressions under the same parent (e.g. `concat(var.x, local.y)`)
+      // aren't collected.
+      const attrs: string[] = [];
+      let sibling = node.nextNamedSibling;
+      while (sibling && sibling.type === 'get_attr') {
+        const id = firstIdentifier(sibling);
+        if (id) attrs.push(id.text);
+        sibling = sibling.nextNamedSibling;
+      }
+      // `data.<type>.<name>` / `resource.<type>.<name>` address a bare
+      // `<type>.<name>` definition — strip the scope prefix. Everything else
+      // (`var.x`, `module.x`) or a bare `<type>.<name>` resource reference keeps
+      // `<prefix>.<firstAttr>`.
+      let name = '';
+      if (TERRAFORM_STRIP_PREFIXES.has(prefix) && attrs.length >= 2) {
+        name = `${attrs[0]}.${attrs[1]}`;
+      } else if (prefix && attrs.length >= 1) {
+        name = `${prefix}.${attrs[0]}`;
+      }
+      if (name) {
+        uses.push({ name, row: node.startPosition.row });
+      }
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i);
+      if (c) walk(c);
+    }
+  };
+  walk(root);
+  return uses;
+}
+
+function extractTerraformSymbols(
+  tree: Tree,
+  chunks: Array<{ startLine: number; endLine: number }>
+): SymbolExtractionResult[] {
+  const defs = collectTerraformDefs(tree.rootNode);
+  const uses = collectTerraformUses(tree.rootNode);
+  return chunks.map((chunk) => {
+    const defines = new Map<string, ChunkKind>();
+    for (const d of defs) {
+      if (d.row >= chunk.startLine && d.row <= chunk.endLine && !defines.has(d.name)) {
+        defines.set(d.name, d.kind);
+      }
+    }
+    const usesSet = new Set<string>();
+    for (const u of uses) {
+      if (u.row >= chunk.startLine && u.row <= chunk.endLine) usesSet.add(u.name);
+    }
+    for (const name of defines.keys()) usesSet.delete(name);
+    const defined_symbols: DefinedSymbol[] = Array.from(defines.entries()).map(([name, kind]) => ({
+      name,
+      kind,
+    }));
+    return {
+      defines_symbols: defined_symbols.map((d) => d.name),
+      uses_symbols: Array.from(usesSet),
+      defined_symbols,
+    };
+  });
+}
+
 /**
  * Resolve ChunkKind from a tree-sitter capture node by walking up to find a known parent type.
  */
@@ -296,6 +459,10 @@ export function extractSymbolsForChunks(
   const querySet = LANGUAGE_QUERIES[lang];
   if (!querySet) {
     return chunks.map(() => ({ defines_symbols: [], uses_symbols: [], defined_symbols: [] }));
+  }
+
+  if (lang === 'terraform') {
+    return extractTerraformSymbols(tree, chunks);
   }
   // Empty set = no scope filtering (legitimate for languages we haven't
   // mapped yet — better to over-emit than to silently drop top-level decls).
