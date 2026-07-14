@@ -340,7 +340,7 @@ async function ensureLocalEmbed(
   cleanupTasks: Array<() => void>
 ): Promise<void> {
   await brewInstall(deps, 'llama-server', 'llama.cpp', 300_000);
-  await brewInstall(deps, 'llama-swap', 'llama-swap', 180_000);
+  await brewInstall(deps, 'llama-swap', 'mostlygeek/tap/llama-swap', 180_000);
 
   await downloadModelIfNeeded(
     deps,
@@ -548,7 +548,7 @@ export async function decideEmbedMode(
     );
     if (opts.nonInteractive) {
       throw new Error(
-        'Native embed server not found. Install with `brew install llama.cpp llama-swap`, ' +
+        'Native embed server not found. Install with `brew install llama.cpp mostlygeek/tap/llama-swap`, ' +
           'or pass --embed-mode docker / --embed-url <url>.'
       );
     }

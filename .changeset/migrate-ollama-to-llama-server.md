@@ -25,6 +25,6 @@ pooling: jina-code → last, bge-m3 → cls), so **no re-index is required**.
   11434).
 - CLI flags: `--ollama-mode` → `--embed-mode`, `--ollama-url` → `--embed-url`;
   `--embeddings` accepts `llama | openai | voyage`.
-- Native macOS install now uses `brew install llama.cpp llama-swap` (Metal
+- Native macOS install now uses `brew install llama.cpp mostlygeek/tap/llama-swap` (Metal
   accelerated) instead of Ollama; no Modelfile / `ollama create` step — llama-swap
   loads models by name on demand.
