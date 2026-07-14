@@ -2,7 +2,13 @@
 set -euo pipefail
 
 # Build and optionally push the paparats-embed Docker image.
-# Server and indexer images are built by CI (docker-publish.yml).
+#
+# NOTE: The primary path is CI — .github/workflows/docker-publish-embed.yml builds
+# and pushes this image (multi-arch amd64+arm64) on every v* tag, and can be run
+# manually via workflow_dispatch. This script is a local fallback for testing or
+# for building from a non-proxy network by hand.
+#
+# Server and indexer images are built by docker-publish.yml.
 #
 # Usage: ./scripts/release-docker.sh [--push]
 #
