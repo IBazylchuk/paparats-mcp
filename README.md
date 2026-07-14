@@ -44,8 +44,9 @@ chunk and which ticket it came from — all without your code ever leaving your 
   (Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud, **Elastic APM**), local SQLite
   analytics, and a built-in `/ui` operator console that visualises ROI, query quality,
   cross-project usage and indexer health in one screen.
-- 🏠 **100% local by default.** Qdrant + Ollama on your machine. No cloud, no API keys,
-  no telemetry leaving the box. Bring your own Qdrant Cloud / Ollama URL if you want.
+- 🏠 **100% local by default.** Qdrant + a local embed server (llama.cpp llama-server +
+  llama-swap) on your machine. No cloud, no API keys, no telemetry leaving the box. Bring
+  your own Qdrant Cloud / embed server URL if you want.
 
 ---
 
@@ -87,7 +88,7 @@ AI coding assistants are smart, but they can only see files you open. They don't
 - **Cross-chunk symbol graph** — `find_usages` walks AST-derived edges (calls, called_by, references, referenced_by) so the agent can trace dependencies without re-grepping
 - **Token savings** — return only relevant chunks instead of full files to reduce context size
 - **Multi-project workspaces** — search across backend, frontend, infra repos in one query
-- **100% local & private** — Qdrant vector database + Ollama embeddings. Nothing leaves your laptop
+- **100% local & private** — Qdrant vector database + local llama-server embeddings. Nothing leaves your laptop
 - **AST-aware chunking** — code split by AST nodes (functions/classes) via tree-sitter, not arbitrary character counts (TypeScript, JavaScript, TSX, Python, Go, Rust, Java, Ruby, C, C++, C#; regex fallback for Terraform)
 - **Rich metadata** — each chunk knows its symbol name (from tree-sitter AST), service, domain context, and tags from directory structure
 - **Git history per chunk** — see who last modified a chunk, when, and which tickets (Jira, GitHub) are linked to it
@@ -111,7 +112,7 @@ AI coding assistants are smart, but they can only see files you open. They don't
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp)
 
-Spin up a full Qdrant + Ollama + paparats stack in a Codespace.
+Spin up a full Qdrant + embed server + paparats stack in a Codespace.
 A small slice of the repo (`packages/shared/src`) is auto-indexed on first start so
 you can run
 
@@ -122,7 +123,7 @@ paparats search -g demo 'gitignore filter'
 within a few minutes. Codespace forwards port 9876 for MCP — point Cursor/Claude Code
 at it via the URL VS Code shows in the Ports panel.
 
-> Note: Codespaces is for demo only. With Ollama-on-CPU embedding the full repo
+> Note: Codespaces is for demo only. With CPU embedding the full repo
 > would take 15+ minutes and can hit batch timeouts on large files. For real
 > workloads run locally — or set `OPENAI_API_KEY` (or `VOYAGE_API_KEY`) as a
 > Codespaces user secret and indexing drops to a couple of seconds; see the
@@ -130,16 +131,17 @@ at it via the URL VS Code shows in the Ports panel.
 
 ### Run locally
 
-You need **Docker** and **Docker Compose v2**. On macOS, also install **Ollama natively** —
-running it inside Docker on macOS is significantly slower because the Docker VM cannot
-use Apple Silicon GPU acceleration.
+You need **Docker** and **Docker Compose v2**. On macOS, also install the **embed server
+natively** — running it inside Docker on macOS is significantly slower because the Docker
+VM cannot use Apple Silicon GPU (Metal) acceleration.
 
 ```bash
 # 1. Install the CLI.
 npm install -g @paparats/cli
 
-# 2. macOS only — install Ollama natively (Linux uses Docker Ollama by default).
-brew install ollama
+# 2. macOS only — install the native embed server (Linux uses the Docker embed
+#    image by default). Metal-accelerated.
+brew install llama.cpp llama-swap
 
 # 3. One-time bootstrap. Generates ~/.paparats/{docker-compose.yml,projects.yml},
 #    starts the stack, downloads the embedding model, wires Cursor/Claude Code MCP.
@@ -195,7 +197,7 @@ Inside the Docker stack:
 | `paparats-mcp`     | `ibaz/paparats-server:latest`  | 9876  | MCP HTTP/SSE endpoints, search, metadata API             |
 | `paparats-indexer` | `ibaz/paparats-indexer:latest` | 9877  | Cron + on-demand indexing, hot-reload of project list    |
 | `qdrant`           | `qdrant/qdrant:latest`         | 6333  | Vector DB (skipped when you pass `--qdrant-url`)         |
-| `ollama`           | `ibaz/paparats-ollama:latest`  | 11434 | Embedding model (Linux default; macOS uses native Ollama) |
+| `embed`            | `ibaz/paparats-embed:latest`   | 11434 | Embed server — llama-server + llama-swap, `jina-code-embeddings` + `bge-m3` pre-baked (Linux default; macOS uses native embed server). llama-swap listens on 8080 inside the container |
 
 The indexer hot-reloads `projects.yml`. Edits that **change project metadata
 only** (group, language, indexing tweaks) reindex in place. Edits that **add or remove
@@ -212,8 +214,8 @@ the CLI does this for you on `paparats add` and `paparats remove`.
 paparats install
 ```
 
-On macOS prefers native Ollama and dockerized Qdrant. On Linux defaults to Docker for
-both.
+On macOS prefers the native embed server and dockerized Qdrant. On Linux defaults to
+Docker for both.
 
 ### Bring your own Qdrant
 
@@ -224,30 +226,29 @@ paparats install --qdrant-url https://qdrant.example.com
 
 When `--qdrant-url` is set the Qdrant container is omitted from the stack entirely.
 
-### Bring your own Ollama
+### Bring your own embed server
 
 ```bash
-paparats install --ollama-url http://10.0.0.5:11434
+paparats install --embed-url http://10.0.0.5:11434
 ```
 
-Skips both native and Docker Ollama.
+Skips both the native and Docker embed server.
 
-> **You must register the embedding model on the remote Ollama yourself.** The installer
-> will not touch a remote instance. On the Ollama host, download the GGUF
-> ([jinaai/jina-code-embeddings-1.5b-Q8_0.gguf](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF))
-> and run:
+> **The remote endpoint must serve the `jina-code-embeddings` model (and `bge-m3` for the
+> arch-memory layer) over an OpenAI-style `/v1/embeddings` API.** The installer will not
+> touch a remote instance. The simplest way is to run the pre-baked image on that host —
+> no model registration needed, llama-swap loads GGUF by name on first request:
 >
 > ```bash
-> echo "FROM /path/to/jina-code-embeddings-1.5b-Q8_0.gguf" > Modelfile
-> ollama create jina-code-embeddings -f Modelfile
+> docker run -d -p 11434:8080 -e EMBED_TTL=300 ibaz/paparats-embed:latest
 > ```
 >
-> Then `paparats install --ollama-url http://that-host:11434` and Paparats will use it.
+> Then `paparats install --embed-url http://that-host:11434` and Paparats will use it.
 
-### Force Docker Ollama on macOS
+### Force Docker embed server on macOS
 
 ```bash
-paparats install --ollama-mode docker
+paparats install --embed-mode docker
 ```
 
 Slower on Apple Silicon (no Metal GPU), but useful for parity testing or laptops without
@@ -292,7 +293,7 @@ Pass `--force` to skip the migration prompt in scripts.
 ## Support agent setup
 
 For bots and support teams that consume an existing Paparats server — no Docker, no
-Ollama needed on this side.
+embed server needed on this side.
 
 ```bash
 # Connect to a running server (default: localhost:9876)
@@ -321,7 +322,7 @@ Your projects                   Paparats                       AI assistant
   backend/                 ┌──────────────────────┐
     .paparats.yml ────────►│  Indexer              │
   frontend/                │   - chunks code       │          ┌──────────────┐
-    .paparats.yml ────────►│   - embeds via Ollama │─────────►│ MCP search   │
+    .paparats.yml ────────►│   - embeds via llama  │─────────►│ MCP search   │
   infra/                   │   - stores in Qdrant  │          │ tool call    │
     .paparats.yml ────────►│   - watches changes   │          └──────────────┘
                            └──────────────────────┘
@@ -369,7 +370,7 @@ the indexer's chokidar file watcher), every file in scope flows through this pip
  └────────┬────────┘
           ▼
  ┌─────────────────┐
- │ 7. Embedding     │  Jina Code Embeddings 1.5B via Ollama
+ │ 7. Embedding     │  Jina Code Embeddings 1.5B via llama-server
  │                  │  SQLite cache (content-hash key) → skip
  │                  │  already-embedded content
  └────────┬────────┘
@@ -468,7 +469,7 @@ writes them via **`arch_record_component`**, **`arch_record_decision`**, and
 correction. Each card carries an `updated N ago` stamp in the read tool so the agent
 can spot stale memory and verify against current code.
 
-**Server-side similarity gate** (cosine over [bge-m3](https://ollama.com/library/bge-m3)
+**Server-side similarity gate** (cosine over [bge-m3](https://huggingface.co/BAAI/bge-m3)
 text embeddings, 1024d):
 
 - `≥ 0.85` is a **duplicate** — decisions are refused (the agent must reconcile or
@@ -496,7 +497,7 @@ about prior decisions before refactoring. Writing (`arch_record_*`) is **support
 recording belongs to the architectural-review workflow, not to every line edit.
 
 **`arch_context` accepts a `min_score` parameter** (default `0.45`, cosine over
-[bge-m3](https://ollama.com/library/bge-m3)). Lower it to broaden recall on a sparse
+[bge-m3](https://huggingface.co/BAAI/bge-m3)). Lower it to broaden recall on a sparse
 arch memory; raise it to demand only high-confidence cards. The tool also emits an
 explicit low-confidence hint when the question matched nothing above the threshold,
 so the agent knows to either rephrase or lower `min_score` instead of inventing
@@ -630,7 +631,7 @@ indexing:
   chunkSize: 1500 # characters per chunk (default: 1200)
   overlap: 100 # chunk overlap (default: 100)
   concurrency: 4 # parallel embedding requests
-  batchSize: 8 # embeddings per Ollama call
+  batchSize: 8 # embeddings per llama-server call
 
 # Metadata
 metadata:
@@ -838,9 +839,9 @@ paparats edit compose|projects          Open the file in $EDITOR; on save, valid
                                           regenerate compose + restart + reindex (projects).
 
 paparats search <query> [flags]         Semantic search from the terminal.
-paparats status                         Stack health: Docker, Ollama, server, indexer.
+paparats status                         Stack health: Docker, embed server, server, indexer.
 paparats groups [--json]                List groups and their projects.
-paparats doctor                         Diagnostic checks (Docker, Ollama, ports, configs).
+paparats doctor                         Diagnostic checks (Docker, embed server, ports, configs).
 paparats update                         Update CLI from npm + pull latest Docker images.
 ```
 
@@ -852,8 +853,8 @@ container, watching is the `chokidar` watcher inside the indexer.
 
 **`paparats install`**
 
-- `--ollama-mode <native|docker>` — force Ollama mode (default: native on macOS, docker on Linux)
-- `--ollama-url <url>` — external Ollama; skips both native and docker Ollama
+- `--embed-mode <native|docker>` — force embed server mode (default: native on macOS, docker on Linux)
+- `--embed-url <url>` — external embed server; skips both native and docker embed server
 - `--qdrant-url <url>` — external Qdrant; skips the Qdrant container
 - `--qdrant-api-key <key>` — for authenticated Qdrant (e.g. Qdrant Cloud); written to `~/.paparats/.env`
 - `--mode support` — wire MCP clients only, no Docker stack
@@ -1007,7 +1008,7 @@ Every span also carries `paparats.user`, `paparats.session`, `paparats.client`, 
 **What this is _not_ — honest caveats:**
 
 - Spans are flat (one event = one span), not parented. Service Map will show `paparats-mcp` as an isolated node; you won't see a "search → embedding → Qdrant" waterfall. Use the per-span `duration_ms` attributes for stage timing instead.
-- Outbound HTTP to Qdrant / Ollama is not auto-instrumented — to see those as separate dependencies in APM you'd need to enable `@opentelemetry/instrumentation-http` (planned, not shipped). For now, embedding and search latency live on the existing spans.
+- Outbound HTTP to Qdrant / the embed server is not auto-instrumented — to see those as separate dependencies in APM you'd need to enable `@opentelemetry/instrumentation-http` (planned, not shipped). For now, embedding and search latency live on the existing spans.
 - Per-request token-savings, top queries, and cross-project usage stay in the local SQLite store — they're aggregations, not events. View them in the built-in `/ui` console, not in APM.
 
 For pure metrics (CPU, GC, RSS, request rates) Elastic Metricbeat or our Prometheus exporter (above) is a better fit than APM.
@@ -1089,7 +1090,7 @@ paparats-mcp/
 │   │   │   ├── ast-queries.ts        # Tree-sitter S-expression queries per language
 │   │   │   ├── tree-sitter-parser.ts # WASM tree-sitter manager
 │   │   │   ├── symbol-graph.ts       # Cross-chunk symbol edges (calls/called_by/refs)
-│   │   │   ├── embeddings.ts         # Ollama provider + SQLite cache
+│   │   │   ├── embeddings.ts         # llama-server provider + SQLite cache
 │   │   │   ├── config.ts             # .paparats.yml reader + validation
 │   │   │   ├── metadata.ts           # Tag resolution + auto-detection
 │   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets + symbol edges
@@ -1100,7 +1101,7 @@ paparats-mcp/
 │   │   │   ├── arch/                 # Architectural memory layer (components, decisions, lessons)
 │   │   │   │   ├── types.ts          # ArchComponent, ArchDecision, ArchLesson, ArchWriteResult
 │   │   │   │   ├── collection.ts     # Per-group Qdrant collection (`paparats_<group>_arch`) lifecycle
-│   │   │   │   ├── text-embeddings.ts # bge-m3 text embedder (1024d, mean-pooled, Ollama)
+│   │   │   │   ├── text-embeddings.ts # bge-m3 text embedder (1024d, mean-pooled, llama-server)
 │   │   │   │   ├── store.ts          # CRUD + server-side similarity gate (cosine 0.85 / 0.70)
 │   │   │   │   └── context.ts        # `arch_context` query — top-N across kinds with age stamps
 │   │   │   └── types.ts              # Shared types
@@ -1114,7 +1115,7 @@ paparats-mcp/
 │   │   │   ├── scheduler.ts          # node-cron wrapper
 │   │   │   └── types.ts              # IndexerConfig, RepoConfig, RepoOverrides, IndexerFileConfig
 │   │   └── Dockerfile
-│   ├── ollama/          # Custom Ollama with pre-baked model (Docker image: ibaz/paparats-ollama)
+│   ├── embed/           # llama.cpp llama-server + llama-swap, models pre-baked (Docker image: ibaz/paparats-embed)
 │   │   └── Dockerfile
 │   ├── cli/             # CLI tool (npm package: @paparats/cli)
 │   │   └── src/
@@ -1137,7 +1138,7 @@ paparats-mcp/
 ## Stack
 
 - **Qdrant** — vector database (1 collection per group with `paparats_` prefix for code, plus a separate `paparats_<group>_arch` collection per group for the architectural memory layer; cosine similarity, payload filtering)
-- **Ollama** — local embeddings via Jina Code Embeddings 1.5B for code (task-specific prefixes) **and bge-m3 for the architectural memory layer** (1024d, mean-pooled, multilingual)
+- **Embed server** — llama.cpp `llama-server` + `llama-swap` serving local embeddings via Jina Code Embeddings 1.5B for code (task-specific prefixes) **and bge-m3 for the architectural memory layer** (1024d, mean-pooled, multilingual). llama-swap routes by model name and idle-unloads after `EMBED_TTL` seconds
 - **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata + symbol edges store (`~/.paparats/metadata.db`)
 - **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
 - **TypeScript** monorepo with Yarn workspaces
@@ -1210,12 +1211,13 @@ refuses to mix providers in one collection and surfaces a clear error).
 
 | Provider     | Model                       | Dims  | Privacy        | Speed (1k chunks)        | Cost                  |
 | ------------ | --------------------------- | ----- | -------------- | ------------------------ | --------------------- |
-| **Ollama**   | `jina-code-embeddings` 1.5B | 1536  | 100% local     | ~10–20 min (CPU)         | Free, ~1.7 GB on disk |
+| **llama**    | `jina-code-embeddings` 1.5B | 1536  | 100% local     | ~2–4 min (CPU)           | Free, ~2.3 GB on disk |
 | **OpenAI**   | `text-embedding-3-small`    | 1536  | Sent to OpenAI | ~30 s                    | ~$0.02 / 1 M tokens   |
 | **Voyage**   | `voyage-code-3`             | 1024  | Sent to Voyage | ~30 s                    | ~$0.18 / 1 M tokens   |
 
-Selection precedence: explicit `EMBEDDING_PROVIDER` → `OPENAI_API_KEY` present
-→ `VOYAGE_API_KEY` present → Ollama. So setting just your API key in the
+Valid `EMBEDDING_PROVIDER` values: `llama` | `openai` | `voyage`. Selection
+precedence: explicit `EMBEDDING_PROVIDER` → `OPENAI_API_KEY` present →
+`VOYAGE_API_KEY` present → `llama`. So setting just your API key in the
 environment is enough to switch.
 
 ```bash
@@ -1236,33 +1238,25 @@ Overrides: `EMBEDDING_MODEL` (defaults: `text-embedding-3-small`,
 1024 / 1536). Voyage `voyage-code-3` supports 256/512/1024/2048 via
 Matryoshka — set `EMBEDDING_DIMENSIONS` to opt into a non-default size.
 
-### Local (Ollama) — defaults below
+### Local (llama) — defaults below
 
-Default: [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — code-optimized, 1.5B params, 1536 dims, 32k context. Not in Ollama registry, so we create a local alias.
+Default model: [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — code-optimized, 1.5B params, 1536 dims, 32k context. The embed server is llama.cpp `llama-server` + `llama-swap`: `llama-server` loads the GGUF directly and `llama-swap` routes by model name and lazy-loads it on first request. There is **no Modelfile and no model-registration step** — llama-swap discovers the model by name.
 
 **Recommended:** `paparats install` automates this:
 
-- **Native mode** (`--ollama-mode native`, default on macOS): Downloads GGUF (~1.65 GB) to `~/.paparats/models/`, creates Modelfile and runs `ollama create jina-code-embeddings`
-- **Docker mode** (`--ollama-mode docker`, default on Linux): Uses `ibaz/paparats-ollama` image with model pre-baked — zero setup
+- **Native mode** (`--embed-mode native`, default on macOS): installs the embed server via `brew install llama.cpp llama-swap` (Metal-accelerated) and downloads the GGUF to `~/.paparats/models/`
+- **Docker mode** (`--embed-mode docker`, default on Linux): Uses the `ibaz/paparats-embed` image with `jina-code-embeddings` + `bge-m3` pre-baked — zero setup
 
-**Manual setup:**
+**Manual setup (Docker):**
 
 ```bash
-# 1. Download GGUF
-curl -L -o jina-code-embeddings-1.5b-Q8_0.gguf \
-  "https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF/resolve/main/jina-code-embeddings-1.5b-Q8_0.gguf"
+# Run the pre-baked embed server. llama-swap serves on 8080 inside the container
+# (mapped to host 11434) and loads models by name — nothing else to configure.
+docker run -d -p 11434:8080 -e EMBED_TTL=300 ibaz/paparats-embed:latest
 
-# 2. Create Modelfile
-cat > Modelfile <<'EOF'
-FROM ./jina-code-embeddings-1.5b-Q8_0.gguf
-PARAMETER num_ctx 8192
-EOF
-
-# 3. Register in Ollama
-ollama create jina-code-embeddings -f Modelfile
-
-# 4. Verify
-ollama list | grep jina
+# Verify (llama-swap exposes an OpenAI-style API)
+curl http://localhost:8080/health
+curl http://localhost:8080/v1/models
 ```
 
 | Spec         | Value                               |
@@ -1444,7 +1438,7 @@ No npm token lives in GitHub secrets — publishing is intentionally a manual, a
 | ----------------------- | ----------------------------- | ---------------------- |
 | `ibaz/paparats-server`  | `packages/server/Dockerfile`  | ~200 MB                |
 | `ibaz/paparats-indexer` | `packages/indexer/Dockerfile` | ~200 MB                |
-| `ibaz/paparats-ollama`  | `packages/ollama/Dockerfile`  | ~3 GB (includes model) |
+| `ibaz/paparats-embed`   | `packages/embed/Dockerfile`   | ~2.3 GB (includes models) |
 
 ---
 
@@ -1465,7 +1459,8 @@ Open an issue or pull request to get started.
 
 - [Jina Code Embeddings](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — embedding model
 - [Qdrant](https://qdrant.tech) — vector database
-- [Ollama](https://ollama.com) — local LLM runtime
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) — local embedding runtime (`llama-server`)
+- [llama-swap](https://github.com/mostlygeek/llama-swap) — model router / lazy loader in front of llama-server
 - [MCP](https://modelcontextprotocol.io) — Model Context Protocol
 
 ---

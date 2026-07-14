@@ -12,7 +12,7 @@
     "semantic-search",
     "embedding",
     "qdrant",
-    "ollama",
+    "llama-cpp",
     "cursor",
     "claude",
     "claude-code",

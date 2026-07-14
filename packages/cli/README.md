@@ -6,11 +6,11 @@ CLI for [Paparats MCP](https://github.com/IBazylchuk/paparats-mcp) - semantic co
 
 - **AST-based code chunking** via tree-sitter (10 languages) with regex fallback
 - **Symbol graph** - cross-chunk call/reference relationships
-- **Vector search** powered by Qdrant + Ollama (Jina Code Embeddings)
+- **Vector search** powered by Qdrant + llama-server (Jina Code Embeddings)
 - **Git metadata** - commit history and ticket references per chunk
 - **Architectural memory** - agent-maintained components / decisions (ADRs) / lessons learned with server-side similarity-gate deduplication (see [main README](https://github.com/IBazylchuk/paparats-mcp#architectural-memory-agent-maintained-adrs-components-lessons))
 - **Dual MCP endpoints** - coding mode and support mode with different tool sets
-- **Docker-based deployment** - one command setup with Qdrant, Ollama, and MCP server
+- **Docker-based deployment** - one command setup with Qdrant, embed server, and MCP server
 
 ## Install
 
@@ -20,7 +20,7 @@ npm install -g @paparats/cli
 
 ## Prerequisites
 
-- **Docker** + **Docker Compose** - runs Qdrant, Ollama, and MCP server
+- **Docker** + **Docker Compose** - runs Qdrant, embed server, and MCP server
 - **Node.js** >= 18
 
 ## Quick Start
@@ -105,7 +105,7 @@ metadata:
 | [@paparats/shared](https://www.npmjs.com/package/@paparats/shared)      | Shared utilities (path validation, gitignore, excludes) |
 | [ibaz/paparats-server](https://hub.docker.com/r/ibaz/paparats-server)   | MCP server Docker image                                 |
 | [ibaz/paparats-indexer](https://hub.docker.com/r/ibaz/paparats-indexer) | Auto-indexer Docker image                               |
-| [ibaz/paparats-ollama](https://hub.docker.com/r/ibaz/paparats-ollama)   | Ollama with pre-baked embedding model                   |
+| [ibaz/paparats-embed](https://hub.docker.com/r/ibaz/paparats-embed)     | llama.cpp llama-server + llama-swap with pre-baked embedding models |
 
 ## Documentation
 

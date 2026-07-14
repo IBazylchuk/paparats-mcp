@@ -13,7 +13,7 @@ git-history per chunk, and an agent-maintained architectural memory layer.
 Three jobs in one process:
 
 - **Indexer.** AST-aware chunking (tree-sitter, 11 languages), per-chunk symbol
-  extraction, single-parse pipeline, Ollama embedding with SQLite cache, batched
+  extraction, single-parse pipeline, llama-server embedding with SQLite cache, batched
   Qdrant upsert. Post-index passes attach git history, ticket references, and
   cross-chunk symbol edges (calls / called_by / references / referenced_by).
 - **Searcher.** Task-prefixed embedding (`nl2code` / `code2code` / `techqa`), query
@@ -52,7 +52,7 @@ Code search tells the agent **what the code does**. The arch-memory layer tells 
 authoring a single doc.
 
 Three card kinds in a separate Qdrant collection per group (`paparats_<group>_arch`),
-embedded with [`bge-m3`](https://ollama.com/library/bge-m3) (1024d, mean-pooled,
+embedded with [`bge-m3`](https://huggingface.co/BAAI/bge-m3) (1024d, cls-pooled,
 multilingual):
 
 | Kind          | Fields                                                                            | Idempotency                     |
@@ -113,7 +113,7 @@ support-only — recording belongs to the architectural-review workflow.
 | `ast-queries.ts`                    | Tree-sitter S-expression queries per language                                                           |
 | `tree-sitter-parser.ts`             | WASM tree-sitter manager — lazy grammar loading                                                         |
 | `symbol-graph.ts`                   | Cross-chunk symbol edges                                                                                |
-| `embeddings.ts`                     | Ollama provider + SQLite cache + cached wrapper                                                         |
+| `embeddings.ts`                     | llama-server provider + SQLite cache + cached wrapper                                                   |
 | `indexer.ts`                        | Group-aware Qdrant indexing — `createQdrantClient()`, `toCollectionName()`, single-parse `chunkFile()`  |
 | `searcher.ts`                       | Vector search with query expansion, cache, metrics                                                      |
 | `query-expansion.ts`                | Abbreviation / case / plural / filler expansion                                                         |
@@ -128,7 +128,7 @@ support-only — recording belongs to the architectural-review workflow.
 | `watcher.ts`                        | `ProjectWatcher` (chokidar) + `WatcherManager`                                                          |
 | `arch/types.ts`                     | Architectural-memory types                                                                              |
 | `arch/collection.ts`                | Per-group `paparats_<group>_arch` collection lifecycle                                                  |
-| `arch/text-embeddings.ts`           | `bge-m3` text embedder via Ollama                                                                       |
+| `arch/text-embeddings.ts`           | `bge-m3` text embedder via llama-server                                                                 |
 | `arch/store.ts`                     | CRUD + server-side similarity gate + `stats()` aggregation                                              |
 | `arch/context.ts`                   | `arch_context` query — top-N across kinds with `min_score` and age stamps                               |
 
@@ -139,10 +139,13 @@ support-only — recording belongs to the architectural-review workflow.
 | `PORT`                      | `9876`                                 | HTTP port                                                    |
 | `QDRANT_URL`                | `http://localhost:6333`                | Qdrant endpoint (https → port 443, http → 6333)              |
 | `QDRANT_API_KEY`            | —                                      | Qdrant Cloud API key                                         |
-| `OLLAMA_URL`                | `http://localhost:11434`               | Ollama endpoint                                              |
+| `EMBED_URL`                 | `http://127.0.0.1:11434`               | Embed server endpoint (llama-swap; internal port 8080 mapped to host 11434) |
+| `EMBED_BATCH_SIZE`          | —                                      | Embeddings per llama-server call                            |
+| `EMBED_TTL`                 | `300`                                  | Seconds a model stays resident before idle-unload           |
+| `EMBEDDING_PROVIDER`        | `llama`                                | Code embedding provider: `llama` \| `openai` \| `voyage`    |
 | `EMBEDDING_MODEL`           | `jina-code-embeddings`                 | Code embedding model                                         |
 | `EMBEDDING_DIMENSIONS`      | `1536`                                 | Code embedding dimensions                                    |
-| `TEXT_EMBEDDING_PROVIDER`   | `ollama`                               | `ollama` or `openai` for the arch layer                      |
+| `TEXT_EMBEDDING_PROVIDER`   | `llama`                                | `llama` or `openai` for the arch layer                      |
 | `TEXT_EMBEDDING_MODEL`      | `bge-m3`                               | Arch-layer text embedding model                              |
 | `TEXT_EMBEDDING_DIMENSIONS` | `1024`                                 | Arch-layer text embedding dimensions                         |
 | `PAPARATS_METRICS`          | `false`                                | Set to `true` to expose `/metrics`                           |
@@ -170,12 +173,12 @@ await indexer.indexProject(group, project);
 docker pull ibaz/paparats-server:latest
 docker run --rm -p 9876:9876 \
   -e QDRANT_URL=http://qdrant:6333 \
-  -e OLLAMA_URL=http://ollama:11434 \
+  -e EMBED_URL=http://embed:8080 \
   ibaz/paparats-server:latest
 ```
 
 See [`docker-compose.template.yml`](./docker-compose.template.yml) for a complete
-stack (Qdrant + Ollama + server + indexer).
+stack (Qdrant + embed server + server + indexer).
 
 ## Development
 
@@ -193,7 +196,7 @@ yarn workspace @paparats/server typecheck
 | [@paparats/cli](https://www.npmjs.com/package/@paparats/cli)            | One-command installer, project management, search       |
 | [@paparats/indexer](https://hub.docker.com/r/ibaz/paparats-indexer)     | Automated multi-repo indexer (uses this as a library)   |
 | [@paparats/shared](https://www.npmjs.com/package/@paparats/shared)      | Shared utilities (path validation, gitignore, excludes) |
-| [ibaz/paparats-ollama](https://hub.docker.com/r/ibaz/paparats-ollama)   | Ollama with pre-baked `jina-code-embeddings` and `bge-m3` |
+| [ibaz/paparats-embed](https://hub.docker.com/r/ibaz/paparats-embed)     | llama.cpp llama-server + llama-swap with pre-baked `jina-code-embeddings` and `bge-m3` |
 
 ## License
 
