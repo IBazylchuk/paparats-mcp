@@ -77,8 +77,8 @@ export interface IndexerConfig {
   cron: string;
   /** Qdrant URL */
   qdrantUrl: string;
-  /** Ollama URL */
-  ollamaUrl: string;
+  /** Embedding server URL (llama-server / llama-swap) */
+  embedUrl: string;
   /** Directory for cloned repos (default: "/data/repos") */
   reposDir: string;
   /** HTTP port for trigger/health endpoints (default: 9877) */

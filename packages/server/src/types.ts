@@ -69,7 +69,7 @@ export interface WatcherConfig {
 }
 
 export interface EmbeddingsConfig {
-  provider?: 'ollama' | 'openai';
+  provider?: 'llama' | 'openai' | 'voyage';
   model?: string;
   dimensions?: number;
 }
