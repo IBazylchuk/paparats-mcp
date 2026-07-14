@@ -93,7 +93,9 @@ describe('decideEmbedMode', () => {
       commandExists: vi.fn().mockReturnValue(false),
     });
     const opts: InstallOptions = { nonInteractive: true };
-    await expect(decideEmbedMode(opts, deps)).rejects.toThrow(/llama.cpp llama-swap/);
+    await expect(decideEmbedMode(opts, deps)).rejects.toThrow(
+      /llama.cpp mostlygeek\/tap\/llama-swap/
+    );
   });
 
   it('macOS + no llama + user picks brew → returns native (brew install deferred)', async () => {
