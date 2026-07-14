@@ -1,7 +1,7 @@
 import { createEmbeddingProvider, type CachedEmbeddingProvider } from '../embeddings.js';
 
 export interface ArchEmbeddingConfig {
-  provider: 'ollama' | 'openai' | 'voyage';
+  provider: 'llama' | 'openai' | 'voyage';
   model: string;
   dimensions: number;
   apiKey?: string;
@@ -32,7 +32,7 @@ export function resolveArchEmbeddingConfig(
     }
     return { provider: 'voyage', model, dimensions, apiKey: voyageKey };
   }
-  return { provider: 'ollama', model, dimensions };
+  return { provider: 'llama', model, dimensions };
 }
 
 export function createArchEmbeddingProvider(config: ArchEmbeddingConfig): CachedEmbeddingProvider {

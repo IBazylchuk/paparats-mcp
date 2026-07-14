@@ -25,7 +25,7 @@ const projectsByGroup = new Map<string, ProjectConfig[]>();
 const PORT = parseInt(process.env.PORT ?? '9876', 10);
 const QDRANT_URL = process.env.QDRANT_URL ?? 'http://localhost:6333';
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY || undefined;
-const OLLAMA_URL = process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
+const EMBED_URL = process.env.EMBED_URL ?? 'http://127.0.0.1:11434';
 const PAPARATS_PROJECTS = process.env.PAPARATS_PROJECTS
   ? process.env.PAPARATS_PROJECTS.split(',')
       .map((p) => p.trim())
@@ -38,8 +38,8 @@ console.log(
   `[startup] Embedding provider: ${embeddingConfig.provider} (${embeddingConfig.model}, ${embeddingConfig.dimensions}d)`
 );
 
-if (OLLAMA_URL !== 'http://127.0.0.1:11434') {
-  process.env.OLLAMA_URL = OLLAMA_URL;
+if (EMBED_URL !== 'http://127.0.0.1:11434') {
+  process.env.EMBED_URL = EMBED_URL;
 }
 
 const metadataStore = new MetadataStore();
@@ -149,7 +149,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(
     `  Qdrant:                   ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`
   );
-  console.log(`  Ollama:                   ${OLLAMA_URL}`);
+  console.log(`  Embeddings:               ${EMBED_URL}`);
   if (metrics.enabled) {
     console.log(`  Metrics:                  http://localhost:${PORT}/metrics`);
   }

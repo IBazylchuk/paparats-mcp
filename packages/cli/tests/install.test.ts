@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   detectLegacyInstall,
-  decideOllamaMode,
+  decideEmbedMode,
   decideEmbeddingProvider,
   mergeDotenv,
   upsertMcpServer,
@@ -44,14 +44,13 @@ describe('detectLegacyInstall', () => {
   });
 });
 
-// ── decideOllamaMode ───────────────────────────────────────────────────────
+// ── decideEmbedMode ─────────────────────────────────────────────────────────
 
-function makeDeps(overrides: Partial<Parameters<typeof decideOllamaMode>[1]> = {}) {
+function makeDeps(overrides: Partial<Parameters<typeof decideEmbedMode>[1]> = {}) {
   return {
     commandExists: vi.fn().mockReturnValue(false),
     getDockerComposeCommand: vi.fn(),
-    ollamaModelExists: vi.fn().mockReturnValue(false),
-    isOllamaRunning: vi.fn().mockResolvedValue(false),
+    isEmbedServerRunning: vi.fn().mockResolvedValue(false),
     waitForHealth: vi.fn().mockResolvedValue(true),
     downloadFile: vi.fn(),
     generateCompose: vi.fn(),
@@ -67,105 +66,113 @@ function makeDeps(overrides: Partial<Parameters<typeof decideOllamaMode>[1]> = {
   };
 }
 
-describe('decideOllamaMode', () => {
-  it('returns external when --ollama-url is set', async () => {
+describe('decideEmbedMode', () => {
+  it('returns external when --embed-url is set', async () => {
     const deps = makeDeps();
-    const result = await decideOllamaMode({ ollamaUrl: 'http://10.0.0.5:11434' }, deps);
+    const result = await decideEmbedMode({ embedUrl: 'http://10.0.0.5:11434' }, deps);
     expect(result.mode).toBe('external');
-    expect(result.ollamaUrl).toBe('http://10.0.0.5:11434');
-    expect(result.setupHostOllama).toBe(false);
+    expect(result.embedUrl).toBe('http://10.0.0.5:11434');
+    expect(result.setupHostEmbed).toBe(false);
   });
 
-  it('macOS + ollama on PATH → native, no prompt', async () => {
+  it('macOS + llama-server & llama-swap on PATH → native, no prompt', async () => {
     const deps = makeDeps({
       platform: vi.fn().mockReturnValue('darwin' as NodeJS.Platform),
-      commandExists: vi.fn().mockImplementation((cmd: string) => cmd === 'ollama'),
+      commandExists: vi
+        .fn()
+        .mockImplementation((cmd: string) => cmd === 'llama-server' || cmd === 'llama-swap'),
     });
-    const result = await decideOllamaMode({}, deps);
+    const result = await decideEmbedMode({}, deps);
     expect(result.mode).toBe('native');
-    expect(result.setupHostOllama).toBe(true);
+    expect(result.setupHostEmbed).toBe(true);
   });
 
-  it('macOS + no ollama + --non-interactive → throws with hint', async () => {
+  it('macOS + no llama binaries + --non-interactive → throws with hint', async () => {
     const deps = makeDeps({
       platform: vi.fn().mockReturnValue('darwin' as NodeJS.Platform),
       commandExists: vi.fn().mockReturnValue(false),
     });
     const opts: InstallOptions = { nonInteractive: true };
-    await expect(decideOllamaMode(opts, deps)).rejects.toThrow(/brew install ollama/);
+    await expect(decideEmbedMode(opts, deps)).rejects.toThrow(
+      /llama.cpp mostlygeek\/tap\/llama-swap/
+    );
   });
 
-  it('macOS + no ollama + user picks brew → installs and returns native', async () => {
+  it('macOS + no llama + user picks brew → returns native (brew install deferred)', async () => {
     const deps = makeDeps({
       platform: vi.fn().mockReturnValue('darwin' as NodeJS.Platform),
       commandExists: vi.fn().mockImplementation((cmd: string) => cmd === 'brew'),
-      promptOllamaChoiceMacOs: vi.fn().mockResolvedValue('brew' as const),
+      promptEmbedChoiceMacOs: vi.fn().mockResolvedValue('brew' as const),
     });
-    const result = await decideOllamaMode({}, deps);
+    const result = await decideEmbedMode({}, deps);
     expect(result.mode).toBe('native');
-    expect(deps.execSync).toHaveBeenCalledWith('brew install ollama', expect.any(Object));
+    expect(result.setupHostEmbed).toBe(true);
+    // brew install happens later in ensureLocalEmbed, not in the decision
+    expect(deps.execSync).not.toHaveBeenCalled();
   });
 
-  it('macOS + no ollama + user picks remote → returns external with prompted url', async () => {
+  it('macOS + no llama + user picks remote → returns external with prompted url', async () => {
     const deps = makeDeps({
       platform: vi.fn().mockReturnValue('darwin' as NodeJS.Platform),
-      promptOllamaChoiceMacOs: vi.fn().mockResolvedValue('remote' as const),
-      promptRemoteOllamaUrl: vi.fn().mockResolvedValue('http://my.host:11434'),
+      promptEmbedChoiceMacOs: vi.fn().mockResolvedValue('remote' as const),
+      promptRemoteEmbedUrl: vi.fn().mockResolvedValue('http://my.host:11434'),
     });
-    const result = await decideOllamaMode({}, deps);
+    const result = await decideEmbedMode({}, deps);
     expect(result.mode).toBe('external');
-    expect(result.ollamaUrl).toBe('http://my.host:11434');
+    expect(result.embedUrl).toBe('http://my.host:11434');
   });
 
-  it('macOS + no ollama + user picks docker → returns docker mode', async () => {
+  it('macOS + no llama + user picks docker → returns docker mode', async () => {
     const deps = makeDeps({
       platform: vi.fn().mockReturnValue('darwin' as NodeJS.Platform),
-      promptOllamaChoiceMacOs: vi.fn().mockResolvedValue('docker' as const),
+      promptEmbedChoiceMacOs: vi.fn().mockResolvedValue('docker' as const),
     });
-    const result = await decideOllamaMode({}, deps);
+    const result = await decideEmbedMode({}, deps);
     expect(result.mode).toBe('docker');
   });
 
   it('Linux default → docker without prompts', async () => {
     const deps = makeDeps({ platform: vi.fn().mockReturnValue('linux' as NodeJS.Platform) });
-    const result = await decideOllamaMode({}, deps);
+    const result = await decideEmbedMode({}, deps);
     expect(result.mode).toBe('docker');
-    expect(result.setupHostOllama).toBe(false);
+    expect(result.setupHostEmbed).toBe(false);
   });
 
-  it('--ollama-mode docker forces docker', async () => {
+  it('--embed-mode docker forces docker', async () => {
     const deps = makeDeps({
       platform: vi.fn().mockReturnValue('darwin' as NodeJS.Platform),
-      commandExists: vi.fn().mockImplementation((cmd: string) => cmd === 'ollama'),
+      commandExists: vi
+        .fn()
+        .mockImplementation((cmd: string) => cmd === 'llama-server' || cmd === 'llama-swap'),
     });
-    const result = await decideOllamaMode({ ollamaMode: 'docker' }, deps);
+    const result = await decideEmbedMode({ embedMode: 'docker' }, deps);
     expect(result.mode).toBe('docker');
   });
 
-  it('--ollama-mode native forces native (setupHostOllama=true)', async () => {
+  it('--embed-mode native forces native (setupHostEmbed=true)', async () => {
     const deps = makeDeps({
       platform: vi.fn().mockReturnValue('linux' as NodeJS.Platform),
     });
-    const result = await decideOllamaMode({ ollamaMode: 'native' }, deps);
+    const result = await decideEmbedMode({ embedMode: 'native' }, deps);
     expect(result.mode).toBe('native');
-    expect(result.setupHostOllama).toBe(true);
+    expect(result.setupHostEmbed).toBe(true);
   });
 });
 
 // ── decideEmbeddingProvider ────────────────────────────────────────────────
 
 describe('decideEmbeddingProvider', () => {
-  it('returns ollama with no API key when --embeddings ollama', async () => {
+  it('returns llama with no API key when --embeddings llama', async () => {
     const deps = makeDeps();
-    const result = await decideEmbeddingProvider({ embeddings: 'ollama' }, deps);
-    expect(result.provider).toBe('ollama');
+    const result = await decideEmbeddingProvider({ embeddings: 'llama' }, deps);
+    expect(result.provider).toBe('llama');
     expect(result.apiKey).toBeUndefined();
   });
 
-  it('returns ollama by default in --non-interactive without --embeddings', async () => {
+  it('returns llama by default in --non-interactive without --embeddings', async () => {
     const deps = makeDeps();
     const result = await decideEmbeddingProvider({ nonInteractive: true }, deps);
-    expect(result.provider).toBe('ollama');
+    expect(result.provider).toBe('llama');
   });
 
   it('uses --embedding-api-key when provided', async () => {

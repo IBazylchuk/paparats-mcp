@@ -146,8 +146,8 @@ export async function runAdd(
       );
     } else {
       const result = regenerateCompose({
-        ollamaMode: state.ollamaMode,
-        ...(state.ollamaUrl !== undefined ? { ollamaUrl: state.ollamaUrl } : {}),
+        embedMode: state.embedMode,
+        ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
         ...(state.embeddingProvider !== undefined
           ? { embeddingProvider: state.embeddingProvider }
           : {}),
@@ -409,8 +409,8 @@ export async function runRemove(
     const state = readInstallState(home);
     if (state) {
       const result = regenerateCompose({
-        ollamaMode: state.ollamaMode,
-        ...(state.ollamaUrl !== undefined ? { ollamaUrl: state.ollamaUrl } : {}),
+        embedMode: state.embedMode,
+        ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
         ...(state.embeddingProvider !== undefined
           ? { embeddingProvider: state.embeddingProvider }
           : {}),

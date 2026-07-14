@@ -141,13 +141,13 @@ watcher:
   enabled: true
   debounce: 300
 embeddings:
-  provider: ollama
+  provider: llama
   dimensions: 1536`
       );
       const { config } = readConfig(tmpDir);
       expect(config.indexing?.chunkSize).toBe(512);
       expect(config.watcher?.enabled).toBe(true);
-      expect(config.embeddings?.provider).toBe('ollama');
+      expect(config.embeddings?.provider).toBe('llama');
     });
   });
 

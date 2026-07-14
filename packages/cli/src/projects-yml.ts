@@ -7,7 +7,7 @@ import {
   generateCompose,
   type EmbeddingProvider,
   type LocalProjectMount,
-  type OllamaMode,
+  type EmbedMode,
 } from './docker-compose-generator.js';
 
 export const PAPARATS_HOME = path.join(os.homedir(), '.paparats');
@@ -45,9 +45,9 @@ export function resolveProjectsFilePath(home: string = PAPARATS_HOME): string | 
 }
 
 export interface InstallState {
-  ollamaMode: OllamaMode;
-  ollamaUrl?: string;
-  /** Embedding provider chosen at install time. Absent on legacy installs (treated as 'ollama'). */
+  embedMode: EmbedMode;
+  embedUrl?: string;
+  /** Embedding provider chosen at install time. Absent on legacy installs (treated as 'llama'). */
   embeddingProvider?: EmbeddingProvider;
   qdrantUrl?: string;
   qdrantApiKey?: string;
@@ -291,8 +291,8 @@ export function localProjectsFor(file: ProjectsFile): LocalProjectMount[] {
 }
 
 export interface RegenerateOptions {
-  ollamaMode: OllamaMode;
-  ollamaUrl?: string;
+  embedMode: EmbedMode;
+  embedUrl?: string;
   embeddingProvider?: EmbeddingProvider;
   qdrantUrl?: string;
   qdrantApiKey?: string;
@@ -323,8 +323,8 @@ export function regenerateCompose(opts: RegenerateOptions): RegenerateResult {
   const home = opts.paparatsHome ?? PAPARATS_HOME;
   const file = readProjectsFile(home);
   const composeYaml = generateCompose({
-    ollamaMode: opts.ollamaMode,
-    ...(opts.ollamaUrl !== undefined ? { ollamaUrl: opts.ollamaUrl } : {}),
+    embedMode: opts.embedMode,
+    ...(opts.embedUrl !== undefined ? { embedUrl: opts.embedUrl } : {}),
     ...(opts.embeddingProvider !== undefined ? { embeddingProvider: opts.embeddingProvider } : {}),
     ...(opts.qdrantUrl !== undefined ? { qdrantUrl: opts.qdrantUrl } : {}),
     ...(opts.qdrantApiKey !== undefined ? { qdrantApiKey: opts.qdrantApiKey } : {}),

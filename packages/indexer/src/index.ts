@@ -38,7 +38,7 @@ const CHANGE_DETECTION_ENABLED =
   (process.env['CHANGE_DETECTION'] ?? 'true').toLowerCase() !== 'false';
 const QDRANT_URL = process.env['QDRANT_URL'] ?? 'http://localhost:6333';
 const QDRANT_API_KEY = process.env['QDRANT_API_KEY'] || undefined;
-const OLLAMA_URL = process.env['OLLAMA_URL'] ?? 'http://127.0.0.1:11434';
+const EMBED_URL = process.env['EMBED_URL'] ?? 'http://127.0.0.1:11434';
 const REPOS_DIR = process.env['REPOS_DIR'] ?? '/data/repos';
 const STATE_DB_PATH =
   process.env['STATE_DB_PATH'] ?? path.join(REPOS_DIR, '..', 'indexer-state.db');
@@ -46,8 +46,8 @@ const PORT = parseInt(process.env['PORT'] ?? '9877', 10);
 /** When set, all repos share this single Qdrant collection (group) */
 const PAPARATS_GROUP = process.env['PAPARATS_GROUP']?.trim() || undefined;
 
-if (OLLAMA_URL !== 'http://127.0.0.1:11434') {
-  process.env['OLLAMA_URL'] = OLLAMA_URL;
+if (EMBED_URL !== 'http://127.0.0.1:11434') {
+  process.env['EMBED_URL'] = EMBED_URL;
 }
 
 // ── State ───────────────────────────────────────────────────────────────────
@@ -377,8 +377,8 @@ async function probeFingerprint(repo: RepoConfig): Promise<FingerprintProbe> {
  * local file-stat hash) and only invoke indexProject() when it differs from
  * the last persisted fingerprint. Fingerprint probes run concurrently — a
  * slow remote can't block the others — but the indexing phase stays
- * sequential because indexProject() is heavy on Ollama and Qdrant. Probe
- * failures fall through to a defensive reindex.
+ * sequential because indexProject() is heavy on the embedding server and
+ * Qdrant. Probe failures fall through to a defensive reindex.
  */
 async function runChangeCheckCycle(): Promise<void> {
   if (fastCycleRunning) {
@@ -513,7 +513,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   );
   console.log(`[indexer] State DB: ${STATE_DB_PATH}`);
   console.log(`[indexer] Qdrant: ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`);
-  console.log(`[indexer] Ollama: ${OLLAMA_URL}`);
+  console.log(`[indexer] Embeddings: ${EMBED_URL}`);
   if (PAPARATS_GROUP) {
     console.log(`[indexer] Shared group: ${PAPARATS_GROUP} (all repos → one collection)`);
   }

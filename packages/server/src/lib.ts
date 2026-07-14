@@ -21,7 +21,7 @@ export {
 
 export {
   EmbeddingCache,
-  OllamaProvider,
+  LlamaServerProvider,
   OpenAIProvider,
   VoyageProvider,
   CachedEmbeddingProvider,

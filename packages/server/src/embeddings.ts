@@ -116,34 +116,45 @@ export class EmbeddingCache {
   }
 }
 
-// ── Ollama provider ────────────────────────────────────────────────────────
+// ── llama-server provider ──────────────────────────────────────────────────
+//
+// Talks to llama.cpp's llama-server (fronted by llama-swap) over its
+// OpenAI-compatible /v1/embeddings endpoint. Replaces the old Ollama provider:
+// ~6.6x faster on the same hardware and serves jina-code-embeddings, which
+// Ollama 0.30+ rejects with HTTP 501. Vectors are drop-in compatible with the
+// old Ollama index provided llama-swap serves each model with the correct
+// pooling (jina-code -> last, bge-m3 -> cls), which the paparats-embed image does.
 
-export interface OllamaProviderConfig {
+export interface LlamaServerProviderConfig {
   url?: string;
   model?: string;
   dimensions?: number;
 }
 
-const OLLAMA_TIMEOUT_MS = 120_000;
-const OLLAMA_MAX_RETRIES = 3;
-const OLLAMA_DEFAULT_BATCH_SIZE = 5;
-const OLLAMA_MAX_BATCH_SIZE =
-  parseInt(process.env['OLLAMA_BATCH_SIZE'] ?? '', 10) || OLLAMA_DEFAULT_BATCH_SIZE;
-// Cap suburb of large chunks per request. CPU-only Ollama can exceed 240s on
-// dense batches; splitting by total chars keeps each request bounded.
-const OLLAMA_DEFAULT_BATCH_CHARS = 16_000;
-const OLLAMA_MAX_BATCH_CHARS =
-  parseInt(process.env['OLLAMA_BATCH_CHARS'] ?? '', 10) || OLLAMA_DEFAULT_BATCH_CHARS;
+const EMBED_TIMEOUT_MS = 120_000;
+const EMBED_MAX_RETRIES = 3;
+const EMBED_DEFAULT_BATCH_SIZE = 5;
+const EMBED_MAX_BATCH_SIZE =
+  parseInt(process.env['EMBED_BATCH_SIZE'] ?? '', 10) || EMBED_DEFAULT_BATCH_SIZE;
+// Cap the total chars per request. CPU-only inference can be slow on dense
+// batches; splitting by total chars keeps each request bounded.
+const EMBED_DEFAULT_BATCH_CHARS = 16_000;
+const EMBED_MAX_BATCH_CHARS =
+  parseInt(process.env['EMBED_BATCH_CHARS'] ?? '', 10) || EMBED_DEFAULT_BATCH_CHARS;
 
-export class OllamaProvider implements EmbeddingProvider {
+interface OpenAIStyleEmbeddingResponse {
+  data: Array<{ embedding: number[]; index: number }>;
+}
+
+export class LlamaServerProvider implements EmbeddingProvider {
   private url: string;
   readonly model: string;
   readonly dimensions: number;
 
-  constructor(config?: OllamaProviderConfig) {
-    this.url = config?.url ?? process.env.OLLAMA_URL ?? 'http://127.0.0.1:11434';
-    // Ollama alias for jinaai/jina-code-embeddings-1.5b-GGUF
-    // Registered locally via Modelfile — not in Ollama registry
+  constructor(config?: LlamaServerProviderConfig) {
+    this.url = config?.url ?? process.env.EMBED_URL ?? 'http://127.0.0.1:11434';
+    // Model name routed by llama-swap. Matches the GGUF baked into
+    // ibaz/paparats-embed (jinaai/jina-code-embeddings-1.5b-GGUF).
     this.model = config?.model ?? 'jina-code-embeddings';
     this.dimensions = config?.dimensions ?? 1536;
   }
@@ -155,12 +166,12 @@ export class OllamaProvider implements EmbeddingProvider {
     }
 
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt < OLLAMA_MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < EMBED_MAX_RETRIES; attempt++) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+        const timeoutId = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS);
 
-        const res = await fetch(`${this.url}/api/embed`, {
+        const res = await fetch(`${this.url}/v1/embeddings`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -174,13 +185,13 @@ export class OllamaProvider implements EmbeddingProvider {
 
         if (!res.ok) {
           const errorText = await res.text();
-          throw new Error(`Ollama error ${res.status}: ${errorText}`);
+          throw new Error(`llama-server error ${res.status}: ${errorText}`);
         }
 
-        const data = (await res.json()) as { embeddings: number[][] };
-        const embedding = data.embeddings[0];
+        const data = (await res.json()) as OpenAIStyleEmbeddingResponse;
+        const embedding = data.data[0]?.embedding;
         if (!embedding) {
-          throw new Error('Ollama returned no embeddings');
+          throw new Error('llama-server returned no embeddings');
         }
 
         if (embedding.length !== this.dimensions) {
@@ -194,35 +205,37 @@ export class OllamaProvider implements EmbeddingProvider {
       } catch (err) {
         lastError = err as Error;
         if (err instanceof Error && err.name === 'AbortError') {
-          lastError = new Error('Ollama request timeout after 120s');
+          lastError = new Error('llama-server request timeout after 120s');
         }
-        if (attempt < OLLAMA_MAX_RETRIES - 1) {
+        if (attempt < EMBED_MAX_RETRIES - 1) {
           const delay = Math.min(1000 * 2 ** attempt, 10_000);
           await new Promise((resolve) => setTimeout(resolve, delay));
           console.warn(
-            `[paparats] Ollama request failed, retrying (${attempt + 1}/${OLLAMA_MAX_RETRIES})...`
+            `[paparats] llama-server request failed, retrying (${attempt + 1}/${EMBED_MAX_RETRIES})...`
           );
         }
       }
     }
-    throw new Error(`Ollama failed after ${OLLAMA_MAX_RETRIES} retries: ${lastError?.message}`);
+    throw new Error(
+      `llama-server failed after ${EMBED_MAX_RETRIES} retries: ${lastError?.message}`
+    );
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (texts.length === 0) return [];
 
     // Split by count first, then re-check total chars on each slice — a slice
-    // of 5 ~4KB chunks easily exceeds CPU Ollama's per-request budget.
-    if (texts.length > OLLAMA_MAX_BATCH_SIZE) {
+    // of 5 ~4KB chunks can exceed the per-request budget on a weak CPU.
+    if (texts.length > EMBED_MAX_BATCH_SIZE) {
       const results: number[][] = [];
-      for (let i = 0; i < texts.length; i += OLLAMA_MAX_BATCH_SIZE) {
-        const batch = texts.slice(i, i + OLLAMA_MAX_BATCH_SIZE);
+      for (let i = 0; i < texts.length; i += EMBED_MAX_BATCH_SIZE) {
+        const batch = texts.slice(i, i + EMBED_MAX_BATCH_SIZE);
         results.push(...(await this.embedBatch(batch)));
       }
       return results;
     }
     const totalChars = texts.reduce((sum, t) => sum + Math.min(t.length, 8192), 0);
-    if (texts.length > 1 && totalChars > OLLAMA_MAX_BATCH_CHARS) {
+    if (texts.length > 1 && totalChars > EMBED_MAX_BATCH_CHARS) {
       const mid = Math.ceil(texts.length / 2);
       const left = await this.embedBatch(texts.slice(0, mid));
       const right = await this.embedBatch(texts.slice(mid));
@@ -244,12 +257,12 @@ export class OllamaProvider implements EmbeddingProvider {
     });
 
     let lastError: Error | null = null;
-    for (let attempt = 0; attempt < OLLAMA_MAX_RETRIES; attempt++) {
+    for (let attempt = 0; attempt < EMBED_MAX_RETRIES; attempt++) {
       try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS * 2); // 240s for batch
+        const timeoutId = setTimeout(() => controller.abort(), EMBED_TIMEOUT_MS * 2); // 240s for batch
 
-        const res = await fetch(`${this.url}/api/embed`, {
+        const res = await fetch(`${this.url}/v1/embeddings`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -263,16 +276,21 @@ export class OllamaProvider implements EmbeddingProvider {
 
         if (!res.ok) {
           const errorText = await res.text();
-          throw new Error(`Ollama error ${res.status}: ${errorText}`);
+          throw new Error(`llama-server error ${res.status}: ${errorText}`);
         }
 
-        const data = (await res.json()) as { embeddings: number[][] };
-        const embeddings = data.embeddings;
-        if (!embeddings || embeddings.length !== texts.length) {
+        const data = (await res.json()) as OpenAIStyleEmbeddingResponse;
+        if (!data.data || data.data.length !== texts.length) {
           throw new Error(
-            `Ollama returned ${embeddings?.length ?? 0} embeddings, expected ${texts.length}`
+            `llama-server returned ${data.data?.length ?? 0} embeddings, expected ${texts.length}`
           );
         }
+
+        // OpenAI-style responses carry an explicit index; sort to be safe.
+        const embeddings = data.data
+          .slice()
+          .sort((a, b) => a.index - b.index)
+          .map((d) => d.embedding);
 
         embeddings.forEach((emb, i) => {
           if (emb.length !== this.dimensions) {
@@ -287,18 +305,20 @@ export class OllamaProvider implements EmbeddingProvider {
       } catch (err) {
         lastError = err as Error;
         if (err instanceof Error && err.name === 'AbortError') {
-          lastError = new Error('Ollama batch request timeout after 240s');
+          lastError = new Error('llama-server batch request timeout after 240s');
         }
-        if (attempt < OLLAMA_MAX_RETRIES - 1) {
+        if (attempt < EMBED_MAX_RETRIES - 1) {
           const delay = Math.min(1000 * 2 ** attempt, 10_000);
           await new Promise((resolve) => setTimeout(resolve, delay));
           console.warn(
-            `[paparats] Ollama batch request failed, retrying (${attempt + 1}/${OLLAMA_MAX_RETRIES})...`
+            `[paparats] llama-server batch request failed, retrying (${attempt + 1}/${EMBED_MAX_RETRIES})...`
           );
         }
       }
     }
-    throw new Error(`Ollama failed after ${OLLAMA_MAX_RETRIES} retries: ${lastError?.message}`);
+    throw new Error(
+      `llama-server failed after ${EMBED_MAX_RETRIES} retries: ${lastError?.message}`
+    );
   }
 }
 
@@ -771,8 +791,8 @@ export function createEmbeddingProvider(config: {
   let base: EmbeddingProvider;
 
   switch (config.provider) {
-    case 'ollama':
-      base = new OllamaProvider({
+    case 'llama':
+      base = new LlamaServerProvider({
         model: config.model,
         dimensions: config.dimensions,
       });
@@ -801,7 +821,7 @@ export function createEmbeddingProvider(config: {
       throw new Error(`Unsupported embedding provider: ${config.provider}`);
   }
 
-  // Auto-enable task prefixes for Jina code embedding models (Ollama).
+  // Auto-enable task prefixes for Jina code embedding models (llama-server).
   // OpenAI and Voyage handle task differentiation natively; for Voyage we
   // toggle via setInputType() inside the searcher hot path.
   const taskPrefixes = config.taskPrefixes ?? {
@@ -817,12 +837,12 @@ export function createEmbeddingProvider(config: {
  * to mirror.
  *
  * Precedence: explicit EMBEDDING_PROVIDER → openai if OPENAI_API_KEY set →
- * voyage if VOYAGE_API_KEY set → ollama. The auto-detect is intentional: a
+ * voyage if VOYAGE_API_KEY set → llama. The auto-detect is intentional: a
  * user who supplies an OpenAI key but forgets EMBEDDING_PROVIDER almost
- * certainly meant "use OpenAI", not "use Ollama and ignore my key".
+ * certainly meant "use OpenAI", not "use llama-server and ignore my key".
  */
 export interface ResolvedEmbeddingConfig {
-  provider: 'ollama' | 'openai' | 'voyage';
+  provider: 'llama' | 'openai' | 'voyage';
   model: string;
   dimensions: number;
   apiKey?: string;
@@ -836,14 +856,14 @@ export function resolveEmbeddingConfigFromEnv(
   const voyageKey = env['VOYAGE_API_KEY']?.trim();
 
   let provider: ResolvedEmbeddingConfig['provider'];
-  if (explicit === 'openai' || explicit === 'voyage' || explicit === 'ollama') {
+  if (explicit === 'openai' || explicit === 'voyage' || explicit === 'llama') {
     provider = explicit;
   } else if (openaiKey) {
     provider = 'openai';
   } else if (voyageKey) {
     provider = 'voyage';
   } else {
-    provider = 'ollama';
+    provider = 'llama';
   }
 
   const modelEnv = env['EMBEDDING_MODEL']?.trim();
@@ -877,7 +897,7 @@ export function resolveEmbeddingConfigFromEnv(
     };
   }
   return {
-    provider: 'ollama',
+    provider: 'llama',
     model: modelEnv || 'jina-code-embeddings',
     dimensions: Number.isFinite(dimEnvParsed) ? dimEnvParsed : 1536,
   };

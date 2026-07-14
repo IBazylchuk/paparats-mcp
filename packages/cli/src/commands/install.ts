@@ -8,7 +8,7 @@ import ora from 'ora';
 import { confirm, input, select } from '@inquirer/prompts';
 import { createTimeoutSignal } from '../abort.js';
 import { generateCompose } from '../docker-compose-generator.js';
-import type { EmbeddingProvider, OllamaMode, InstallMode } from '../docker-compose-generator.js';
+import type { EmbeddingProvider, EmbedMode, InstallMode } from '../docker-compose-generator.js';
 import {
   PAPARATS_HOME,
   COMPOSE_YML,
@@ -21,10 +21,17 @@ import {
 } from '../projects-yml.js';
 
 const MODELS_DIR = path.join(PAPARATS_HOME, 'models');
-const OLLAMA_MODEL_NAME = 'jina-code-embeddings';
-const GGUF_URL =
+const EMBED_CONFIG_FILE = path.join(PAPARATS_HOME, 'llama-swap.yaml');
+// Native embed setup: llama.cpp (llama-server) + llama-swap, mirroring the
+// ibaz/paparats-embed docker image but with Metal on macOS. Both models are
+// downloaded and served through one llama-swap config, routed by model name.
+const CODE_MODEL_NAME = 'jina-code-embeddings';
+const CODE_GGUF_URL =
   'https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF/resolve/main/jina-code-embeddings-1.5b-Q8_0.gguf';
-const GGUF_FILE = path.join(MODELS_DIR, 'jina-code-embeddings-1.5b-Q8_0.gguf');
+const CODE_GGUF_FILE = path.join(MODELS_DIR, 'jina-code-embeddings-1.5b-Q8_0.gguf');
+const TEXT_MODEL_NAME = 'bge-m3';
+const TEXT_GGUF_URL = 'https://huggingface.co/KimChen/bge-m3-GGUF/resolve/main/bge-m3-q8_0.gguf';
+const TEXT_GGUF_FILE = path.join(MODELS_DIR, 'bge-m3-Q8_0.gguf');
 
 export function commandExists(cmd: string): boolean {
   try {
@@ -53,26 +60,9 @@ export function getDockerComposeCommand(): string {
   }
 }
 
-function execCmd(cmd: string, options?: { timeout?: number }): string {
-  return execSync(cmd, {
-    encoding: 'utf8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    timeout: options?.timeout ?? 30_000,
-  }).trim();
-}
-
-export function ollamaModelExists(modelName: string): boolean {
+export async function isEmbedServerRunning(): Promise<boolean> {
   try {
-    const output = execCmd('ollama list', { timeout: 10_000 });
-    return output.includes(modelName);
-  } catch {
-    return false;
-  }
-}
-
-export async function isOllamaRunning(): Promise<boolean> {
-  try {
-    const res = await fetch('http://localhost:11434/api/tags', {
+    const res = await fetch('http://localhost:11434/health', {
       signal: createTimeoutSignal(2000),
     });
     return res.ok;
@@ -201,10 +191,10 @@ export function upsertMcpServer(
 
 export interface InstallOptions {
   mode?: InstallMode;
-  ollamaMode?: OllamaMode;
-  /** External Ollama URL — bypasses native and docker Ollama */
-  ollamaUrl?: string;
-  /** Embedding backend. 'openai' / 'voyage' skip Ollama entirely. */
+  embedMode?: EmbedMode;
+  /** External embed server URL — bypasses native and docker embed server */
+  embedUrl?: string;
+  /** Embedding backend. 'openai' / 'voyage' skip the local embed server entirely. */
   embeddings?: EmbeddingProvider;
   /** API key for the cloud embedding provider (only used when embeddings is 'openai' or 'voyage'). */
   embeddingApiKey?: string;
@@ -224,8 +214,7 @@ export interface InstallOptions {
 export interface InstallDeps {
   commandExists?: (cmd: string) => boolean;
   getDockerComposeCommand?: () => string;
-  ollamaModelExists?: (modelName: string) => boolean;
-  isOllamaRunning?: () => Promise<boolean>;
+  isEmbedServerRunning?: () => Promise<boolean>;
   waitForHealth?: (url: string, label: string) => Promise<boolean>;
   downloadFile?: (url: string, dest: string, signal?: AbortSignal) => Promise<void>;
   generateCompose?: typeof generateCompose;
@@ -238,8 +227,8 @@ export interface InstallDeps {
   promptUseExternalQdrant?: () => Promise<boolean>;
   promptQdrantUrl?: () => Promise<string>;
   promptQdrantApiKey?: () => Promise<string>;
-  promptOllamaChoiceMacOs?: () => Promise<'brew' | 'docker' | 'remote'>;
-  promptRemoteOllamaUrl?: () => Promise<string>;
+  promptEmbedChoiceMacOs?: () => Promise<'brew' | 'docker' | 'remote'>;
+  promptRemoteEmbedUrl?: () => Promise<string>;
   promptOverwriteCompose?: () => Promise<boolean>;
   promptMigrate?: () => Promise<boolean>;
   promptEmbeddingProvider?: () => Promise<EmbeddingProvider>;
@@ -250,74 +239,150 @@ export interface InstallDeps {
   execSync?: (cmd: string, opts?: object) => Buffer | string;
 }
 
-// ── Shared Ollama setup ─────────────────────────────────────────────────────
+// ── Shared native embed setup (llama.cpp + llama-swap) ──────────────────────
 
-interface OllamaSetupDeps {
+interface EmbedSetupDeps {
   commandExists: (cmd: string) => boolean;
-  ollamaModelExists: (modelName: string) => boolean;
-  isOllamaRunning: () => Promise<boolean>;
+  isEmbedServerRunning: () => Promise<boolean>;
   downloadFile: (url: string, dest: string, signal?: AbortSignal) => Promise<void>;
   mkdirSync: (dir: string) => void;
   writeFileSync: (path: string, data: string) => void;
   existsSync: (path: string) => boolean;
   unlinkSync: (path: string) => void;
+  execSync: (cmd: string, opts?: object) => Buffer | string;
   signal?: AbortSignal;
 }
 
-/**
- * Ensure local Ollama is running and the embedding model is registered.
- * Shared by developer and server install modes when ollamaMode is 'local'.
- */
-async function ensureLocalOllama(
-  deps: OllamaSetupDeps,
-  cleanupTasks: Array<() => void>
+/** Render the native llama-swap config \u2014 mirrors the docker image's template
+ *  (per-model pooling: jina-code -> last, bge-m3 -> cls). */
+function renderLlamaSwapConfig(): string {
+  return `# paparats-embed \u2014 native llama-swap config (generated by paparats install)
+healthCheckTimeout: 300
+startPort: 10001
+
+macros:
+  llama-embed: >
+    llama-server
+    --host 127.0.0.1 --port \${PORT}
+    --embeddings --ctx-size 8192 --batch-size 8192 --ubatch-size 8192
+
+models:
+  ${CODE_MODEL_NAME}:
+    cmd: |
+      \${llama-embed}
+      --model ${CODE_GGUF_FILE}
+      --pooling last
+    ttl: 300
+
+  ${TEXT_MODEL_NAME}:
+    cmd: |
+      \${llama-embed}
+      --model ${TEXT_GGUF_FILE}
+      --pooling cls
+    ttl: 300
+`;
+}
+
+async function downloadModelIfNeeded(
+  deps: EmbedSetupDeps,
+  cleanupTasks: Array<() => void>,
+  label: string,
+  url: string,
+  dest: string
 ): Promise<void> {
-  if (deps.ollamaModelExists(OLLAMA_MODEL_NAME)) {
-    console.log(chalk.green(`\u2713 Ollama model ${OLLAMA_MODEL_NAME} already exists\n`));
+  if (deps.existsSync(dest)) {
+    console.log(chalk.dim(`${label} GGUF already downloaded at ${dest}`));
     return;
   }
+  console.log(chalk.bold(`Downloading ${label}...`));
+  deps.mkdirSync(MODELS_DIR);
+  cleanupTasks.push(() => {
+    if (deps.existsSync(dest)) deps.unlinkSync(dest);
+  });
+  await deps.downloadFile(url, dest, deps.signal);
+  cleanupTasks.pop();
+  console.log(chalk.green(`\u2713 ${label} downloaded`));
+}
 
-  if (!(await deps.isOllamaRunning())) {
-    console.log(chalk.dim('Starting Ollama...'));
-    spawn('ollama', ['serve'], { stdio: 'ignore', detached: true }).unref();
-    await new Promise((r) => setTimeout(r, 3000));
-    if (!(await deps.isOllamaRunning())) {
-      throw new Error('Failed to start Ollama. Please start it manually: ollama serve');
-    }
+async function brewInstall(
+  deps: EmbedSetupDeps,
+  binary: string,
+  formula: string,
+  timeoutMs: number
+): Promise<void> {
+  if (deps.commandExists(binary)) return;
+  if (!deps.commandExists('brew')) {
+    throw new Error(
+      `${binary} not found and Homebrew is unavailable. Install it (brew install ${formula}) ` +
+        'or use --embed-mode docker / --embed-url <url>.'
+    );
   }
+  const s = ora(`Installing ${formula} via brew...`).start();
+  try {
+    deps.execSync(`brew install ${formula}`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: timeoutMs,
+    });
+    s.succeed(`${formula} installed`);
+  } catch (err) {
+    s.fail(`brew install ${formula} failed`);
+    throw err;
+  }
+}
 
-  if (deps.existsSync(GGUF_FILE)) {
-    console.log(chalk.dim(`GGUF already downloaded at ${GGUF_FILE}`));
-  } else {
-    if (!deps.commandExists('curl')) {
-      console.log(
-        chalk.yellow(
-          'Note: curl not found. Using Node fetch (slower for large files). Install curl for better download performance.'
-        )
+/**
+ * Ensure a native embedding server (llama.cpp + llama-swap) is installed,
+ * configured, and running. Mirrors the ibaz/paparats-embed docker image but uses
+ * Metal on macOS. Used by developer/server install when embedMode is 'native'.
+ */
+async function ensureLocalEmbed(
+  deps: EmbedSetupDeps,
+  cleanupTasks: Array<() => void>
+): Promise<void> {
+  await brewInstall(deps, 'llama-server', 'llama.cpp', 300_000);
+  await brewInstall(deps, 'llama-swap', 'mostlygeek/tap/llama-swap', 180_000);
+
+  await downloadModelIfNeeded(
+    deps,
+    cleanupTasks,
+    'jina-code-embeddings (~1.65 GB)',
+    CODE_GGUF_URL,
+    CODE_GGUF_FILE
+  );
+  await downloadModelIfNeeded(
+    deps,
+    cleanupTasks,
+    'bge-m3 (~600 MB)',
+    TEXT_GGUF_URL,
+    TEXT_GGUF_FILE
+  );
+
+  deps.writeFileSync(EMBED_CONFIG_FILE, renderLlamaSwapConfig());
+  console.log(chalk.dim(`Wrote llama-swap config to ${EMBED_CONFIG_FILE}`));
+
+  const spinner = ora('Starting native embedding server (llama-swap)...').start();
+  try {
+    if (await deps.isEmbedServerRunning()) {
+      spinner.succeed('Embedding server already running');
+      return;
+    }
+    // Detached llama-swap on the Ollama-compatible host port so the EMBED_URL
+    // default (http://127.0.0.1:11434) resolves without extra config.
+    spawn('llama-swap', ['--config', EMBED_CONFIG_FILE, '--listen', '127.0.0.1:11434'], {
+      stdio: 'ignore',
+      detached: true,
+    }).unref();
+    await new Promise((r) => setTimeout(r, 3000));
+    if (!(await deps.isEmbedServerRunning())) {
+      throw new Error(
+        `Failed to start llama-swap. Start it manually: llama-swap --config ${EMBED_CONFIG_FILE} --listen 127.0.0.1:11434`
       );
     }
-    console.log(chalk.bold('Downloading jina-code-embeddings (~1.65 GB)...'));
-    deps.mkdirSync(MODELS_DIR);
-    cleanupTasks.push(() => {
-      if (deps.existsSync(GGUF_FILE)) deps.unlinkSync(GGUF_FILE);
-    });
-    await deps.downloadFile(GGUF_URL, GGUF_FILE, deps.signal);
-    cleanupTasks.pop();
-    console.log(chalk.green('\u2713 Download complete'));
-  }
-
-  const modelfilePath = path.join(MODELS_DIR, 'Modelfile');
-  deps.writeFileSync(modelfilePath, `FROM ${GGUF_FILE}\n`);
-
-  const spinner = ora('Registering model in Ollama...').start();
-  try {
-    execSync(`ollama create ${OLLAMA_MODEL_NAME} -f "${modelfilePath}"`, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 60_000,
-    });
-    spinner.succeed(`Ollama model ${OLLAMA_MODEL_NAME} registered`);
+    spinner.succeed(
+      `Native embedding server running (models: ${CODE_MODEL_NAME}, ${TEXT_MODEL_NAME})`
+    );
   } catch (err) {
-    spinner.fail('Failed to register model');
+    spinner.fail('Failed to start native embedding server');
     throw err;
   }
 }
@@ -419,8 +484,7 @@ export function tearDownAndBackupLegacy(
 export interface ResolvedDeps {
   commandExists: (cmd: string) => boolean;
   getDockerComposeCommand: () => string;
-  ollamaModelExists: (modelName: string) => boolean;
-  isOllamaRunning: () => Promise<boolean>;
+  isEmbedServerRunning: () => Promise<boolean>;
   waitForHealth: (url: string, label: string) => Promise<boolean>;
   downloadFile: (url: string, dest: string, signal?: AbortSignal) => Promise<void>;
   generateCompose: typeof generateCompose;
@@ -433,8 +497,8 @@ export interface ResolvedDeps {
   promptUseExternalQdrant?: () => Promise<boolean>;
   promptQdrantUrl?: () => Promise<string>;
   promptQdrantApiKey?: () => Promise<string>;
-  promptOllamaChoiceMacOs?: () => Promise<'brew' | 'docker' | 'remote'>;
-  promptRemoteOllamaUrl?: () => Promise<string>;
+  promptEmbedChoiceMacOs?: () => Promise<'brew' | 'docker' | 'remote'>;
+  promptRemoteEmbedUrl?: () => Promise<string>;
   promptOverwriteCompose?: () => Promise<boolean>;
   promptMigrate?: () => Promise<boolean>;
   promptEmbeddingProvider?: () => Promise<EmbeddingProvider>;
@@ -445,88 +509,78 @@ export interface ResolvedDeps {
   signal?: AbortSignal;
 }
 
-// ── Decide Ollama mode ──────────────────────────────────────────────────────
+// ── Decide embed mode ───────────────────────────────────────────────────────
 
-export interface OllamaDecision {
-  mode: OllamaMode;
-  ollamaUrl?: string;
-  /** Should the host-side `ensureLocalOllama` (download + register model) run? */
-  setupHostOllama: boolean;
+export interface EmbedDecision {
+  mode: EmbedMode;
+  embedUrl?: string;
+  /** Should the host-side `ensureLocalEmbed` (install + download + serve) run? */
+  setupHostEmbed: boolean;
 }
 
-export async function decideOllamaMode(
+export async function decideEmbedMode(
   opts: InstallOptions,
   deps: ResolvedDeps
-): Promise<OllamaDecision> {
-  if (opts.ollamaUrl) {
-    return { mode: 'external', ollamaUrl: opts.ollamaUrl, setupHostOllama: false };
+): Promise<EmbedDecision> {
+  if (opts.embedUrl) {
+    return { mode: 'external', embedUrl: opts.embedUrl, setupHostEmbed: false };
   }
-  if (opts.ollamaMode === 'docker') {
-    return { mode: 'docker', setupHostOllama: false };
+  if (opts.embedMode === 'docker') {
+    return { mode: 'docker', setupHostEmbed: false };
   }
-  if (opts.ollamaMode === 'native') {
-    return { mode: 'native', setupHostOllama: true };
+  if (opts.embedMode === 'native') {
+    return { mode: 'native', setupHostEmbed: true };
   }
 
   const platform = deps.platform();
   if (platform === 'darwin') {
-    if (deps.commandExists('ollama')) {
-      console.log(chalk.green('✓ Native Ollama detected on macOS\n'));
-      return { mode: 'native', setupHostOllama: true };
+    if (deps.commandExists('llama-server') && deps.commandExists('llama-swap')) {
+      console.log(chalk.green('✓ Native llama-server + llama-swap detected on macOS\n'));
+      return { mode: 'native', setupHostEmbed: true };
     }
     console.log(
-      chalk.yellow('Ollama is not installed.\n') +
+      chalk.yellow('Native embedding server (llama.cpp + llama-swap) is not installed.\n') +
         chalk.dim(
-          'Recommendation for macOS: install Ollama natively. Running Ollama in Docker on\n' +
-            'macOS is significantly slower because the Docker VM cannot use Apple Silicon\n' +
-            'GPU acceleration. Native Ollama uses Metal directly.\n'
+          'Recommendation for macOS: install natively. Running the embed server in Docker on\n' +
+            'macOS is slower because the Docker VM cannot use Apple Silicon GPU acceleration.\n' +
+            'Native llama-server uses Metal directly.\n'
         )
     );
     if (opts.nonInteractive) {
       throw new Error(
-        'Ollama not found. Install with `brew install ollama`, or pass --ollama-mode docker / --ollama-url <url>.'
+        'Native embed server not found. Install with `brew install llama.cpp mostlygeek/tap/llama-swap`, ' +
+          'or pass --embed-mode docker / --embed-url <url>.'
       );
     }
-    const choice = deps.promptOllamaChoiceMacOs
-      ? await deps.promptOllamaChoiceMacOs()
+    const choice = deps.promptEmbedChoiceMacOs
+      ? await deps.promptEmbedChoiceMacOs()
       : await select({
-          message: 'How should Paparats reach Ollama?',
+          message: 'How should Paparats reach the embedding server?',
           choices: [
-            { name: 'Install natively via brew install ollama (recommended)', value: 'brew' },
-            { name: 'Use a remote Ollama URL', value: 'remote' },
-            { name: 'Run Ollama in Docker (slower on macOS)', value: 'docker' },
+            {
+              name: 'Install natively via brew (llama.cpp + llama-swap, recommended)',
+              value: 'brew',
+            },
+            { name: 'Use a remote embed server URL', value: 'remote' },
+            { name: 'Run the embed server in Docker (slower on macOS)', value: 'docker' },
           ],
           default: 'brew',
         });
     if (choice === 'brew') {
-      if (!deps.commandExists('brew')) {
-        throw new Error(
-          'Homebrew not found. Install brew first (https://brew.sh) or pass --ollama-mode docker / --ollama-url.'
-        );
-      }
-      const spinner = ora('Installing ollama via brew...').start();
-      try {
-        deps.execSync('brew install ollama', {
-          stdio: opts.verbose ? 'inherit' : ['pipe', 'pipe', 'pipe'],
-          timeout: 180_000,
-        });
-        spinner.succeed('ollama installed');
-      } catch (err) {
-        spinner.fail('brew install ollama failed');
-        throw err;
-      }
-      return { mode: 'native', setupHostOllama: true };
+      // Actual brew install happens in ensureLocalEmbed (it also downloads models
+      // and starts llama-swap), so just select native here.
+      return { mode: 'native', setupHostEmbed: true };
     }
     if (choice === 'remote') {
-      const url = deps.promptRemoteOllamaUrl
-        ? await deps.promptRemoteOllamaUrl()
-        : await input({ message: 'Remote Ollama URL:' });
-      return { mode: 'external', ollamaUrl: url, setupHostOllama: false };
+      const url = deps.promptRemoteEmbedUrl
+        ? await deps.promptRemoteEmbedUrl()
+        : await input({ message: 'Remote embed server URL:' });
+      return { mode: 'external', embedUrl: url, setupHostEmbed: false };
     }
-    return { mode: 'docker', setupHostOllama: false };
+    return { mode: 'docker', setupHostEmbed: false };
   }
 
-  return { mode: 'docker', setupHostOllama: false };
+  return { mode: 'docker', setupHostEmbed: false };
 }
 
 // ── Decide embedding provider ───────────────────────────────────────────────
@@ -537,7 +591,7 @@ export interface EmbeddingDecision {
   apiKey?: string;
 }
 
-const EMBEDDING_KEY_VAR: Record<Exclude<EmbeddingProvider, 'ollama'>, string> = {
+const EMBEDDING_KEY_VAR: Record<Exclude<EmbeddingProvider, 'llama'>, string> = {
   openai: 'OPENAI_API_KEY',
   voyage: 'VOYAGE_API_KEY',
 };
@@ -551,7 +605,7 @@ export async function decideEmbeddingProvider(
   if (opts.embeddings) {
     provider = opts.embeddings;
   } else if (opts.nonInteractive) {
-    provider = 'ollama';
+    provider = 'llama';
   } else {
     provider = deps.promptEmbeddingProvider
       ? await deps.promptEmbeddingProvider()
@@ -559,8 +613,8 @@ export async function decideEmbeddingProvider(
           message: 'Which embedding provider should Paparats use?',
           choices: [
             {
-              name: 'Local Ollama (private, free, ~1.7 GB image, slower on CPU)',
-              value: 'ollama' as EmbeddingProvider,
+              name: 'Local llama.cpp (private, free, ~2.3 GB image, fast; Metal on macOS)',
+              value: 'llama' as EmbeddingProvider,
             },
             {
               name: 'OpenAI text-embedding-3-small (fast, paid, requires API key)',
@@ -571,11 +625,11 @@ export async function decideEmbeddingProvider(
               value: 'voyage' as EmbeddingProvider,
             },
           ],
-          default: 'ollama',
+          default: 'llama',
         });
   }
 
-  if (provider === 'ollama') {
+  if (provider === 'llama') {
     return { provider };
   }
 
@@ -646,21 +700,23 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
     needsLegacyTeardown = true;
   }
 
-  // 3. Embedding provider decision (asked first — cloud providers short-circuit Ollama)
+  // 3. Embedding provider decision (asked first — cloud providers short-circuit local embed)
   const embeddingDecision = await decideEmbeddingProvider(opts, deps);
-  if (embeddingDecision.provider !== 'ollama') {
+  if (embeddingDecision.provider !== 'llama') {
     console.log(
-      chalk.green(`✓ Embeddings: ${embeddingDecision.provider} (cloud) — Ollama service skipped\n`)
+      chalk.green(
+        `✓ Embeddings: ${embeddingDecision.provider} (cloud) — local embed service skipped\n`
+      )
     );
   }
 
-  // 4. Ollama decision (only if we need it). Cloud providers get a dummy decision
-  //    so downstream code that reads ollamaMode still works; the compose generator
-  //    drops the ollama service either way.
-  const ollamaDecision =
-    embeddingDecision.provider === 'ollama'
-      ? await decideOllamaMode(opts, deps)
-      : ({ mode: 'docker', setupHostOllama: false } as OllamaDecision);
+  // 4. Embed-server decision (only if we need it). Cloud providers get a dummy
+  //    decision so downstream code that reads embedMode still works; the compose
+  //    generator drops the embed service either way.
+  const embedDecision =
+    embeddingDecision.provider === 'llama'
+      ? await decideEmbedMode(opts, deps)
+      : ({ mode: 'docker', setupHostEmbed: false } as EmbedDecision);
 
   // 4. Qdrant decision
   if (!opts.qdrantUrl && !opts.nonInteractive) {
@@ -716,8 +772,8 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
   // 6. Generate compose using current projects list
   const projectsFile = readProjectsFile(PAPARATS_HOME);
   const newComposeContent = deps.generateCompose({
-    ollamaMode: ollamaDecision.mode,
-    ...(ollamaDecision.ollamaUrl !== undefined ? { ollamaUrl: ollamaDecision.ollamaUrl } : {}),
+    embedMode: embedDecision.mode,
+    ...(embedDecision.embedUrl !== undefined ? { embedUrl: embedDecision.embedUrl } : {}),
     embeddingProvider: embeddingDecision.provider,
     ...(opts.qdrantUrl !== undefined ? { qdrantUrl: opts.qdrantUrl } : {}),
     ...(opts.qdrantApiKey !== undefined ? { qdrantApiKey: opts.qdrantApiKey } : {}),
@@ -774,13 +830,13 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
   }
 
   // 7b. Persist install state so `paparats add | remove | edit projects` can
-  //     regenerate compose later with the same flags (ollama mode, qdrant
+  //     regenerate compose later with the same flags (embed mode, qdrant
   //     credentials, cron). Without this, those commands have no idea which
   //     services should be in the compose.
   writeInstallState(
     {
-      ollamaMode: ollamaDecision.mode,
-      ...(ollamaDecision.ollamaUrl !== undefined ? { ollamaUrl: ollamaDecision.ollamaUrl } : {}),
+      embedMode: embedDecision.mode,
+      ...(embedDecision.embedUrl !== undefined ? { embedUrl: embedDecision.embedUrl } : {}),
       embeddingProvider: embeddingDecision.provider,
       ...(opts.qdrantUrl !== undefined ? { qdrantUrl: opts.qdrantUrl } : {}),
       ...(opts.qdrantApiKey !== undefined ? { qdrantApiKey: opts.qdrantApiKey } : {}),
@@ -792,7 +848,7 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
   //    (HTTP_PROXY, custom compose substitutions, …) survive re-runs of install.
   const updates: Record<string, string> = {};
   if (opts.qdrantApiKey) updates['QDRANT_API_KEY'] = opts.qdrantApiKey;
-  if (embeddingDecision.apiKey && embeddingDecision.provider !== 'ollama') {
+  if (embeddingDecision.apiKey && embeddingDecision.provider !== 'llama') {
     updates[EMBEDDING_KEY_VAR[embeddingDecision.provider]] = embeddingDecision.apiKey;
   }
   if (Object.keys(updates).length > 0) {
@@ -819,9 +875,9 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
   await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
   await deps.waitForHealth('http://localhost:9877/health', 'Indexer');
 
-  // 10. Ollama model registration on host (when native)
-  if (ollamaDecision.setupHostOllama) {
-    await ensureLocalOllama(deps, cleanupTasks);
+  // 10. Native embed server setup on host (when native)
+  if (embedDecision.setupHostEmbed) {
+    await ensureLocalEmbed(deps, cleanupTasks);
   }
 
   // 11. MCP-client wiring
@@ -974,8 +1030,7 @@ export async function runInstall(
   const resolved: ResolvedDeps = {
     commandExists: deps?.commandExists ?? commandExists,
     getDockerComposeCommand: deps?.getDockerComposeCommand ?? getDockerComposeCommand,
-    ollamaModelExists: deps?.ollamaModelExists ?? ollamaModelExists,
-    isOllamaRunning: deps?.isOllamaRunning ?? isOllamaRunning,
+    isEmbedServerRunning: deps?.isEmbedServerRunning ?? isEmbedServerRunning,
     waitForHealth: deps?.waitForHealth ?? waitForHealth,
     downloadFile: deps?.downloadFile ?? downloadFile,
     generateCompose: deps?.generateCompose ?? generateCompose,
@@ -996,11 +1051,11 @@ export async function runInstall(
     ...(deps?.promptQdrantApiKey !== undefined
       ? { promptQdrantApiKey: deps.promptQdrantApiKey }
       : {}),
-    ...(deps?.promptOllamaChoiceMacOs !== undefined
-      ? { promptOllamaChoiceMacOs: deps.promptOllamaChoiceMacOs }
+    ...(deps?.promptEmbedChoiceMacOs !== undefined
+      ? { promptEmbedChoiceMacOs: deps.promptEmbedChoiceMacOs }
       : {}),
-    ...(deps?.promptRemoteOllamaUrl !== undefined
-      ? { promptRemoteOllamaUrl: deps.promptRemoteOllamaUrl }
+    ...(deps?.promptRemoteEmbedUrl !== undefined
+      ? { promptRemoteEmbedUrl: deps.promptRemoteEmbedUrl }
       : {}),
     ...(deps?.promptOverwriteCompose !== undefined
       ? { promptOverwriteCompose: deps.promptOverwriteCompose }
@@ -1026,21 +1081,21 @@ export async function runInstall(
 }
 
 export const installCommand = new Command('install')
-  .description('Set up Paparats — Docker stack, Ollama, MCP wiring')
+  .description('Set up Paparats — Docker stack, embedding server, MCP wiring')
   .option(
     '--mode <mode>',
     'support to wire up an MCP client only; otherwise the unified install runs',
     'developer'
   )
   .option(
-    '--ollama-mode <mode>',
-    'Force Ollama mode: native | docker (default: native on macOS, docker elsewhere)'
+    '--embed-mode <mode>',
+    'Force embed-server mode: native | docker (default: native on macOS, docker elsewhere)'
   )
-  .option('--ollama-url <url>', 'External Ollama URL (skips both native and docker Ollama)')
+  .option('--embed-url <url>', 'External embed server URL (skips both native and docker embed)')
   .option(
     '--embeddings <provider>',
-    'Embedding backend: ollama | openai | voyage (default: ollama). ' +
-      'openai/voyage skip the Ollama service entirely.'
+    'Embedding backend: llama | openai | voyage (default: llama). ' +
+      'openai/voyage skip the local embed service entirely.'
   )
   .option(
     '--embedding-api-key <key>',
@@ -1053,14 +1108,14 @@ export const installCommand = new Command('install')
   .option('--force', 'Skip overwrite/migration prompts (always overwrite)')
   .option('--non-interactive', 'Fail on any prompt instead of asking')
   .option('-v, --verbose', 'Show detailed output')
-  .action(async (opts: InstallOptions & { ollamaMode?: string; embeddings?: string }) => {
+  .action(async (opts: InstallOptions & { embedMode?: string; embeddings?: string }) => {
     const controller = new AbortController();
     process.on('SIGINT', () => controller.abort());
 
-    if (opts.embeddings && !['ollama', 'openai', 'voyage'].includes(opts.embeddings)) {
+    if (opts.embeddings && !['llama', 'openai', 'voyage'].includes(opts.embeddings)) {
       console.error(
         chalk.red(
-          `Invalid --embeddings value "${opts.embeddings}". Expected: ollama | openai | voyage.`
+          `Invalid --embeddings value "${opts.embeddings}". Expected: llama | openai | voyage.`
         )
       );
       process.exit(1);
@@ -1070,7 +1125,7 @@ export const installCommand = new Command('install')
       await runInstall(
         {
           ...opts,
-          ollamaMode: opts.ollamaMode as OllamaMode | undefined,
+          embedMode: opts.embedMode as EmbedMode | undefined,
           embeddings: opts.embeddings as EmbeddingProvider | undefined,
         },
         { signal: controller.signal }

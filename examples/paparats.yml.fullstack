@@ -7,5 +7,5 @@ indexing:
   exclude: ["node_modules/**", "dist/**", ".terraform/**"]
 
 embeddings:
-  provider: "ollama"
-  model: "jina-code-embeddings"  # Ollama alias for jinaai/jina-code-embeddings-1.5b-GGUF
+  provider: "llama"
+  model: "jina-code-embeddings"  # llama-swap route → jinaai/jina-code-embeddings-1.5b-GGUF

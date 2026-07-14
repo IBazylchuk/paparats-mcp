@@ -1,6 +1,6 @@
 # paparats-mcp
 
-Semantic code search MCP server. Monorepo: `packages/shared` (shared utilities), `packages/server` (MCP server + HTTP API), `packages/cli` (CLI tool), `packages/indexer` (automated repo indexer), and `packages/ollama` (custom Ollama Docker image).
+Semantic code search MCP server. Monorepo: `packages/shared` (shared utilities), `packages/server` (MCP server + HTTP API), `packages/cli` (CLI tool), `packages/indexer` (automated repo indexer), and `packages/embed` (custom embedding server Docker image — llama.cpp llama-server + llama-swap).
 
 ## IDs
 
@@ -12,7 +12,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - **`.paparats.yml`** = per-project config. Server reads it on demand via `readConfig()` / `resolveProject()`.
 - **Server is stateless** — no hardcoded project list. Projects register via `POST /api/index`.
 - **Qdrant client**: All `QdrantClient` instances must be created via `createQdrantClient({ url, apiKey?, timeout? })` from `indexer.ts`. This helper resolves the correct port from the URL protocol (HTTPS → 443, HTTP → 6333) — the JS client defaults to 6333 which breaks Qdrant Cloud. `QDRANT_API_KEY` env var → passed as `apiKey`. CLI: `--qdrant-api-key`. Docker Compose generator passes it via `${QDRANT_API_KEY}` env var substitution.
-- **Embedding model**: `jina-code-embeddings` is a local Ollama alias for `jinaai/jina-code-embeddings-1.5b-GGUF`, registered via Modelfile. Not in Ollama registry.
+- **Embedding backend**: llama.cpp `llama-server` + `llama-swap`. `llama-server` loads GGUF weights directly; `llama-swap` routes requests by model name and lazy-loads / idle-unloads models (no manual model registration — no Modelfile). Two models: `jina-code-embeddings` (`jinaai/jina-code-embeddings-1.5b-GGUF`, code, 1536d, pooling last) and `bge-m3` (arch/docs text, 1024d, pooling cls). OpenAI-style API: `/v1/embeddings`, `/v1/models`.
 
 ## TypeScript conventions
 
@@ -46,7 +46,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 | `ast-queries.ts`          | Tree-sitter S-expression query patterns per language                                                                                                                             |
 | `tree-sitter-parser.ts`   | WASM tree-sitter manager — `createTreeSitterManager()`, lazy grammar loading                                                                                                     |
 | `symbol-graph.ts`         | Cross-chunk symbol edges (`calls`, `called_by`, `references`, `referenced_by`)                                                                                                   |
-| `embeddings.ts`           | `OllamaProvider`, `EmbeddingCache` (SQLite), `CachedEmbeddingProvider`                                                                                                           |
+| `embeddings.ts`           | `LlamaServerProvider`, `EmbeddingCache` (SQLite), `CachedEmbeddingProvider`                                                                                                           |
 | `indexer.ts`              | Group-aware Qdrant indexing — `createQdrantClient()`, `toCollectionName()`/`fromCollectionName()` prefix helpers, single-parse `chunkFile()` (AST chunking + symbols), file CRUD |
 | `searcher.ts`             | Vector search with project filtering, query expansion, query cache, metrics instrumentation                                                                                      |
 | `query-expansion.ts`      | Abbreviation, case variant, plural, filler word expansion for search queries                                                                                                     |
@@ -72,11 +72,11 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 | `state-store.ts`     | SQLite store of per-repo fingerprints (default `/data/indexer-state.db`); persisted between cron ticks                                                  |
 | `types.ts`           | `IndexerConfig`, `RepoConfig`, `RepoOverrides`, `IndexerFileConfig`, `RunStatus`, `HealthResponse`                                                      |
 
-**packages/ollama/**
+**packages/embed/**
 
-| File         | Responsibility                                                                                                              |
-| ------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `Dockerfile` | Multi-stage build: registers model in `ollama/ollama`, copies into `alpine/ollama` (~1.7 GB, CPU-only, zero-config startup) |
+| File         | Responsibility                                                                                                                                            |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Dockerfile` | Builds a llama.cpp `llama-server` + `llama-swap` image with `jina-code-embeddings` + `bge-m3` GGUF pre-baked (~2.3 GB, CPU-only, zero-config startup). llama-swap serves on port 8080, lazy-loads models by name and idle-unloads after `EMBED_TTL` seconds |
 
 **packages/cli/src/**
 
@@ -97,9 +97,9 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 - **Dual MCP modes**: coding (`/mcp`, `/sse`) and support (`/support/mcp`, `/support/sse`). Each mode has its own tool set and `serverInstructions`. Coding: `search_code`, `get_chunk`, `find_usages`, `health_check`, `reindex`. Support adds `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`. Tool sets defined by `CODING_TOOLS`/`SUPPORT_TOOLS` constants; `createMcpServer(mode)` registers only the relevant tools
 - **Orchestration tools** (`explain_feature`, `recent_changes`, `impact_analysis`): support-mode only. Compose search + metadata + edges in a single MCP call. Return structured markdown without code content. Use `resolveChunkLocation()` helper for payload extraction. Gracefully degrade when `metadataStore` is null (skip metadata sections, still return search results)
 - **Server lib extraction**: `packages/server/src/lib.ts` is the public library entry point (all re-exports). `index.ts` re-exports from `lib.ts`. Server's `package.json` `exports` map points to `lib.js` so importing `@paparats/server` doesn't execute the server bootstrap
-- **Docker Ollama**: `ibaz/paparats-ollama` — multi-stage build: official `ollama/ollama` registers model, then copies into `alpine/ollama` (~70 MB, CPU-only). Final image ~1.7 GB. Model immediately ready on container start
+- **Docker embed server**: `ibaz/paparats-embed` — llama.cpp `llama-server` + `llama-swap` with `jina-code-embeddings` + `bge-m3` GGUF pre-baked (~2.3 GB, CPU-only). llama-swap serves on port 8080, routes by model name, lazy-loads on first request and idle-unloads after `EMBED_TTL` seconds (default 300). No Modelfile, no `ollama create` — models ready on container start. ~5–9× faster than Ollama on CPU, and works with the jina-code model that Ollama 0.30+ rejects (HTTP 501)
 - **Docker Compose generator**: `packages/cli/src/docker-compose-generator.ts` builds YAML programmatically. `generateDockerCompose()` for developer mode, `generateServerCompose()` for server mode (adds indexer service)
-- **Install modes**: `paparats install --mode <developer|server|support>`. Developer = current flow + Ollama mode choice. Server = full Docker stack with auto-indexer. Support = client-only MCP config (no Docker). `--ollama-url` skips local Ollama entirely (no binary check, no GGUF download)
+- **Install modes**: `paparats install --mode <developer|server|support>`. Developer = current flow + embed mode choice (`--embed-mode native|docker`). Server = full Docker stack with auto-indexer. Support = client-only MCP config (no Docker). `--embed-url` skips the local embed server entirely (no binary check, no GGUF download). Native macOS embed mode installs via `brew install llama.cpp mostlygeek/tap/llama-swap` (Metal-accelerated)
 - **Indexer container**: `packages/indexer` — separate Docker image that clones repos and indexes on a schedule. Uses `Indexer` class from `@paparats/server` as a library. HTTP trigger at `POST /trigger`, health at `GET /health`
 - **Indexer config file**: `projects.yml` mounted at `/config/` in the container. Per-repo overrides (`group`, `language`, `indexing.exclude`, etc.) with global `defaults` section. Priority: `.paparats.yml` in repo > indexer YAML overrides > auto-detection. Falls back to `REPOS` env when no config file present. `CONFIG_DIR` env controls the lookup directory
 - **Indexer change detection**: two cron schedules run side by side. Fast `CRON_FAST` (default `*/10 * * * *`) computes a fingerprint per repo and only invokes `indexProject()` when it differs from the last persisted value; slow `CRON` (default `0 */3 * * *`) is the safety-net full pass. Remote repos fingerprint via `git ls-remote HEAD`; bind-mounted local repos via mtime/size hash of the project's file set (same patterns/excludes as indexing). State persists in `STATE_DB_PATH` (default `/data/indexer-state.db`). Fingerprints advance only after successful indexing; detector failures fall through to a defensive reindex. Set `CHANGE_DETECTION=false` to opt out
@@ -129,8 +129,8 @@ Releases are driven by [Changesets](https://github.com/changesets/changesets) in
 
 - `packages/server/Dockerfile` — builds and runs the server (`ibaz/paparats-server`)
 - `packages/indexer/Dockerfile` — builds the indexer (`ibaz/paparats-indexer`)
-- `packages/ollama/Dockerfile` — multi-stage: builds Ollama with pre-baked model using `alpine/ollama` base (`ibaz/paparats-ollama`)
+- `packages/embed/Dockerfile` — builds llama.cpp `llama-server` + `llama-swap` with pre-baked `jina-code-embeddings` + `bge-m3` GGUF models (`ibaz/paparats-embed`)
 - `packages/server/docker-compose.template.yml` — reference template (install uses generator now)
 - `packages/cli/src/docker-compose-generator.ts` — generates docker-compose.yml at install time
 - Qdrant at `:6333`, MCP server at `:9876`, Indexer at `:9877`
-- Ollama: local mode via `host.docker.internal:11434`, Docker mode via `http://ollama:11434`, external via `--ollama-url`
+- Embed server (llama-swap on internal port 8080, mapped to host 11434): local mode via `host.docker.internal:11434`, Docker mode via `http://embed:8080`, external via `--embed-url`

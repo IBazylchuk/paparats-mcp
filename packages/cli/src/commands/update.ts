@@ -91,8 +91,8 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
       } else {
         try {
           const result = regenerate({
-            ollamaMode: state.ollamaMode,
-            ...(state.ollamaUrl !== undefined ? { ollamaUrl: state.ollamaUrl } : {}),
+            embedMode: state.embedMode,
+            ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
             ...(state.embeddingProvider !== undefined
               ? { embeddingProvider: state.embeddingProvider }
               : {}),

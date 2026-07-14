@@ -1,12 +1,12 @@
 # paparats-mcp — Docker Compose reference template
 # NOTE: `paparats install` now generates docker-compose.yml programmatically.
-# This file is kept as a reference for the default local-Ollama developer setup.
+# This file is kept as a reference for a native/external embedding-server setup.
 #
 # Content-based: CLI sends file contents via HTTP. No volume mounts needed.
 #
-# For Linux users with Ollama on host:
-#   OLLAMA_URL uses host.docker.internal (Mac/Windows only).
-#   Override: OLLAMA_URL=http://172.17.0.1:11434 (or your docker0 IP)
+# For a native embedding server (llama.cpp + llama-swap) on the host:
+#   EMBED_URL uses host.docker.internal (Mac/Windows only).
+#   Override: EMBED_URL=http://172.17.0.1:11434 (or your docker0 IP)
 
 services:
   qdrant:
@@ -46,7 +46,7 @@ services:
       - '${PAPARATS_PORT:-9876}:9876'
     environment:
       QDRANT_URL: http://qdrant:6333
-      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      EMBED_URL: ${EMBED_URL:-http://host.docker.internal:11434}
     extra_hosts:
       - 'host.docker.internal:host-gateway'
     volumes:

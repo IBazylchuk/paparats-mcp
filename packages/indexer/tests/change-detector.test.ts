@@ -25,7 +25,7 @@ function makeProject(root: string, overrides: Partial<ProjectConfig> = {}): Proj
       batchSize: 1,
     },
     watcher: { enabled: false, debounceMs: 0 },
-    embeddings: { provider: 'ollama', model: 'm', dimensions: 1 },
+    embeddings: { provider: 'llama', model: 'm', dimensions: 1 },
     metadata: {
       service: '',
       bounded_context: '',
