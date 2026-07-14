@@ -1,13 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-# Build and optionally push the paparats-ollama Docker image.
+# Build and optionally push the paparats-embed Docker image.
 # Server and indexer images are built by CI (docker-publish.yml).
 #
 # Usage: ./scripts/release-docker.sh [--push]
 #
 # Without --push: builds image locally (for testing)
 # With --push: builds and pushes to Docker Hub (requires `docker login`)
+#
+# Note: the build downloads ~2.3 GB of GGUF models from Hugging Face. Run it from
+# a network without a TLS-intercepting proxy (a corporate MITM proxy breaks the
+# in-container curl). CI and a home network both work.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -22,28 +26,28 @@ for arg in "$@"; do
   esac
 done
 
-echo "Building paparats-ollama for v${VERSION}..."
-echo "  (downloads ~1.6 GB GGUF model — may take a while)"
+echo "Building paparats-embed for v${VERSION}..."
+echo "  (downloads ~2.3 GB of GGUF models — may take a while)"
 echo ""
 
 docker build \
-  -f "$ROOT_DIR/packages/ollama/Dockerfile" \
-  -t "ibaz/paparats-ollama:${VERSION}" \
-  -t "ibaz/paparats-ollama:latest" \
-  "$ROOT_DIR/packages/ollama"
+  -f "$ROOT_DIR/packages/embed/Dockerfile" \
+  -t "ibaz/paparats-embed:${VERSION}" \
+  -t "ibaz/paparats-embed:latest" \
+  "$ROOT_DIR/packages/embed"
 
 echo ""
-echo "Built: ibaz/paparats-ollama:${VERSION}"
+echo "Built: ibaz/paparats-embed:${VERSION}"
 
 if [ "$PUSH" = true ]; then
   echo ""
   echo "Pushing to Docker Hub..."
 
-  docker push "ibaz/paparats-ollama:${VERSION}"
-  docker push "ibaz/paparats-ollama:latest"
+  docker push "ibaz/paparats-embed:${VERSION}"
+  docker push "ibaz/paparats-embed:latest"
 
   echo ""
-  echo "Pushed ibaz/paparats-ollama:${VERSION} and :latest"
+  echo "Pushed ibaz/paparats-embed:${VERSION} and :latest"
 else
   echo ""
   echo "To push: ./scripts/release-docker.sh --push"
