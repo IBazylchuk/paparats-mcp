@@ -43,6 +43,6 @@ YML
 
 echo
 echo "== Registered paparats-mcp (group=demo, scope=packages/shared/src) =="
-echo "Indexer is running on Ollama CPU — first index takes a few minutes."
+echo "Indexer is running on the CPU embedding server — first index takes a few minutes."
 echo "Watch progress: docker compose -f .devcontainer/docker-compose.yml logs -f indexer"
 echo "Then try:        paparats search -g demo 'gitignore filter'"

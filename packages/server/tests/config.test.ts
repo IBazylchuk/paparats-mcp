@@ -45,7 +45,7 @@ watcher:
   enabled: true
   debounce: 500
 embeddings:
-  provider: ollama
+  provider: llama
   model: jina-code-embeddings
   dimensions: 1536
 `;
@@ -133,7 +133,7 @@ injection: !!js/function >
       expect(config.indexing.chunkSize).toBe(1024);
       expect(config.indexing.overlap).toBe(128);
       expect(config.watcher.debounce).toBe(1000);
-      expect(config.embeddings.provider).toBe('ollama');
+      expect(config.embeddings.provider).toBe('llama');
       expect(config.patterns).toContain('**/*.rb');
     });
 
@@ -312,19 +312,25 @@ injection: !!js/function >
         expect(() => resolveProject(projectDir, raw)).toThrow('Invalid embeddings.provider');
       });
 
-      it('accepts ollama and openai providers', () => {
-        const rawOllama = {
+      it('accepts llama, openai and voyage providers', () => {
+        const rawLlama = {
           group: 'g',
           language: 'ruby',
-          embeddings: { provider: 'ollama' as const },
+          embeddings: { provider: 'llama' as const },
         };
         const rawOpenai = {
           group: 'g',
           language: 'ruby',
           embeddings: { provider: 'openai' as const },
         };
-        expect(resolveProject(projectDir, rawOllama).embeddings.provider).toBe('ollama');
+        const rawVoyage = {
+          group: 'g',
+          language: 'ruby',
+          embeddings: { provider: 'voyage' as const },
+        };
+        expect(resolveProject(projectDir, rawLlama).embeddings.provider).toBe('llama');
         expect(resolveProject(projectDir, rawOpenai).embeddings.provider).toBe('openai');
+        expect(resolveProject(projectDir, rawVoyage).embeddings.provider).toBe('voyage');
       });
     });
   });

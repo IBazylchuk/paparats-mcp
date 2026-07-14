@@ -12,11 +12,11 @@ const COMPOSE_WITH_QDRANT = `services:
 const COMPOSE_WITHOUT_QDRANT = `services:
   paparats:
     image: ibaz/paparats-server:latest
-  ollama:
-    image: ibaz/paparats-ollama:latest
+  embed:
+    image: ibaz/paparats-embed:latest
 `;
 
-const STUB_INSTALL_STATE = { ollamaMode: 'native' as const };
+const STUB_INSTALL_STATE = { embedMode: 'native' as const };
 
 function stubRegenerate(
   override?: Partial<RegenerateResult>
@@ -196,7 +196,7 @@ describe('update', () => {
       );
 
       expect(regenerate).toHaveBeenCalledWith(
-        expect.objectContaining({ backupOnChange: true, ollamaMode: 'native' })
+        expect.objectContaining({ backupOnChange: true, embedMode: 'native' })
       );
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('/tmp/docker-compose.yml.bak'));
       expect(execMock).toHaveBeenCalledWith(

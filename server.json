@@ -20,7 +20,7 @@
     "code-search",
     "vector-database",
     "qdrant",
-    "ollama",
+    "llama-cpp",
     "local-first",
     "privacy",
     "multi-repo",

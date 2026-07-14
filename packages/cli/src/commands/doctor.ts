@@ -48,14 +48,14 @@ export async function runChecks(
 
   // Resolve config for URLs/models
   const qdrantUrl = process.env.QDRANT_URL ?? 'http://localhost:6333';
-  const ollamaUrl = process.env.OLLAMA_URL ?? 'http://localhost:11434';
-  let ollamaModel = process.env.EMBEDDING_MODEL ?? 'jina-code-embeddings';
+  const embedUrl = process.env.EMBED_URL ?? 'http://localhost:11434';
+  let embedModel = process.env.EMBEDDING_MODEL ?? 'jina-code-embeddings';
 
   const configDir = findConfigDir();
   if (configDir) {
     try {
       const { config } = readConfig(configDir);
-      ollamaModel = config.embeddings?.model ?? ollamaModel;
+      embedModel = config.embeddings?.model ?? embedModel;
     } catch {
       // Config invalid, use defaults
     }
@@ -122,53 +122,54 @@ export async function runChecks(
     });
   }
 
-  // 5. Ollama
-  onCheckStart?.('Ollama');
-  if (commandExists('ollama')) {
-    try {
-      const ollamaTagsUrl = new URL('/api/tags', ollamaUrl).href;
-      const res = await fetch(ollamaTagsUrl, {
-        signal: createTimeoutSignal(3000),
-      });
+  // 5. Embeddings
+  onCheckStart?.('Embeddings');
+  try {
+    const embedHealthUrl = new URL('/health', embedUrl).href;
+    const healthRes = await fetch(embedHealthUrl, {
+      signal: createTimeoutSignal(3000),
+    });
 
-      if (res.ok) {
-        const data = (await res.json()) as { models?: Array<{ name: string }> };
-        const models = data.models ?? [];
-        const hasModel = models.some((m) => m.name.includes(ollamaModel));
-
-        if (hasModel) {
-          results.push({ name: 'Ollama', ok: true, message: `model ${ollamaModel} ready` });
-        } else {
-          const available = models.map((m) => m.name).join(', ') || 'none';
-          results.push({
-            name: 'Ollama',
-            ok: false,
-            message: `running but ${ollamaModel} model not found`,
-            details: verbose ? `Available: ${available}` : undefined,
-          });
+    if (healthRes.ok) {
+      let modelListed = false;
+      try {
+        const modelsUrl = new URL('/v1/models', embedUrl).href;
+        const modelsRes = await fetch(modelsUrl, {
+          signal: createTimeoutSignal(3000),
+        });
+        if (modelsRes.ok) {
+          const data = (await modelsRes.json()) as { data?: Array<{ id: string }> };
+          const models = data.data ?? [];
+          modelListed = models.some((m) => m.id === embedModel);
         }
-      } else {
-        const output = execSync('ollama list', { encoding: 'utf8', timeout: 5_000 });
-        if (output.includes(ollamaModel)) {
-          results.push({ name: 'Ollama', ok: true, message: `model ${ollamaModel} ready` });
-        } else {
-          results.push({
-            name: 'Ollama',
-            ok: false,
-            message: `running but ${ollamaModel} model not found`,
-          });
-        }
+      } catch {
+        // /v1/models unavailable — treat as lazy-loaded, not an error
       }
-    } catch (err) {
+
+      if (modelListed) {
+        results.push({ name: 'Embeddings', ok: true, message: `model ${embedModel} ready` });
+      } else {
+        // llama-swap lazy-loads models; a model not yet listed is not an error
+        results.push({
+          name: 'Embeddings',
+          ok: true,
+          message: `running (model ${embedModel} loads on first use)`,
+        });
+      }
+    } else {
       results.push({
-        name: 'Ollama',
+        name: 'Embeddings',
         ok: false,
-        message: 'installed but not running',
-        details: verbose ? (err as Error).message : undefined,
+        message: 'embed server not reachable at ' + embedUrl,
       });
     }
-  } else {
-    results.push({ name: 'Ollama', ok: false, message: 'not installed' });
+  } catch (err) {
+    results.push({
+      name: 'Embeddings',
+      ok: false,
+      message: 'embed server not reachable at ' + embedUrl,
+      details: verbose ? (err as Error).message : undefined,
+    });
   }
 
   // 6. Qdrant

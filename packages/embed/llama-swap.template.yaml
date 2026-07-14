@@ -1,0 +1,42 @@
+# paparats-embed — llama-swap config (rendered from this template at container start)
+#
+# ${EMBED_TTL} is substituted by entrypoint.sh from the EMBED_TTL env var.
+# TTL is seconds of idle before a model is unloaded from RAM. Lazy loading means
+# a model nobody queries (e.g. the arch/docs text model for a code-only user)
+# never spins up. Tune per deployment: short on a laptop, long on a server.
+#
+# Pooling is dictated by model architecture (empirically cosine-verified vs the
+# old Ollama 0.24 vectors — see the migration notes):
+#   jina-code (qwen2 decoder) -> --pooling last
+#   bge-m3    (BERT/XLM-R)     -> --pooling cls
+# Wrong pooling silently corrupts the vector space.
+
+healthCheckTimeout: 300
+startPort: 10001
+
+macros:
+  llama-embed: >
+    llama-server
+    --host 127.0.0.1 --port ${PORT}
+    --embeddings
+    --ctx-size 8192
+    --batch-size 8192
+    --ubatch-size 8192
+
+models:
+  # Code embeddings — jina-code-embeddings-1.5b (1536d). Model name kept identical
+  # to the old Ollama alias so no re-index / config change is required.
+  jina-code-embeddings:
+    cmd: |
+      ${llama-embed}
+      --model /models/jina-code-embeddings-1.5b-Q8_0.gguf
+      --pooling last
+    ttl: ${EMBED_TTL}
+
+  # Arch/docs text embeddings — bge-m3 (1024d).
+  bge-m3:
+    cmd: |
+      ${llama-embed}
+      --model /models/bge-m3-Q8_0.gguf
+      --pooling cls
+    ttl: ${EMBED_TTL}

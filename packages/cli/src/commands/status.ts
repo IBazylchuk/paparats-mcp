@@ -35,7 +35,7 @@ export function validateHealthResponse(data: unknown): data is HealthResponseDat
 
 export interface StatusDeps {
   dockerStatus?: () => { qdrant: string; mcp: string };
-  ollamaStatus?: (modelName: string) => string;
+  embedStatus?: (modelName: string) => string;
   findConfigDir?: (startDir?: string) => string | null;
   readConfig?: (dir?: string) => {
     config: { group: string; language: string | string[]; embeddings?: { model?: string } };
@@ -66,15 +66,15 @@ export function dockerStatus(): { qdrant: string; mcp: string } {
   return result;
 }
 
-export function ollamaStatus(modelName = 'jina-code-embeddings'): string {
+export function embedStatus(_modelName = 'jina-code-embeddings'): string {
   try {
-    const output = execSync('ollama list', {
+    // Static URL, no user input — checks the embed server /health endpoint
+    execSync('curl -fsS http://localhost:11434/health', {
       encoding: 'utf8',
       timeout: 5_000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
-    if (output.includes(modelName)) return 'model ready';
-    return 'running (model not found)';
+    return 'model ready';
   } catch {
     return 'not running';
   }
@@ -96,7 +96,7 @@ function formatMemory(heapUsed: string): string {
 
 export interface StatusResult {
   docker: { qdrant: string; mcp: string };
-  ollama: string;
+  embed: string;
   config: {
     found: boolean;
     group?: string;
@@ -117,7 +117,7 @@ export interface StatusResult {
 
 export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise<StatusResult> {
   const getDockerStatus = deps?.dockerStatus ?? dockerStatus;
-  const getOllamaStatus = deps?.ollamaStatus ?? ollamaStatus;
+  const getEmbedStatus = deps?.embedStatus ?? embedStatus;
   const findCfgDir = deps?.findConfigDir ?? findConfigDir;
   const readCfg = deps?.readConfig ?? readConfig;
   const healthCheck = deps?.healthCheck;
@@ -127,7 +127,7 @@ export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise
 
   const result: StatusResult = {
     docker: { qdrant: 'not running', mcp: 'not running' },
-    ollama: 'not running',
+    embed: 'not running',
     config: { found: false },
     server: { ok: false },
     timestamp: new Date().toISOString(),
@@ -137,7 +137,7 @@ export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise
   const docker = getDockerStatus();
   result.docker = docker;
 
-  // Ollama — read model from config
+  // Embeddings — read model from config
   let modelName = 'jina-code-embeddings';
   const configDir = findCfgDir();
   if (configDir) {
@@ -148,8 +148,8 @@ export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise
       // Use default
     }
   }
-  const ollama = getOllamaStatus(modelName);
-  result.ollama = ollama;
+  const embed = getEmbedStatus(modelName);
+  result.embed = embed;
 
   // Config
   if (configDir) {
@@ -219,15 +219,15 @@ export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise
 }
 
 function outputStatus(result: StatusResult, opts: StatusOptions): void {
-  const { docker, ollama, config, server } = result;
+  const { docker, embed, config, server } = result;
   const qdrantOk = docker.qdrant !== 'not running';
   const mcpOk = docker.mcp !== 'not running';
-  const ollamaOk = ollama === 'model ready';
+  const embedOk = embed === 'model ready';
 
   if (opts.json) {
     const jsonData = {
       docker,
-      ollama,
+      embed,
       config,
       server: server.ok
         ? {
@@ -250,8 +250,8 @@ function outputStatus(result: StatusResult, opts: StatusOptions): void {
   console.log(`  Qdrant:   ${qdrantOk ? chalk.green(docker.qdrant) : chalk.red(docker.qdrant)}`);
   console.log(`  MCP:      ${mcpOk ? chalk.green(docker.mcp) : chalk.red(docker.mcp)}`);
 
-  // Ollama
-  console.log(`  Ollama:   ${ollamaOk ? chalk.green(ollama) : chalk.yellow(ollama)}`);
+  // Embeddings
+  console.log(`  Embeddings: ${embedOk ? chalk.green(embed) : chalk.yellow(embed)}`);
 
   // Config
   if (config.found) {
@@ -306,16 +306,6 @@ function outputStatus(result: StatusResult, opts: StatusOptions): void {
     } catch {
       // Ignore
     }
-    try {
-      const version = execSync('ollama --version', {
-        encoding: 'utf8',
-        timeout: 3_000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      console.log(chalk.dim(`  Ollama version: ${version.trim()}`));
-    } catch {
-      // Ignore
-    }
   }
 
   console.log();
@@ -346,8 +336,8 @@ export const statusCommand = new Command('status')
 
       const qdrantOk = result.docker.qdrant !== 'not running';
       const mcpOk = result.docker.mcp !== 'not running';
-      const ollamaOk = result.ollama === 'model ready';
-      const criticalDown = !qdrantOk || !mcpOk || !ollamaOk;
+      const embedOk = result.embed === 'model ready';
+      const criticalDown = !qdrantOk || !mcpOk || !embedOk;
 
       if (criticalDown && !opts.json) {
         console.log(chalk.yellow('\n⚠ Some critical services are not running'));

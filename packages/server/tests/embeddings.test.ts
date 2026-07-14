@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import {
   EmbeddingCache,
-  OllamaProvider,
+  LlamaServerProvider,
   OpenAIProvider,
   VoyageProvider,
   CachedEmbeddingProvider,
@@ -174,9 +174,9 @@ describe('CachedEmbeddingProvider', () => {
 });
 
 describe('createEmbeddingProvider', () => {
-  it('creates CachedEmbeddingProvider for ollama', () => {
+  it('creates CachedEmbeddingProvider for llama', () => {
     const provider = createEmbeddingProvider({
-      provider: 'ollama',
+      provider: 'llama',
       model: 'test',
       dimensions: 256,
     });
@@ -197,15 +197,15 @@ describe('createEmbeddingProvider', () => {
   });
 });
 
-describe('OllamaProvider', () => {
+describe('LlamaServerProvider', () => {
   it('has default config', () => {
-    const provider = new OllamaProvider();
+    const provider = new LlamaServerProvider();
     expect(provider.model).toBe('jina-code-embeddings');
     expect(provider.dimensions).toBe(1536);
   });
 
   it('accepts config overrides', () => {
-    const provider = new OllamaProvider({
+    const provider = new LlamaServerProvider({
       model: 'custom',
       dimensions: 384,
     });
@@ -222,13 +222,13 @@ describe('OllamaProvider', () => {
         ok: true,
         json: () =>
           Promise.resolve({
-            embeddings: Array.from({ length: count }, (_, i) => [i, 0, 0, 0]),
+            data: Array.from({ length: count }, (_, i) => ({ embedding: [i, 0, 0, 0], index: i })),
           }),
       });
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    const provider = new OllamaProvider({ url: 'http://localhost:9999' });
+    const provider = new LlamaServerProvider({ url: 'http://localhost:9999' });
     const texts = Array.from({ length: 150 }, (_, i) => `text${i}`);
     const results = await provider.embedBatch(texts);
 
@@ -248,7 +248,7 @@ describe('OllamaProvider', () => {
         ok: true,
         json: () =>
           Promise.resolve({
-            embeddings: Array.from({ length: count }, () => [0, 0, 0, 0]),
+            data: Array.from({ length: count }, (_, i) => ({ embedding: [0, 0, 0, 0], index: i })),
           }),
       });
     });
@@ -256,9 +256,9 @@ describe('OllamaProvider', () => {
 
     // 4 chunks within the count cap (5) but ~32k chars total — well past the
     // 16k char cap. Adaptive splitter must subdivide so no single request
-    // carries the full payload that would time out on CPU Ollama.
+    // carries the full payload that would time out on CPU llama-server.
     const big = 'x'.repeat(8000);
-    const provider = new OllamaProvider({ url: 'http://localhost:9999' });
+    const provider = new LlamaServerProvider({ url: 'http://localhost:9999' });
     const results = await provider.embedBatch([big, big, big, big]);
 
     expect(results).toHaveLength(4);
@@ -397,10 +397,10 @@ describe('VoyageProvider', () => {
 });
 
 describe('resolveEmbeddingConfigFromEnv', () => {
-  it('defaults to ollama with jina model and 1536 dims when nothing is set', () => {
+  it('defaults to llama with jina model and 1536 dims when nothing is set', () => {
     const c = resolveEmbeddingConfigFromEnv({});
     expect(c).toEqual({
-      provider: 'ollama',
+      provider: 'llama',
       model: 'jina-code-embeddings',
       dimensions: 1536,
     });
