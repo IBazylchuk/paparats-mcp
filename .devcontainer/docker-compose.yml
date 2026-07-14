@@ -22,7 +22,7 @@ services:
       PAPARATS_SERVER_URL: http://paparats:9876
       PAPARATS_INDEXER_URL: http://indexer:9877
       QDRANT_URL: http://qdrant:6333
-      OLLAMA_URL: http://ollama:11434
+      EMBED_URL: http://embed:8080
     networks:
       - paparats-net
     depends_on:
@@ -44,18 +44,18 @@ services:
       retries: 3
       start_period: 15s
 
-  ollama:
-    image: ibaz/paparats-ollama:latest
+  embed:
+    image: ibaz/paparats-embed:latest
     networks:
       - paparats-net
-    volumes:
-      - ollama_data:/root/.ollama
+    environment:
+      EMBED_TTL: ${EMBED_TTL:-300}
     healthcheck:
-      test: ['CMD', 'ollama', 'list']
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:8080/health']
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 60s
+      start_period: 30s
 
   paparats:
     image: ibaz/paparats-server:latest
@@ -63,7 +63,7 @@ services:
       - '9876:9876'
     environment:
       QDRANT_URL: http://qdrant:6333
-      OLLAMA_URL: http://ollama:11434
+      EMBED_URL: http://embed:8080
       # Optional cloud embeddings — set in Codespaces secrets or your shell.
       # Auto-detected: if OPENAI_API_KEY (or VOYAGE_API_KEY) is present and
       # EMBEDDING_PROVIDER is unset, the server switches to that provider.
@@ -75,7 +75,7 @@ services:
     depends_on:
       qdrant:
         condition: service_healthy
-      ollama:
+      embed:
         condition: service_healthy
     networks:
       - paparats-net
@@ -87,7 +87,7 @@ services:
     image: ibaz/paparats-indexer:latest
     environment:
       QDRANT_URL: http://qdrant:6333
-      OLLAMA_URL: http://ollama:11434
+      EMBED_URL: http://embed:8080
       CONFIG_DIR: /config
       CRON_FAST: '*/2 * * * *'
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER:-}
@@ -104,14 +104,13 @@ services:
         condition: service_completed_successfully
       qdrant:
         condition: service_healthy
-      ollama:
+      embed:
         condition: service_healthy
     networks:
       - paparats-net
 
 volumes:
   qdrant_data:
-  ollama_data:
   paparats_data:
   paparats_home:
   indexer_data:
