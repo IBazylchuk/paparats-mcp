@@ -121,11 +121,10 @@ const DEFAULT_WATCHER: Required<WatcherConfig> = {
 };
 
 // Default model: jinaai/jina-code-embeddings-1.5b-GGUF (HuggingFace)
-// Not in Ollama registry — registered as local alias via Modelfile.
-// See README.md "Embedding model setup" for one-time setup instructions.
+// Served by llama-server (fronted by llama-swap) in the ibaz/paparats-embed image.
 const DEFAULT_EMBEDDINGS: Required<EmbeddingsConfig> = {
-  provider: 'ollama',
-  model: 'jina-code-embeddings', // Ollama alias for jina-code-embeddings-1.5b
+  provider: 'llama',
+  model: 'jina-code-embeddings', // llama-swap route → jina-code-embeddings-1.5b
   dimensions: 1536,
 };
 
@@ -175,7 +174,7 @@ function resolveMetadata(
 
 export const CONFIG_FILE = '.paparats.yml';
 
-const VALID_EMBEDDING_PROVIDERS = ['ollama', 'openai'] as const;
+const VALID_EMBEDDING_PROVIDERS = ['llama', 'openai', 'voyage'] as const;
 
 // Known embedding model dimensions (for validation warning)
 const MODEL_DIMENSIONS: Record<string, number> = {
