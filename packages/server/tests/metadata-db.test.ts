@@ -366,7 +366,7 @@ describe('MetadataStore', () => {
     expect(p1.map((r) => r.chunkId)).toEqual(['g//p1//x.ts//1-5//hx']);
   });
 
-  it('invalidates degree cache after deleteEdgesByProject', () => {
+  it('refreshes degree cache after deleteEdgesByProject (stale-while-revalidate)', async () => {
     store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p1//a.ts//1-5//h1',
@@ -376,9 +376,17 @@ describe('MetadataStore', () => {
         confidence: 'INFERRED',
       },
     ]);
+    // Warm the cache.
     expect(store.getGroupDegreeSnapshot('g').topInDegree).toHaveLength(1);
 
     store.deleteEdgesByProject('g', 'p1');
+    // The read is non-blocking: it serves the stale snapshot immediately and
+    // schedules a background recompute, so the edge is still visible right after
+    // the delete.
+    expect(store.getGroupDegreeSnapshot('g').topInDegree).toHaveLength(1);
+
+    // After the background refresh runs, the snapshot reflects the deletion.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(store.getGroupDegreeSnapshot('g').topInDegree).toHaveLength(0);
   });
 
@@ -386,7 +394,7 @@ describe('MetadataStore', () => {
   // degree cache via invalidateDegreeCache(). It must now only drop entries
   // for groups touched by the incoming edges, so an index pass on one group
   // doesn't blow away unrelated groups' cached stats.
-  it('upsertSymbolEdges only invalidates the cache of groups touched by the edges', () => {
+  it('upsertSymbolEdges only invalidates the cache of groups touched by the edges', async () => {
     store.upsertSymbolEdges([
       {
         from_chunk_id: 'groupA//p//a.ts//1-5//h1',
@@ -418,12 +426,16 @@ describe('MetadataStore', () => {
       },
     ]);
 
-    // groupA stats reflect the new edge (b.ts now has in-degree 2).
+    // Reading groupA serves the stale snapshot immediately and schedules a
+    // background refresh; after it runs, the stats reflect the new edge
+    // (b.ts now has in-degree 2).
+    store.getGroupDegreeSnapshot('groupA');
+    await new Promise((resolve) => setImmediate(resolve));
     const afterA = store.getGroupDegreeSnapshot('groupA');
     expect(afterA.topInDegree[0]?.degree).toBe(2);
-    // groupB cache survived the unrelated write — the cached hubChunkIds
-    // Set is reused (object identity), even though the wrapper object is
-    // re-allocated per call.
+    // groupB cache survived the unrelated write untouched — it was never marked
+    // stale, so no refresh was scheduled and the cached hubChunkIds Set is the
+    // same object.
     const afterB = store.getGroupDegreeSnapshot('groupB');
     expect(afterB.hubChunkIds).toBe(beforeB.hubChunkIds);
   });
