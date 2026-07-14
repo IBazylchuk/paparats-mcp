@@ -1,15 +1,15 @@
 import * as yaml from 'js-yaml';
 
 /**
- * Ollama deployment mode in the unified install:
- * - 'native'   — host's local Ollama; container reaches it via host.docker.internal
- * - 'docker'   — bundled Ollama service in the compose stack
- * - 'external' — explicit OLLAMA_URL (skip both native detection and the docker service)
+ * Embedding server deployment mode in the unified install:
+ * - 'native'   — host's local llama-server; container reaches it via host.docker.internal
+ * - 'docker'   — bundled paparats-embed service in the compose stack
+ * - 'external' — explicit EMBED_URL (skip both native detection and the docker service)
  */
-export type OllamaMode = 'native' | 'docker' | 'external';
+export type EmbedMode = 'native' | 'docker' | 'external';
 
 /** Embedding backend selected at install time. */
-export type EmbeddingProvider = 'ollama' | 'openai' | 'voyage';
+export type EmbeddingProvider = 'llama' | 'openai' | 'voyage';
 
 /** Kept for support-mode compatibility in legacy install code. */
 export type InstallMode = 'developer' | 'server' | 'support';
@@ -22,10 +22,10 @@ export interface LocalProjectMount {
 }
 
 export interface UnifiedComposeConfig {
-  ollamaMode: OllamaMode;
-  /** Required when ollamaMode === 'external'. */
-  ollamaUrl?: string;
-  /** Embedding backend. Cloud providers skip Ollama entirely. Default: 'ollama'. */
+  embedMode: EmbedMode;
+  /** Required when embedMode === 'external'. */
+  embedUrl?: string;
+  /** Embedding backend. Cloud providers skip the local embed server entirely. Default: 'llama'. */
   embeddingProvider?: EmbeddingProvider;
   /** When set, the dockerized Qdrant service is skipped. */
   qdrantUrl?: string;
@@ -41,7 +41,7 @@ export interface UnifiedComposeConfig {
   ports?: {
     qdrant?: number;
     paparats?: number;
-    ollama?: number;
+    embed?: number;
     indexer?: number;
   };
 }
@@ -96,18 +96,20 @@ function qdrantService(port: number): ComposeService {
   };
 }
 
-function ollamaService(port: number): ComposeService {
+function embedService(port: number): ComposeService {
   return {
-    image: 'ibaz/paparats-ollama:latest',
-    container_name: 'paparats-ollama',
-    ports: [`\${OLLAMA_PORT:-${port}}:11434`],
-    volumes: ['ollama_data:/root/.ollama'],
+    image: 'ibaz/paparats-embed:latest',
+    container_name: 'paparats-embed',
+    ports: [`\${EMBED_PORT:-${port}}:8080`],
+    // EMBED_TTL: idle seconds before a model unloads. Short on a laptop, long on
+    // a server. Models are baked into the image — no data volume needed.
+    environment: { EMBED_TTL: '${EMBED_TTL:-300}' },
     healthcheck: {
-      test: ['CMD', 'ollama', 'list'],
+      test: ['CMD', 'curl', '-fsS', 'http://localhost:8080/health'],
       interval: '10s',
       timeout: '5s',
       retries: 5,
-      start_period: '60s',
+      start_period: '30s',
     },
     logging: { driver: 'json-file', options: { 'max-size': '10m', 'max-file': '3' } },
     restart: 'unless-stopped',
@@ -117,7 +119,7 @@ function ollamaService(port: number): ComposeService {
 
 function paparatsService(
   port: number,
-  ollamaUrl: string,
+  embedUrl: string,
   qdrantUrl: string,
   includeQdrantDep: boolean,
   qdrantApiKey: string | undefined,
@@ -131,16 +133,16 @@ function paparatsService(
   const env: Record<string, string> = {
     QDRANT_URL: qdrantUrl,
   };
-  if (embeddingProvider === 'ollama') {
-    env['OLLAMA_URL'] = ollamaUrl;
-    env['OLLAMA_BATCH_SIZE'] = '${OLLAMA_BATCH_SIZE:-5}';
+  if (embeddingProvider === 'llama') {
+    env['EMBED_URL'] = embedUrl;
+    env['EMBED_BATCH_SIZE'] = '${EMBED_BATCH_SIZE:-5}';
   } else {
     env['EMBEDDING_PROVIDER'] = embeddingProvider;
     if (embeddingProvider === 'openai') env['OPENAI_API_KEY'] = '${OPENAI_API_KEY:-}';
     if (embeddingProvider === 'voyage') env['VOYAGE_API_KEY'] = '${VOYAGE_API_KEY:-}';
   }
   // Arch-layer text embeddings — defaults track the bge-m3 baked into
-  // ibaz/paparats-ollama. Override via .env when using a cloud provider or a
+  // ibaz/paparats-embed. Override via .env when using a cloud provider or a
   // different text model.
   env['TEXT_EMBEDDING_MODEL'] = '${TEXT_EMBEDDING_MODEL:-bge-m3}';
   env['TEXT_EMBEDDING_DIMENSIONS'] = '${TEXT_EMBEDDING_DIMENSIONS:-1024}';
@@ -185,15 +187,15 @@ function paparatsService(
 function indexerService(
   config: UnifiedComposeConfig,
   qdrantUrl: string,
-  ollamaUrl: string,
+  embedUrl: string,
   port: number,
   embeddingProvider: EmbeddingProvider
 ): ComposeService {
   const externalQdrant = !!config.qdrantUrl;
-  const dockerOllama = config.ollamaMode === 'docker' && embeddingProvider === 'ollama';
+  const dockerEmbed = config.embedMode === 'docker' && embeddingProvider === 'llama';
 
   const dependsOn: Record<string, { condition: string }> = {};
-  if (dockerOllama) dependsOn['ollama'] = { condition: 'service_healthy' };
+  if (dockerEmbed) dependsOn['embed'] = { condition: 'service_healthy' };
   if (!externalQdrant) dependsOn['qdrant'] = { condition: 'service_healthy' };
 
   const env: Record<string, string> = {
@@ -201,9 +203,9 @@ function indexerService(
     CRON: `\${CRON:-${config.cron ?? '0 */6 * * *'}}`,
     QDRANT_URL: qdrantUrl,
   };
-  if (embeddingProvider === 'ollama') {
-    env['OLLAMA_URL'] = ollamaUrl;
-    env['OLLAMA_BATCH_SIZE'] = '${OLLAMA_BATCH_SIZE:-5}';
+  if (embeddingProvider === 'llama') {
+    env['EMBED_URL'] = embedUrl;
+    env['EMBED_BATCH_SIZE'] = '${EMBED_BATCH_SIZE:-5}';
   } else {
     env['EMBEDDING_PROVIDER'] = embeddingProvider;
     if (embeddingProvider === 'openai') env['OPENAI_API_KEY'] = '${OPENAI_API_KEY:-}';
@@ -238,35 +240,35 @@ function indexerService(
 }
 
 /**
- * Generate the unified docker-compose.yml — qdrant (optional) + ollama (optional)
+ * Generate the unified docker-compose.yml — qdrant (optional) + embed (optional)
  * + paparats-server + paparats-indexer with mounts derived from `localProjects`.
  */
 export function generateCompose(config: UnifiedComposeConfig): string {
   const qdrantPort = config.ports?.qdrant ?? 6333;
   const paparatsPort = config.ports?.paparats ?? 9876;
-  const ollamaPort = config.ports?.ollama ?? 11434;
+  const embedPort = config.ports?.embed ?? 11434;
   const indexerPort = config.ports?.indexer ?? 9877;
 
-  const embeddingProvider: EmbeddingProvider = config.embeddingProvider ?? 'ollama';
-  const isCloud = embeddingProvider !== 'ollama';
+  const embeddingProvider: EmbeddingProvider = config.embeddingProvider ?? 'llama';
+  const isCloud = embeddingProvider !== 'llama';
 
   const externalQdrant = !!config.qdrantUrl;
-  // Cloud providers don't use Ollama at all — drop the service and depends_on edges.
-  const dockerOllama = !isCloud && config.ollamaMode === 'docker';
+  // Cloud providers don't use the local embed server — drop the service and edges.
+  const dockerEmbed = !isCloud && config.embedMode === 'docker';
 
   const qdrantUrl = externalQdrant ? config.qdrantUrl! : 'http://qdrant:6333';
   // For cloud providers the URL is irrelevant (the server reads
   // EMBEDDING_PROVIDER instead) — pass an empty string so we don't accidentally
-  // wire host.docker.internal when the host has no Ollama running.
-  const ollamaUrl = isCloud ? '' : resolveOllamaUrl(config);
+  // wire host.docker.internal when the host has no embed server running.
+  const embedUrl = isCloud ? '' : resolveEmbedUrl(config);
 
   const compose: ComposeFile = {
     services: {
       ...(externalQdrant ? {} : { qdrant: qdrantService(qdrantPort) }),
-      ...(dockerOllama ? { ollama: ollamaService(ollamaPort) } : {}),
+      ...(dockerEmbed ? { embed: embedService(embedPort) } : {}),
       paparats: paparatsService(
         paparatsPort,
-        ollamaUrl,
+        embedUrl,
         qdrantUrl,
         !externalQdrant,
         config.qdrantApiKey,
@@ -275,14 +277,13 @@ export function generateCompose(config: UnifiedComposeConfig): string {
       'paparats-indexer': indexerService(
         config,
         qdrantUrl,
-        ollamaUrl,
+        embedUrl,
         indexerPort,
         embeddingProvider
       ),
     },
     volumes: {
       ...(externalQdrant ? {} : { qdrant_data: null }),
-      ...(dockerOllama ? { ollama_data: null } : {}),
       paparats_data: null,
       indexer_repos: null,
     },
@@ -291,8 +292,8 @@ export function generateCompose(config: UnifiedComposeConfig): string {
     },
   };
 
-  if (dockerOllama) {
-    compose.services['paparats']!.depends_on!['ollama'] = { condition: 'service_healthy' };
+  if (dockerEmbed) {
+    compose.services['paparats']!.depends_on!['embed'] = { condition: 'service_healthy' };
   }
 
   return (
@@ -301,16 +302,16 @@ export function generateCompose(config: UnifiedComposeConfig): string {
   );
 }
 
-function resolveOllamaUrl(config: UnifiedComposeConfig): string {
-  switch (config.ollamaMode) {
+function resolveEmbedUrl(config: UnifiedComposeConfig): string {
+  switch (config.embedMode) {
     case 'docker':
-      return 'http://ollama:11434';
+      return 'http://embed:8080';
     case 'native':
       return 'http://host.docker.internal:11434';
     case 'external':
-      if (!config.ollamaUrl) {
-        throw new Error('generateCompose: ollamaMode="external" requires ollamaUrl');
+      if (!config.embedUrl) {
+        throw new Error('generateCompose: embedMode="external" requires embedUrl');
       }
-      return config.ollamaUrl;
+      return config.embedUrl;
   }
 }

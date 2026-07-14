@@ -113,14 +113,14 @@ async function defaultRegenerateAndRestart(
     return { composeChanged: false };
   }
 
-  // Prefer install.json — it's the source of truth for embedding provider, ollama mode, etc.
+  // Prefer install.json — it's the source of truth for embedding provider, embed mode, etc.
   // Fall back to parsing the existing compose for installs that predate install.json.
   const state = readInstallState(paparatsHome);
   let regenerateOpts: Parameters<typeof regenerateCompose>[0];
   if (state) {
     regenerateOpts = {
-      ollamaMode: state.ollamaMode,
-      ...(state.ollamaUrl !== undefined ? { ollamaUrl: state.ollamaUrl } : {}),
+      embedMode: state.embedMode,
+      ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
       ...(state.embeddingProvider !== undefined
         ? { embeddingProvider: state.embeddingProvider }
         : {}),
@@ -131,20 +131,20 @@ async function defaultRegenerateAndRestart(
     };
   } else {
     const existing = fs.readFileSync(composePath, 'utf8');
-    const ollamaMode = existing.includes('container_name: paparats-ollama')
+    const embedMode = existing.includes('container_name: paparats-embed')
       ? 'docker'
-      : existing.includes('OLLAMA_URL: http://host.docker.internal:11434')
+      : existing.includes('EMBED_URL: http://host.docker.internal:11434')
         ? 'native'
         : 'external';
-    const externalOllamaMatch = existing.match(/OLLAMA_URL:\s*(http\S+)/);
-    const ollamaUrl =
-      ollamaMode === 'external' && externalOllamaMatch ? externalOllamaMatch[1] : undefined;
+    const externalEmbedMatch = existing.match(/EMBED_URL:\s*(http\S+)/);
+    const embedUrl =
+      embedMode === 'external' && externalEmbedMatch ? externalEmbedMatch[1] : undefined;
     const externalQdrant = !existing.includes('container_name: paparats-qdrant');
     const qdrantMatch = existing.match(/QDRANT_URL:\s*(http\S+)/);
     const qdrantUrl = externalQdrant && qdrantMatch ? qdrantMatch[1] : undefined;
     regenerateOpts = {
-      ollamaMode,
-      ...(ollamaUrl !== undefined ? { ollamaUrl } : {}),
+      embedMode,
+      ...(embedUrl !== undefined ? { embedUrl } : {}),
       ...(qdrantUrl !== undefined ? { qdrantUrl } : {}),
       paparatsHome,
     };
