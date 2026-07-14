@@ -153,7 +153,7 @@ function createProjectConfig(
       batchSize: 50,
     },
     watcher: { enabled: true, debounce: 1000, stabilityThreshold: 1000 },
-    embeddings: { provider: 'ollama', model: 'test', dimensions: 4 },
+    embeddings: { provider: 'llama', model: 'test', dimensions: 4 },
     metadata: {
       service: 'test-project',
       bounded_context: null,
@@ -833,7 +833,7 @@ describe('Indexer collection metadata sentinel', () => {
       qdrantUrl: 'http://127.0.0.1:6333',
       embeddingProvider: provider,
       dimensions: 4,
-      embeddingProviderId: 'ollama',
+      embeddingProviderId: 'llama',
       embeddingModelId: 'jina-code-embeddings',
       qdrantClient: mockQdrant.client as never,
     });
@@ -842,7 +842,7 @@ describe('Indexer collection metadata sentinel', () => {
 
     const meta = await indexer.readCollectionMeta('g1');
     expect(meta).toEqual({
-      provider: 'ollama',
+      provider: 'llama',
       model: 'jina-code-embeddings',
       dimensions: 4,
       createdAt: expect.any(Number),
@@ -855,7 +855,7 @@ describe('Indexer collection metadata sentinel', () => {
       qdrantUrl: 'http://127.0.0.1:6333',
       embeddingProvider: provider,
       dimensions: 4,
-      embeddingProviderId: 'ollama',
+      embeddingProviderId: 'llama',
       embeddingModelId: 'jina-code-embeddings',
       qdrantClient: mockQdrant.client as never,
     });
@@ -882,7 +882,7 @@ describe('Indexer collection metadata sentinel', () => {
       qdrantUrl: 'http://127.0.0.1:6333',
       embeddingProvider: provider,
       dimensions: 4,
-      embeddingProviderId: 'ollama',
+      embeddingProviderId: 'llama',
       embeddingModelId: 'jina-code-embeddings',
       qdrantClient: mockQdrant.client as never,
     });
@@ -890,7 +890,7 @@ describe('Indexer collection metadata sentinel', () => {
     await indexer.ensureCollection('legacy');
 
     const meta = await indexer.readCollectionMeta('legacy');
-    expect(meta?.provider).toBe('ollama');
+    expect(meta?.provider).toBe('llama');
   });
 
   it('getGroupStats subtracts the sentinel point from points_count', async () => {
@@ -898,7 +898,7 @@ describe('Indexer collection metadata sentinel', () => {
       qdrantUrl: 'http://127.0.0.1:6333',
       embeddingProvider: provider,
       dimensions: 4,
-      embeddingProviderId: 'ollama',
+      embeddingProviderId: 'llama',
       embeddingModelId: 'jina-code-embeddings',
       qdrantClient: mockQdrant.client as never,
     });
@@ -920,7 +920,7 @@ describe('Indexer collection metadata sentinel', () => {
       qdrantUrl: 'http://127.0.0.1:6333',
       embeddingProvider: provider,
       dimensions: 4,
-      embeddingProviderId: 'ollama',
+      embeddingProviderId: 'llama',
       embeddingModelId: 'jina-code-embeddings',
       qdrantClient: mockQdrant.client as never,
     });
@@ -934,7 +934,7 @@ describe('Indexer collection metadata sentinel', () => {
       qdrantUrl: 'http://127.0.0.1:6333',
       embeddingProvider: provider,
       dimensions: 4,
-      embeddingProviderId: 'ollama',
+      embeddingProviderId: 'llama',
       embeddingModelId: 'jina-code-embeddings',
       qdrantClient: mockQdrant.client as never,
     });

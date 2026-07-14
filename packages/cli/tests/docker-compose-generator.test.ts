@@ -15,56 +15,60 @@ function parseCompose(output: string): ComposeFile {
 const HOME = '/Users/ilya/.paparats';
 
 describe('generateCompose', () => {
-  it('emits qdrant + paparats + indexer for ollamaMode=native (no docker ollama)', () => {
-    const out = generateCompose({ ollamaMode: 'native', paparatsHome: HOME });
+  it('emits qdrant + paparats + indexer for embedMode=native (no docker embed)', () => {
+    const out = generateCompose({ embedMode: 'native', paparatsHome: HOME });
     const compose = parseCompose(out);
 
     expect(compose.services['qdrant']).toBeDefined();
     expect(compose.services['paparats']).toBeDefined();
     expect(compose.services['paparats-indexer']).toBeDefined();
-    expect(compose.services['ollama']).toBeUndefined();
+    expect(compose.services['embed']).toBeUndefined();
 
     const env = compose.services['paparats']!['environment'] as Record<string, string>;
-    expect(env['OLLAMA_URL']).toBe('http://host.docker.internal:11434');
+    expect(env['EMBED_URL']).toBe('http://host.docker.internal:11434');
   });
 
-  it('emits ollama service for ollamaMode=docker and wires depends_on', () => {
-    const out = generateCompose({ ollamaMode: 'docker', paparatsHome: HOME });
+  it('emits embed service for embedMode=docker and wires depends_on', () => {
+    const out = generateCompose({ embedMode: 'docker', paparatsHome: HOME });
     const compose = parseCompose(out);
 
-    expect(compose.services['ollama']).toBeDefined();
+    expect(compose.services['embed']).toBeDefined();
+    expect(compose.services['embed']!['image']).toBe('ibaz/paparats-embed:latest');
+    expect(compose.services['embed']!['container_name']).toBe('paparats-embed');
     const paparatsDeps = compose.services['paparats']!['depends_on'] as Record<string, unknown>;
     const indexerDeps = compose.services['paparats-indexer']!['depends_on'] as Record<
       string,
       unknown
     >;
-    expect(paparatsDeps['ollama']).toBeDefined();
-    expect(indexerDeps['ollama']).toBeDefined();
-    expect(compose.volumes['ollama_data']).toBeDefined();
+    expect(paparatsDeps['embed']).toBeDefined();
+    expect(indexerDeps['embed']).toBeDefined();
+
+    const env = compose.services['paparats']!['environment'] as Record<string, string>;
+    expect(env['EMBED_URL']).toBe('http://embed:8080');
   });
 
-  it('uses provided OLLAMA_URL for ollamaMode=external', () => {
+  it('uses provided EMBED_URL for embedMode=external', () => {
     const out = generateCompose({
-      ollamaMode: 'external',
-      ollamaUrl: 'http://10.0.0.5:11434',
+      embedMode: 'external',
+      embedUrl: 'http://10.0.0.5:11434',
       paparatsHome: HOME,
     });
     const compose = parseCompose(out);
 
-    expect(compose.services['ollama']).toBeUndefined();
+    expect(compose.services['embed']).toBeUndefined();
     const env = compose.services['paparats']!['environment'] as Record<string, string>;
-    expect(env['OLLAMA_URL']).toBe('http://10.0.0.5:11434');
+    expect(env['EMBED_URL']).toBe('http://10.0.0.5:11434');
   });
 
-  it('throws when ollamaMode=external and ollamaUrl missing', () => {
-    expect(() => generateCompose({ ollamaMode: 'external', paparatsHome: HOME })).toThrow(
-      /ollamaUrl/
+  it('throws when embedMode=external and embedUrl missing', () => {
+    expect(() => generateCompose({ embedMode: 'external', paparatsHome: HOME })).toThrow(
+      /embedUrl/
     );
   });
 
   it('omits qdrant service when qdrantUrl is set', () => {
     const out = generateCompose({
-      ollamaMode: 'native',
+      embedMode: 'native',
       qdrantUrl: 'http://my-qdrant:6333',
       paparatsHome: HOME,
     });
@@ -80,7 +84,7 @@ describe('generateCompose', () => {
 
   it('propagates qdrantApiKey env var into both server and indexer', () => {
     const out = generateCompose({
-      ollamaMode: 'native',
+      embedMode: 'native',
       qdrantUrl: 'http://my-qdrant:6333',
       qdrantApiKey: 'sekret',
       paparatsHome: HOME,
@@ -97,7 +101,7 @@ describe('generateCompose', () => {
   });
 
   it('mounts paparatsHome as /config (directory bind-mount, not single file)', () => {
-    const out = generateCompose({ ollamaMode: 'native', paparatsHome: HOME });
+    const out = generateCompose({ embedMode: 'native', paparatsHome: HOME });
     const compose = parseCompose(out);
     const volumes = compose.services['paparats-indexer']!['volumes'] as string[];
     expect(volumes).toContain(`${HOME}:/config:ro`);
@@ -105,7 +109,7 @@ describe('generateCompose', () => {
 
   it('adds bind-mount per local project', () => {
     const out = generateCompose({
-      ollamaMode: 'native',
+      embedMode: 'native',
       paparatsHome: HOME,
       localProjects: [
         { name: 'billing', hostPath: '/Users/alice/code/billing' },
@@ -120,7 +124,7 @@ describe('generateCompose', () => {
 
   it('emits no extra mounts when localProjects is empty', () => {
     const out = generateCompose({
-      ollamaMode: 'native',
+      embedMode: 'native',
       paparatsHome: HOME,
       localProjects: [],
     });
@@ -131,7 +135,7 @@ describe('generateCompose', () => {
   });
 
   it('output is valid YAML with header comment', () => {
-    const out = generateCompose({ ollamaMode: 'native', paparatsHome: HOME });
+    const out = generateCompose({ embedMode: 'native', paparatsHome: HOME });
     expect(out).toContain('# paparats-mcp');
     const compose = parseCompose(out);
     expect(compose.services).toBeDefined();
@@ -140,56 +144,55 @@ describe('generateCompose', () => {
 
   it('honors port overrides', () => {
     const out = generateCompose({
-      ollamaMode: 'docker',
+      embedMode: 'docker',
       paparatsHome: HOME,
-      ports: { qdrant: 7333, paparats: 8876, ollama: 12434, indexer: 9999 },
+      ports: { qdrant: 7333, paparats: 8876, embed: 12434, indexer: 9999 },
     });
     const compose = parseCompose(out);
     expect((compose.services['qdrant']!['ports'] as string[])[0]).toContain('7333');
     expect((compose.services['paparats']!['ports'] as string[])[0]).toContain('8876');
-    expect((compose.services['ollama']!['ports'] as string[])[0]).toContain('12434');
+    expect((compose.services['embed']!['ports'] as string[])[0]).toContain('12434');
     expect((compose.services['paparats-indexer']!['ports'] as string[])[0]).toContain('9999');
   });
 
   it('default cron set when not provided', () => {
-    const out = generateCompose({ ollamaMode: 'native', paparatsHome: HOME });
+    const out = generateCompose({ embedMode: 'native', paparatsHome: HOME });
     const compose = parseCompose(out);
     const env = compose.services['paparats-indexer']!['environment'] as Record<string, string>;
     expect(env['CRON']).toContain('0 */6 * * *');
   });
 
   it('custom cron override', () => {
-    const out = generateCompose({ ollamaMode: 'native', paparatsHome: HOME, cron: '*/15 * * * *' });
+    const out = generateCompose({ embedMode: 'native', paparatsHome: HOME, cron: '*/15 * * * *' });
     const compose = parseCompose(out);
     const env = compose.services['paparats-indexer']!['environment'] as Record<string, string>;
     expect(env['CRON']).toContain('*/15 * * * *');
   });
 
   describe('embeddingProvider', () => {
-    it('skips the ollama service entirely for embeddingProvider=openai', () => {
+    it('skips the embed service entirely for embeddingProvider=openai', () => {
       const out = generateCompose({
-        ollamaMode: 'docker',
+        embedMode: 'docker',
         embeddingProvider: 'openai',
         paparatsHome: HOME,
       });
       const compose = parseCompose(out);
 
-      expect(compose.services['ollama']).toBeUndefined();
-      expect(compose.volumes['ollama_data']).toBeUndefined();
+      expect(compose.services['embed']).toBeUndefined();
 
       const paparatsDeps = compose.services['paparats']!['depends_on'] as Record<string, unknown>;
-      expect(paparatsDeps['ollama']).toBeUndefined();
+      expect(paparatsDeps['embed']).toBeUndefined();
 
       const indexerDeps = compose.services['paparats-indexer']!['depends_on'] as Record<
         string,
         unknown
       >;
-      expect(indexerDeps['ollama']).toBeUndefined();
+      expect(indexerDeps['embed']).toBeUndefined();
     });
 
     it('sets EMBEDDING_PROVIDER and OPENAI_API_KEY on both services for openai', () => {
       const out = generateCompose({
-        ollamaMode: 'docker',
+        embedMode: 'docker',
         embeddingProvider: 'openai',
         paparatsHome: HOME,
       });
@@ -202,16 +205,16 @@ describe('generateCompose', () => {
 
       expect(paparatsEnv['EMBEDDING_PROVIDER']).toBe('openai');
       expect(paparatsEnv['OPENAI_API_KEY']).toBe('${OPENAI_API_KEY:-}');
-      expect(paparatsEnv['OLLAMA_URL']).toBeUndefined();
+      expect(paparatsEnv['EMBED_URL']).toBeUndefined();
 
       expect(indexerEnv['EMBEDDING_PROVIDER']).toBe('openai');
       expect(indexerEnv['OPENAI_API_KEY']).toBe('${OPENAI_API_KEY:-}');
-      expect(indexerEnv['OLLAMA_URL']).toBeUndefined();
+      expect(indexerEnv['EMBED_URL']).toBeUndefined();
     });
 
     it('sets EMBEDDING_PROVIDER and VOYAGE_API_KEY for voyage', () => {
       const out = generateCompose({
-        ollamaMode: 'native',
+        embedMode: 'native',
         embeddingProvider: 'voyage',
         paparatsHome: HOME,
       });
@@ -221,21 +224,21 @@ describe('generateCompose', () => {
       expect(paparatsEnv['EMBEDDING_PROVIDER']).toBe('voyage');
       expect(paparatsEnv['VOYAGE_API_KEY']).toBe('${VOYAGE_API_KEY:-}');
       expect(paparatsEnv['OPENAI_API_KEY']).toBeUndefined();
-      expect(compose.services['ollama']).toBeUndefined();
+      expect(compose.services['embed']).toBeUndefined();
     });
 
-    it('keeps OLLAMA_URL when embeddingProvider is unset (default = ollama)', () => {
-      const out = generateCompose({ ollamaMode: 'native', paparatsHome: HOME });
+    it('keeps EMBED_URL when embeddingProvider is unset (default = llama)', () => {
+      const out = generateCompose({ embedMode: 'native', paparatsHome: HOME });
       const compose = parseCompose(out);
       const env = compose.services['paparats']!['environment'] as Record<string, string>;
 
       expect(env['EMBEDDING_PROVIDER']).toBeUndefined();
-      expect(env['OLLAMA_URL']).toBe('http://host.docker.internal:11434');
+      expect(env['EMBED_URL']).toBe('http://host.docker.internal:11434');
     });
 
     it('cloud provider still keeps qdrant and bind-mounts intact', () => {
       const out = generateCompose({
-        ollamaMode: 'native',
+        embedMode: 'native',
         embeddingProvider: 'openai',
         paparatsHome: HOME,
         localProjects: [{ name: 'web', hostPath: '/Users/x/web' }],

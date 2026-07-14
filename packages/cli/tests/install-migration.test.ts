@@ -26,8 +26,7 @@ function makeDeps(overrides: Partial<ResolvedDeps> = {}): ResolvedDeps {
   return {
     commandExists: () => true,
     getDockerComposeCommand: () => 'docker compose',
-    ollamaModelExists: () => true,
-    isOllamaRunning: async () => true,
+    isEmbedServerRunning: async () => true,
     waitForHealth: async () => true,
     downloadFile: async () => undefined,
     generateCompose: () => 'services: {}\n',

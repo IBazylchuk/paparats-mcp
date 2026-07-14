@@ -173,23 +173,27 @@ describe('doctor', () => {
       });
     });
 
-    describe('Ollama check', () => {
-      it('uses OLLAMA_URL from env', async () => {
-        const customOllamaUrl = 'http://127.0.0.1:9999';
-        process.env.OLLAMA_URL = customOllamaUrl;
+    describe('Embeddings check', () => {
+      it('uses EMBED_URL from env', async () => {
+        const customEmbedUrl = 'http://127.0.0.1:9999';
+        process.env.EMBED_URL = customEmbedUrl;
         mockedExecSync.mockReturnValue(Buffer.from(''));
         mockedFindConfigDir.mockReturnValue(null);
 
         const mockFetch = vi.fn((url: string | URL) => {
           const urlStr = typeof url === 'string' ? url : url.href;
-          if (urlStr.startsWith(customOllamaUrl)) {
-            return Promise.resolve({
-              ok: true,
-              json: () =>
-                Promise.resolve({
-                  models: [{ name: 'jina-code-embeddings' }],
-                }),
-            } as Response);
+          if (urlStr.startsWith(customEmbedUrl)) {
+            if (urlStr.includes('/v1/models')) {
+              return Promise.resolve({
+                ok: true,
+                json: () =>
+                  Promise.resolve({
+                    data: [{ id: 'jina-code-embeddings' }],
+                  }),
+              } as Response);
+            }
+            // /health
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response);
           }
           return originalFetch(url as URL);
         });
@@ -197,18 +201,18 @@ describe('doctor', () => {
 
         const results = await runChecks('http://localhost:9876');
 
-        const ollamaCheck = results.find((r) => r.name === 'Ollama');
-        expect(ollamaCheck?.ok).toBe(true);
-        expect(ollamaCheck?.message).toContain('jina-code-embeddings');
+        const embedCheck = results.find((r) => r.name === 'Embeddings');
+        expect(embedCheck?.ok).toBe(true);
+        expect(embedCheck?.message).toContain('jina-code-embeddings');
         expect(mockFetch).toHaveBeenCalledWith(
-          expect.stringContaining(customOllamaUrl),
+          expect.stringContaining(customEmbedUrl),
           expect.any(Object)
         );
       });
 
       it('reads model from config when available', async () => {
-        const customOllamaUrl = 'http://127.0.0.1:19999';
-        process.env.OLLAMA_URL = customOllamaUrl;
+        const customEmbedUrl = 'http://127.0.0.1:19999';
+        process.env.EMBED_URL = customEmbedUrl;
         mockedExecSync.mockReturnValue(Buffer.from(''));
         mockedFindConfigDir.mockReturnValue('/tmp/proj');
         mockedReadConfig.mockReturnValue({
@@ -222,14 +226,17 @@ describe('doctor', () => {
 
         const mockFetch = vi.fn((url: string | URL) => {
           const urlStr = typeof url === 'string' ? url : url.href;
-          if (urlStr.startsWith(customOllamaUrl)) {
-            return Promise.resolve({
-              ok: true,
-              json: () =>
-                Promise.resolve({
-                  models: [{ name: 'custom-model' }],
-                }),
-            } as Response);
+          if (urlStr.startsWith(customEmbedUrl)) {
+            if (urlStr.includes('/v1/models')) {
+              return Promise.resolve({
+                ok: true,
+                json: () =>
+                  Promise.resolve({
+                    data: [{ id: 'custom-model' }],
+                  }),
+              } as Response);
+            }
+            return Promise.resolve({ ok: true, json: () => Promise.resolve({}) } as Response);
           }
           return Promise.resolve({ ok: false, status: 503 } as Response);
         });
@@ -237,9 +244,9 @@ describe('doctor', () => {
 
         const results = await runChecks('http://localhost:9876');
 
-        const ollamaCheck = results.find((r) => r.name === 'Ollama');
-        expect(ollamaCheck?.ok).toBe(true);
-        expect(ollamaCheck?.message).toContain('custom-model');
+        const embedCheck = results.find((r) => r.name === 'Embeddings');
+        expect(embedCheck?.ok).toBe(true);
+        expect(embedCheck?.message).toContain('custom-model');
       });
     });
 
@@ -322,7 +329,7 @@ describe('doctor', () => {
         expect(callback).toHaveBeenCalledWith('Install');
         expect(callback).toHaveBeenCalledWith('Docker');
         expect(callback).toHaveBeenCalledWith('Docker Compose');
-        expect(callback).toHaveBeenCalledWith('Ollama');
+        expect(callback).toHaveBeenCalledWith('Embeddings');
         expect(callback).toHaveBeenCalledWith('Qdrant');
         expect(callback).toHaveBeenCalledWith('MCP Server');
       });
@@ -338,7 +345,7 @@ describe('doctor', () => {
         expect(names).toContain('Install');
         expect(names).toContain('Docker');
         expect(names).toContain('Docker Compose');
-        expect(names).toContain('Ollama');
+        expect(names).toContain('Embeddings');
         expect(names).toContain('Qdrant');
         expect(names).toContain('MCP Server');
         expect(results.length).toBe(7);
