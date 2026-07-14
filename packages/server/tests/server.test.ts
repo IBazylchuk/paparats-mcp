@@ -39,7 +39,7 @@ function createProjectConfig(overrides?: Partial<ProjectConfig>): ProjectConfig 
       batchSize: 50,
     },
     watcher: { enabled: false, debounce: 1000, stabilityThreshold: 1000 },
-    embeddings: { provider: 'ollama', model: 'test', dimensions: 4 },
+    embeddings: { provider: 'llama', model: 'test', dimensions: 4 },
     metadata: {
       service: 'test-project',
       bounded_context: null,

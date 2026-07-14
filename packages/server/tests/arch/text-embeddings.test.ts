@@ -5,9 +5,9 @@ import {
 } from '../../src/arch/text-embeddings.js';
 
 describe('resolveArchEmbeddingConfig', () => {
-  it('defaults to ollama + bge-m3 + 1024 dims', () => {
+  it('defaults to llama + bge-m3 + 1024 dims', () => {
     const cfg = resolveArchEmbeddingConfig({});
-    expect(cfg.provider).toBe('ollama');
+    expect(cfg.provider).toBe('llama');
     expect(cfg.model).toBe('bge-m3');
     expect(cfg.dimensions).toBe(1024);
   });
@@ -55,7 +55,7 @@ describe('resolveArchEmbeddingConfig', () => {
 describe('createArchEmbeddingProvider', () => {
   it('builds a CachedEmbeddingProvider for the text model with prefixes disabled', () => {
     const provider = createArchEmbeddingProvider({
-      provider: 'ollama',
+      provider: 'llama',
       model: 'bge-m3',
       dimensions: 1024,
     });

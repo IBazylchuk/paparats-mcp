@@ -19,7 +19,7 @@ beforeEach(() => {
   // Most tests assume `paparats install` already ran — without install.json
   // add/remove skip compose regen and never restart, breaking restart-related
   // expectations. Record a minimal install state.
-  writeInstallState({ ollamaMode: 'native' }, tmpHome);
+  writeInstallState({ embedMode: 'native' }, tmpHome);
 });
 
 afterEach(() => {

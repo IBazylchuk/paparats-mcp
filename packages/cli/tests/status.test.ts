@@ -3,7 +3,7 @@ import {
   runStatus,
   validateHealthResponse,
   dockerStatus,
-  ollamaStatus,
+  embedStatus,
   StatusDeps,
 } from '../src/commands/status.js';
 import { execSync } from 'child_process';
@@ -94,37 +94,21 @@ describe('status', () => {
     });
   });
 
-  describe('ollamaStatus', () => {
-    it('returns model ready when model found', () => {
-      mockedExecSync.mockReturnValue('NAME\njina-code-embeddings\n');
+  describe('embedStatus', () => {
+    it('returns model ready when the embed server health check succeeds', () => {
+      mockedExecSync.mockReturnValue(Buffer.from(''));
 
-      const result = ollamaStatus();
-
-      expect(result).toBe('model ready');
-    });
-
-    it('returns running (model not found) when ollama runs but model missing', () => {
-      mockedExecSync.mockReturnValue('NAME\nllama3\n');
-
-      const result = ollamaStatus();
-
-      expect(result).toBe('running (model not found)');
-    });
-
-    it('uses custom model name', () => {
-      mockedExecSync.mockReturnValue('NAME\ncustom-embeddings\n');
-
-      const result = ollamaStatus('custom-embeddings');
+      const result = embedStatus();
 
       expect(result).toBe('model ready');
     });
 
-    it('returns not running when ollama throws', () => {
+    it('returns not running when the health check throws', () => {
       mockedExecSync.mockImplementation(() => {
-        throw new Error('ollama not found');
+        throw new Error('connection refused');
       });
 
-      const result = ollamaStatus();
+      const result = embedStatus();
 
       expect(result).toBe('not running');
     });
@@ -144,7 +128,7 @@ describe('status', () => {
 
       const deps: StatusDeps = {
         dockerStatus: () => ({ qdrant: 'Up 1h', mcp: 'Up 1h' }),
-        ollamaStatus: () => 'model ready',
+        embedStatus: () => 'model ready',
         findConfigDir: () => '/tmp/project',
         readConfig: () => ({
           config: {
@@ -160,7 +144,7 @@ describe('status', () => {
       const result = await runStatus({ server: 'http://localhost:9876' }, deps);
 
       expect(result.docker).toEqual({ qdrant: 'Up 1h', mcp: 'Up 1h' });
-      expect(result.ollama).toBe('model ready');
+      expect(result.embed).toBe('model ready');
       expect(result.config.found).toBe(true);
       expect(result.config.group).toBe('my-group');
       expect(result.config.language).toBe('typescript');
@@ -172,11 +156,11 @@ describe('status', () => {
     });
 
     it('uses model from config when embeddings.model set', async () => {
-      const ollamaStatusMock = vi.fn().mockReturnValue('model ready');
+      const embedStatusMock = vi.fn().mockReturnValue('model ready');
 
       const deps: StatusDeps = {
         dockerStatus: () => ({ qdrant: 'running', mcp: 'running' }),
-        ollamaStatus: ollamaStatusMock,
+        embedStatus: embedStatusMock,
         findConfigDir: () => '/tmp/project',
         readConfig: () => ({
           config: {
@@ -199,7 +183,7 @@ describe('status', () => {
 
       await runStatus({}, deps);
 
-      expect(ollamaStatusMock).toHaveBeenCalledWith('custom-model');
+      expect(embedStatusMock).toHaveBeenCalledWith('custom-model');
     });
 
     it('handles invalid health response', async () => {
@@ -210,7 +194,7 @@ describe('status', () => {
 
       const deps: StatusDeps = {
         dockerStatus: () => ({ qdrant: 'running', mcp: 'running' }),
-        ollamaStatus: () => 'model ready',
+        embedStatus: () => 'model ready',
         findConfigDir: () => null,
         readConfig: () => ({ config: { group: 'g', language: 'ts' }, projectDir: '/' }),
         healthCheck,
@@ -227,7 +211,7 @@ describe('status', () => {
 
       const deps: StatusDeps = {
         dockerStatus: () => ({ qdrant: 'not running', mcp: 'not running' }),
-        ollamaStatus: () => 'not running',
+        embedStatus: () => 'not running',
         findConfigDir: () => null,
         healthCheck,
       };
@@ -251,7 +235,7 @@ describe('status', () => {
 
       const deps: StatusDeps = {
         dockerStatus: () => ({ qdrant: 'running', mcp: 'running' }),
-        ollamaStatus: () => 'model ready',
+        embedStatus: () => 'model ready',
         findConfigDir: () => null,
         healthCheck,
       };
@@ -264,7 +248,7 @@ describe('status', () => {
     it('handles config read error', async () => {
       const deps: StatusDeps = {
         dockerStatus: () => ({ qdrant: 'running', mcp: 'running' }),
-        ollamaStatus: () => 'model ready',
+        embedStatus: () => 'model ready',
         findConfigDir: () => '/tmp/project',
         readConfig: () => {
           throw new Error('Invalid YAML');
