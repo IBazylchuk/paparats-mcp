@@ -38,7 +38,7 @@ const CHANGE_DETECTION_ENABLED =
   (process.env['CHANGE_DETECTION'] ?? 'true').toLowerCase() !== 'false';
 const QDRANT_URL = process.env['QDRANT_URL'] ?? 'http://localhost:6333';
 const QDRANT_API_KEY = process.env['QDRANT_API_KEY'] || undefined;
-const EMBED_URL = process.env['EMBED_URL'] ?? 'http://127.0.0.1:11434';
+const EMBED_URL = process.env['EMBED_URL'] ?? 'http://127.0.0.1:18434';
 const REPOS_DIR = process.env['REPOS_DIR'] ?? '/data/repos';
 const STATE_DB_PATH =
   process.env['STATE_DB_PATH'] ?? path.join(REPOS_DIR, '..', 'indexer-state.db');
@@ -46,7 +46,7 @@ const PORT = parseInt(process.env['PORT'] ?? '9877', 10);
 /** When set, all repos share this single Qdrant collection (group) */
 const PAPARATS_GROUP = process.env['PAPARATS_GROUP']?.trim() || undefined;
 
-if (EMBED_URL !== 'http://127.0.0.1:11434') {
+if (EMBED_URL !== 'http://127.0.0.1:18434') {
   process.env['EMBED_URL'] = EMBED_URL;
 }
 

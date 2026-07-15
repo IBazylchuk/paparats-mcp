@@ -346,6 +346,31 @@ export function regenerateCompose(opts: RegenerateOptions): RegenerateResult {
 }
 
 /**
+ * Find an `http(s)` value for an environment key, scoped to the top-level
+ * `services:` block. A whole-file regex would also match a same-named key
+ * under `volumes:`/`networks:`/`x-*` anchors; we enter the block on
+ * `services:` and stop at the next column-0 key (`/^\S/`). Matches both YAML
+ * map (`KEY: value`) and list (`- KEY=value`) env styles.
+ */
+function findEnvUrlInServices(composeContent: string, key: string): string | undefined {
+  const pattern = new RegExp(`${key}[:=]\\s*['"]?(https?://[^\\s'"]+)`);
+  let inServices = false;
+  for (const raw of composeContent.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (/^services:\s*(?:#.*)?$/.test(line)) {
+      inServices = true;
+      continue;
+    }
+    if (inServices) {
+      if (/^\S/.test(line)) break; // next top-level key → out of services
+      const m = line.match(pattern);
+      if (m) return m[1];
+    }
+  }
+  return undefined;
+}
+
+/**
  * Derive {@link RegenerateOptions} by parsing an existing docker-compose.yml.
  *
  * The fallback for installs that predate `install.json` (the Ollama-era
@@ -359,15 +384,14 @@ export function regenerateCompose(opts: RegenerateOptions): RegenerateResult {
  *                                          → `native`
  *
  * Returning `native` here is what lets `paparats update` heal a legacy compose:
- * regeneration then writes the `EMBED_URL: http://host.docker.internal:11434`
+ * regeneration then writes the `EMBED_URL: http://host.docker.internal:18434`
  * that the Dockerised server/indexer need to reach the host embed server.
  */
 export function deriveRegenerateOptsFromCompose(
   composeContent: string,
   paparatsHome: string = PAPARATS_HOME
 ): RegenerateOptions {
-  const externalEmbedMatch = composeContent.match(/EMBED_URL:\s*(http\S+)/);
-  const externalEmbedUrl = externalEmbedMatch?.[1];
+  const externalEmbedUrl = findEnvUrlInServices(composeContent, 'EMBED_URL');
   const isHostGateway = externalEmbedUrl?.includes('host.docker.internal');
 
   let embedMode: EmbedMode;
@@ -384,8 +408,7 @@ export function deriveRegenerateOptsFromCompose(
   }
 
   const externalQdrant = !composeContent.includes('container_name: paparats-qdrant');
-  const qdrantMatch = composeContent.match(/QDRANT_URL:\s*(http\S+)/);
-  const qdrantUrl = externalQdrant ? qdrantMatch?.[1] : undefined;
+  const qdrantUrl = externalQdrant ? findEnvUrlInServices(composeContent, 'QDRANT_URL') : undefined;
 
   return {
     embedMode,
