@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import Database from 'better-sqlite3';
 import { MetadataStore } from '../src/metadata-db.js';
 
 function createTempDir(): string {
@@ -699,5 +700,43 @@ describe('MetadataStore git file cache', () => {
     store.deleteByProject('g', 'p');
     expect(store.getGitFileCache('g', 'p', 'src/a.ts', 'head1')).toBeNull();
     expect(store.getGitFileCache('g', 'other', 'src/a.ts', 'head1')).not.toBeNull();
+  });
+
+  // Regression: the composite (grp, …) indexes must be created AFTER the grp
+  // migration, not in the initial CREATE block. On a legacy DB the table
+  // already exists without `grp`, so creating a (grp, …) index up front throws
+  // `no such column: grp` and crashes startup.
+  it('opens a legacy database (symbol_edges without grp) without crashing and migrates it', () => {
+    const legacyPath = path.join(tmpDir, 'legacy-metadata.db');
+    // Build a pre-`grp` schema by hand and seed an edge.
+    const raw = new Database(legacyPath);
+    raw.exec(
+      'CREATE TABLE symbol_edges (' +
+        'from_chunk_id TEXT NOT NULL, to_chunk_id TEXT NOT NULL, ' +
+        'relation_type TEXT NOT NULL, symbol_name TEXT NOT NULL, ' +
+        "confidence TEXT NOT NULL DEFAULT 'INFERRED', " +
+        'PRIMARY KEY (from_chunk_id, to_chunk_id, symbol_name))'
+    );
+    raw
+      .prepare(
+        'INSERT INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence) VALUES (?, ?, ?, ?, ?)'
+      )
+      .run('leg//p//a.ts//1-5//h1', 'leg//p//b.ts//1-5//h2', 'calls', 'foo', 'INFERRED');
+    raw.close();
+
+    // Opening the store runs the migration; this must not throw.
+    const legacyStore = new MetadataStore(legacyPath);
+    try {
+      // grp was backfilled from from_chunk_id, so degree stats resolve the group.
+      const snap = legacyStore.getGroupDegreeSnapshot('leg');
+      expect(snap.topInDegree.map((r) => r.chunkId)).toContain('leg//p//b.ts//1-5//h2');
+      // The composite index now exists.
+      const indexes = (legacyStore as unknown as { db: Database.Database }).db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='symbol_edges'")
+        .all() as Array<{ name: string }>;
+      expect(indexes.map((i) => i.name)).toContain('idx_symbol_edges_grp_to');
+    } finally {
+      legacyStore.close();
+    }
   });
 });
