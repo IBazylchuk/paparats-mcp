@@ -22,6 +22,14 @@ import {
 
 const MODELS_DIR = path.join(PAPARATS_HOME, 'models');
 const EMBED_CONFIG_FILE = path.join(PAPARATS_HOME, 'llama-swap.yaml');
+/** Address llama-swap listens on. Must be 0.0.0.0, NOT 127.0.0.1: the MCP
+ *  server and indexer run in Docker and reach the host embed server via
+ *  `host.docker.internal`, which arrives on the host-gateway interface — a
+ *  loopback-only bind (127.0.0.1) refuses those connections and every embed
+ *  call fails with "fetch failed". 0.0.0.0 accepts both loopback (native
+ *  clients / doctor) and the Docker bridge. (Ollama defaults to 0.0.0.0:11434
+ *  for the same reason.) */
+const EMBED_LISTEN_ADDR = '0.0.0.0:11434';
 // Native embed setup: llama.cpp (llama-server) + llama-swap, mirroring the
 // ibaz/paparats-embed docker image but with Metal on macOS. Both models are
 // downloaded and served through one llama-swap config, routed by model name.
@@ -293,7 +301,7 @@ function renderLaunchAgentPlist(llamaSwapPath: string, binDir: string): string {
     <string>--config</string>
     <string>${EMBED_CONFIG_FILE}</string>
     <string>--listen</string>
-    <string>127.0.0.1:11434</string>
+    <string>${EMBED_LISTEN_ADDR}</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -501,7 +509,7 @@ export async function ensureLocalEmbed(
         '--config',
         EMBED_CONFIG_FILE,
         '--listen',
-        '127.0.0.1:11434',
+        EMBED_LISTEN_ADDR,
       ]);
     }
     // Poll for health regardless of launcher — launchd RunAtLoad and the
@@ -517,7 +525,7 @@ export async function ensureLocalEmbed(
     }
     if (!healthy) {
       throw new Error(
-        `Failed to start llama-swap. Start it manually: llama-swap --config ${EMBED_CONFIG_FILE} --listen 127.0.0.1:11434`
+        `Failed to start llama-swap. Start it manually: llama-swap --config ${EMBED_CONFIG_FILE} --listen ${EMBED_LISTEN_ADDR}`
       );
     }
     spinner.succeed(
