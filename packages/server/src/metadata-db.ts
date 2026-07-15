@@ -103,10 +103,13 @@ export class MetadataStore {
     // user_version at 0 (retry next boot) and never let it crash startup.
     if ((this.db.pragma('user_version', { simple: true }) as number) < 1) {
       try {
-        // Detect a non-empty table before dropping, purely so the log is honest.
-        const hadEdges = this.db
+        // Detect a non-empty table before dropping, purely so the log is honest
+        // — an existing-but-empty table (e.g. a prior interrupted purge) should
+        // not report that rows were dropped, so check for at least one row.
+        const tableExists = this.db
           .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'symbol_edges'")
           .get();
+        const hadEdges = tableExists && this.db.prepare('SELECT 1 FROM symbol_edges LIMIT 1').get();
         this.db.exec('DROP TABLE IF EXISTS symbol_edges');
         this.db.pragma('user_version = 1');
         if (hadEdges) {
