@@ -86,6 +86,45 @@ export class MetadataStore {
     // 30s comfortably covers a full-table migration or a batch upsert.
     this.db.pragma('busy_timeout = 30000');
 
+    // One-time purge of edges produced before the AMBIGUOUS fan-out cap. Pre-cap
+    // indexes accumulated millions of quadratic high-fanout edges (e.g. every
+    // caller of `Business` linked to all ~600 definitions) — tables that grew to
+    // many gigabytes. Gated on user_version so it runs exactly once; the CREATE
+    // TABLE IF NOT EXISTS below then recreates the table empty, and the indexer's
+    // reindex epoch (see StateStore) rebuilds every project's edges with the cap.
+    //
+    // MUST use DROP TABLE, never DELETE. `DELETE FROM symbol_edges` logs every
+    // row to the WAL/journal — on a multi-gigabyte table that inflates the WAL
+    // past the table's own size (14 GB observed), never commits, and crashes
+    // startup with SQLITE_BUSY. DROP TABLE deallocates pages in bulk instead.
+    //
+    // Best-effort, NOT a startup precondition: the server and indexer share this
+    // file, so the DROP can still lose a lock race. On any failure we leave
+    // user_version at 0 (retry next boot) and never let it crash startup.
+    if ((this.db.pragma('user_version', { simple: true }) as number) < 1) {
+      try {
+        // Detect a non-empty table before dropping, purely so the log is honest
+        // — an existing-but-empty table (e.g. a prior interrupted purge) should
+        // not report that rows were dropped, so check for at least one row.
+        const tableExists = this.db
+          .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'symbol_edges'")
+          .get();
+        const hadEdges = tableExists && this.db.prepare('SELECT 1 FROM symbol_edges LIMIT 1').get();
+        this.db.exec('DROP TABLE IF EXISTS symbol_edges');
+        this.db.pragma('user_version = 1');
+        if (hadEdges) {
+          console.log(
+            '[metadata] dropped pre-cap symbol_edges table; it will be recreated empty and rebuilt on next reindex'
+          );
+        }
+      } catch (err) {
+        // Do NOT bump user_version — the purge is retried on the next open.
+        console.warn(
+          `[metadata] deferred pre-cap edge purge (will retry on next start): ${(err as Error).message}`
+        );
+      }
+    }
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS chunk_commits (
         chunk_id TEXT NOT NULL,
@@ -176,24 +215,6 @@ export class MetadataStore {
     this.db.exec(
       'CREATE INDEX IF NOT EXISTS idx_symbol_edges_grp_from ON symbol_edges(grp, from_chunk_id)'
     );
-
-    // One-time purge of edges produced before the AMBIGUOUS fan-out cap. Pre-cap
-    // indexes accumulated millions of quadratic high-fanout edges (e.g. every
-    // caller of `Business` linked to all ~600 definitions); leaving them in
-    // place would keep degree stats and find_usages noisy until each project
-    // happens to be re-indexed. Wiping the table here — gated on user_version so
-    // it runs exactly once — hands the indexer a clean slate; its own reindex
-    // epoch (see StateStore) then rebuilds every project's edges with the cap.
-    const edgeSchemaVersion = this.db.pragma('user_version', { simple: true }) as number;
-    if (edgeSchemaVersion < 1) {
-      const purged = this.db.prepare('DELETE FROM symbol_edges').run().changes;
-      this.db.pragma('user_version = 1');
-      if (purged > 0) {
-        console.log(
-          `[metadata] purged ${purged} pre-cap symbol edge(s); they will be rebuilt on next reindex`
-        );
-      }
-    }
 
     this.insertCommitStmt = this.db.prepare(
       'INSERT OR REPLACE INTO chunk_commits (chunk_id, commit_hash, committed_at, author_email, message_summary) VALUES (?, ?, ?, ?, ?)'
