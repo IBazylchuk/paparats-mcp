@@ -317,7 +317,30 @@ function renderLaunchAgentPlist(llamaSwapPath: string, binDir: string): string {
  *  reboots and auto-restarts on crash. Idempotent: rewrites the plist and
  *  bootout/bootstrap-reloads it each run so config changes take effect. */
 function installLaunchAgent(deps: EmbedSetupDeps): void {
-  const llamaSwapPath = String(deps.execSync('command -v llama-swap')).trim();
+  // brewInstall ran before us so llama-swap is installed, but `command -v`
+  // resolves against this process's PATH — which may not include the Homebrew
+  // bin dir (fresh brew install, or a `paparats update` shell without it). Fall
+  // back to the standard Homebrew locations before giving up with a clear error.
+  let llamaSwapPath = '';
+  try {
+    llamaSwapPath = String(deps.execSync('command -v llama-swap')).trim();
+  } catch {
+    // not on PATH — try the known Homebrew bin dirs below
+  }
+  if (!llamaSwapPath) {
+    for (const candidate of ['/opt/homebrew/bin/llama-swap', '/usr/local/bin/llama-swap']) {
+      if (deps.existsSync(candidate)) {
+        llamaSwapPath = candidate;
+        break;
+      }
+    }
+  }
+  if (!llamaSwapPath) {
+    throw new Error(
+      'llama-swap binary not found on PATH or in common Homebrew locations ' +
+        '(/opt/homebrew/bin, /usr/local/bin). Reinstall with `brew install mostlygeek/llama-swap/llama-swap`.'
+    );
+  }
   const binDir = path.dirname(llamaSwapPath);
   deps.mkdirSync(path.dirname(LAUNCH_AGENT_PLIST));
   deps.writeFileSync(LAUNCH_AGENT_PLIST, renderLaunchAgentPlist(llamaSwapPath, binDir));

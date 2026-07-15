@@ -433,4 +433,40 @@ describe('ensureLocalEmbed launcher', () => {
     });
     await expect(ensureLocalEmbed(deps, [])).rejects.toThrow(/Failed to start llama-swap/);
   });
+
+  it('falls back to a Homebrew path when `command -v llama-swap` is not on PATH', async () => {
+    const written: Record<string, string> = {};
+    const deps = makeEmbedDeps({
+      // `command -v llama-swap` throws (brew bin dir not on this process PATH);
+      // launchctl calls succeed.
+      execSync: vi.fn((cmd: string) => {
+        if (String(cmd) === 'command -v llama-swap') throw new Error('not found');
+        return '';
+      }),
+      // binary present in a standard Homebrew location
+      existsSync: vi.fn((p: string) => p === '/opt/homebrew/bin/llama-swap' || true),
+      writeFileSync: vi.fn((p: string, data: string) => {
+        written[p] = data;
+      }),
+    });
+    await ensureLocalEmbed(deps, []);
+    const plist = Object.entries(written).find(([p]) =>
+      p.endsWith('com.paparats.embed.plist')
+    )?.[1];
+    expect(plist).toContain('<string>/opt/homebrew/bin/llama-swap</string>');
+  });
+
+  it('throws a clear error when llama-swap is nowhere to be found', async () => {
+    const deps = makeEmbedDeps({
+      execSync: vi.fn((cmd: string) => {
+        if (String(cmd) === 'command -v llama-swap') throw new Error('not found');
+        return '';
+      }),
+      // neither the GGUFs nor the binary exist — but brewInstall is skipped
+      // because commandExists returns true, so we reach the launcher and fail
+      // resolving the binary path.
+      existsSync: vi.fn((p: string) => p.endsWith('.gguf')),
+    });
+    await expect(ensureLocalEmbed(deps, [])).rejects.toThrow(/binary not found on PATH/);
+  });
 });
