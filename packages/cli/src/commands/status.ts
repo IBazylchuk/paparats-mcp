@@ -69,7 +69,7 @@ export function dockerStatus(): { qdrant: string; mcp: string } {
 export function embedStatus(_modelName = 'jina-code-embeddings'): string {
   try {
     // Static URL, no user input — checks the embed server /health endpoint
-    execSync('curl -fsS http://localhost:11434/health', {
+    execSync('curl -fsS http://localhost:18434/health', {
       encoding: 'utf8',
       timeout: 5_000,
       stdio: ['pipe', 'pipe', 'pipe'],

@@ -22,14 +22,20 @@ import {
 
 const MODELS_DIR = path.join(PAPARATS_HOME, 'models');
 const EMBED_CONFIG_FILE = path.join(PAPARATS_HOME, 'llama-swap.yaml');
-/** Address llama-swap listens on. Must be 0.0.0.0, NOT 127.0.0.1: the MCP
- *  server and indexer run in Docker and reach the host embed server via
+/** Port the native embed server (llama-swap) listens on. Deliberately NOT
+ *  11434 (Ollama's default): sharing that port means llama-swap can't start
+ *  while Ollama is running, and — worse — an embed call could silently hit a
+ *  running Ollama (which rejects the jina-code model). Using a dedicated port
+ *  lets paparats and Ollama coexist. Must stay in sync with the compose
+ *  generator's embed URL and every EMBED_URL default across packages. */
+const EMBED_PORT = 18434;
+/** Address llama-swap binds to. Must be 0.0.0.0, NOT 127.0.0.1: the MCP server
+ *  and indexer run in Docker and reach the host embed server via
  *  `host.docker.internal`, which arrives on the host-gateway interface — a
  *  loopback-only bind (127.0.0.1) refuses those connections and every embed
  *  call fails with "fetch failed". 0.0.0.0 accepts both loopback (native
- *  clients / doctor) and the Docker bridge. (Ollama defaults to 0.0.0.0:11434
- *  for the same reason.) */
-const EMBED_LISTEN_ADDR = '0.0.0.0:11434';
+ *  clients / doctor) and the Docker bridge. */
+const EMBED_LISTEN_ADDR = `0.0.0.0:${EMBED_PORT}`;
 // Native embed setup: llama.cpp (llama-server) + llama-swap, mirroring the
 // ibaz/paparats-embed docker image but with Metal on macOS. Both models are
 // downloaded and served through one llama-swap config, routed by model name.
@@ -70,7 +76,7 @@ export function getDockerComposeCommand(): string {
 
 export async function isEmbedServerRunning(): Promise<boolean> {
   try {
-    const res = await fetch('http://localhost:11434/health', {
+    const res = await fetch(`http://localhost:${EMBED_PORT}/health`, {
       signal: createTimeoutSignal(2000),
     });
     return res.ok;
@@ -502,8 +508,8 @@ export async function ensureLocalEmbed(
       spinner.succeed('Embedding server already running');
       return;
     } else {
-      // Non-macOS: detached llama-swap on the Ollama-compatible host port so the
-      // EMBED_URL default (http://127.0.0.1:11434) resolves without extra config.
+      // Non-macOS: detached llama-swap on the dedicated embed port so the
+      // EMBED_URL default (http://127.0.0.1:18434) resolves without extra config.
       // (No supervisor here — document systemd/service setup per-platform.)
       deps.spawnDetached('llama-swap', [
         '--config',
