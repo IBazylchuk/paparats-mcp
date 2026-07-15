@@ -97,11 +97,17 @@ export class MetadataStore {
         relation_type TEXT NOT NULL,
         symbol_name TEXT NOT NULL,
         confidence TEXT NOT NULL DEFAULT 'INFERRED',
+        grp TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (from_chunk_id, to_chunk_id, symbol_name)
       );
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_from ON symbol_edges(from_chunk_id);
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_to ON symbol_edges(to_chunk_id);
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_symbol ON symbol_edges(symbol_name);
+      -- NOTE: the composite (grp, ...) indexes are created AFTER the grp-column
+      -- migration below, not here. On a legacy database symbol_edges already
+      -- exists without grp, so CREATE TABLE IF NOT EXISTS is a no-op and the
+      -- column is only added by the migration — creating a (grp, ...) index here
+      -- would throw "no such column: grp" and crash startup.
 
       CREATE TABLE IF NOT EXISTS git_file_cache (
         grp TEXT NOT NULL,
@@ -126,6 +132,35 @@ export class MetadataStore {
       );
     }
 
+    // Migrate legacy databases pre-dating the `grp` column. It denormalises the
+    // group (first `//`-delimited segment of a chunk_id) so degree stats can be
+    // aggregated with an indexed `WHERE grp = ?` instead of a full-table
+    // `LIKE 'group//%'` scan. Backfill from existing rows; the composite
+    // indexes above are created regardless, and new/reindexed edges populate
+    // the column directly via upsertSymbolEdges.
+    if (!cols.some((c) => c.name === 'grp')) {
+      this.db.exec("ALTER TABLE symbol_edges ADD COLUMN grp TEXT NOT NULL DEFAULT ''");
+      // substr up to the first '//' — SQLite instr() returns 1-based position.
+      this.db.exec(
+        'UPDATE symbol_edges SET grp = CASE ' +
+          "WHEN instr(from_chunk_id, '//') > 0 " +
+          "THEN substr(from_chunk_id, 1, instr(from_chunk_id, '//') - 1) " +
+          'ELSE from_chunk_id END ' +
+          "WHERE grp = ''"
+      );
+    }
+
+    // Composite (grp, …) indexes for degree aggregation. Created here — after
+    // the migration guarantees the `grp` column exists on both fresh and legacy
+    // databases — so degree stats aggregate via an index range scan instead of
+    // a full-table LIKE scan.
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_symbol_edges_grp_to ON symbol_edges(grp, to_chunk_id)'
+    );
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_symbol_edges_grp_from ON symbol_edges(grp, from_chunk_id)'
+    );
+
     this.insertCommitStmt = this.db.prepare(
       'INSERT OR REPLACE INTO chunk_commits (chunk_id, commit_hash, committed_at, author_email, message_summary) VALUES (?, ?, ?, ?, ?)'
     );
@@ -149,7 +184,7 @@ export class MetadataStore {
     this.deleteChunkTicketsStmt = this.db.prepare('DELETE FROM chunk_tickets WHERE chunk_id = ?');
 
     this.insertEdgeStmt = this.db.prepare(
-      'INSERT OR REPLACE INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence) VALUES (?, ?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, grp) VALUES (?, ?, ?, ?, ?, ?)'
     );
     this.deleteEdgesFromStmt = this.db.prepare('DELETE FROM symbol_edges WHERE from_chunk_id = ?');
     this.deleteEdgesToStmt = this.db.prepare('DELETE FROM symbol_edges WHERE to_chunk_id = ?');
@@ -280,17 +315,21 @@ export class MetadataStore {
   upsertSymbolEdges(edges: SymbolEdge[]): void {
     const tx = this.db.transaction(() => {
       for (const e of edges) {
+        // Denormalise the group (first `//` segment of the source chunk_id) so
+        // degree stats aggregate on an indexed column, not a LIKE scan.
+        const grp = e.from_chunk_id.split('//')[0] ?? '';
         this.insertEdgeStmt.run(
           e.from_chunk_id,
           e.to_chunk_id,
           e.relation_type,
           e.symbol_name,
-          e.confidence ?? 'INFERRED'
+          e.confidence ?? 'INFERRED',
+          grp
         );
       }
     });
     tx();
-    // Edges changed → drop the degree cache for affected groups only. The
+    // Edges changed → mark the degree cache stale for affected groups only. The
     // group is the first `//`-delimited segment of a chunk_id; touching one
     // project must not invalidate cached stats for unrelated groups.
     const affected = new Set<string>();
@@ -360,16 +399,34 @@ export class MetadataStore {
        * fresh Sets per tool invocation.
        */
       hubChunkIds: Set<string>;
+      /**
+       * Marked true when edges are written/deleted for the group. A stale
+       * snapshot is still served immediately (stale-while-revalidate) while a
+       * fresh one is recomputed in the background — a read must never block on
+       * the full-graph scan, which is what caused `find_usages` to hang while
+       * indexing kept invalidating the cache.
+       */
+      stale: boolean;
     }
   >();
   private static readonly DEGREE_CACHE_TTL_MS = 5 * 60 * 1000;
+  /** Groups with an in-flight background degree recompute — dedupes concurrent refreshes. */
+  private degreeRefreshInFlight = new Set<string>();
 
+  /**
+   * Invalidate the degree cache. During indexing this is called on every edge
+   * write, so it must be cheap and must NOT drop the snapshot — otherwise the
+   * next `find_usages` blocks on a full-graph rescan. Instead we mark the
+   * entry stale; the next read serves it immediately and refreshes in the
+   * background. Passing no group clears everything (used by tests / shutdown).
+   */
   invalidateDegreeCache(group?: string): void {
     if (group === undefined) {
       this.degreeCache.clear();
       return;
     }
-    this.degreeCache.delete(group);
+    const entry = this.degreeCache.get(group);
+    if (entry) entry.stale = true;
   }
 
   private computeGroupDegreeStats(group: string): {
@@ -378,17 +435,19 @@ export class MetadataStore {
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
   } {
-    const pattern = `${escapeLike(group)}//%`;
+    // Aggregate on the indexed `grp` column instead of a `LIKE 'group//%'`
+    // scan — the composite indexes (grp, to/from_chunk_id) turn each of these
+    // into an index range scan + grouping rather than a full-table scan.
     const inRows = this.db
       .prepare(
-        "SELECT to_chunk_id AS chunkId, COUNT(*) AS degree FROM symbol_edges WHERE to_chunk_id LIKE ? ESCAPE '\\' GROUP BY to_chunk_id ORDER BY degree DESC"
+        'SELECT to_chunk_id AS chunkId, COUNT(*) AS degree FROM symbol_edges WHERE grp = ? GROUP BY to_chunk_id ORDER BY degree DESC'
       )
-      .all(pattern) as Array<{ chunkId: string; degree: number }>;
+      .all(group) as Array<{ chunkId: string; degree: number }>;
     const outRows = this.db
       .prepare(
-        "SELECT from_chunk_id AS chunkId, COUNT(*) AS degree FROM symbol_edges WHERE from_chunk_id LIKE ? ESCAPE '\\' GROUP BY from_chunk_id ORDER BY degree DESC"
+        'SELECT from_chunk_id AS chunkId, COUNT(*) AS degree FROM symbol_edges WHERE grp = ? GROUP BY from_chunk_id ORDER BY degree DESC'
       )
-      .all(pattern) as Array<{ chunkId: string; degree: number }>;
+      .all(group) as Array<{ chunkId: string; degree: number }>;
     return {
       inDegreeP95: percentile(
         inRows.map((r) => r.degree),
@@ -403,18 +462,22 @@ export class MetadataStore {
     };
   }
 
-  private getGroupDegreeStats(group: string): {
+  /** Build a cache entry from raw stats. Extracted so both the synchronous
+   * first-computation path and the background refresh share hub-set logic. */
+  private buildDegreeEntry(stats: {
+    inDegreeP95: number;
+    outDegreeP95: number;
+    topInDegree: Array<{ chunkId: string; degree: number }>;
+    topOutDegree: Array<{ chunkId: string; degree: number }>;
+  }): {
+    computedAt: number;
     inDegreeP95: number;
     outDegreeP95: number;
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
     hubChunkIds: Set<string>;
+    stale: boolean;
   } {
-    const cached = this.degreeCache.get(group);
-    if (cached && Date.now() - cached.computedAt < MetadataStore.DEGREE_CACHE_TTL_MS) {
-      return cached;
-    }
-    const stats = this.computeGroupDegreeStats(group);
     // Threshold is `>= max(5, p95)`. Using `>` would never match anything
     // when p95 sits on the top-degree node itself (which happens often in
     // small graphs); `>=` reads as "in the top-percentile band". Floor at 5
@@ -428,8 +491,48 @@ export class MetadataStore {
     for (const r of stats.topOutDegree) {
       if (r.degree >= outFloor) hubChunkIds.add(r.chunkId);
     }
-    this.degreeCache.set(group, { ...stats, hubChunkIds, computedAt: Date.now() });
-    return { ...stats, hubChunkIds };
+    return { ...stats, hubChunkIds, computedAt: Date.now(), stale: false };
+  }
+
+  /** Recompute degree stats off the request path and store them. Deduped per
+   * group so concurrent reads don't kick off redundant full-graph scans. */
+  private scheduleDegreeRefresh(group: string): void {
+    if (this.degreeRefreshInFlight.has(group)) return;
+    this.degreeRefreshInFlight.add(group);
+    setImmediate(() => {
+      try {
+        const stats = this.computeGroupDegreeStats(group);
+        this.degreeCache.set(group, this.buildDegreeEntry(stats));
+      } catch {
+        // Leave the previous (stale) entry in place; a later read retries.
+      } finally {
+        this.degreeRefreshInFlight.delete(group);
+      }
+    });
+  }
+
+  private getGroupDegreeStats(group: string): {
+    inDegreeP95: number;
+    outDegreeP95: number;
+    topInDegree: Array<{ chunkId: string; degree: number }>;
+    topOutDegree: Array<{ chunkId: string; degree: number }>;
+    hubChunkIds: Set<string>;
+  } {
+    const cached = this.degreeCache.get(group);
+    if (cached) {
+      const expired = Date.now() - cached.computedAt >= MetadataStore.DEGREE_CACHE_TTL_MS;
+      // Stale-while-revalidate: never block a read on the full-graph scan.
+      // Serve the existing snapshot immediately and refresh in the background
+      // if it's been invalidated by an edge write or has aged out.
+      if (cached.stale || expired) this.scheduleDegreeRefresh(group);
+      return cached;
+    }
+    // Cold start: no snapshot exists yet. Compute once synchronously so the
+    // first caller gets real data (there's nothing to serve otherwise).
+    const stats = this.computeGroupDegreeStats(group);
+    const entry = this.buildDegreeEntry(stats);
+    this.degreeCache.set(group, entry);
+    return entry;
   }
 
   /**
