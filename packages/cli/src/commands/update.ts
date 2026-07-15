@@ -89,11 +89,27 @@ export interface UpdateDeps {
   readNpmLatestVersion?: () => string | null;
 }
 
-/** Check if a service is defined in the compose file */
+/** Check whether a service is declared under the top-level `services:` block.
+ *
+ *  Scoped to `services:` on purpose: a naive `^  <name>:` match on the whole
+ *  file would also hit a same-name key under `volumes:`/`networks:` (both
+ *  indented two spaces). We enter the block on `services:` and leave it at the
+ *  next column-0 key (`/^\S/`, which also stops on a comment at column 0). */
 function composeHasService(composeContent: string, service: string): boolean {
-  // Simple YAML check: service name at indent level 2 under services
-  const pattern = new RegExp(`^  ${service}:`, 'm');
-  return pattern.test(composeContent);
+  const servicePattern = new RegExp(`^  ${service}:`);
+  let inServices = false;
+  for (const raw of composeContent.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (/^services:\s*(?:#.*)?$/.test(line)) {
+      inServices = true;
+      continue;
+    }
+    if (inServices) {
+      if (/^\S/.test(line)) break; // next top-level key → out of services
+      if (servicePattern.test(line)) return true;
+    }
+  }
+  return false;
 }
 
 interface EmbedRefreshDecision {
@@ -153,19 +169,26 @@ function decideEmbedRefresh(deps: {
     return { refresh: true, reason: 'no embedMode; llama-swap.yaml present' };
   }
   if (existsSync(COMPOSE_FILE)) {
-    // Compose exists: native iff it does NOT run an embed service. A Dockerised
-    // embed (`embed` service present) is self-updated by `docker compose pull`
-    // above, so we must NOT also run the native setup for it.
+    // A Dockerised embed (`embed` service present) is self-updated by
+    // `docker compose pull` above, so never run native setup for it —
+    // regardless of platform.
     let composeHasEmbed = false;
     try {
       composeHasEmbed = composeHasService(readFileSync(COMPOSE_FILE, 'utf8'), 'embed');
     } catch {
       // Unreadable compose — fall through to the platform default below.
     }
-    if (!composeHasEmbed) {
+    if (composeHasEmbed) {
+      return { refresh: false, reason: 'no embedMode; docker-compose.yml runs an embed service' };
+    }
+    // Compose without an embed service means the embed runs natively — but
+    // native embed is only supported on macOS (Homebrew llama.cpp/llama-swap).
+    // On Linux/Windows this configuration is external/manual, so don't try to
+    // brew-install; fall through to the non-macOS default (refresh: false).
+    if (platform() === 'darwin') {
       return { refresh: true, reason: 'no embedMode; docker-compose.yml has no embed service' };
     }
-    return { refresh: false, reason: 'no embedMode; docker-compose.yml runs an embed service' };
+    return { refresh: false, reason: 'no embedMode; non-macOS compose without embed service' };
   }
   if (platform() === 'darwin') {
     return { refresh: true, reason: 'no embedMode; macOS host without docker-compose.yml' };
