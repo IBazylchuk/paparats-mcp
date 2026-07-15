@@ -103,11 +103,11 @@ export class MetadataStore {
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_from ON symbol_edges(from_chunk_id);
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_to ON symbol_edges(to_chunk_id);
       CREATE INDEX IF NOT EXISTS idx_symbol_edges_symbol ON symbol_edges(symbol_name);
-      -- Degree stats aggregate per group. A composite grp index turns the old
-      -- full-table LIKE scan into an index range scan, which is what let
-      -- find_usages hang while indexing churned the graph.
-      CREATE INDEX IF NOT EXISTS idx_symbol_edges_grp_to ON symbol_edges(grp, to_chunk_id);
-      CREATE INDEX IF NOT EXISTS idx_symbol_edges_grp_from ON symbol_edges(grp, from_chunk_id);
+      -- NOTE: the composite (grp, ...) indexes are created AFTER the grp-column
+      -- migration below, not here. On a legacy database symbol_edges already
+      -- exists without grp, so CREATE TABLE IF NOT EXISTS is a no-op and the
+      -- column is only added by the migration — creating a (grp, ...) index here
+      -- would throw "no such column: grp" and crash startup.
 
       CREATE TABLE IF NOT EXISTS git_file_cache (
         grp TEXT NOT NULL,
@@ -149,6 +149,17 @@ export class MetadataStore {
           "WHERE grp = ''"
       );
     }
+
+    // Composite (grp, …) indexes for degree aggregation. Created here — after
+    // the migration guarantees the `grp` column exists on both fresh and legacy
+    // databases — so degree stats aggregate via an index range scan instead of
+    // a full-table LIKE scan.
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_symbol_edges_grp_to ON symbol_edges(grp, to_chunk_id)'
+    );
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_symbol_edges_grp_from ON symbol_edges(grp, from_chunk_id)'
+    );
 
     this.insertCommitStmt = this.db.prepare(
       'INSERT OR REPLACE INTO chunk_commits (chunk_id, commit_hash, committed_at, author_email, message_summary) VALUES (?, ?, ?, ?, ?)'
