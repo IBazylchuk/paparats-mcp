@@ -48,7 +48,7 @@ export async function runChecks(
 
   // Resolve config for URLs/models
   const qdrantUrl = process.env.QDRANT_URL ?? 'http://localhost:6333';
-  const embedUrl = process.env.EMBED_URL ?? 'http://localhost:11434';
+  const embedUrl = process.env.EMBED_URL ?? 'http://localhost:18434';
   let embedModel = process.env.EMBEDDING_MODEL ?? 'jina-code-embeddings';
 
   const configDir = findConfigDir();

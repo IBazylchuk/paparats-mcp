@@ -107,7 +107,8 @@ async function defaultRegenerateAndRestart(
   paparatsHome: string = PAPARATS_HOME
 ): Promise<{ composeChanged: boolean }> {
   // Lazy import to avoid pulling install.ts (and its deps) in non-edit code paths.
-  const { regenerateCompose, readInstallState } = await import('../projects-yml.js');
+  const { regenerateCompose, readInstallState, deriveRegenerateOptsFromCompose } =
+    await import('../projects-yml.js');
   const composePath = path.join(paparatsHome, COMPOSE_YML);
   if (!fs.existsSync(composePath)) {
     return { composeChanged: false };
@@ -130,24 +131,10 @@ async function defaultRegenerateAndRestart(
       paparatsHome,
     };
   } else {
-    const existing = fs.readFileSync(composePath, 'utf8');
-    const embedMode = existing.includes('container_name: paparats-embed')
-      ? 'docker'
-      : existing.includes('EMBED_URL: http://host.docker.internal:11434')
-        ? 'native'
-        : 'external';
-    const externalEmbedMatch = existing.match(/EMBED_URL:\s*(http\S+)/);
-    const embedUrl =
-      embedMode === 'external' && externalEmbedMatch ? externalEmbedMatch[1] : undefined;
-    const externalQdrant = !existing.includes('container_name: paparats-qdrant');
-    const qdrantMatch = existing.match(/QDRANT_URL:\s*(http\S+)/);
-    const qdrantUrl = externalQdrant && qdrantMatch ? qdrantMatch[1] : undefined;
-    regenerateOpts = {
-      embedMode,
-      ...(embedUrl !== undefined ? { embedUrl } : {}),
-      ...(qdrantUrl !== undefined ? { qdrantUrl } : {}),
-      paparatsHome,
-    };
+    regenerateOpts = deriveRegenerateOptsFromCompose(
+      fs.readFileSync(composePath, 'utf8'),
+      paparatsHome
+    );
   }
 
   const { changed } = regenerateCompose(regenerateOpts);

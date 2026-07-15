@@ -12,7 +12,9 @@ import { setupNativeEmbed } from './install.js';
 import { commandExists as realCommandExists } from './install.js';
 import {
   readInstallState,
+  writeInstallState,
   regenerateCompose,
+  deriveRegenerateOptsFromCompose,
   type RegenerateOptions,
   type RegenerateResult,
 } from '../projects-yml.js';
@@ -81,6 +83,8 @@ export interface UpdateDeps {
   existsSync?: (path: string) => boolean;
   readFileSync?: (path: string, encoding: BufferEncoding) => string;
   readInstallState?: typeof readInstallState;
+  writeInstallState?: typeof writeInstallState;
+  deriveRegenerateOptsFromCompose?: typeof deriveRegenerateOptsFromCompose;
   regenerateCompose?: (opts: RegenerateOptions) => RegenerateResult;
   setupNativeEmbed?: () => Promise<void>;
   commandExists?: (cmd: string) => boolean;
@@ -203,6 +207,8 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
   const exists = deps?.existsSync ?? fs.existsSync.bind(fs);
   const readFile = deps?.readFileSync ?? fs.readFileSync.bind(fs);
   const readInstall = deps?.readInstallState ?? readInstallState;
+  const writeInstall = deps?.writeInstallState ?? writeInstallState;
+  const deriveCompose = deps?.deriveRegenerateOptsFromCompose ?? deriveRegenerateOptsFromCompose;
   const regenerate = deps?.regenerateCompose ?? regenerateCompose;
   const setupEmbed = deps?.setupNativeEmbed ?? setupNativeEmbed;
   const commandExists = deps?.commandExists ?? realCommandExists;
@@ -262,40 +268,61 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
       // can collide on container names or miss new env/volume settings.
       const regenSpinner = ora('Refreshing docker-compose.yml...').start();
       const state = readInstall(PAPARATS_HOME);
-      if (!state) {
-        regenSpinner.warn(
-          `install.json missing — skipping compose refresh. Run \`paparats install\` to record install settings.`
-        );
+      // install.json is the source of truth. When it's missing (Ollama-era
+      // installs that predate the file), derive the same options by parsing the
+      // existing compose so `update` can still refresh — and persist a fresh
+      // install.json so subsequent runs have the clean signal. Without this, a
+      // legacy compose that lacks EMBED_URL is left untouched and the
+      // Dockerised server/indexer default to 127.0.0.1 (themselves) →
+      // "llama-server failed: fetch failed".
+      let regenerateOpts: RegenerateOptions;
+      if (state) {
+        regenerateOpts = {
+          embedMode: state.embedMode,
+          ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
+          ...(state.embeddingProvider !== undefined
+            ? { embeddingProvider: state.embeddingProvider }
+            : {}),
+          ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
+          ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
+          ...(state.cron !== undefined ? { cron: state.cron } : {}),
+          paparatsHome: PAPARATS_HOME,
+        };
       } else {
-        try {
-          const result = regenerate({
-            embedMode: state.embedMode,
-            ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
-            ...(state.embeddingProvider !== undefined
-              ? { embeddingProvider: state.embeddingProvider }
+        regenerateOpts = deriveCompose(readFile(COMPOSE_FILE, 'utf8'), PAPARATS_HOME);
+        writeInstall(
+          {
+            embedMode: regenerateOpts.embedMode,
+            ...(regenerateOpts.embedUrl !== undefined ? { embedUrl: regenerateOpts.embedUrl } : {}),
+            ...(regenerateOpts.qdrantUrl !== undefined
+              ? { qdrantUrl: regenerateOpts.qdrantUrl }
               : {}),
-            ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
-            ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
-            ...(state.cron !== undefined ? { cron: state.cron } : {}),
-            paparatsHome: PAPARATS_HOME,
-            backupOnChange: true,
-          });
-          if (result.changed) {
-            regenSpinner.succeed('docker-compose.yml refreshed');
-            if (result.backupPath) {
-              console.log(
-                chalk.dim(
-                  `  Previous compose backed up to ${result.backupPath} (hand-edits, if any, are preserved there).`
-                )
-              );
-            }
-          } else {
-            regenSpinner.succeed('docker-compose.yml already up to date');
+          },
+          PAPARATS_HOME
+        );
+        console.log(
+          chalk.dim(
+            `  No install.json — inferred embedMode=${regenerateOpts.embedMode} from docker-compose.yml and recorded it.`
+          )
+        );
+      }
+      try {
+        const result = regenerate({ ...regenerateOpts, backupOnChange: true });
+        if (result.changed) {
+          regenSpinner.succeed('docker-compose.yml refreshed');
+          if (result.backupPath) {
+            console.log(
+              chalk.dim(
+                `  Previous compose backed up to ${result.backupPath} (hand-edits, if any, are preserved there).`
+              )
+            );
           }
-        } catch (err) {
-          regenSpinner.fail('Failed to refresh docker-compose.yml');
-          throw err;
+        } else {
+          regenSpinner.succeed('docker-compose.yml already up to date');
         }
+      } catch (err) {
+        regenSpinner.fail('Failed to refresh docker-compose.yml');
+        throw err;
       }
 
       const composeContent = readFile(COMPOSE_FILE, 'utf8');

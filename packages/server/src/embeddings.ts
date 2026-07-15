@@ -152,7 +152,7 @@ export class LlamaServerProvider implements EmbeddingProvider {
   readonly dimensions: number;
 
   constructor(config?: LlamaServerProviderConfig) {
-    this.url = config?.url ?? process.env.EMBED_URL ?? 'http://127.0.0.1:11434';
+    this.url = config?.url ?? process.env.EMBED_URL ?? 'http://127.0.0.1:18434';
     // Model name routed by llama-swap. Matches the GGUF baked into
     // ibaz/paparats-embed (jinaai/jina-code-embeddings-1.5b-GGUF).
     this.model = config?.model ?? 'jina-code-embeddings';
