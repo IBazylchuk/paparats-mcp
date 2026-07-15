@@ -30,6 +30,16 @@ describe('update', () => {
   let execMock: ReturnType<typeof vi.fn>;
   let embedMock: ReturnType<typeof vi.fn>;
 
+  // Default CLI-version deps: installed === latest → the version guard passes.
+  // Individual tests override to exercise the mismatch path. Bundled so every
+  // runUpdate call can spread them without touching real npm.
+  const versionDeps = {
+    readInstalledCliVersion: () => '1.7.2',
+    readNpmLatestVersion: () => '1.7.2',
+    commandExists: () => false,
+    platform: () => 'linux' as NodeJS.Platform,
+  };
+
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -50,6 +60,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -80,6 +91,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -100,6 +112,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
         }
@@ -118,6 +131,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => false,
@@ -139,6 +153,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: healthMock,
           existsSync: () => true,
@@ -164,6 +179,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: healthMock,
           existsSync: () => true,
@@ -196,6 +212,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -223,6 +240,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -250,6 +268,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -268,6 +287,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -286,6 +306,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -304,6 +325,7 @@ describe('update', () => {
         {
           execSync: execMock,
           setupNativeEmbed: embedMock,
+          ...versionDeps,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           readInstallState: () => ({ embedMode: 'native' as const }),
@@ -311,6 +333,118 @@ describe('update', () => {
       );
 
       expect(embedMock).toHaveBeenCalledTimes(1);
+    });
+
+    // ── CLI-version verification (defect A) ──────────────────────────────────
+
+    it('throws when the CLI did not actually upgrade to npm latest', async () => {
+      await expect(
+        runUpdate(
+          {},
+          {
+            execSync: execMock,
+            setupNativeEmbed: embedMock,
+            ...versionDeps,
+            // npm install exited 0 but the global stayed on an old version
+            readInstalledCliVersion: () => '0.2.18',
+            readNpmLatestVersion: () => '1.7.2',
+            getDockerComposeCommand: () => 'docker compose',
+            waitForHealth: () => Promise.resolve(true),
+            existsSync: () => true,
+            readFileSync: () => COMPOSE_WITH_QDRANT,
+            readInstallState: () => STUB_INSTALL_STATE,
+            regenerateCompose: stubRegenerate(),
+          }
+        )
+      ).rejects.toThrow(/CLI did not update: global .* is 0\.2\.18, but npm latest is 1\.7\.2/);
+
+      // Aborts before Docker/embed run — old code must not proceed.
+      expect(embedMock).not.toHaveBeenCalled();
+    });
+
+    it('does not throw when version is unknown (offline / npm unreachable)', async () => {
+      await runUpdate(
+        {},
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          ...versionDeps,
+          readInstalledCliVersion: () => '0.2.18',
+          readNpmLatestVersion: () => null, // registry unreachable
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          existsSync: () => true,
+          readFileSync: () => COMPOSE_WITH_QDRANT,
+          readInstallState: () => STUB_INSTALL_STATE,
+          regenerateCompose: stubRegenerate(),
+        }
+      );
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Update complete'));
+    });
+
+    // ── native-embed detection without install.json (defect B) ───────────────
+
+    it('refreshes embed when no install.json but llama-swap is on PATH', async () => {
+      await runUpdate(
+        { skipCli: true, skipDocker: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          ...versionDeps,
+          commandExists: (cmd: string) => cmd === 'llama-swap',
+          readInstallState: () => null,
+        }
+      );
+      expect(embedMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('refreshes embed when no install.json but llama-swap.yaml exists', async () => {
+      await runUpdate(
+        { skipCli: true, skipDocker: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          ...versionDeps,
+          commandExists: () => false,
+          existsSync: (p: string) => p.endsWith('llama-swap.yaml'),
+          readInstallState: () => null,
+        }
+      );
+      expect(embedMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('refreshes embed on macOS with no install.json and no docker-compose.yml', async () => {
+      await runUpdate(
+        { skipCli: true, skipDocker: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          ...versionDeps,
+          commandExists: () => false,
+          platform: () => 'darwin' as NodeJS.Platform,
+          existsSync: () => false, // no compose file
+          readInstallState: () => null,
+        }
+      );
+      expect(embedMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT refresh embed when no install.json and no native signals (Linux, docker-only)', async () => {
+      await runUpdate(
+        { skipCli: true, skipDocker: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          ...versionDeps,
+          commandExists: () => false,
+          platform: () => 'linux' as NodeJS.Platform,
+          existsSync: () => false,
+          readInstallState: () => null,
+        }
+      );
+      expect(embedMock).not.toHaveBeenCalled();
+      // And it says why it skipped (defect C).
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Skipping native embed refresh'));
     });
   });
 });

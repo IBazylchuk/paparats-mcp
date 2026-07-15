@@ -8,6 +8,7 @@ import ora from 'ora';
 import { getDockerComposeCommand } from './install.js';
 import { waitForHealth } from './install.js';
 import { setupNativeEmbed } from './install.js';
+import { commandExists as realCommandExists } from './install.js';
 import {
   readInstallState,
   regenerateCompose,
@@ -17,7 +18,38 @@ import {
 
 const PAPARATS_HOME = path.join(os.homedir(), '.paparats');
 const COMPOSE_FILE = path.join(PAPARATS_HOME, 'docker-compose.yml');
+const EMBED_CONFIG_FILE = path.join(PAPARATS_HOME, 'llama-swap.yaml');
 const NPM_PACKAGE = '@paparats/cli';
+
+/** Installed global CLI version. `npm ls -g` reads the on-disk package.json.
+ *  The command string is fully static (no user input) — same execSync pattern
+ *  the rest of this module uses. Returns null if it can't be determined. */
+function readInstalledCliVersion(): string | null {
+  try {
+    const out = execSync(`npm ls -g ${NPM_PACKAGE} --depth=0 --json`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30_000,
+    }).toString();
+    const parsed = JSON.parse(out) as { dependencies?: Record<string, { version?: string }> };
+    return parsed.dependencies?.[NPM_PACKAGE]?.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Latest version published to npm. Null if the registry can't be reached. */
+function readNpmLatestVersion(): string | null {
+  try {
+    return execSync(`npm view ${NPM_PACKAGE} version`, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 30_000,
+    })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+}
 
 export interface UpdateOptions {
   skipCli?: boolean;
@@ -35,6 +67,10 @@ export interface UpdateDeps {
   readInstallState?: typeof readInstallState;
   regenerateCompose?: (opts: RegenerateOptions) => RegenerateResult;
   setupNativeEmbed?: () => Promise<void>;
+  commandExists?: (cmd: string) => boolean;
+  platform?: () => NodeJS.Platform;
+  readInstalledCliVersion?: () => string | null;
+  readNpmLatestVersion?: () => string | null;
 }
 
 /** Check if a service is defined in the compose file */
@@ -42,6 +78,49 @@ function composeHasService(composeContent: string, service: string): boolean {
   // Simple YAML check: service name at indent level 2 under services
   const pattern = new RegExp(`^  ${service}:`, 'm');
   return pattern.test(composeContent);
+}
+
+interface EmbedRefreshDecision {
+  refresh: boolean;
+  reason: string;
+}
+
+/** Decide whether `update` should (re)install the native embed server.
+ *
+ *  The clean signal is install.json's embedMode. But installs from before that
+ *  file existed — or hand-rolled ones — have no install.json, and the old code
+ *  then silently skipped the embed step, leaving the host with no running embed
+ *  backend after the Ollama→llama-server migration. So when install.json is
+ *  absent we detect native usage by artifacts + platform:
+ *    - llama-swap or llama-server already on PATH  → native embed in use
+ *    - ~/.paparats/llama-swap.yaml present         → native embed configured
+ *    - macOS host with no docker-compose.yml       → native is the default there
+ *  A `docker`/`external` embedMode, or a Docker-only host, returns refresh=false. */
+function decideEmbedRefresh(deps: {
+  state: ReturnType<typeof readInstallState>;
+  commandExists: (cmd: string) => boolean;
+  existsSync: (p: string) => boolean;
+  platform: () => NodeJS.Platform;
+}): EmbedRefreshDecision {
+  const { state, commandExists, existsSync, platform } = deps;
+
+  if (state) {
+    return state.embedMode === 'native'
+      ? { refresh: true, reason: 'install.json embedMode=native' }
+      : { refresh: false, reason: `install.json embedMode=${state.embedMode}` };
+  }
+
+  // No install.json — detect by artifacts + platform.
+  if (commandExists('llama-swap') || commandExists('llama-server')) {
+    return { refresh: true, reason: 'no install.json; llama-swap/llama-server on PATH' };
+  }
+  if (existsSync(EMBED_CONFIG_FILE)) {
+    return { refresh: true, reason: 'no install.json; llama-swap.yaml present' };
+  }
+  if (platform() === 'darwin' && !existsSync(COMPOSE_FILE)) {
+    return { refresh: true, reason: 'no install.json; macOS host without docker-compose.yml' };
+  }
+  return { refresh: false, reason: 'no install.json; no native-embed signals detected' };
 }
 
 export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise<void> {
@@ -53,6 +132,10 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
   const readInstall = deps?.readInstallState ?? readInstallState;
   const regenerate = deps?.regenerateCompose ?? regenerateCompose;
   const setupEmbed = deps?.setupNativeEmbed ?? setupNativeEmbed;
+  const commandExists = deps?.commandExists ?? realCommandExists;
+  const platform = deps?.platform ?? (() => process.platform);
+  const installedVersion = deps?.readInstalledCliVersion ?? readInstalledCliVersion;
+  const npmLatest = deps?.readNpmLatestVersion ?? readNpmLatestVersion;
 
   console.log(chalk.bold('\npaparats update\n'));
 
@@ -74,6 +157,24 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
       } else {
         throw err;
       }
+    }
+
+    // Verify the install actually took. `npm install -g` can exit 0 without
+    // upgrading (a stale/parallel node context, a `paparats` on PATH from a
+    // different node/nvm install, or missing global-write perms), leaving the
+    // running process on old code — every step below then silently runs the old
+    // logic. Fail loudly instead of reporting a false "Update complete".
+    const latest = npmLatest();
+    const installed = installedVersion();
+    if (latest && installed && installed !== latest) {
+      throw new Error(
+        `CLI did not update: global ${NPM_PACKAGE} is ${installed}, but npm latest is ${latest}.\n` +
+          `  The \`paparats\` on your PATH likely belongs to a different node/nvm install than the ` +
+          `\`npm\` that ran the upgrade.\n` +
+          `  Fix: run \`which -a paparats\` and \`npm root -g\` to find the mismatch, then ` +
+          `\`npm install -g ${NPM_PACKAGE}@latest\` with the node that owns your PATH \`paparats\`.\n` +
+          `  Re-run \`paparats update\` afterward so the new native-embed / compose logic runs.`
+      );
     }
   }
 
@@ -164,16 +265,28 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
   }
 
   // Native embed server lives on the host (not Docker), so `docker compose
-  // pull/up` above never touches it. For native installs, re-run the embed
-  // setup here so a single `paparats update` also installs/refreshes/starts
-  // llama-server + llama-swap. Idempotent — no-ops when everything is current.
+  // pull/up` above never touches it. Re-run the embed setup here so a single
+  // `paparats update` also installs/refreshes/starts llama-server + llama-swap.
+  // Idempotent — no-ops when everything is current.
   if (!opts.skipEmbed) {
-    const state = readInstall(PAPARATS_HOME);
-    if (state?.embedMode === 'native') {
+    const decision = decideEmbedRefresh({
+      state: readInstall(PAPARATS_HOME),
+      commandExists,
+      existsSync: exists,
+      platform,
+    });
+    if (decision.refresh) {
       // setupNativeEmbed prints its own spinners for each step (brew, download,
       // start), so just announce the section rather than wrapping in a spinner.
-      console.log(chalk.dim('\nEnsuring native embedding server (llama-server + llama-swap)...'));
+      console.log(
+        chalk.dim(
+          `\nEnsuring native embedding server (llama-server + llama-swap) — ${decision.reason}...`
+        )
+      );
       await setupEmbed();
+    } else {
+      // Say why we skipped so a missing embed server isn't a silent surprise.
+      console.log(chalk.dim(`\nSkipping native embed refresh (${decision.reason}).`));
     }
   }
 
