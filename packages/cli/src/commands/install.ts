@@ -237,11 +237,12 @@ export interface InstallDeps {
   env?: NodeJS.ProcessEnv;
   platform?: () => NodeJS.Platform;
   execSync?: (cmd: string, opts?: object) => Buffer | string;
+  spawnDetached?: (cmd: string, args: string[]) => void;
 }
 
 // ── Shared native embed setup (llama.cpp + llama-swap) ──────────────────────
 
-interface EmbedSetupDeps {
+export interface EmbedSetupDeps {
   commandExists: (cmd: string) => boolean;
   isEmbedServerRunning: () => Promise<boolean>;
   downloadFile: (url: string, dest: string, signal?: AbortSignal) => Promise<void>;
@@ -250,7 +251,88 @@ interface EmbedSetupDeps {
   existsSync: (path: string) => boolean;
   unlinkSync: (path: string) => void;
   execSync: (cmd: string, opts?: object) => Buffer | string;
+  /** Detached fallback launcher (non-macOS). Returns nothing; caller polls health. */
+  spawnDetached: (cmd: string, args: string[]) => void;
+  platform: () => NodeJS.Platform;
+  /** Delay between health-poll ticks. Injectable so tests run instantly. */
+  sleep?: (ms: number) => Promise<void>;
   signal?: AbortSignal;
+}
+
+const LAUNCHD_LABEL = 'com.paparats.embed';
+const LAUNCH_AGENT_PLIST = path.join(
+  os.homedir(),
+  'Library',
+  'LaunchAgents',
+  `${LAUNCHD_LABEL}.plist`
+);
+const EMBED_LOG_FILE = path.join(PAPARATS_HOME, 'llama-swap.log');
+
+/** Render a LaunchAgent plist that runs llama-swap on the Ollama-compatible
+ *  port. RunAtLoad starts it at login; KeepAlive restarts it if it crashes —
+ *  the macOS equivalent of the `service` block Homebrew formulae ship (which
+ *  llama-swap's tap does not). llamaSwapPath is the resolved absolute binary
+ *  path so launchd (which has a minimal PATH) can find it.
+ *
+ *  The EnvironmentVariables/PATH is critical: launchd hands the process a bare
+ *  `/usr/bin:/bin:/usr/sbin:/sbin`, but the llama-swap config spawns
+ *  `llama-server` by bare name. Without the Homebrew bin dir on PATH, that
+ *  child spawn fails with "executable file not found in $PATH" and every embed
+ *  request 500s. binDir is the directory holding both binaries (Homebrew). */
+function renderLaunchAgentPlist(llamaSwapPath: string, binDir: string): string {
+  const launchPath = `${binDir}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${llamaSwapPath}</string>
+    <string>--config</string>
+    <string>${EMBED_CONFIG_FILE}</string>
+    <string>--listen</string>
+    <string>127.0.0.1:11434</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${launchPath}</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>${EMBED_LOG_FILE}</string>
+  <key>StandardErrorPath</key>
+  <string>${EMBED_LOG_FILE}</string>
+</dict>
+</plist>
+`;
+}
+
+/** Install + (re)load the llama-swap LaunchAgent so the embed server survives
+ *  reboots and auto-restarts on crash. Idempotent: rewrites the plist and
+ *  bootout/bootstrap-reloads it each run so config changes take effect. */
+function installLaunchAgent(deps: EmbedSetupDeps): void {
+  const llamaSwapPath = String(deps.execSync('command -v llama-swap')).trim();
+  const binDir = path.dirname(llamaSwapPath);
+  deps.mkdirSync(path.dirname(LAUNCH_AGENT_PLIST));
+  deps.writeFileSync(LAUNCH_AGENT_PLIST, renderLaunchAgentPlist(llamaSwapPath, binDir));
+
+  const uid = process.getuid ? process.getuid() : 0;
+  const domain = `gui/${uid}`;
+  // Reload cleanly: bootout an existing instance (ignore "not loaded" errors),
+  // then bootstrap the fresh plist. `launchctl load -w` is the older spelling;
+  // bootstrap/bootout is the current one and works on modern macOS.
+  try {
+    deps.execSync(`launchctl bootout ${domain}/${LAUNCHD_LABEL}`, { stdio: 'ignore' });
+  } catch {
+    // not currently loaded — fine
+  }
+  deps.execSync(`launchctl bootstrap ${domain} "${LAUNCH_AGENT_PLIST}"`);
 }
 
 /** Render the native llama-swap config \u2014 mirrors the docker image's template
@@ -319,6 +401,22 @@ async function brewInstall(
   }
   const s = ora(`Installing ${formula} via brew...`).start();
   try {
+    // A third-party formula is spelled `user/tap/formula`. Recent Homebrew
+    // requires the tap to be added AND trusted before it will load such a
+    // formula (`Refusing to load formula ... from untrusted tap`). Core
+    // formulae (a bare name like `llama.cpp`) skip all of this.
+    const parts = formula.split('/');
+    if (parts.length === 3) {
+      const tap = `${parts[0]}/${parts[1]}`;
+      deps.execSync(`brew tap ${tap}`, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: timeoutMs,
+      });
+      deps.execSync(`brew trust ${tap}`, {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        timeout: timeoutMs,
+      });
+    }
     deps.execSync(`brew install ${formula}`, {
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: timeoutMs,
@@ -335,12 +433,12 @@ async function brewInstall(
  * configured, and running. Mirrors the ibaz/paparats-embed docker image but uses
  * Metal on macOS. Used by developer/server install when embedMode is 'native'.
  */
-async function ensureLocalEmbed(
+export async function ensureLocalEmbed(
   deps: EmbedSetupDeps,
   cleanupTasks: Array<() => void>
 ): Promise<void> {
   await brewInstall(deps, 'llama-server', 'llama.cpp', 300_000);
-  await brewInstall(deps, 'llama-swap', 'mostlygeek/tap/llama-swap', 180_000);
+  await brewInstall(deps, 'llama-swap', 'mostlygeek/llama-swap/llama-swap', 180_000);
 
   await downloadModelIfNeeded(
     deps,
@@ -362,18 +460,39 @@ async function ensureLocalEmbed(
 
   const spinner = ora('Starting native embedding server (llama-swap)...').start();
   try {
-    if (await deps.isEmbedServerRunning()) {
+    const isMac = deps.platform() === 'darwin';
+    if (isMac) {
+      // macOS: run under launchd so the server survives reboot and restarts on
+      // crash. llama-swap's Homebrew formula ships no `service` block, so brew
+      // services can't do this for us. Reload every run to pick up config
+      // changes; the LaunchAgent's KeepAlive keeps it up thereafter.
+      installLaunchAgent(deps);
+    } else if (await deps.isEmbedServerRunning()) {
       spinner.succeed('Embedding server already running');
       return;
+    } else {
+      // Non-macOS: detached llama-swap on the Ollama-compatible host port so the
+      // EMBED_URL default (http://127.0.0.1:11434) resolves without extra config.
+      // (No supervisor here — document systemd/service setup per-platform.)
+      deps.spawnDetached('llama-swap', [
+        '--config',
+        EMBED_CONFIG_FILE,
+        '--listen',
+        '127.0.0.1:11434',
+      ]);
     }
-    // Detached llama-swap on the Ollama-compatible host port so the EMBED_URL
-    // default (http://127.0.0.1:11434) resolves without extra config.
-    spawn('llama-swap', ['--config', EMBED_CONFIG_FILE, '--listen', '127.0.0.1:11434'], {
-      stdio: 'ignore',
-      detached: true,
-    }).unref();
-    await new Promise((r) => setTimeout(r, 3000));
-    if (!(await deps.isEmbedServerRunning())) {
+    // Poll for health regardless of launcher — launchd RunAtLoad and the
+    // detached spawn both take a moment to bind the port.
+    const sleep = deps.sleep ?? ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+    let healthy = false;
+    for (let i = 0; i < 15; i++) {
+      if (await deps.isEmbedServerRunning()) {
+        healthy = true;
+        break;
+      }
+      await sleep(1000);
+    }
+    if (!healthy) {
       throw new Error(
         `Failed to start llama-swap. Start it manually: llama-swap --config ${EMBED_CONFIG_FILE} --listen 127.0.0.1:11434`
       );
@@ -385,6 +504,37 @@ async function ensureLocalEmbed(
     spinner.fail('Failed to start native embedding server');
     throw err;
   }
+}
+
+/**
+ * Idempotently ensure the native (llama.cpp + llama-swap) embed server is
+ * installed, configured and running, using real filesystem/process deps.
+ *
+ * `ensureLocalEmbed` is the shared implementation but expects a pre-built
+ * `EmbedSetupDeps` and a cleanup-task list (install threads its own through so
+ * an interrupted install rolls back partial downloads). This wrapper assembles
+ * the production deps and owns the cleanup list, so callers outside install
+ * (notably `paparats update` for native installs) get the same behaviour from
+ * one call. Re-running is safe: brew installs are skipped when the binary
+ * exists, GGUFs are skipped when already downloaded, and the server is left
+ * alone when already healthy.
+ */
+export async function setupNativeEmbed(): Promise<void> {
+  const embedDeps: EmbedSetupDeps = {
+    commandExists,
+    isEmbedServerRunning,
+    downloadFile,
+    mkdirSync: (p: string) => fs.mkdirSync(p, { recursive: true }),
+    writeFileSync: fs.writeFileSync.bind(fs),
+    existsSync: fs.existsSync.bind(fs),
+    unlinkSync: fs.unlinkSync.bind(fs),
+    execSync: execSync as unknown as EmbedSetupDeps['execSync'],
+    spawnDetached: (cmd, args) => {
+      spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
+    },
+    platform: () => process.platform,
+  };
+  await ensureLocalEmbed(embedDeps, []);
 }
 
 // ── Migration ───────────────────────────────────────────────────────────────
@@ -506,6 +656,7 @@ export interface ResolvedDeps {
   env: NodeJS.ProcessEnv;
   platform: () => NodeJS.Platform;
   execSync: (cmd: string, opts?: object) => Buffer | string;
+  spawnDetached: (cmd: string, args: string[]) => void;
   signal?: AbortSignal;
 }
 
@@ -548,7 +699,7 @@ export async function decideEmbedMode(
     );
     if (opts.nonInteractive) {
       throw new Error(
-        'Native embed server not found. Install with `brew install llama.cpp mostlygeek/tap/llama-swap`, ' +
+        'Native embed server not found. Install with `brew install llama.cpp mostlygeek/llama-swap/llama-swap`, ' +
           'or pass --embed-mode docker / --embed-url <url>.'
       );
     }
@@ -1043,6 +1194,11 @@ export async function runInstall(
     env: deps?.env ?? process.env,
     platform: deps?.platform ?? (() => process.platform),
     execSync: deps?.execSync ?? (execSync as unknown as ResolvedDeps['execSync']),
+    spawnDetached:
+      deps?.spawnDetached ??
+      ((cmd: string, args: string[]) => {
+        spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
+      }),
     ...(deps?.signal !== undefined ? { signal: deps.signal } : {}),
     ...(deps?.promptUseExternalQdrant !== undefined
       ? { promptUseExternalQdrant: deps.promptUseExternalQdrant }
