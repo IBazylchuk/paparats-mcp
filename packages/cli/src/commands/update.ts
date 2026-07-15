@@ -89,11 +89,27 @@ export interface UpdateDeps {
   readNpmLatestVersion?: () => string | null;
 }
 
-/** Check if a service is defined in the compose file */
+/** Check whether a service is declared under the top-level `services:` block.
+ *
+ *  Scoped to `services:` on purpose: a naive `^  <name>:` match on the whole
+ *  file would also hit a same-name key under `volumes:`/`networks:` (both
+ *  indented two spaces). We enter the block on `services:` and leave it at the
+ *  next column-0 key (`/^\S/`, which also stops on a comment at column 0). */
 function composeHasService(composeContent: string, service: string): boolean {
-  // Simple YAML check: service name at indent level 2 under services
-  const pattern = new RegExp(`^  ${service}:`, 'm');
-  return pattern.test(composeContent);
+  const servicePattern = new RegExp(`^  ${service}:`);
+  let inServices = false;
+  for (const raw of composeContent.split('\n')) {
+    const line = raw.replace(/\r$/, '');
+    if (/^services:\s*(?:#.*)?$/.test(line)) {
+      inServices = true;
+      continue;
+    }
+    if (inServices) {
+      if (/^\S/.test(line)) break; // next top-level key → out of services
+      if (servicePattern.test(line)) return true;
+    }
+  }
+  return false;
 }
 
 interface EmbedRefreshDecision {
@@ -103,40 +119,81 @@ interface EmbedRefreshDecision {
 
 /** Decide whether `update` should (re)install the native embed server.
  *
- *  The clean signal is install.json's embedMode. But installs from before that
- *  file existed — or hand-rolled ones — have no install.json, and the old code
- *  then silently skipped the embed step, leaving the host with no running embed
- *  backend after the Ollama→llama-server migration. So when install.json is
- *  absent we detect native usage by artifacts + platform:
- *    - llama-swap or llama-server already on PATH  → native embed in use
- *    - ~/.paparats/llama-swap.yaml present         → native embed configured
- *    - macOS host with no docker-compose.yml       → native is the default there
- *  A `docker`/`external` embedMode, or a Docker-only host, returns refresh=false. */
+ *  The clean signal is install.json's embedMode — but only when it is actually
+ *  set. Installs from before that field existed have an install.json with no
+ *  embedMode (undefined); hand-rolled installs have no install.json at all. In
+ *  both cases the old code silently skipped the embed step, leaving the host
+ *  with no running embed backend after the Ollama→llama-server migration.
+ *
+ *  So embedMode decides ONLY when it is a known value:
+ *    - `native`             → refresh
+ *    - `docker`/`external`  → skip
+ *  Otherwise (embedMode undefined, or no install.json) we fall through to
+ *  detection by artifacts + compose contents:
+ *    - llama-swap or llama-server already on PATH   → native embed in use
+ *    - ~/.paparats/llama-swap.yaml present          → native embed configured
+ *    - docker-compose.yml exists WITHOUT an `embed`
+ *      service (Qdrant+server in Docker, embed on
+ *      the host) → native embed is in use           → refresh
+ *    - no compose at all on macOS                    → native is the default there
+ *
+ *  The compose-contents check is the key signal for hosts that upgraded from
+ *  the Ollama era: those developer installs always wrote a docker-compose.yml
+ *  (Qdrant + server) but ran embeddings natively — so "compose present" alone
+ *  never meant "embed is Dockerised". We must look at whether the compose file
+ *  actually declares an `embed` service. */
 function decideEmbedRefresh(deps: {
   state: ReturnType<typeof readInstallState>;
   commandExists: (cmd: string) => boolean;
   existsSync: (p: string) => boolean;
+  readFileSync: (p: string, enc: 'utf8') => string;
   platform: () => NodeJS.Platform;
 }): EmbedRefreshDecision {
-  const { state, commandExists, existsSync, platform } = deps;
+  const { state, commandExists, existsSync, readFileSync, platform } = deps;
 
-  if (state) {
-    return state.embedMode === 'native'
-      ? { refresh: true, reason: 'install.json embedMode=native' }
-      : { refresh: false, reason: `install.json embedMode=${state.embedMode}` };
+  // Explicit embedMode wins — but only when it is actually set. A truthy
+  // `state` with `embedMode === undefined` (pre-embedMode install.json) must
+  // NOT short-circuit to skip; it falls through to artifact/compose detection.
+  if (state?.embedMode === 'native') {
+    return { refresh: true, reason: 'install.json embedMode=native' };
+  }
+  if (state?.embedMode === 'docker' || state?.embedMode === 'external') {
+    return { refresh: false, reason: `install.json embedMode=${state.embedMode}` };
   }
 
-  // No install.json — detect by artifacts + platform.
+  // No decisive embedMode — detect by artifacts + compose contents.
   if (commandExists('llama-swap') || commandExists('llama-server')) {
-    return { refresh: true, reason: 'no install.json; llama-swap/llama-server on PATH' };
+    return { refresh: true, reason: 'no embedMode; llama-swap/llama-server on PATH' };
   }
   if (existsSync(EMBED_CONFIG_FILE)) {
-    return { refresh: true, reason: 'no install.json; llama-swap.yaml present' };
+    return { refresh: true, reason: 'no embedMode; llama-swap.yaml present' };
   }
-  if (platform() === 'darwin' && !existsSync(COMPOSE_FILE)) {
-    return { refresh: true, reason: 'no install.json; macOS host without docker-compose.yml' };
+  if (existsSync(COMPOSE_FILE)) {
+    // A Dockerised embed (`embed` service present) is self-updated by
+    // `docker compose pull` above, so never run native setup for it —
+    // regardless of platform.
+    let composeHasEmbed = false;
+    try {
+      composeHasEmbed = composeHasService(readFileSync(COMPOSE_FILE, 'utf8'), 'embed');
+    } catch {
+      // Unreadable compose — fall through to the platform default below.
+    }
+    if (composeHasEmbed) {
+      return { refresh: false, reason: 'no embedMode; docker-compose.yml runs an embed service' };
+    }
+    // Compose without an embed service means the embed runs natively — but
+    // native embed is only supported on macOS (Homebrew llama.cpp/llama-swap).
+    // On Linux/Windows this configuration is external/manual, so don't try to
+    // brew-install; fall through to the non-macOS default (refresh: false).
+    if (platform() === 'darwin') {
+      return { refresh: true, reason: 'no embedMode; docker-compose.yml has no embed service' };
+    }
+    return { refresh: false, reason: 'no embedMode; non-macOS compose without embed service' };
   }
-  return { refresh: false, reason: 'no install.json; no native-embed signals detected' };
+  if (platform() === 'darwin') {
+    return { refresh: true, reason: 'no embedMode; macOS host without docker-compose.yml' };
+  }
+  return { refresh: false, reason: 'no embedMode; no native-embed signals detected' };
 }
 
 export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise<void> {
@@ -289,6 +346,7 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
       state: readInstall(PAPARATS_HOME),
       commandExists,
       existsSync: exists,
+      readFileSync: readFile,
       platform,
     });
     if (decision.refresh) {
