@@ -396,6 +396,13 @@ describe('ensureLocalEmbed launcher', () => {
       p.endsWith('com.paparats.embed.plist')
     )?.[1];
     expect(plist).toContain('<string>/custom/bin/llama-swap</string>');
+    // Must bind 0.0.0.0, not 127.0.0.1: the Dockerised MCP server / indexer
+    // reach the host embed via host.docker.internal (host-gateway iface); a
+    // loopback-only bind refuses those and every embed call fails. This is the
+    // path `paparats update` takes on macOS (installLaunchAgent runs every
+    // time), so update rewrites a stale 127.0.0.1 plist to 0.0.0.0.
+    expect(plist).toContain('<string>0.0.0.0:11434</string>');
+    expect(plist).not.toContain('<string>127.0.0.1:11434</string>');
     expect(plist).toContain('<key>RunAtLoad</key>');
     expect(plist).toContain('<key>KeepAlive</key>');
     // PATH must include the binary's dir so launchd's minimal PATH can still
@@ -418,7 +425,7 @@ describe('ensureLocalEmbed launcher', () => {
       '--config',
       expect.stringContaining('llama-swap.yaml'),
       '--listen',
-      '127.0.0.1:11434',
+      '0.0.0.0:11434',
     ]);
     const execCalls = (deps.execSync as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
       String(c[0])
