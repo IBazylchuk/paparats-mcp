@@ -25,7 +25,7 @@ describe('generateCompose', () => {
     expect(compose.services['embed']).toBeUndefined();
 
     const env = compose.services['paparats']!['environment'] as Record<string, string>;
-    expect(env['EMBED_URL']).toBe('http://host.docker.internal:11434');
+    expect(env['EMBED_URL']).toBe('http://host.docker.internal:18434');
   });
 
   it('emits embed service for embedMode=docker and wires depends_on', () => {
@@ -233,7 +233,7 @@ describe('generateCompose', () => {
       const env = compose.services['paparats']!['environment'] as Record<string, string>;
 
       expect(env['EMBEDDING_PROVIDER']).toBeUndefined();
-      expect(env['EMBED_URL']).toBe('http://host.docker.internal:11434');
+      expect(env['EMBED_URL']).toBe('http://host.docker.internal:18434');
     });
 
     it('cloud provider still keeps qdrant and bind-mounts intact', () => {

@@ -24,7 +24,7 @@ describe('deriveRegenerateOptsFromCompose', () => {
   paparats:
     container_name: paparats-mcp
     environment:
-      EMBED_URL: http://host.docker.internal:11434
+      EMBED_URL: http://host.docker.internal:18434
 `;
     expect(deriveRegenerateOptsFromCompose(compose, '/home').embedMode).toBe('native');
   });
@@ -52,13 +52,53 @@ describe('deriveRegenerateOptsFromCompose', () => {
     expect(opts.embedUrl).toBe('http://gpu-box.internal:11434');
   });
 
+  it('does not match EMBED_URL outside the services block (volumes/networks false positive)', () => {
+    const compose = `services:
+  paparats:
+    container_name: paparats-mcp
+    image: ibaz/paparats-server:latest
+volumes:
+  EMBED_URL: http://false-positive.example.com
+`;
+    const opts = deriveRegenerateOptsFromCompose(compose, '/home');
+    // The volumes-block key must be ignored → no external URL → native.
+    expect(opts.embedMode).toBe('native');
+    expect(opts.embedUrl).toBeUndefined();
+  });
+
+  it('does not match QDRANT_URL outside the services block', () => {
+    const compose = `services:
+  paparats:
+    container_name: paparats-mcp
+    environment:
+      EMBED_URL: http://host.docker.internal:18434
+networks:
+  QDRANT_URL: http://false-positive.example.com
+`;
+    // No qdrant container → externalQdrant true, but the URL only lives in
+    // networks:, so it must not be picked up.
+    expect(deriveRegenerateOptsFromCompose(compose, '/home').qdrantUrl).toBeUndefined();
+  });
+
+  it('reads a list-style env entry (- KEY=value)', () => {
+    const compose = `services:
+  paparats:
+    container_name: paparats-mcp
+    environment:
+      - EMBED_URL=http://gpu-box.internal:11434
+`;
+    const opts = deriveRegenerateOptsFromCompose(compose, '/home');
+    expect(opts.embedMode).toBe('external');
+    expect(opts.embedUrl).toBe('http://gpu-box.internal:11434');
+  });
+
   it('captures an external Qdrant URL when there is no qdrant container', () => {
     const compose = `services:
   paparats:
     container_name: paparats-mcp
     environment:
       QDRANT_URL: https://cloud.qdrant.io:6333
-      EMBED_URL: http://host.docker.internal:11434
+      EMBED_URL: http://host.docker.internal:18434
 `;
     const opts = deriveRegenerateOptsFromCompose(compose, '/home');
     expect(opts.qdrantUrl).toBe('https://cloud.qdrant.io:6333');

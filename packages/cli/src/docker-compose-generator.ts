@@ -246,7 +246,7 @@ function indexerService(
 export function generateCompose(config: UnifiedComposeConfig): string {
   const qdrantPort = config.ports?.qdrant ?? 6333;
   const paparatsPort = config.ports?.paparats ?? 9876;
-  const embedPort = config.ports?.embed ?? 11434;
+  const embedPort = config.ports?.embed ?? 18434;
   const indexerPort = config.ports?.indexer ?? 9877;
 
   const embeddingProvider: EmbeddingProvider = config.embeddingProvider ?? 'llama';
@@ -307,7 +307,7 @@ function resolveEmbedUrl(config: UnifiedComposeConfig): string {
     case 'docker':
       return 'http://embed:8080';
     case 'native':
-      return 'http://host.docker.internal:11434';
+      return 'http://host.docker.internal:18434';
     case 'external':
       if (!config.embedUrl) {
         throw new Error('generateCompose: embedMode="external" requires embedUrl');
