@@ -739,4 +739,14 @@ describe('MetadataStore git file cache', () => {
       legacyStore.close();
     }
   });
+
+  // The server and indexer share this DB file and both write to it. A short
+  // busy_timeout makes a contended write fail with "database is locked" instead
+  // of waiting; guard against regressing the value back down.
+  it('sets a generous busy_timeout so concurrent writers wait for the lock', () => {
+    const timeout = (store as unknown as { db: Database.Database }).db.pragma('busy_timeout', {
+      simple: true,
+    });
+    expect(timeout).toBeGreaterThanOrEqual(30000);
+  });
 });

@@ -68,7 +68,14 @@ export class MetadataStore {
     } catch {
       // WAL not supported, continue with default
     }
-    this.db.pragma('busy_timeout = 5000');
+    // The server and indexer processes open this same file (shared volume) and
+    // both write to it — the indexer during indexing, the server on-demand for
+    // git history. WAL lets readers run during a write, but two writers still
+    // serialise. With a short timeout a contended write (e.g. the startup
+    // symbol_edges migration racing the indexer) fails immediately with
+    // SQLite "database is locked". Wait for the lock instead of erroring —
+    // 30s comfortably covers a full-table migration or a batch upsert.
+    this.db.pragma('busy_timeout = 30000');
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS chunk_commits (
