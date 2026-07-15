@@ -5,7 +5,9 @@ import {
   decideEmbeddingProvider,
   mergeDotenv,
   upsertMcpServer,
+  ensureLocalEmbed,
   type InstallOptions,
+  type EmbedSetupDeps,
 } from '../src/commands/install.js';
 import type { EmbeddingProvider } from '../src/docker-compose-generator.js';
 
@@ -94,7 +96,7 @@ describe('decideEmbedMode', () => {
     });
     const opts: InstallOptions = { nonInteractive: true };
     await expect(decideEmbedMode(opts, deps)).rejects.toThrow(
-      /llama.cpp mostlygeek\/tap\/llama-swap/
+      /llama.cpp mostlygeek\/llama-swap\/llama-swap/
     );
   });
 
@@ -321,5 +323,114 @@ describe('upsertMcpServer', () => {
     };
     const r = upsertMcpServer('/tmp/x.json', 'paparats', { url: 'http://x' }, deps);
     expect(r).toBe('unchanged');
+  });
+});
+
+// ── ensureLocalEmbed: launcher (launchd on macOS, detached spawn elsewhere) ──
+
+function makeEmbedDeps(overrides: Partial<EmbedSetupDeps> = {}): EmbedSetupDeps {
+  return {
+    // binaries already present → brewInstall is a no-op
+    commandExists: vi.fn().mockReturnValue(true),
+    // healthy immediately so the poll loop exits on the first tick
+    isEmbedServerRunning: vi.fn().mockResolvedValue(true),
+    downloadFile: vi.fn(),
+    mkdirSync: vi.fn(),
+    writeFileSync: vi.fn(),
+    // GGUFs already downloaded → no network
+    existsSync: vi.fn().mockReturnValue(true),
+    unlinkSync: vi.fn(),
+    execSync: vi.fn().mockReturnValue('/opt/homebrew/bin/llama-swap\n'),
+    spawnDetached: vi.fn(),
+    platform: vi.fn().mockReturnValue('darwin' as NodeJS.Platform),
+    sleep: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+describe('ensureLocalEmbed launcher', () => {
+  it('installs and bootstraps a LaunchAgent on macOS (no detached spawn)', async () => {
+    const deps = makeEmbedDeps({ platform: vi.fn().mockReturnValue('darwin') });
+    await ensureLocalEmbed(deps, []);
+
+    const execCalls = (deps.execSync as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+      String(c[0])
+    );
+    const writeCalls = (deps.writeFileSync as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+      String(c[0])
+    );
+
+    // plist written to ~/Library/LaunchAgents
+    expect(writeCalls.some((p) => p.includes('LaunchAgents/com.paparats.embed.plist'))).toBe(true);
+    // resolved the binary path and bootstrapped the agent
+    expect(execCalls).toContain('command -v llama-swap');
+    expect(execCalls.some((c) => c.startsWith('launchctl bootstrap '))).toBe(true);
+    // never falls back to a detached spawn on macOS
+    expect(deps.spawnDetached).not.toHaveBeenCalled();
+  });
+
+  it('boots out a stale agent before bootstrapping (reload)', async () => {
+    const deps = makeEmbedDeps();
+    await ensureLocalEmbed(deps, []);
+    const execCalls = (deps.execSync as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+      String(c[0])
+    );
+    const bootoutIdx = execCalls.findIndex((c) => c.startsWith('launchctl bootout '));
+    const bootstrapIdx = execCalls.findIndex((c) => c.startsWith('launchctl bootstrap '));
+    expect(bootoutIdx).toBeGreaterThanOrEqual(0);
+    expect(bootstrapIdx).toBeGreaterThan(bootoutIdx);
+  });
+
+  it('embeds the resolved llama-swap path into the plist', async () => {
+    const written: Record<string, string> = {};
+    const deps = makeEmbedDeps({
+      execSync: vi.fn((cmd: string) =>
+        String(cmd) === 'command -v llama-swap' ? '/custom/bin/llama-swap\n' : ''
+      ),
+      writeFileSync: vi.fn((p: string, data: string) => {
+        written[p] = data;
+      }),
+    });
+    await ensureLocalEmbed(deps, []);
+    const plist = Object.entries(written).find(([p]) =>
+      p.endsWith('com.paparats.embed.plist')
+    )?.[1];
+    expect(plist).toContain('<string>/custom/bin/llama-swap</string>');
+    expect(plist).toContain('<key>RunAtLoad</key>');
+    expect(plist).toContain('<key>KeepAlive</key>');
+    // PATH must include the binary's dir so launchd's minimal PATH can still
+    // find `llama-server`, which the llama-swap config spawns by bare name.
+    expect(plist).toContain('<key>PATH</key>');
+    expect(plist).toMatch(/<string>\/custom\/bin:[^<]*<\/string>/);
+  });
+
+  it('uses a detached spawn on non-macOS (no launchctl)', async () => {
+    const deps = makeEmbedDeps({
+      platform: vi.fn().mockReturnValue('linux'),
+      isEmbedServerRunning: vi
+        .fn()
+        .mockResolvedValueOnce(false) // pre-check: not running
+        .mockResolvedValue(true), // health poll: up
+    });
+    await ensureLocalEmbed(deps, []);
+
+    expect(deps.spawnDetached).toHaveBeenCalledWith('llama-swap', [
+      '--config',
+      expect.stringContaining('llama-swap.yaml'),
+      '--listen',
+      '127.0.0.1:11434',
+    ]);
+    const execCalls = (deps.execSync as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+      String(c[0])
+    );
+    expect(execCalls.some((c) => c.includes('launchctl'))).toBe(false);
+  });
+
+  it('throws if the server never becomes healthy', async () => {
+    const deps = makeEmbedDeps({
+      platform: vi.fn().mockReturnValue('linux'),
+      isEmbedServerRunning: vi.fn().mockResolvedValue(false),
+    });
+    await expect(ensureLocalEmbed(deps, [])).rejects.toThrow(/Failed to start llama-swap/);
   });
 });
