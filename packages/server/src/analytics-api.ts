@@ -161,7 +161,10 @@ function parsePeriod(raw: unknown): PeriodLabel {
   return '24h';
 }
 
-async function fetchIndexerHealth(url: string, timeoutMs = 5000): Promise<IndexerSection> {
+// 15s, not 5s: the indexer's event loop can be busy for several seconds while
+// it commits a large symbol-edge batch, so a 5s probe would spuriously report
+// the indexer as unreachable during an otherwise healthy index cycle.
+async function fetchIndexerHealth(url: string, timeoutMs = 15000): Promise<IndexerSection> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
