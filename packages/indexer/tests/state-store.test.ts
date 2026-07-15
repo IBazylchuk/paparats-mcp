@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import Database from 'better-sqlite3';
 import { StateStore } from '../src/state-store.js';
 
 describe('StateStore', () => {
@@ -81,5 +82,46 @@ describe('StateStore', () => {
   it('close is idempotent', () => {
     store.close();
     expect(() => store.close()).not.toThrow();
+  });
+
+  describe('reindex epoch', () => {
+    it('clears all fingerprints once when opening a pre-epoch database', () => {
+      // Seed a legacy DB: rows present, user_version still 0 (pre-epoch).
+      const legacyPath = path.join(dir, 'legacy-state.db');
+      const raw = new Database(legacyPath);
+      const createSql =
+        'CREATE TABLE repo_fingerprints (' +
+        'full_name TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, ' +
+        'last_indexed_at TEXT NOT NULL, last_chunks INTEGER)';
+      raw.prepare(createSql).run();
+      raw
+        .prepare(
+          'INSERT INTO repo_fingerprints (full_name, fingerprint, kind, last_indexed_at, last_chunks) VALUES (?, ?, ?, ?, ?)'
+        )
+        .run('org/repo', 'stale', 'git', '2024-01-01T00:00:00Z', 5);
+      raw.close();
+
+      // Opening via StateStore trips the epoch gate → fingerprints wiped, so the
+      // next cron cycle re-indexes everything and rebuilds derived data.
+      const migrated = new StateStore(legacyPath);
+      try {
+        expect(migrated.get('org/repo')).toBeUndefined();
+      } finally {
+        migrated.close();
+      }
+    });
+
+    it('does not clear fingerprints on subsequent opens (idempotent)', () => {
+      // A store created fresh has already advanced to the current epoch, so a
+      // fingerprint set now must survive a reopen.
+      store.set('org/repo', 'fp', 'git', 3);
+      store.close();
+      const reopened = new StateStore(dbPath);
+      try {
+        expect(reopened.get('org/repo')?.fingerprint).toBe('fp');
+      } finally {
+        reopened.close();
+      }
+    });
   });
 });

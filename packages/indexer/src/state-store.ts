@@ -10,6 +10,20 @@ export interface StoredFingerprint {
 }
 
 /**
+ * Bump this whenever a code change requires every repo to be re-indexed on the
+ * next boot regardless of its content fingerprint — e.g. a symbol-graph fix
+ * that must rebuild edges even for repos whose source hasn't changed. On
+ * startup the store compares this against the persisted value; a mismatch wipes
+ * all fingerprints so the next cron cycle performs a full pass, then records the
+ * new version. Left unchanged, boots are a no-op.
+ *
+ * History:
+ *  1 — symbol-graph AMBIGUOUS fan-out cap: rebuild edges to purge the millions
+ *      of stale high-fanout edges from pre-cap indexes.
+ */
+const REINDEX_EPOCH = 1;
+
+/**
  * Persistent store of per-repo fingerprints used by the change-detection
  * cycle. One row per repo `fullName`. Lives at a configurable SQLite path
  * (typically /data/indexer-state.db inside the container).
@@ -50,6 +64,26 @@ export class StateStore {
          last_chunks     = excluded.last_chunks`
     );
     this.deleteStmt = this.db.prepare('DELETE FROM repo_fingerprints WHERE full_name = ?');
+
+    this.applyReindexEpoch();
+  }
+
+  /**
+   * One-time forced reindex gate. When the code's {@link REINDEX_EPOCH} is newer
+   * than the value persisted in this database, drop every stored fingerprint so
+   * the next cron cycle re-indexes all repos (rebuilding derived data such as
+   * symbol edges), then record the new epoch. Idempotent across restarts —
+   * only the first boot after an epoch bump clears state.
+   */
+  private applyReindexEpoch(): void {
+    const stored = (this.db.pragma('user_version', { simple: true }) as number) ?? 0;
+    if (stored >= REINDEX_EPOCH) return;
+    const cleared = this.db.prepare('DELETE FROM repo_fingerprints').run().changes;
+    // user_version only accepts an integer literal — no bound parameters.
+    this.db.pragma(`user_version = ${REINDEX_EPOCH}`);
+    console.log(
+      `[indexer] reindex epoch ${stored} → ${REINDEX_EPOCH}: cleared ${cleared} repo fingerprint(s); next cycle re-indexes all repos`
+    );
   }
 
   get(fullName: string): StoredFingerprint | undefined {
