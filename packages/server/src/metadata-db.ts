@@ -7,6 +7,15 @@ import type { ChunkCommit, ChunkTicket, SymbolEdge } from './types.js';
 const PAPARATS_DIR = path.join(os.homedir(), '.paparats');
 const DEFAULT_DB_PATH = path.join(PAPARATS_DIR, 'metadata.db');
 
+/**
+ * Symbol-edge inserts are chunked into transactions of this size. better-sqlite3
+ * is synchronous, so a single transaction over a very large edge set blocks the
+ * Node event loop for its whole duration — long enough on big repos to trip the
+ * indexer's health probe. Committing in batches with a yield (`setImmediate`)
+ * between them lets pending I/O (health checks, HTTP requests) run in the gaps.
+ */
+const EDGE_INSERT_BATCH_SIZE = 5000;
+
 /** Escape SQLite LIKE wildcards (% and _) so they match literally */
 function escapeLike(value: string): string {
   return value.replace(/[%_\\]/g, '\\$&');
@@ -168,6 +177,24 @@ export class MetadataStore {
       'CREATE INDEX IF NOT EXISTS idx_symbol_edges_grp_from ON symbol_edges(grp, from_chunk_id)'
     );
 
+    // One-time purge of edges produced before the AMBIGUOUS fan-out cap. Pre-cap
+    // indexes accumulated millions of quadratic high-fanout edges (e.g. every
+    // caller of `Business` linked to all ~600 definitions); leaving them in
+    // place would keep degree stats and find_usages noisy until each project
+    // happens to be re-indexed. Wiping the table here — gated on user_version so
+    // it runs exactly once — hands the indexer a clean slate; its own reindex
+    // epoch (see StateStore) then rebuilds every project's edges with the cap.
+    const edgeSchemaVersion = this.db.pragma('user_version', { simple: true }) as number;
+    if (edgeSchemaVersion < 1) {
+      const purged = this.db.prepare('DELETE FROM symbol_edges').run().changes;
+      this.db.pragma('user_version = 1');
+      if (purged > 0) {
+        console.log(
+          `[metadata] purged ${purged} pre-cap symbol edge(s); they will be rebuilt on next reindex`
+        );
+      }
+    }
+
     this.insertCommitStmt = this.db.prepare(
       'INSERT OR REPLACE INTO chunk_commits (chunk_id, commit_hash, committed_at, author_email, message_summary) VALUES (?, ?, ?, ?, ?)'
     );
@@ -319,9 +346,9 @@ export class MetadataStore {
 
   // ── Symbol edge methods ─────────────────────────────────────────────────
 
-  upsertSymbolEdges(edges: SymbolEdge[]): void {
-    const tx = this.db.transaction(() => {
-      for (const e of edges) {
+  async upsertSymbolEdges(edges: SymbolEdge[]): Promise<void> {
+    const insertBatch = this.db.transaction((batch: SymbolEdge[]) => {
+      for (const e of batch) {
         // Denormalise the group (first `//` segment of the source chunk_id) so
         // degree stats aggregate on an indexed column, not a LIKE scan.
         const grp = e.from_chunk_id.split('//')[0] ?? '';
@@ -335,7 +362,14 @@ export class MetadataStore {
         );
       }
     });
-    tx();
+    // Commit in bounded transactions, yielding between them so the synchronous
+    // SQLite work never monopolises the event loop for the whole edge set.
+    for (let i = 0; i < edges.length; i += EDGE_INSERT_BATCH_SIZE) {
+      insertBatch(edges.slice(i, i + EDGE_INSERT_BATCH_SIZE));
+      if (i + EDGE_INSERT_BATCH_SIZE < edges.length) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
     // Edges changed → mark the degree cache stale for affected groups only. The
     // group is the first `//`-delimited segment of a chunk_id; touching one
     // project must not invalidate cached stats for unrelated groups.

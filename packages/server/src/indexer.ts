@@ -951,13 +951,17 @@ export class Indexer {
         // Symbol graph building
         if (needsSymbols && chunkSymbols.length > 0) {
           try {
-            const edges = buildSymbolEdges(chunkSymbols);
+            const { edges, stats } = buildSymbolEdges(chunkSymbols);
             this.metadataStore!.deleteEdgesByProject(groupName, project.name);
             if (edges.length > 0) {
-              this.metadataStore!.upsertSymbolEdges(edges);
+              await this.metadataStore!.upsertSymbolEdges(edges);
             }
+            const skipNote =
+              stats.skippedSymbols > 0
+                ? ` (skipped ${stats.skippedSymbols} high-fanout symbols, ~${stats.skippedEdges} edges)`
+                : '';
             console.log(
-              `  [indexer] Symbol graph: ${chunkSymbols.length} chunks, ${edges.length} edges`
+              `  [indexer] Symbol graph: ${chunkSymbols.length} chunks, ${edges.length} edges${skipNote}`
             );
           } catch (err) {
             console.warn(
