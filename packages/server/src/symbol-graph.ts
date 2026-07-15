@@ -1,5 +1,26 @@
 import type { EdgeConfidence, SymbolEdge } from './types.js';
 
+/**
+ * A symbol defined in more than this many chunks is treated as structural noise
+ * rather than a real call target — namespace roots, lifecycle hooks
+ * (`initialize`, `render`), and shared base-class names get re-declared across
+ * hundreds of chunks. Linking every caller of such a name to every definition
+ * produces a quadratic fan-out (`uses × defines`) that has been observed to
+ * generate millions of AMBIGUOUS edges for a single symbol, blocking the event
+ * loop for minutes while they are inserted. These edges carry no navigational
+ * value (a "call" to one of 600 `Business` definitions tells you nothing), so
+ * we drop them entirely and report the count.
+ */
+export const MAX_DEFINITION_FANOUT = 50;
+
+/** Diagnostics returned alongside the edges so the indexer can log what it cut. */
+export interface SymbolEdgeStats {
+  /** Symbols skipped because they exceeded {@link MAX_DEFINITION_FANOUT}. */
+  skippedSymbols: number;
+  /** Estimated edges avoided by skipping those symbols. */
+  skippedEdges: number;
+}
+
 /** Chunk-id prefix is `<group>//<project>//<file>//<lines>//<hash>` — the file
  * segment is the third `//`-delimited part. Used to decide whether two chunks
  * live in the same source file, which lets us label intra-file edges as
@@ -31,8 +52,9 @@ export function buildSymbolEdges(
     chunk_id: string;
     defines_symbols: string[];
     uses_symbols: string[];
-  }>
-): SymbolEdge[] {
+  }>,
+  maxDefinitionFanout: number = MAX_DEFINITION_FANOUT
+): { edges: SymbolEdge[]; stats: SymbolEdgeStats } {
   // Build inverted index: symbol → set of defining chunk IDs
   const definedBy = new Map<string, Set<string>>();
   for (const chunk of chunkSymbols) {
@@ -48,11 +70,28 @@ export function buildSymbolEdges(
 
   const edges: SymbolEdge[] = [];
   const seen = new Set<string>();
+  const stats: SymbolEdgeStats = { skippedSymbols: 0, skippedEdges: 0 };
 
   for (const chunk of chunkSymbols) {
     for (const sym of chunk.uses_symbols) {
       const defChunks = definedBy.get(sym);
       if (!defChunks) continue;
+
+      // Structural-noise cap: a symbol defined in too many chunks explodes into
+      // a quadratic AMBIGUOUS fan-out with no navigational value. Each use we
+      // encounter here avoids exactly `defChunks.size` edges — summing that
+      // across all uses yields the same `uses × defines` total the eager pass
+      // would have computed, but with no extra map or pre-pass. Count the symbol
+      // itself once (guarded by `seen`).
+      if (defChunks.size > maxDefinitionFanout) {
+        stats.skippedEdges += defChunks.size;
+        const skipKey = `\0skip\0${sym}`;
+        if (!seen.has(skipKey)) {
+          seen.add(skipKey);
+          stats.skippedSymbols += 1;
+        }
+        continue;
+      }
 
       const ambiguous = defChunks.size > 1;
       const callerFile = fileKey(chunk.chunk_id);
@@ -84,5 +123,5 @@ export function buildSymbolEdges(
     }
   }
 
-  return edges;
+  return { edges, stats };
 }

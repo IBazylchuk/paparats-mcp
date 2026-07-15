@@ -244,8 +244,8 @@ describe('MetadataStore', () => {
 
   // ── Symbol edge tests ───────────────────────────────────────────────────
 
-  it('stores and retrieves symbol edges', () => {
-    store.upsertSymbolEdges([
+  it('stores and retrieves symbol edges', async () => {
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p//caller.ts//1-5//h1',
         to_chunk_id: 'g//p//def.ts//1-5//h2',
@@ -266,8 +266,8 @@ describe('MetadataStore', () => {
     expect(to[0]!.from_chunk_id).toBe('g//p//caller.ts//1-5//h1');
   });
 
-  it('round-trips EXTRACTED/INFERRED/AMBIGUOUS confidence values', () => {
-    store.upsertSymbolEdges([
+  it('round-trips EXTRACTED/INFERRED/AMBIGUOUS confidence values', async () => {
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p//a.ts//1-5//h1',
         to_chunk_id: 'g//p//a.ts//6-10//h2',
@@ -300,8 +300,8 @@ describe('MetadataStore', () => {
     });
   });
 
-  it('defaults legacy edges (written without confidence) to INFERRED', () => {
-    store.upsertSymbolEdges([
+  it('defaults legacy edges (written without confidence) to INFERRED', async () => {
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p//caller.ts//1-5//h1',
         to_chunk_id: 'g//p//def.ts//1-5//h2',
@@ -316,7 +316,7 @@ describe('MetadataStore', () => {
 
   // ── Degree analytics ────────────────────────────────────────────────────
 
-  it('getGroupDegreeSnapshot ranks chunks by incoming degree', () => {
+  it('getGroupDegreeSnapshot ranks chunks by incoming degree', async () => {
     const hub = 'g//p//hub.ts//1-5//hub';
     const edges = [];
     for (let i = 0; i < 12; i++) {
@@ -336,7 +336,7 @@ describe('MetadataStore', () => {
       symbol_name: 'rare',
       confidence: 'INFERRED',
     });
-    store.upsertSymbolEdges(edges);
+    await store.upsertSymbolEdges(edges);
 
     const snap = store.getGroupDegreeSnapshot('g');
     expect(snap.topInDegree[0]?.chunkId).toBe(hub);
@@ -345,8 +345,8 @@ describe('MetadataStore', () => {
     expect(snap.inDegreeP95).toBeGreaterThanOrEqual(5);
   });
 
-  it('getTopByInDegree honors an optional project filter', () => {
-    store.upsertSymbolEdges([
+  it('getTopByInDegree honors an optional project filter', async () => {
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p1//a.ts//1-5//h1',
         to_chunk_id: 'g//p1//x.ts//1-5//hx',
@@ -368,7 +368,7 @@ describe('MetadataStore', () => {
   });
 
   it('refreshes degree cache after deleteEdgesByProject (stale-while-revalidate)', async () => {
-    store.upsertSymbolEdges([
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p1//a.ts//1-5//h1',
         to_chunk_id: 'g//p1//x.ts//1-5//hx',
@@ -396,7 +396,7 @@ describe('MetadataStore', () => {
   // for groups touched by the incoming edges, so an index pass on one group
   // doesn't blow away unrelated groups' cached stats.
   it('upsertSymbolEdges only invalidates the cache of groups touched by the edges', async () => {
-    store.upsertSymbolEdges([
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'groupA//p//a.ts//1-5//h1',
         to_chunk_id: 'groupA//p//b.ts//1-5//h2',
@@ -417,7 +417,7 @@ describe('MetadataStore', () => {
     expect(beforeB.topInDegree).toHaveLength(1);
 
     // Add an edge in groupA only.
-    store.upsertSymbolEdges([
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'groupA//p//e.ts//1-5//h5',
         to_chunk_id: 'groupA//p//b.ts//1-5//h2',
@@ -441,7 +441,7 @@ describe('MetadataStore', () => {
     expect(afterB.hubChunkIds).toBe(beforeB.hubChunkIds);
   });
 
-  it('exposes a pre-computed hubChunkIds set so find_usages avoids per-call Set construction', () => {
+  it('exposes a pre-computed hubChunkIds set so find_usages avoids per-call Set construction', async () => {
     const hub = 'g//p//hub.ts//1-5//hub';
     const edges = [];
     // 12 callers of `hub` → in-degree 12, well above the floor of 5.
@@ -462,7 +462,7 @@ describe('MetadataStore', () => {
       symbol_name: 'rare',
       confidence: 'INFERRED',
     });
-    store.upsertSymbolEdges(edges);
+    await store.upsertSymbolEdges(edges);
 
     const snap = store.getGroupDegreeSnapshot('g');
     expect(snap.hubChunkIds.has(hub)).toBe(true);
@@ -477,8 +477,8 @@ describe('MetadataStore', () => {
     expect(store.getEdgesTo('nonexistent')).toEqual([]);
   });
 
-  it('deleteEdgesForChunk removes edges in both directions', () => {
-    store.upsertSymbolEdges([
+  it('deleteEdgesForChunk removes edges in both directions', async () => {
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p//a.ts//1-5//h1',
         to_chunk_id: 'g//p//b.ts//1-5//h2',
@@ -500,7 +500,7 @@ describe('MetadataStore', () => {
     expect(store.getEdgesTo('g//p//a.ts//1-5//h1')).toHaveLength(0);
   });
 
-  it('deleteChunk cascades to symbol edges', () => {
+  it('deleteChunk cascades to symbol edges', async () => {
     const chunkId = 'g//p//file.ts//1-10//h1';
 
     store.upsertCommits(chunkId, [
@@ -511,7 +511,7 @@ describe('MetadataStore', () => {
         message_summary: 'test',
       },
     ]);
-    store.upsertSymbolEdges([
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: chunkId,
         to_chunk_id: 'g//p//other.ts//1-5//h2',
@@ -526,8 +526,8 @@ describe('MetadataStore', () => {
     expect(store.getEdgesFrom(chunkId)).toHaveLength(0);
   });
 
-  it('deleteByProject cascades to symbol edges', () => {
-    store.upsertSymbolEdges([
+  it('deleteByProject cascades to symbol edges', async () => {
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'mygroup//proj1//a.ts//1-5//h1',
         to_chunk_id: 'mygroup//proj1//b.ts//1-5//h2',
@@ -549,8 +549,8 @@ describe('MetadataStore', () => {
     expect(store.getEdgesFrom('mygroup//proj2//c.ts//1-5//h3')).toHaveLength(1);
   });
 
-  it('deleteEdgesByProject removes only target project edges', () => {
-    store.upsertSymbolEdges([
+  it('deleteEdgesByProject removes only target project edges', async () => {
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p1//a.ts//1-5//h1',
         to_chunk_id: 'g//p1//b.ts//1-5//h2',
@@ -571,7 +571,7 @@ describe('MetadataStore', () => {
     expect(store.getEdgesFrom('g//p2//c.ts//1-5//h3')).toHaveLength(1);
   });
 
-  it('deleteByFile removes commits, tickets, and edges for a specific file', () => {
+  it('deleteByFile removes commits, tickets, and edges for a specific file', async () => {
     // Two files in same project
     store.upsertCommits('g//proj//src/keep.ts//1-5//h1', [
       {
@@ -592,7 +592,7 @@ describe('MetadataStore', () => {
     store.upsertTickets('g//proj//src/remove.ts//1-5//h2', [
       { ticket_key: 'PROJ-123', source: 'jira' },
     ]);
-    store.upsertSymbolEdges([
+    await store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//proj//src/remove.ts//1-5//h2',
         to_chunk_id: 'g//proj//src/keep.ts//1-5//h1',
@@ -640,8 +640,8 @@ describe('MetadataStore', () => {
     expect(store.getCommits('g//proj//src/file_1009.ts//1-5//h2')).toHaveLength(1);
   });
 
-  it('upsertSymbolEdges handles empty array', () => {
-    expect(() => store.upsertSymbolEdges([])).not.toThrow();
+  it('upsertSymbolEdges handles empty array', async () => {
+    await expect(store.upsertSymbolEdges([])).resolves.toBeUndefined();
   });
 });
 
@@ -727,16 +727,64 @@ describe('MetadataStore git file cache', () => {
     // Opening the store runs the migration; this must not throw.
     const legacyStore = new MetadataStore(legacyPath);
     try {
-      // grp was backfilled from from_chunk_id, so degree stats resolve the group.
-      const snap = legacyStore.getGroupDegreeSnapshot('leg');
-      expect(snap.topInDegree.map((r) => r.chunkId)).toContain('leg//p//b.ts//1-5//h2');
-      // The composite index now exists.
+      // The grp column was added and the composite index created — verify via
+      // schema, not via a surviving edge (the one-time cap purge wipes pre-cap
+      // rows; see the dedicated purge test below).
+      const cols = (legacyStore as unknown as { db: Database.Database }).db
+        .prepare("PRAGMA table_info('symbol_edges')")
+        .all() as Array<{ name: string }>;
+      expect(cols.map((c) => c.name)).toContain('grp');
       const indexes = (legacyStore as unknown as { db: Database.Database }).db
         .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='symbol_edges'")
         .all() as Array<{ name: string }>;
       expect(indexes.map((i) => i.name)).toContain('idx_symbol_edges_grp_to');
     } finally {
       legacyStore.close();
+    }
+  });
+
+  it('purges pre-cap symbol edges once on first open, then leaves the table alone', async () => {
+    const legacyPath = path.join(tmpDir, 'pre-cap-metadata.db');
+    // A pre-cap database: symbol_edges populated, user_version still 0.
+    const raw = new Database(legacyPath);
+    raw.exec(
+      'CREATE TABLE symbol_edges (' +
+        'from_chunk_id TEXT NOT NULL, to_chunk_id TEXT NOT NULL, ' +
+        'relation_type TEXT NOT NULL, symbol_name TEXT NOT NULL, ' +
+        "confidence TEXT NOT NULL DEFAULT 'INFERRED', grp TEXT NOT NULL DEFAULT '', " +
+        'PRIMARY KEY (from_chunk_id, to_chunk_id, symbol_name))'
+    );
+    raw
+      .prepare(
+        'INSERT INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, grp) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+      .run('g//p//a.ts//1-5//h1', 'g//p//b.ts//1-5//h2', 'calls', 'foo', 'INFERRED', 'g');
+    raw.close();
+
+    // First open purges the stale edge and bumps user_version to 1.
+    const first = new MetadataStore(legacyPath);
+    try {
+      expect(first.getEdgesFrom('g//p//a.ts//1-5//h1')).toHaveLength(0);
+      // Fresh edges written after the purge survive.
+      await first.upsertSymbolEdges([
+        {
+          from_chunk_id: 'g//p//c.ts//1-5//h3',
+          to_chunk_id: 'g//p//d.ts//1-5//h4',
+          relation_type: 'calls',
+          symbol_name: 'bar',
+          confidence: 'INFERRED',
+        },
+      ]);
+    } finally {
+      first.close();
+    }
+
+    // Second open must NOT purge again (user_version already 1).
+    const second = new MetadataStore(legacyPath);
+    try {
+      expect(second.getEdgesFrom('g//p//c.ts//1-5//h3')).toHaveLength(1);
+    } finally {
+      second.close();
     }
   });
 
