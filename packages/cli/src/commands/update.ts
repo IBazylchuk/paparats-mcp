@@ -2,6 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { fileURLToPath } from 'url';
 import { execSync } from 'child_process';
 import chalk from 'chalk';
 import ora from 'ora';
@@ -21,20 +22,35 @@ const COMPOSE_FILE = path.join(PAPARATS_HOME, 'docker-compose.yml');
 const EMBED_CONFIG_FILE = path.join(PAPARATS_HOME, 'llama-swap.yaml');
 const NPM_PACKAGE = '@paparats/cli';
 
-/** Installed global CLI version. `npm ls -g` reads the on-disk package.json.
- *  The command string is fully static (no user input) — same execSync pattern
- *  the rest of this module uses. Returns null if it can't be determined. */
+/** Version of the *currently running* CLI, read from its own on-disk
+ *  package.json by walking up from this module's location until a package.json
+ *  named `@paparats/cli` is found.
+ *
+ *  Deliberately NOT `npm ls -g`: that resolves `npm` from PATH — the same npm
+ *  the preceding `npm install -g` used — so in the exact failure this guard
+ *  targets (the running `paparats` from one node/nvm prefix, `npm` in PATH from
+ *  another), install lands in prefix B and `npm ls -g` cheerfully reports B as
+ *  up-to-date while the running binary (prefix A) stays stale. Reading the
+ *  running module's own package.json reflects the binary actually executing.
+ *  Returns null if it can't be determined. */
 function readInstalledCliVersion(): string | null {
   try {
-    const out = execSync(`npm ls -g ${NPM_PACKAGE} --depth=0 --json`, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      timeout: 30_000,
-    }).toString();
-    const parsed = JSON.parse(out) as { dependencies?: Record<string, { version?: string }> };
-    return parsed.dependencies?.[NPM_PACKAGE]?.version ?? null;
+    let dir = path.dirname(fileURLToPath(import.meta.url));
+    while (dir !== path.parse(dir).root) {
+      const pkgPath = path.join(dir, 'package.json');
+      if (fs.existsSync(pkgPath)) {
+        const parsed = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as {
+          name?: string;
+          version?: string;
+        };
+        if (parsed.name === NPM_PACKAGE) return parsed.version ?? null;
+      }
+      dir = path.dirname(dir);
+    }
   } catch {
     return null;
   }
+  return null;
 }
 
 /** Latest version published to npm. Null if the registry can't be reached. */
@@ -168,9 +184,9 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
     const installed = installedVersion();
     if (latest && installed && installed !== latest) {
       throw new Error(
-        `CLI did not update: global ${NPM_PACKAGE} is ${installed}, but npm latest is ${latest}.\n` +
-          `  The \`paparats\` on your PATH likely belongs to a different node/nvm install than the ` +
-          `\`npm\` that ran the upgrade.\n` +
+        `CLI did not update: the running ${NPM_PACKAGE} is ${installed}, but npm latest is ${latest}.\n` +
+          `  \`npm install -g\` likely wrote to a different node/nvm prefix than the one this ` +
+          `\`paparats\` runs from, so the upgrade landed elsewhere.\n` +
           `  Fix: run \`which -a paparats\` and \`npm root -g\` to find the mismatch, then ` +
           `\`npm install -g ${NPM_PACKAGE}@latest\` with the node that owns your PATH \`paparats\`.\n` +
           `  Re-run \`paparats update\` afterward so the new native-embed / compose logic runs.`

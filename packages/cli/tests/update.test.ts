@@ -356,7 +356,9 @@ describe('update', () => {
             regenerateCompose: stubRegenerate(),
           }
         )
-      ).rejects.toThrow(/CLI did not update: global .* is 0\.2\.18, but npm latest is 1\.7\.2/);
+      ).rejects.toThrow(
+        /CLI did not update: the running .* is 0\.2\.18, but npm latest is 1\.7\.2/
+      );
 
       // Aborts before Docker/embed run — old code must not proceed.
       expect(embedMock).not.toHaveBeenCalled();
