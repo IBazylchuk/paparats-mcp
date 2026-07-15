@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -785,6 +785,68 @@ describe('MetadataStore git file cache', () => {
       expect(second.getEdgesFrom('g//p//c.ts//1-5//h3')).toHaveLength(1);
     } finally {
       second.close();
+    }
+  });
+
+  it('does not crash startup when the pre-cap purge fails; defers to next open', () => {
+    const failPath = path.join(tmpDir, 'purge-fail-metadata.db');
+    // Seed a pre-cap DB (edges present, user_version 0).
+    const seed = new Database(failPath);
+    seed.exec(
+      'CREATE TABLE symbol_edges (' +
+        'from_chunk_id TEXT NOT NULL, to_chunk_id TEXT NOT NULL, ' +
+        'relation_type TEXT NOT NULL, symbol_name TEXT NOT NULL, ' +
+        "confidence TEXT NOT NULL DEFAULT 'INFERRED', grp TEXT NOT NULL DEFAULT '', " +
+        'PRIMARY KEY (from_chunk_id, to_chunk_id, symbol_name))'
+    );
+    seed
+      .prepare(
+        'INSERT INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, grp) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+      .run('g//p//a.ts//1-5//h1', 'g//p//b.ts//1-5//h2', 'calls', 'foo', 'INFERRED', 'g');
+    seed.close();
+
+    // Force the purge DROP to throw (as SQLITE_BUSY does under a held write
+    // lock): spy on Database.prototype.exec so the `DROP TABLE symbol_edges`
+    // statement throws, while every other exec (schema creation, etc.) runs
+    // normally.
+    const realExec = Database.prototype.exec;
+    const spy = vi.spyOn(Database.prototype, 'exec').mockImplementation(function (
+      this: Database.Database,
+      sql: string
+    ) {
+      if (/DROP TABLE IF EXISTS symbol_edges/i.test(sql)) {
+        const e = new Error('database is locked') as Error & { code: string };
+        e.code = 'SQLITE_BUSY';
+        throw e;
+      }
+      return realExec.call(this, sql);
+    });
+
+    let store2: MetadataStore | undefined;
+    try {
+      // Construction must NOT throw despite the purge failing.
+      expect(() => {
+        store2 = new MetadataStore(failPath);
+      }).not.toThrow();
+      // user_version stays 0 so the purge is retried on the next open.
+      expect(
+        (store2 as unknown as { db: Database.Database }).db.pragma('user_version', { simple: true })
+      ).toBe(0);
+    } finally {
+      spy.mockRestore();
+      store2?.close();
+    }
+
+    // Next open (no spy) purges cleanly and advances the version.
+    const retry = new MetadataStore(failPath);
+    try {
+      expect(retry.getEdgesFrom('g//p//a.ts//1-5//h1')).toHaveLength(0);
+      expect(
+        (retry as unknown as { db: Database.Database }).db.pragma('user_version', { simple: true })
+      ).toBe(1);
+    } finally {
+      retry.close();
     }
   });
 
