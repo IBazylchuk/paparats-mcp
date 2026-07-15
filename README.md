@@ -141,7 +141,7 @@ npm install -g @paparats/cli
 
 # 2. macOS only — install the native embed server (Linux uses the Docker embed
 #    image by default). Metal-accelerated.
-brew install llama.cpp mostlygeek/tap/llama-swap
+brew install llama.cpp mostlygeek/llama-swap/llama-swap
 
 # 3. One-time bootstrap. Generates ~/.paparats/{docker-compose.yml,projects.yml},
 #    starts the stack, downloads the embedding model, wires Cursor/Claude Code MCP.
@@ -1244,7 +1244,7 @@ Default model: [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/ji
 
 **Recommended:** `paparats install` automates this:
 
-- **Native mode** (`--embed-mode native`, default on macOS): installs the embed server via `brew install llama.cpp mostlygeek/tap/llama-swap` (Metal-accelerated) and downloads the GGUF to `~/.paparats/models/`
+- **Native mode** (`--embed-mode native`, default on macOS): installs the embed server via `brew install llama.cpp mostlygeek/llama-swap/llama-swap` (Metal-accelerated) and downloads the GGUF to `~/.paparats/models/`
 - **Docker mode** (`--embed-mode docker`, default on Linux): Uses the `ibaz/paparats-embed` image with `jina-code-embeddings` + `bge-m3` pre-baked — zero setup
 
 **Manual setup (Docker):**

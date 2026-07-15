@@ -28,11 +28,14 @@ describe('update', () => {
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
   let execMock: ReturnType<typeof vi.fn>;
+  let embedMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     execMock = vi.fn();
+    // Stub the native embed setup everywhere so tests never touch brew/network.
+    embedMock = vi.fn().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -46,6 +49,7 @@ describe('update', () => {
         {},
         {
           execSync: execMock,
+          setupNativeEmbed: embedMock,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -75,6 +79,7 @@ describe('update', () => {
         { skipCli: true },
         {
           execSync: execMock,
+          setupNativeEmbed: embedMock,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -94,6 +99,7 @@ describe('update', () => {
         { skipDocker: true },
         {
           execSync: execMock,
+          setupNativeEmbed: embedMock,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
         }
@@ -111,6 +117,7 @@ describe('update', () => {
         {},
         {
           execSync: execMock,
+          setupNativeEmbed: embedMock,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => false,
@@ -131,6 +138,7 @@ describe('update', () => {
         { skipCli: true },
         {
           execSync: execMock,
+          setupNativeEmbed: embedMock,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: healthMock,
           existsSync: () => true,
@@ -155,6 +163,7 @@ describe('update', () => {
         { skipCli: true },
         {
           execSync: execMock,
+          setupNativeEmbed: embedMock,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: healthMock,
           existsSync: () => true,
@@ -186,6 +195,7 @@ describe('update', () => {
         { skipCli: true },
         {
           execSync: execMock,
+          setupNativeEmbed: embedMock,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -212,6 +222,7 @@ describe('update', () => {
         { skipCli: true },
         {
           execSync: execMock,
+          setupNativeEmbed: embedMock,
           getDockerComposeCommand: () => 'docker compose',
           waitForHealth: () => Promise.resolve(true),
           existsSync: () => true,
@@ -231,6 +242,75 @@ describe('update', () => {
         expect.stringMatching(/docker compose -f .* up -d --remove-orphans/),
         expect.any(Object)
       );
+    });
+
+    it('refreshes the native embed server for native installs', async () => {
+      await runUpdate(
+        { skipCli: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          existsSync: () => true,
+          readFileSync: () => COMPOSE_WITH_QDRANT,
+          readInstallState: () => ({ embedMode: 'native' as const }),
+          regenerateCompose: stubRegenerate(),
+        }
+      );
+
+      expect(embedMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not touch the embed server for docker installs', async () => {
+      await runUpdate(
+        { skipCli: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          existsSync: () => true,
+          readFileSync: () => COMPOSE_WITH_QDRANT,
+          readInstallState: () => ({ embedMode: 'docker' as const }),
+          regenerateCompose: stubRegenerate(),
+        }
+      );
+
+      expect(embedMock).not.toHaveBeenCalled();
+    });
+
+    it('skips the embed refresh when --skip-embed', async () => {
+      await runUpdate(
+        { skipCli: true, skipEmbed: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          existsSync: () => true,
+          readFileSync: () => COMPOSE_WITH_QDRANT,
+          readInstallState: () => ({ embedMode: 'native' as const }),
+          regenerateCompose: stubRegenerate(),
+        }
+      );
+
+      expect(embedMock).not.toHaveBeenCalled();
+    });
+
+    it('refreshes the embed server even when Docker is skipped (native install)', async () => {
+      await runUpdate(
+        { skipCli: true, skipDocker: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          getDockerComposeCommand: () => 'docker compose',
+          waitForHealth: () => Promise.resolve(true),
+          readInstallState: () => ({ embedMode: 'native' as const }),
+        }
+      );
+
+      expect(embedMock).toHaveBeenCalledTimes(1);
     });
   });
 });
