@@ -1,5 +1,12 @@
 # @paparats/indexer
 
+## 1.7.5
+
+### Patch Changes
+
+- @paparats/shared@1.7.5
+- @paparats/server@1.7.5
+
 ## 1.7.4
 
 ### Patch Changes
