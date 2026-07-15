@@ -55,16 +55,30 @@ export interface InstallState {
 }
 
 /** Read ~/.paparats/install.json — captured by `paparats install` so that
- *  `add`/`remove`/`edit projects` can regenerate compose with the same flags. */
+ *  `add`/`remove`/`edit projects` can regenerate compose with the same flags.
+ *
+ *  Returns null when the file is absent, unparseable, OR present but without a
+ *  usable embed mode. That last case covers pre-`embedMode` installs (the
+ *  Ollama era wrote `{"ollamaMode": "native"}`): we migrate the legacy field if
+ *  it names a valid mode, and otherwise return null so callers fall through to
+ *  their compose-derivation path instead of trusting a state with no embedMode. */
 export function readInstallState(home: string = PAPARATS_HOME): InstallState | null {
   const file = path.join(home, INSTALL_STATE);
   if (!fs.existsSync(file)) return null;
+  let parsed: Record<string, unknown>;
   try {
-    const raw = fs.readFileSync(file, 'utf8');
-    return JSON.parse(raw) as InstallState;
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
   } catch {
     return null;
   }
+  // Migrate the legacy `ollamaMode` field (Ollama era) to `embedMode`.
+  const mode = parsed['embedMode'] ?? parsed['ollamaMode'];
+  if (mode !== 'native' && mode !== 'docker' && mode !== 'external') {
+    // No usable embed mode → treat as "no state" so callers re-derive it.
+    return null;
+  }
+  delete parsed['ollamaMode'];
+  return { ...parsed, embedMode: mode } as InstallState;
 }
 
 export function writeInstallState(state: InstallState, home: string = PAPARATS_HOME): void {
