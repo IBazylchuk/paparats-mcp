@@ -16,6 +16,18 @@ const COMPOSE_WITHOUT_QDRANT = `services:
     image: ibaz/paparats-embed:latest
 `;
 
+// A compose that has NO embed *service* but does have an `embed` key under
+// `volumes:` — the naive whole-file `^  embed:` match would wrongly treat this
+// as a Dockerised embed. composeHasService must scope to the services: block.
+const COMPOSE_EMBED_VOLUME_ONLY = `services:
+  qdrant:
+    image: qdrant/qdrant:latest
+  paparats:
+    image: ibaz/paparats-server:latest
+volumes:
+  embed:
+`;
+
 const STUB_INSTALL_STATE = { embedMode: 'native' as const };
 
 function stubRegenerate(
@@ -462,6 +474,44 @@ describe('update', () => {
           platform: () => 'darwin' as NodeJS.Platform,
           existsSync: (p: string) => p.endsWith('docker-compose.yml'),
           readFileSync: () => COMPOSE_WITHOUT_QDRANT, // has an `embed:` service
+          readInstallState: () => null,
+        }
+      );
+      expect(embedMock).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Skipping native embed refresh'));
+    });
+
+    it('treats `embed` under volumes (not services) as no embed service → refreshes', async () => {
+      await runUpdate(
+        { skipCli: true, skipDocker: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          ...versionDeps,
+          commandExists: () => false,
+          platform: () => 'darwin' as NodeJS.Platform,
+          existsSync: (p: string) => p.endsWith('docker-compose.yml'),
+          readFileSync: () => COMPOSE_EMBED_VOLUME_ONLY, // `embed` only under volumes:
+          readInstallState: () => null,
+        }
+      );
+      expect(embedMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT refresh embed on non-macOS when compose lacks an embed service (no brew there)', async () => {
+      // Compose without an embed service means native embed — but native embed
+      // is macOS-only (Homebrew). On Linux/Windows this is an external/manual
+      // setup; running setupNativeEmbed would try to brew-install and fail.
+      await runUpdate(
+        { skipCli: true, skipDocker: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          ...versionDeps,
+          commandExists: () => false,
+          platform: () => 'linux' as NodeJS.Platform,
+          existsSync: (p: string) => p.endsWith('docker-compose.yml'),
+          readFileSync: () => COMPOSE_WITH_QDRANT, // no `embed:` service
           readInstallState: () => null,
         }
       );
