@@ -244,8 +244,15 @@ describe('update', () => {
       );
     });
 
-    it('skips compose regeneration when install.json is missing', async () => {
-      const regenerate = vi.fn(stubRegenerate());
+    it('derives compose opts and heals a legacy install with no install.json', async () => {
+      // The real breaking-change repro: an Ollama-era compose (Qdrant + server,
+      // no embed service, no EMBED_URL) and no install.json. update must NOT
+      // skip — it must derive embedMode=native from the compose, regenerate so
+      // the server/indexer get EMBED_URL: host.docker.internal, and record a
+      // fresh install.json for next time.
+      const regenerate = vi.fn(stubRegenerate({ changed: true }));
+      const writeInstall = vi.fn();
+      const derive = vi.fn(() => ({ embedMode: 'native' as const, paparatsHome: '/home' }));
 
       await runUpdate(
         { skipCli: true },
@@ -258,15 +265,20 @@ describe('update', () => {
           existsSync: () => true,
           readFileSync: () => COMPOSE_WITH_QDRANT,
           readInstallState: () => null,
+          deriveRegenerateOptsFromCompose: derive,
+          writeInstallState: writeInstall,
           regenerateCompose: regenerate,
         }
       );
 
-      expect(regenerate).not.toHaveBeenCalled();
-      // Pull + up still run — we don't want missing install.json to stop the update.
-      expect(execMock).toHaveBeenCalledWith(
-        expect.stringMatching(/docker compose -f .* pull/),
-        expect.any(Object)
+      // Derived from the on-disk compose, regenerated, and persisted.
+      expect(derive).toHaveBeenCalledWith(COMPOSE_WITH_QDRANT, expect.any(String));
+      expect(regenerate).toHaveBeenCalledWith(
+        expect.objectContaining({ embedMode: 'native', backupOnChange: true })
+      );
+      expect(writeInstall).toHaveBeenCalledWith(
+        expect.objectContaining({ embedMode: 'native' }),
+        expect.any(String)
       );
       expect(execMock).toHaveBeenCalledWith(
         expect.stringMatching(/docker compose -f .* up -d --remove-orphans/),
