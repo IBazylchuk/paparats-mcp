@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import Database from 'better-sqlite3';
 import { MetadataStore } from '../src/metadata-db.js';
 
 function createTempDir(): string {
@@ -366,7 +367,7 @@ describe('MetadataStore', () => {
     expect(p1.map((r) => r.chunkId)).toEqual(['g//p1//x.ts//1-5//hx']);
   });
 
-  it('invalidates degree cache after deleteEdgesByProject', () => {
+  it('refreshes degree cache after deleteEdgesByProject (stale-while-revalidate)', async () => {
     store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p1//a.ts//1-5//h1',
@@ -376,9 +377,17 @@ describe('MetadataStore', () => {
         confidence: 'INFERRED',
       },
     ]);
+    // Warm the cache.
     expect(store.getGroupDegreeSnapshot('g').topInDegree).toHaveLength(1);
 
     store.deleteEdgesByProject('g', 'p1');
+    // The read is non-blocking: it serves the stale snapshot immediately and
+    // schedules a background recompute, so the edge is still visible right after
+    // the delete.
+    expect(store.getGroupDegreeSnapshot('g').topInDegree).toHaveLength(1);
+
+    // After the background refresh runs, the snapshot reflects the deletion.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(store.getGroupDegreeSnapshot('g').topInDegree).toHaveLength(0);
   });
 
@@ -386,7 +395,7 @@ describe('MetadataStore', () => {
   // degree cache via invalidateDegreeCache(). It must now only drop entries
   // for groups touched by the incoming edges, so an index pass on one group
   // doesn't blow away unrelated groups' cached stats.
-  it('upsertSymbolEdges only invalidates the cache of groups touched by the edges', () => {
+  it('upsertSymbolEdges only invalidates the cache of groups touched by the edges', async () => {
     store.upsertSymbolEdges([
       {
         from_chunk_id: 'groupA//p//a.ts//1-5//h1',
@@ -418,12 +427,16 @@ describe('MetadataStore', () => {
       },
     ]);
 
-    // groupA stats reflect the new edge (b.ts now has in-degree 2).
+    // Reading groupA serves the stale snapshot immediately and schedules a
+    // background refresh; after it runs, the stats reflect the new edge
+    // (b.ts now has in-degree 2).
+    store.getGroupDegreeSnapshot('groupA');
+    await new Promise((resolve) => setImmediate(resolve));
     const afterA = store.getGroupDegreeSnapshot('groupA');
     expect(afterA.topInDegree[0]?.degree).toBe(2);
-    // groupB cache survived the unrelated write — the cached hubChunkIds
-    // Set is reused (object identity), even though the wrapper object is
-    // re-allocated per call.
+    // groupB cache survived the unrelated write untouched — it was never marked
+    // stale, so no refresh was scheduled and the cached hubChunkIds Set is the
+    // same object.
     const afterB = store.getGroupDegreeSnapshot('groupB');
     expect(afterB.hubChunkIds).toBe(beforeB.hubChunkIds);
   });
@@ -687,5 +700,43 @@ describe('MetadataStore git file cache', () => {
     store.deleteByProject('g', 'p');
     expect(store.getGitFileCache('g', 'p', 'src/a.ts', 'head1')).toBeNull();
     expect(store.getGitFileCache('g', 'other', 'src/a.ts', 'head1')).not.toBeNull();
+  });
+
+  // Regression: the composite (grp, …) indexes must be created AFTER the grp
+  // migration, not in the initial CREATE block. On a legacy DB the table
+  // already exists without `grp`, so creating a (grp, …) index up front throws
+  // `no such column: grp` and crashes startup.
+  it('opens a legacy database (symbol_edges without grp) without crashing and migrates it', () => {
+    const legacyPath = path.join(tmpDir, 'legacy-metadata.db');
+    // Build a pre-`grp` schema by hand and seed an edge.
+    const raw = new Database(legacyPath);
+    raw.exec(
+      'CREATE TABLE symbol_edges (' +
+        'from_chunk_id TEXT NOT NULL, to_chunk_id TEXT NOT NULL, ' +
+        'relation_type TEXT NOT NULL, symbol_name TEXT NOT NULL, ' +
+        "confidence TEXT NOT NULL DEFAULT 'INFERRED', " +
+        'PRIMARY KEY (from_chunk_id, to_chunk_id, symbol_name))'
+    );
+    raw
+      .prepare(
+        'INSERT INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence) VALUES (?, ?, ?, ?, ?)'
+      )
+      .run('leg//p//a.ts//1-5//h1', 'leg//p//b.ts//1-5//h2', 'calls', 'foo', 'INFERRED');
+    raw.close();
+
+    // Opening the store runs the migration; this must not throw.
+    const legacyStore = new MetadataStore(legacyPath);
+    try {
+      // grp was backfilled from from_chunk_id, so degree stats resolve the group.
+      const snap = legacyStore.getGroupDegreeSnapshot('leg');
+      expect(snap.topInDegree.map((r) => r.chunkId)).toContain('leg//p//b.ts//1-5//h2');
+      // The composite index now exists.
+      const indexes = (legacyStore as unknown as { db: Database.Database }).db
+        .prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='symbol_edges'")
+        .all() as Array<{ name: string }>;
+      expect(indexes.map((i) => i.name)).toContain('idx_symbol_edges_grp_to');
+    } finally {
+      legacyStore.close();
+    }
   });
 });
