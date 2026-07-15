@@ -7,6 +7,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { getDockerComposeCommand } from './install.js';
 import { waitForHealth } from './install.js';
+import { setupNativeEmbed } from './install.js';
 import {
   readInstallState,
   regenerateCompose,
@@ -21,6 +22,7 @@ const NPM_PACKAGE = '@paparats/cli';
 export interface UpdateOptions {
   skipCli?: boolean;
   skipDocker?: boolean;
+  skipEmbed?: boolean;
   verbose?: boolean;
 }
 
@@ -32,6 +34,7 @@ export interface UpdateDeps {
   readFileSync?: (path: string, encoding: BufferEncoding) => string;
   readInstallState?: typeof readInstallState;
   regenerateCompose?: (opts: RegenerateOptions) => RegenerateResult;
+  setupNativeEmbed?: () => Promise<void>;
 }
 
 /** Check if a service is defined in the compose file */
@@ -49,6 +52,7 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
   const readFile = deps?.readFileSync ?? fs.readFileSync.bind(fs);
   const readInstall = deps?.readInstallState ?? readInstallState;
   const regenerate = deps?.regenerateCompose ?? regenerateCompose;
+  const setupEmbed = deps?.setupNativeEmbed ?? setupNativeEmbed;
 
   console.log(chalk.bold('\npaparats update\n'));
 
@@ -159,13 +163,30 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
     }
   }
 
+  // Native embed server lives on the host (not Docker), so `docker compose
+  // pull/up` above never touches it. For native installs, re-run the embed
+  // setup here so a single `paparats update` also installs/refreshes/starts
+  // llama-server + llama-swap. Idempotent — no-ops when everything is current.
+  if (!opts.skipEmbed) {
+    const state = readInstall(PAPARATS_HOME);
+    if (state?.embedMode === 'native') {
+      // setupNativeEmbed prints its own spinners for each step (brew, download,
+      // start), so just announce the section rather than wrapping in a spinner.
+      console.log(chalk.dim('\nEnsuring native embedding server (llama-server + llama-swap)...'));
+      await setupEmbed();
+    }
+  }
+
   console.log(chalk.bold.green('\n✓ Update complete!\n'));
 }
 
 export const updateCommand = new Command('update')
-  .description('Update CLI from npm and pull/restart latest server Docker image')
+  .description(
+    'Update CLI from npm, pull/restart latest server Docker image, and (native installs) refresh the local embed server'
+  )
   .option('--skip-cli', 'Skip CLI update (only update Docker)')
   .option('--skip-docker', 'Skip Docker update (only update CLI)')
+  .option('--skip-embed', 'Skip native embedding server refresh (native installs only)')
   .option('-v, --verbose', 'Show detailed output')
   .action(async (opts: UpdateOptions) => {
     try {
