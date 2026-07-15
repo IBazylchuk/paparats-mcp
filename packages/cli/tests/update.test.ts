@@ -431,6 +431,44 @@ describe('update', () => {
       expect(embedMock).toHaveBeenCalledTimes(1);
     });
 
+    it('refreshes embed when compose exists WITHOUT an embed service (Ollama-era developer install)', async () => {
+      // The real breaking-change repro: a host that upgraded from the Ollama era
+      // has a docker-compose.yml (Qdrant + server) but ran embeddings natively,
+      // and never wrote install.json. Compose present ≠ Dockerised embed.
+      await runUpdate(
+        { skipCli: true, skipDocker: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          ...versionDeps,
+          commandExists: () => false,
+          platform: () => 'darwin' as NodeJS.Platform,
+          existsSync: (p: string) => p.endsWith('docker-compose.yml'),
+          readFileSync: () => COMPOSE_WITH_QDRANT, // no `embed:` service
+          readInstallState: () => null,
+        }
+      );
+      expect(embedMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT refresh embed when compose runs an embed service (Dockerised embed)', async () => {
+      await runUpdate(
+        { skipCli: true, skipDocker: true },
+        {
+          execSync: execMock,
+          setupNativeEmbed: embedMock,
+          ...versionDeps,
+          commandExists: () => false,
+          platform: () => 'darwin' as NodeJS.Platform,
+          existsSync: (p: string) => p.endsWith('docker-compose.yml'),
+          readFileSync: () => COMPOSE_WITHOUT_QDRANT, // has an `embed:` service
+          readInstallState: () => null,
+        }
+      );
+      expect(embedMock).not.toHaveBeenCalled();
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Skipping native embed refresh'));
+    });
+
     it('does NOT refresh embed when no install.json and no native signals (Linux, docker-only)', async () => {
       await runUpdate(
         { skipCli: true, skipDocker: true },
