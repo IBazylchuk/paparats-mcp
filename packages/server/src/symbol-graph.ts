@@ -68,15 +68,6 @@ export function buildSymbolEdges(
     }
   }
 
-  // Count how many chunks *use* each symbol so we can estimate (and log) the
-  // edges avoided when a high-fanout symbol is skipped: uses × defines.
-  const usedBy = new Map<string, number>();
-  for (const chunk of chunkSymbols) {
-    for (const sym of chunk.uses_symbols) {
-      usedBy.set(sym, (usedBy.get(sym) ?? 0) + 1);
-    }
-  }
-
   const edges: SymbolEdge[] = [];
   const seen = new Set<string>();
   const stats: SymbolEdgeStats = { skippedSymbols: 0, skippedEdges: 0 };
@@ -87,14 +78,17 @@ export function buildSymbolEdges(
       if (!defChunks) continue;
 
       // Structural-noise cap: a symbol defined in too many chunks explodes into
-      // a quadratic AMBIGUOUS fan-out with no navigational value. Skip it once
-      // (guarded by `seen` on the symbol) and account for the edges avoided.
+      // a quadratic AMBIGUOUS fan-out with no navigational value. Each use we
+      // encounter here avoids exactly `defChunks.size` edges — summing that
+      // across all uses yields the same `uses × defines` total the eager pass
+      // would have computed, but with no extra map or pre-pass. Count the symbol
+      // itself once (guarded by `seen`).
       if (defChunks.size > maxDefinitionFanout) {
+        stats.skippedEdges += defChunks.size;
         const skipKey = `\0skip\0${sym}`;
         if (!seen.has(skipKey)) {
           seen.add(skipKey);
           stats.skippedSymbols += 1;
-          stats.skippedEdges += (usedBy.get(sym) ?? 0) * defChunks.size;
         }
         continue;
       }
