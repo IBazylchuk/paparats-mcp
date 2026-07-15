@@ -1,5 +1,37 @@
 import { describe, it, expect } from 'vitest';
-import { deriveRegenerateOptsFromCompose } from '../src/projects-yml.js';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { deriveRegenerateOptsFromCompose, readInstallState } from '../src/projects-yml.js';
+
+describe('readInstallState legacy migration', () => {
+  function withHome(json: string | null): string {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-install-'));
+    if (json !== null) fs.writeFileSync(path.join(home, 'install.json'), json);
+    return home;
+  }
+
+  it('migrates the legacy ollamaMode field to embedMode', () => {
+    const home = withHome(JSON.stringify({ ollamaMode: 'native' }));
+    const state = readInstallState(home);
+    expect(state?.embedMode).toBe('native');
+    // legacy key is dropped, not carried through
+    expect((state as Record<string, unknown>).ollamaMode).toBeUndefined();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it('returns null for a state with no usable embed mode', () => {
+    const home = withHome(JSON.stringify({ somethingElse: true }));
+    expect(readInstallState(home)).toBeNull();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it('returns null when install.json is absent', () => {
+    const home = withHome(null);
+    expect(readInstallState(home)).toBeNull();
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+});
 
 describe('deriveRegenerateOptsFromCompose', () => {
   it('infers native for a legacy compose with no embed service and no EMBED_URL', () => {
