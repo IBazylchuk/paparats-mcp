@@ -1,5 +1,11 @@
 # @paparats/server
 
+## 1.7.7
+
+### Patch Changes
+
+- @paparats/shared@1.7.7
+
 ## 1.7.6
 
 ### Patch Changes
