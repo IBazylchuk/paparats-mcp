@@ -141,10 +141,10 @@ function paparatsService(
     if (embeddingProvider === 'openai') env['OPENAI_API_KEY'] = '${OPENAI_API_KEY:-}';
     if (embeddingProvider === 'voyage') env['VOYAGE_API_KEY'] = '${VOYAGE_API_KEY:-}';
   }
-  // Arch-layer text embeddings — defaults track the bge-m3 baked into
-  // ibaz/paparats-embed. Override via .env when using a cloud provider or a
+  // Arch-layer text embeddings — defaults track the qwen3-embedding-0.6b baked
+  // into ibaz/paparats-embed. Override via .env when using a cloud provider or a
   // different text model.
-  env['TEXT_EMBEDDING_MODEL'] = '${TEXT_EMBEDDING_MODEL:-bge-m3}';
+  env['TEXT_EMBEDDING_MODEL'] = '${TEXT_EMBEDDING_MODEL:-qwen3-embedding-0.6b}';
   env['TEXT_EMBEDDING_DIMENSIONS'] = '${TEXT_EMBEDDING_DIMENSIONS:-1024}';
   if (qdrantApiKey) env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
   // Resolve indexer over the docker-compose network so the analytics UI's

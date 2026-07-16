@@ -47,14 +47,8 @@ export type { SearcherConfig } from './searcher.js';
 
 export { expandQuery } from './query-expansion.js';
 
-export {
-  detectQueryType,
-  prefixQuery,
-  prefixPassage,
-  getQueryPrefix,
-  getPassagePrefix,
-} from './task-prefixes.js';
-export type { QueryType, TaskPrefixConfig } from './task-prefixes.js';
+export { detectQueryType, prefixQuery, prefixPassage, modelFamily } from './task-prefixes.js';
+export type { QueryType, TaskPrefixConfig, ModelFamily } from './task-prefixes.js';
 
 export { McpHandler } from './mcp-handler.js';
 export type { McpHandlerConfig } from './mcp-handler.js';

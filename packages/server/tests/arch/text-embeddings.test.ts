@@ -5,10 +5,10 @@ import {
 } from '../../src/arch/text-embeddings.js';
 
 describe('resolveArchEmbeddingConfig', () => {
-  it('defaults to llama + bge-m3 + 1024 dims', () => {
+  it('defaults to llama + qwen3-embedding-0.6b + 1024 dims', () => {
     const cfg = resolveArchEmbeddingConfig({});
     expect(cfg.provider).toBe('llama');
-    expect(cfg.model).toBe('bge-m3');
+    expect(cfg.model).toBe('qwen3-embedding-0.6b');
     expect(cfg.dimensions).toBe(1024);
   });
 

@@ -200,7 +200,7 @@ describe('createEmbeddingProvider', () => {
 describe('LlamaServerProvider', () => {
   it('has default config', () => {
     const provider = new LlamaServerProvider();
-    expect(provider.model).toBe('jina-code-embeddings');
+    expect(provider.model).toBe('bge-code-v1');
     expect(provider.dimensions).toBe(1536);
   });
 
@@ -397,11 +397,11 @@ describe('VoyageProvider', () => {
 });
 
 describe('resolveEmbeddingConfigFromEnv', () => {
-  it('defaults to llama with jina model and 1536 dims when nothing is set', () => {
+  it('defaults to llama with bge-code-v1 model and 1536 dims when nothing is set', () => {
     const c = resolveEmbeddingConfigFromEnv({});
     expect(c).toEqual({
       provider: 'llama',
-      model: 'jina-code-embeddings',
+      model: 'bge-code-v1',
       dimensions: 1536,
     });
   });

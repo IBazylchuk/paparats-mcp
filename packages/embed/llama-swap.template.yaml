@@ -5,10 +5,10 @@
 # a model nobody queries (e.g. the arch/docs text model for a code-only user)
 # never spins up. Tune per deployment: short on a laptop, long on a server.
 #
-# Pooling is dictated by model architecture (empirically cosine-verified vs the
-# old Ollama 0.24 vectors — see the migration notes):
-#   jina-code (qwen2 decoder) -> --pooling last
-#   bge-m3    (BERT/XLM-R)     -> --pooling cls
+# Pooling is dictated by model architecture — cosine-verify against the
+# reference (sentence-transformers) output before trusting a new GGUF:
+#   bge-code-v1          (qwen2 decoder) -> --pooling last
+#   Qwen3-Embedding-0.6b (qwen3 decoder) -> --pooling last
 # Wrong pooling silently corrupts the vector space.
 
 healthCheckTimeout: 300
@@ -24,19 +24,23 @@ macros:
     --ubatch-size 8192
 
 models:
-  # Code embeddings — jina-code-embeddings-1.5b (1536d). Model name kept identical
-  # to the old Ollama alias so no re-index / config change is required.
-  jina-code-embeddings:
+  # Code embeddings — bge-code-v1 (1536d, Apache-2.0). qwen2-based → --pooling
+  # last. Query instruction is applied by the server on the search path
+  # (documents are embedded unprefixed).
+  bge-code-v1:
     cmd: |
       ${llama-embed}
-      --model /models/jina-code-embeddings-1.5b-Q8_0.gguf
+      --model /models/bge-code-v1-Q8_0.gguf
       --pooling last
     ttl: ${EMBED_TTL}
 
-  # Arch/docs text embeddings — bge-m3 (1024d).
-  bge-m3:
+  # Arch/docs text embeddings — Qwen3-Embedding-0.6B (1024d, Apache-2.0).
+  # Replaces bge-m3 default; +5-8pt Recall@5 on prose (SciFact/FiQA), same dim.
+  # Qwen3 decoder → --pooling last. Server applies the `Instruct: ...\nQuery:`
+  # prefix on the search path; documents are embedded unprefixed. No LoRA.
+  qwen3-embedding-0.6b:
     cmd: |
       ${llama-embed}
-      --model /models/bge-m3-Q8_0.gguf
-      --pooling cls
+      --model /models/Qwen3-Embedding-0.6B-Q8_0.gguf
+      --pooling last
     ttl: ${EMBED_TTL}

@@ -66,7 +66,7 @@ export function dockerStatus(): { qdrant: string; mcp: string } {
   return result;
 }
 
-export function embedStatus(_modelName = 'jina-code-embeddings'): string {
+export function embedStatus(_modelName = 'bge-code-v1'): string {
   try {
     // Static URL, no user input — checks the embed server /health endpoint
     execSync('curl -fsS http://localhost:18434/health', {
@@ -138,7 +138,7 @@ export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise
   result.docker = docker;
 
   // Embeddings — read model from config
-  let modelName = 'jina-code-embeddings';
+  let modelName = 'bge-code-v1';
   const configDir = findCfgDir();
   if (configDir) {
     try {
