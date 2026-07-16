@@ -270,6 +270,24 @@ export class ApiClient {
     });
   }
 
+  /**
+   * Re-embed a group's arch/docs memory with the server's current text model.
+   * Needed after a text-model swap — arch memory has no source to re-walk, so it
+   * won't reindex on its own. See docs/replacing-embedding-models.md.
+   */
+  async reindexArch(
+    group: string,
+    options?: { timeout?: number; signal?: AbortSignal }
+  ): Promise<ApiResponse> {
+    return this.requestWithRetry({
+      method: 'POST',
+      path: '/api/arch/reindex',
+      body: { group },
+      timeout: options?.timeout ?? 300_000,
+      signal: options?.signal,
+    });
+  }
+
   async health(options?: { timeout?: number }): Promise<ApiResponse> {
     return this.request({ method: 'GET', path: '/health', timeout: options?.timeout ?? 5_000 });
   }

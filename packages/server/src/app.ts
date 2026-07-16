@@ -346,6 +346,40 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     }
   });
 
+  // ── POST /api/arch/reindex ──────────────────────────────────────────────────
+  // Re-embed the arch/docs memory of a group with the current text model.
+  // Unlike code (which the indexer re-walks from source), arch memory is only
+  // written by the arch_record_* tools, so a model swap requires an explicit
+  // pass. Manual, operator-triggered — see docs/replacing-embedding-models.md.
+
+  app.post('/api/arch/reindex', async (req, res) => {
+    try {
+      const { group } = req.body;
+      if (!group) {
+        res.status(400).json({ error: 'group is required' });
+        return;
+      }
+      if (!archStore) {
+        res.status(501).json({ error: 'arch store not configured on this server' });
+        return;
+      }
+      console.log(`[api] Reindexing arch memory for ${sanitizeForLog(group)}...`);
+      const reindexed = await withTimeout(
+        archStore.reindexArch(group),
+        INDEX_TIMEOUT_MS,
+        'Arch reindex timeout'
+      );
+      res.json({ status: 'ok', group, reindexed });
+    } catch (err) {
+      if ((err as Error).message === 'Arch reindex timeout') {
+        res.status(504).json({ error: 'Arch reindex timed out' });
+      } else {
+        console.error('[api] Arch reindex error:', err);
+        res.status(500).json({ error: (err as Error).message });
+      }
+    }
+  });
+
   // ── POST /api/file-changed (content-based) ─────────────────────────────────
 
   app.post('/api/file-changed', async (req, res) => {

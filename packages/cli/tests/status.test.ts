@@ -134,7 +134,7 @@ describe('status', () => {
           config: {
             group: 'my-group',
             language: 'typescript',
-            embeddings: { model: 'jina-code-embeddings' },
+            embeddings: { model: 'bge-code-v1' },
           },
           projectDir: '/tmp/project',
         }),

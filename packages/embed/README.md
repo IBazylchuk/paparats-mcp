@@ -6,22 +6,24 @@
 
 ## Why
 
-Paparats used to embed with Ollama. Ollama 0.30+ **broke code embeddings** (rejects the jina-code model with HTTP 501), and even when it worked it was slow on CPU. This image replaces it:
+Paparats used to embed with Ollama, then briefly with CC-BY-NC jina models. This image ships two **permissively licensed (Apache-2.0)** embedders on `llama-server`, ~5–9× faster than Ollama on CPU:
 
-- ⚡ **~5–9× faster than Ollama on the same hardware** (measured on an 8-CPU AWS Graviton box, batch=1: jina-code 5.4×, bge-m3 8.8×). The win is *bigger* on weak servers, where Ollama's per-request overhead dominates.
-- ✅ **Serves the code model Ollama can't.** `jina-code-embeddings-1.5b` runs perfectly on `llama-server` — the exact model Ollama 0.30+ rejects.
-- 🎯 **Correct pooling, drop-in compatible vectors.** Per-model pooling is baked in and cosine-verified against the old Ollama vectors — **no re-index required** when migrating.
+- ⚖️ **Permissive licenses.** `bge-code-v1` and `Qwen3-Embedding-0.6B` are both Apache-2.0 — safe for commercial/enterprise use (the previous jina models were CC-BY-NC).
+- ⚡ **~5–9× faster than Ollama on the same hardware.** The win is *bigger* on weak servers, where Ollama's per-request overhead dominates.
+- 🎯 **Correct pooling.** Both models are decoder-based → `--pooling last`, baked in and cosine-verified. Wrong pooling silently corrupts the vector space.
 - 💤 **Lazy load + idle unload.** Models load on first request and unload after `EMBED_TTL` seconds idle. A code-only user never spins up the text model; RAM is freed when nobody's searching.
 - 🧊 **Zero-config, CPU-only.** No CUDA, no model registry, no Modelfile. Both GGUFs are baked in.
 
 ## Models
 
-| Model | Use | Dims | Pooling |
-| --- | --- | --- | --- |
-| `jina-code-embeddings` | code search | 1536 | last |
-| `bge-m3` | arch/docs text | 1024 | cls |
+| Model | Use | Dims | Pooling | License |
+| --- | --- | --- | --- | --- |
+| `bge-code-v1` | code search | 1536 | last | Apache-2.0 |
+| `qwen3-embedding-0.6b` | arch/docs text | 1024 | last | Apache-2.0 |
 
 Both are served on a single OpenAI-compatible endpoint; route by model name.
+
+Swapping in a different model? Follow [docs/replacing-embedding-models.md](../../docs/replacing-embedding-models.md).
 
 ## Run
 

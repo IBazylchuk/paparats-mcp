@@ -188,7 +188,7 @@ describe('doctor', () => {
                 ok: true,
                 json: () =>
                   Promise.resolve({
-                    data: [{ id: 'jina-code-embeddings' }],
+                    data: [{ id: 'bge-code-v1' }],
                   }),
               } as Response);
             }
@@ -203,7 +203,7 @@ describe('doctor', () => {
 
         const embedCheck = results.find((r) => r.name === 'Embeddings');
         expect(embedCheck?.ok).toBe(true);
-        expect(embedCheck?.message).toContain('jina-code-embeddings');
+        expect(embedCheck?.message).toContain('bge-code-v1');
         expect(mockFetch).toHaveBeenCalledWith(
           expect.stringContaining(customEmbedUrl),
           expect.any(Object)

@@ -1,11 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  detectQueryType,
-  prefixQuery,
-  prefixPassage,
-  getQueryPrefix,
-  getPassagePrefix,
-} from '../src/task-prefixes.js';
+import { detectQueryType, prefixQuery, prefixPassage, modelFamily } from '../src/task-prefixes.js';
 
 describe('detectQueryType', () => {
   it('detects code queries (function keyword)', () => {
@@ -61,42 +55,72 @@ describe('detectQueryType', () => {
   });
 });
 
+describe('modelFamily', () => {
+  it('maps bge-code-v1 to bge-code', () => {
+    expect(modelFamily('bge-code-v1')).toBe('bge-code');
+  });
+
+  it('maps Qwen3-Embedding models to qwen (case-insensitive)', () => {
+    expect(modelFamily('qwen3-embedding-0.6b')).toBe('qwen');
+    expect(modelFamily('Qwen3-Embedding-0.6B')).toBe('qwen');
+  });
+
+  it('maps unknown / provider-native models to none', () => {
+    expect(modelFamily('bge-m3')).toBe('none');
+    expect(modelFamily('text-embedding-3-small')).toBe('none');
+    expect(modelFamily('jina-code-embeddings')).toBe('none');
+  });
+});
+
 describe('prefixQuery', () => {
-  it('adds nl2code prefix for search terms', () => {
-    const result = prefixQuery('authentication middleware');
-    expect(result).toContain('Find the most relevant code snippet');
-    expect(result.endsWith('authentication middleware')).toBe(true);
+  it('returns the query unchanged for the none family', () => {
+    expect(prefixQuery('authentication middleware', 'none')).toBe('authentication middleware');
+    // default family is 'none'
+    expect(prefixQuery('authentication middleware')).toBe('authentication middleware');
   });
 
-  it('adds code2code prefix for code input', () => {
-    const result = prefixQuery('function handleAuth() {');
-    expect(result).toContain('Find an equivalent code snippet');
-    expect(result.endsWith('function handleAuth() {')).toBe(true);
+  it('wraps in the bge-code <instruct>/<query> template with a detected task', () => {
+    const result = prefixQuery('authentication middleware', 'bge-code');
+    expect(result.startsWith('<instruct>')).toBe(true);
+    expect(result).toContain('\n<query>authentication middleware');
+    // nl2code task wording — verbatim from the bge-code-v1 model card (CosQA)
+    expect(result).toContain(
+      'Given a web search query, retrieve relevant code that can help answer the query.'
+    );
   });
 
-  it('adds techqa prefix for questions', () => {
-    const result = prefixQuery('how does authentication work');
-    expect(result).toContain('Find the most relevant technical answer');
+  it('wraps in the qwen Instruct/Query template with the single qwen instruction', () => {
+    const result = prefixQuery('function handleAuth() {', 'qwen');
+    expect(result.startsWith('Instruct: ')).toBe(true);
+    expect(result).toContain('\nQuery:function handleAuth() {');
+    // Qwen3-Embedding has one retrieval instruction for all query types (no period).
+    expect(result).toContain(
+      'Given a web search query, retrieve relevant passages that answer the query'
+    );
+  });
+
+  it('uses the bge-code code2code instruction for code-shaped queries', () => {
+    const result = prefixQuery('function handleAuth() {', 'bge-code');
+    // code2code — verbatim from the bge-code-v1 card (CodeTrans-DL)
+    expect(result).toContain('retrieve code that is semantically equivalent to the input code.');
+  });
+
+  it('picks the bge-code techqa (StackOverFlow-QA) instruction for questions', () => {
+    const result = prefixQuery('how does authentication work', 'bge-code');
+    // techqa — verbatim from the bge-code-v1 card (StackOverFlow-QA), NOT the qwen string
+    expect(result).toContain(
+      'retrieve relevant answers that also consist of a mix of text and code snippets'
+    );
     expect(result.endsWith('how does authentication work')).toBe(true);
   });
 });
 
 describe('prefixPassage', () => {
-  it('adds passage prefix to code chunk', () => {
-    const result = prefixPassage('const x = 1;');
-    expect(result).toContain('Candidate code snippet:');
-    expect(result.endsWith('const x = 1;')).toBe(true);
-  });
-});
-
-describe('getQueryPrefix / getPassagePrefix', () => {
-  it('returns non-empty query prefix for all types', () => {
-    expect(getQueryPrefix('nl2code').length).toBeGreaterThan(0);
-    expect(getQueryPrefix('code2code').length).toBeGreaterThan(0);
-    expect(getQueryPrefix('techqa').length).toBeGreaterThan(0);
-  });
-
-  it('returns non-empty passage prefix', () => {
-    expect(getPassagePrefix().length).toBeGreaterThan(0);
+  it('returns documents unprefixed for instruction-tuned families', () => {
+    // asymmetric retrieval: documents carry no instruction
+    expect(prefixPassage('const x = 1;', 'bge-code')).toBe('const x = 1;');
+    expect(prefixPassage('const x = 1;', 'qwen')).toBe('const x = 1;');
+    expect(prefixPassage('const x = 1;', 'none')).toBe('const x = 1;');
+    expect(prefixPassage('const x = 1;')).toBe('const x = 1;');
   });
 });
