@@ -818,9 +818,9 @@ export class ArchStore {
     ) {
       return 0; // already on the current model
     }
-    // Missing meta but empty collection → nothing to heal; stamp lazily on first write.
-    const stats = await this.stats(group);
-    if (stats.total === 0) return 0;
+    // reindexArch already handles the empty/missing cases without side effects:
+    // it scrolls, finds 0 cards, and returns 0 before writing any meta sentinel.
+    // No separate stats() guard needed (it would double-scroll the collection).
     return this.reindexArch(group);
   }
 
