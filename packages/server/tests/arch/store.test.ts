@@ -1059,7 +1059,9 @@ describe('ArchStore.listPoints', () => {
     qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
     await store.listPoints('g', {});
     const firstFilter = qdrant.scroll.mock.calls[0]?.[1]?.filter;
+    // The meta sentinel is always excluded; superseded/deprecated too by default.
     expect(firstFilter?.must_not).toEqual([
+      { key: '__meta', match: { value: true } },
       { key: 'status', match: { value: 'superseded' } },
       { key: 'status', match: { value: 'deprecated' } },
     ]);
@@ -1067,7 +1069,8 @@ describe('ArchStore.listPoints', () => {
     qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
     await store.listPoints('g', { includeHistory: true });
     const secondFilter = qdrant.scroll.mock.calls[1]?.[1]?.filter;
-    expect(secondFilter?.must_not).toBeUndefined();
+    // With history included, only the meta-sentinel exclusion remains.
+    expect(secondFilter?.must_not).toEqual([{ key: '__meta', match: { value: true } }]);
   });
 
   it('passes the kind filter through to Qdrant as `arch_kind` match.any', async () => {
@@ -1326,5 +1329,209 @@ describe('ArchStore.searchWithVector project boost', () => {
     });
     const out = await store.searchWithVector('g', Array(512).fill(0), { project: 'app-a' });
     expect(out[0]!.score).toBe(1);
+  });
+});
+
+// ── ArchStore.reindexArch (re-embed all cards after a model swap) ───────────
+
+describe('ArchStore.reindexArch', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let provider: CachedEmbeddingProvider;
+  let store: ArchStore;
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    provider = fakeProvider();
+    store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider,
+    });
+  });
+
+  it('returns 0 and does nothing for an empty collection', async () => {
+    qdrant.scroll.mockResolvedValue({ points: [] });
+    const n = await store.reindexArch('g');
+    expect(n).toBe(0);
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+
+  it('returns 0 when the collection does not exist (scroll throws)', async () => {
+    qdrant.scroll.mockRejectedValue(new Error('Not found'));
+    const n = await store.reindexArch('g');
+    expect(n).toBe(0);
+  });
+
+  it('re-embeds every card and rewrites it in place at the same dimension', async () => {
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [
+        {
+          id: 'c1',
+          payload: {
+            arch_kind: 'component',
+            name: 'indexer',
+            summary: 'indexes files',
+            files: ['a.ts'],
+            neighbours: ['cache'],
+            project: 'app',
+          },
+        },
+        {
+          id: 'd1',
+          payload: {
+            arch_kind: 'decision',
+            title: 'use qwen',
+            context: 'ctx',
+            decision: 'dec',
+            alternativesRejected: 'alt',
+            consequences: 'con',
+            scope: 'global',
+          },
+        },
+      ],
+      next_page_offset: null,
+    });
+    // Same dimension as the provider → no drop/recreate.
+    qdrant.getCollection.mockResolvedValue({ config: { params: { vectors: { size: 512 } } } });
+
+    const n = await store.reindexArch('g');
+
+    expect(n).toBe(2);
+    expect(provider.embed).toHaveBeenCalledTimes(2);
+    expect(qdrant.deleteCollection).not.toHaveBeenCalled();
+    // Two upserts: the re-embedded cards, then the meta sentinel stamp.
+    expect(qdrant.upsert).toHaveBeenCalledTimes(2);
+    const upsertArg = qdrant.upsert.mock.calls[0]![1] as {
+      points: Array<{ id: string; vector: number[]; payload: Record<string, unknown> }>;
+    };
+    expect(upsertArg.points.map((p) => p.id)).toEqual(['c1', 'd1']);
+    // Payload is preserved verbatim.
+    expect(upsertArg.points[0]!.payload['name']).toBe('indexer');
+    // The final upsert stamps the current model.
+    const metaArg = qdrant.upsert.mock.calls[1]![1] as {
+      points: Array<{ payload: Record<string, unknown> }>;
+    };
+    expect(metaArg.points[0]!.payload['__meta']).toBe(true);
+    expect(metaArg.points[0]!.payload['model']).toBe('bge-m3');
+  });
+
+  it('drops and recreates the collection when the dimension changed', async () => {
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [
+        {
+          id: 'l1',
+          payload: {
+            arch_kind: 'lesson',
+            rule: 'always cosine-smoke',
+            why: 'catch bad pooling',
+            when: 'model swap',
+            scope: 'global',
+            severity: 'high',
+          },
+        },
+      ],
+      next_page_offset: null,
+    });
+    // First getCollection (dim probe) reports the old 1024 dim → rebuild;
+    // after the drop, ensureArchCollection's getCollection throws → create.
+    qdrant.getCollection
+      .mockResolvedValueOnce({ config: { params: { vectors: { size: 1024 } } } })
+      .mockRejectedValueOnce(new Error('Not found'));
+
+    const n = await store.reindexArch('g');
+
+    expect(n).toBe(1);
+    expect(qdrant.deleteCollection).toHaveBeenCalledTimes(1);
+    expect(qdrant.createCollection).toHaveBeenCalledTimes(1);
+    // Upserts: meta on collection (re)creation, the re-embedded card, and the
+    // final meta stamp = 3.
+    expect(qdrant.upsert).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ── ArchStore.healArchModel (auto-heal after a model swap) ─────────────────
+
+describe('ArchStore.healArchModel', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let provider: CachedEmbeddingProvider;
+  let store: ArchStore;
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    provider = fakeProvider(); // model 'bge-m3', dim 512
+    store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider,
+    });
+  });
+
+  it('is a no-op when the stamped model matches the current provider', async () => {
+    qdrant.retrieve.mockResolvedValue([
+      { id: 'meta', payload: { __meta: true, model: 'bge-m3', dimensions: 512 } },
+    ]);
+    const n = await store.healArchModel('g');
+    expect(n).toBe(0);
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+
+  it('reindexes when the stamped model differs from the current provider', async () => {
+    // Sentinel says the collection was embedded by a different model.
+    qdrant.retrieve.mockResolvedValue([
+      { id: 'meta', payload: { __meta: true, model: 'jina-code-embeddings', dimensions: 512 } },
+    ]);
+    // One real card to re-embed. healArchModel scrolls twice (stats, then
+    // reindexArch), so return the card on every scroll (next_page_offset: null
+    // stops pagination each time).
+    qdrant.scroll.mockResolvedValue({
+      points: [
+        {
+          id: 'l1',
+          payload: {
+            arch_kind: 'lesson',
+            rule: 'r',
+            why: 'w',
+            when: 'when',
+            scope: 'global',
+            severity: 'high',
+          },
+        },
+      ],
+      next_page_offset: null,
+    });
+    qdrant.getCollection.mockResolvedValue({ config: { params: { vectors: { size: 512 } } } });
+
+    const n = await store.healArchModel('g');
+    expect(n).toBe(1);
+    expect(provider.embed).toHaveBeenCalled();
+  });
+
+  it('is a no-op when there is no meta and the collection is empty', async () => {
+    qdrant.retrieve.mockResolvedValue([]); // no sentinel
+    qdrant.scroll.mockResolvedValue({ points: [] }); // empty stats scan
+    const n = await store.healArchModel('g');
+    expect(n).toBe(0);
+  });
+});
+
+describe('ArchStore.healAllArchModels', () => {
+  it('heals only arch collections, skipping code collections', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.getCollections = vi.fn().mockResolvedValue({
+      collections: [
+        { name: 'paparats_app' }, // code — skipped
+        { name: 'paparats_app_arch' }, // arch — checked
+        { name: 'random' }, // not ours — skipped
+      ],
+    });
+    // Matching model → healArchModel returns 0 for the one arch collection.
+    qdrant.retrieve.mockResolvedValue([
+      { id: 'meta', payload: { __meta: true, model: 'bge-m3', dimensions: 512 } },
+    ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    await store.healAllArchModels();
+    // Only the arch collection triggered a meta read.
+    expect(qdrant.retrieve).toHaveBeenCalledTimes(1);
   });
 });

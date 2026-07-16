@@ -1,7 +1,14 @@
 import type { QdrantClient } from '@qdrant/js-client-rest';
 import { v7 as uuidv7 } from 'uuid';
 import type { CachedEmbeddingProvider } from '../embeddings.js';
-import { ensureArchCollection, toArchCollectionName } from './collection.js';
+import {
+  dropArchCollection,
+  ensureArchCollection,
+  fromArchCollectionName,
+  readArchCollectionMeta,
+  toArchCollectionName,
+  writeArchCollectionMeta,
+} from './collection.js';
 import type {
   ArchKind,
   ArchPoint,
@@ -123,7 +130,7 @@ export class ArchStore {
    * `created` otherwise.
    */
   async upsertComponent(group: string, input: UpsertComponentInput): Promise<ArchWriteResult> {
-    await ensureArchCollection(this.qdrant, group, this.provider.dimensions);
+    await ensureArchCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
     const existing = await this.findByName(group, 'component', input.name, input.project);
     const id = existing?.id ?? uuidv7();
     const now = Date.now();
@@ -164,7 +171,7 @@ export class ArchStore {
    * already decided to replace a specific prior decision.
    */
   async upsertDecision(group: string, input: UpsertDecisionInput): Promise<ArchWriteResult> {
-    await ensureArchCollection(this.qdrant, group, this.provider.dimensions);
+    await ensureArchCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
     const text = renderDecisionForEmbedding(input);
     const vector = await this.provider.embed(text);
 
@@ -232,7 +239,7 @@ export class ArchStore {
    *  - `created`: a new lesson point is written.
    */
   async upsertLesson(group: string, input: UpsertLessonInput): Promise<ArchWriteResult> {
-    await ensureArchCollection(this.qdrant, group, this.provider.dimensions);
+    await ensureArchCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
     const text = renderLessonForEmbedding(input);
     const vector = await this.provider.embed(text);
 
@@ -388,7 +395,9 @@ export class ArchStore {
     if (opts.kinds && opts.kinds.length > 0) {
       must.push({ key: 'arch_kind', match: { any: opts.kinds } });
     }
-    const must_not: unknown[] = [];
+    // Always exclude the embedding metadata sentinel (a payload-only point with
+    // no arch_kind) from listings and search.
+    const must_not: unknown[] = [{ key: '__meta', match: { value: true } }];
     if (!opts.includeHistory) {
       must_not.push(
         { key: 'status', match: { value: 'superseded' } },
@@ -569,7 +578,9 @@ export class ArchStore {
     if (opts.kinds && opts.kinds.length > 0) {
       must.push({ key: 'arch_kind', match: { any: opts.kinds } });
     }
-    const must_not: unknown[] = [];
+    // Always exclude the embedding metadata sentinel (a payload-only point with
+    // no arch_kind) from listings and search.
+    const must_not: unknown[] = [{ key: '__meta', match: { value: true } }];
     if (!opts.includeHistory) {
       must_not.push(
         { key: 'status', match: { value: 'superseded' } },
@@ -664,6 +675,7 @@ export class ArchStore {
         });
         for (const p of page.points) {
           const pl = p.payload ?? {};
+          if (pl['__meta'] === true) continue; // skip the meta sentinel
           out.total += 1;
           const kind = pl['arch_kind'] ?? pl['kind'];
           if (kind === 'component' || kind === 'decision' || kind === 'lesson') {
@@ -695,6 +707,157 @@ export class ArchStore {
       // Collection doesn't exist yet (or transient error) — leave zeros.
     }
     return out;
+  }
+
+  /**
+   * Re-embed every card in the group's arch collection with the current
+   * provider and rewrite it in place. Needed after an embedding-model swap:
+   * unlike code (which the indexer re-walks from source), arch memory is only
+   * ever written by the `arch_record_*` tools, so nothing else re-embeds it —
+   * old vectors would linger in the previous model's space (or, on a dimension
+   * change, be outright incompatible).
+   *
+   * The embedding text is reconstructed from the stored payload via the same
+   * renderers used on write, so no source is required. If the collection's
+   * dimension no longer matches the provider, the collection is dropped and
+   * recreated at the new dimension before re-upserting (arch collections are
+   * tiny, so a full read-into-memory rebuild is fine).
+   *
+   * Returns the number of cards re-embedded. A missing collection is a no-op.
+   */
+  async reindexArch(group: string): Promise<number> {
+    const collection = toArchCollectionName(group);
+
+    // Read every card (payload only — the old vector is discarded).
+    const cards: Array<{ id: string | number; payload: Record<string, unknown> }> = [];
+    let offset: string | number | Record<string, unknown> | undefined | null = undefined;
+    try {
+      while (true) {
+        const page = await this.qdrant.scroll(collection, {
+          limit: 256,
+          with_payload: true,
+          with_vector: false,
+          ...(offset !== undefined && offset !== null ? { offset } : {}),
+        });
+        for (const p of page.points) {
+          if (p.id === undefined || p.id === null) continue;
+          const payload = (p.payload ?? {}) as Record<string, unknown>;
+          if (payload['__meta'] === true) continue; // skip the meta sentinel
+          cards.push({ id: p.id, payload });
+        }
+        if (!page.next_page_offset) break;
+        offset = page.next_page_offset;
+      }
+    } catch {
+      // Collection doesn't exist yet — nothing to reindex.
+      return 0;
+    }
+    if (cards.length === 0) return 0;
+
+    // Re-embed each card from its payload.
+    const points: Array<{
+      id: string | number;
+      vector: number[];
+      payload: Record<string, unknown>;
+    }> = [];
+    for (const card of cards) {
+      const text = renderPayloadForEmbedding(card.payload);
+      if (text === null) continue; // unknown kind — leave it (shouldn't happen)
+      const vector = await this.provider.embed(text);
+      points.push({ id: card.id, vector, payload: card.payload });
+    }
+
+    // If the dimension changed, the existing collection can't hold the new
+    // vectors — drop and recreate at the provider's dimension.
+    let dimensionChanged: boolean;
+    try {
+      const info = await this.qdrant.getCollection(collection);
+      const size = (info.config?.params?.vectors as { size?: number } | undefined)?.size;
+      dimensionChanged = typeof size === 'number' && size !== this.provider.dimensions;
+    } catch {
+      // Can't read config — assume a rebuild is safest.
+      dimensionChanged = true;
+    }
+    if (dimensionChanged) {
+      await dropArchCollection(this.qdrant, group);
+    }
+    await ensureArchCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
+
+    // Upsert in batches (arch is small, but keep payloads well under limits).
+    const BATCH = 128;
+    for (let i = 0; i < points.length; i += BATCH) {
+      await this.qdrant.upsert(collection, { wait: true, points: points.slice(i, i + BATCH) });
+    }
+
+    // Stamp the collection with the model it now holds so the next startup can
+    // tell whether another swap has happened.
+    await writeArchCollectionMeta(this.qdrant, group, {
+      model: this.provider.model,
+      dimensions: this.provider.dimensions,
+    });
+    return points.length;
+  }
+
+  /**
+   * Startup self-heal: if the arch collection was embedded by a different text
+   * model than the one now running, re-embed it in place (see {@link reindexArch}).
+   * A dimension or model mismatch — or a collection with data but no meta
+   * sentinel (pre-feature) whose model can't be confirmed — triggers a reindex.
+   * Returns the number of cards re-embedded (0 if already current or empty).
+   *
+   * Safe by construction: reindexArch reconstructs text from payload and never
+   * drops data except to recreate at a new dimension, so a healed collection
+   * keeps every card. Idempotent — a matching sentinel makes this a no-op.
+   */
+  async healArchModel(group: string): Promise<number> {
+    const meta = await readArchCollectionMeta(this.qdrant, group);
+    if (
+      meta &&
+      meta.model === this.provider.model &&
+      meta.dimensions === this.provider.dimensions
+    ) {
+      return 0; // already on the current model
+    }
+    // Missing meta but empty collection → nothing to heal; stamp lazily on first write.
+    const stats = await this.stats(group);
+    if (stats.total === 0) return 0;
+    return this.reindexArch(group);
+  }
+
+  /**
+   * Heal every arch collection in Qdrant whose text model no longer matches the
+   * running provider. Called once at startup so an operator who bumps the text
+   * model (e.g. via `paparats update`) gets their arch memory re-embedded
+   * automatically — without losing it — rather than silently searching a stale
+   * vector space. Discovers arch collections by the `_arch` suffix. Best-effort
+   * and non-fatal: a per-group failure is logged and skipped so one bad group
+   * can't block startup.
+   */
+  async healAllArchModels(): Promise<void> {
+    let collections: string[];
+    try {
+      const res = await this.qdrant.getCollections();
+      collections = res.collections.map((c) => c.name);
+    } catch (err) {
+      console.warn(
+        `[arch] model-heal skipped — could not list collections: ${(err as Error).message}`
+      );
+      return;
+    }
+    for (const name of collections) {
+      const group = fromArchCollectionName(name);
+      if (group === null) continue;
+      try {
+        const n = await this.healArchModel(group);
+        if (n > 0) {
+          console.log(
+            `[arch] re-embedded ${n} card(s) in group "${group}" with ${this.provider.model} (text model changed)`
+          );
+        }
+      } catch (err) {
+        console.warn(`[arch] model-heal failed for group "${group}": ${(err as Error).message}`);
+      }
+    }
   }
 }
 
@@ -737,6 +900,48 @@ function renderDecisionForEmbedding(input: UpsertDecisionInput): string {
 
 function renderLessonForEmbedding(input: UpsertLessonInput): string {
   return [`Lesson: ${input.rule}`, '', `Why: ${input.why}`, '', `When: ${input.when}`].join('\n');
+}
+
+/**
+ * Reconstruct the embedding text from a stored card payload, dispatching on
+ * `arch_kind`. Used by {@link ArchStore.reindexArch} — the payload holds every
+ * field the write-path renderers consume, so the text is byte-identical to what
+ * was embedded originally. Returns null for an unrecognised kind (skip it).
+ */
+function renderPayloadForEmbedding(payload: Record<string, unknown>): string | null {
+  const kind = payload['arch_kind'] ?? payload['kind'];
+  const str = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const arr = (v: unknown): string[] => (Array.isArray(v) ? v.map(String) : []);
+  switch (kind) {
+    case 'component':
+      return renderComponentForEmbedding({
+        project: str(payload['project']),
+        name: str(payload['name']),
+        summary: str(payload['summary']),
+        files: arr(payload['files']),
+        neighbours: arr(payload['neighbours']),
+        anchors: arr(payload['anchors']),
+      });
+    case 'decision':
+      return renderDecisionForEmbedding({
+        title: str(payload['title']),
+        context: str(payload['context']),
+        decision: str(payload['decision']),
+        alternativesRejected: str(payload['alternativesRejected']),
+        consequences: str(payload['consequences']),
+        scope: payload['scope'] as ArchScope,
+      });
+    case 'lesson':
+      return renderLessonForEmbedding({
+        rule: str(payload['rule']),
+        why: str(payload['why']),
+        when: str(payload['when']),
+        scope: payload['scope'] as ArchScope,
+        severity: payload['severity'] as ArchSeverity,
+      });
+    default:
+      return null;
+  }
 }
 
 /**

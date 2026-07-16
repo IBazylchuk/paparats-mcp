@@ -46,7 +46,7 @@ watcher:
   debounce: 500
 embeddings:
   provider: llama
-  model: jina-code-embeddings
+  model: bge-code-v1
   dimensions: 1536
 `;
 

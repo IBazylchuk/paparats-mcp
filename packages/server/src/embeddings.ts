@@ -4,7 +4,7 @@ import fs from 'fs';
 import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 import type { EmbeddingProvider } from './types.js';
-import { prefixQuery, prefixPassage, type TaskPrefixConfig } from './task-prefixes.js';
+import { prefixQuery, prefixPassage, modelFamily, type TaskPrefixConfig } from './task-prefixes.js';
 import type { Telemetry } from './telemetry/facade.js';
 import type { MetricsRegistry } from './metrics.js';
 
@@ -119,11 +119,11 @@ export class EmbeddingCache {
 // ── llama-server provider ──────────────────────────────────────────────────
 //
 // Talks to llama.cpp's llama-server (fronted by llama-swap) over its
-// OpenAI-compatible /v1/embeddings endpoint. Replaces the old Ollama provider:
-// ~6.6x faster on the same hardware and serves jina-code-embeddings, which
-// Ollama 0.30+ rejects with HTTP 501. Vectors are drop-in compatible with the
-// old Ollama index provided llama-swap serves each model with the correct
-// pooling (jina-code -> last, bge-m3 -> cls), which the paparats-embed image does.
+// OpenAI-compatible /v1/embeddings endpoint. Serves the two permissively
+// licensed embedders baked into paparats-embed: bge-code-v1 (code, 1536d) and
+// Qwen3-Embedding-0.6B (arch/docs text, 1024d). Both are qwen-decoder based and
+// MUST be served with --pooling last; wrong pooling silently corrupts the
+// vector space (cosine-verify a new GGUF against the reference before trusting).
 
 export interface LlamaServerProviderConfig {
   url?: string;
@@ -154,8 +154,8 @@ export class LlamaServerProvider implements EmbeddingProvider {
   constructor(config?: LlamaServerProviderConfig) {
     this.url = config?.url ?? process.env.EMBED_URL ?? 'http://127.0.0.1:18434';
     // Model name routed by llama-swap. Matches the GGUF baked into
-    // ibaz/paparats-embed (jinaai/jina-code-embeddings-1.5b-GGUF).
-    this.model = config?.model ?? 'jina-code-embeddings';
+    // ibaz/paparats-embed (BAAI/bge-code-v1, Apache-2.0, 1536d, --pooling last).
+    this.model = config?.model ?? 'bge-code-v1';
     this.dimensions = config?.dimensions ?? 1536;
   }
 
@@ -752,24 +752,29 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     }
   }
 
-  /** Embed a search query with auto-detected task prefix (if enabled) */
+  /** Embed a search query with the model family's instruction prefix (if enabled) */
   async embedQuery(text: string): Promise<number[]> {
-    const input = this.taskPrefixConfig.enabled ? prefixQuery(text) : text;
+    const input = this.taskPrefixConfig.enabled
+      ? prefixQuery(text, this.taskPrefixConfig.family)
+      : text;
     return this.embed(input);
   }
 
-  /** Embed a code passage/chunk with passage prefix (if enabled) */
+  /** Embed a document/chunk. Instruction-tuned families embed documents
+   *  unprefixed, so this passes the text through even when prefixes are on. */
   async embedPassage(text: string): Promise<number[]> {
-    const input = this.taskPrefixConfig.enabled ? prefixPassage(text) : text;
+    const input = this.taskPrefixConfig.enabled
+      ? prefixPassage(text, this.taskPrefixConfig.family)
+      : text;
     return this.embed(input);
   }
 
-  /** Embed a batch of code passages/chunks with passage prefix (if enabled) */
+  /** Embed a batch of document/chunks (unprefixed for instruction-tuned families) */
   async embedBatchPassage(texts: string[]): Promise<number[][]> {
     if (!this.taskPrefixConfig.enabled) {
       return this.embedBatch(texts);
     }
-    const prefixed = texts.map((t) => prefixPassage(t));
+    const prefixed = texts.map((t) => prefixPassage(t, this.taskPrefixConfig.family));
     return this.embedBatch(prefixed);
   }
 
@@ -821,11 +826,15 @@ export function createEmbeddingProvider(config: {
       throw new Error(`Unsupported embedding provider: ${config.provider}`);
   }
 
-  // Auto-enable task prefixes for Jina code embedding models (llama-server).
-  // OpenAI and Voyage handle task differentiation natively; for Voyage we
-  // toggle via setInputType() inside the searcher hot path.
+  // Auto-enable instruction prefixes for instruction-tuned llama-server models
+  // (bge-code-v1, Qwen3-Embedding). OpenAI and Voyage handle task
+  // differentiation natively; for Voyage we toggle via setInputType() inside the
+  // searcher hot path. `modelFamily` returns 'none' for unknown models → no
+  // prefix, so this is a no-op for anything we don't recognize.
+  const family = modelFamily(config.model);
   const taskPrefixes = config.taskPrefixes ?? {
-    enabled: config.model.includes('jina-code') || config.model.includes('jina_code'),
+    enabled: family !== 'none',
+    family,
   };
 
   return new CachedEmbeddingProvider(base, undefined, taskPrefixes);
@@ -898,7 +907,7 @@ export function resolveEmbeddingConfigFromEnv(
   }
   return {
     provider: 'llama',
-    model: modelEnv || 'jina-code-embeddings',
+    model: modelEnv || 'bge-code-v1',
     dimensions: Number.isFinite(dimEnvParsed) ? dimEnvParsed : 1536,
   };
 }

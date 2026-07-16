@@ -49,7 +49,7 @@ export async function runChecks(
   // Resolve config for URLs/models
   const qdrantUrl = process.env.QDRANT_URL ?? 'http://localhost:6333';
   const embedUrl = process.env.EMBED_URL ?? 'http://localhost:18434';
-  let embedModel = process.env.EMBEDDING_MODEL ?? 'jina-code-embeddings';
+  let embedModel = process.env.EMBEDDING_MODEL ?? 'bge-code-v1';
 
   const configDir = findConfigDir();
   if (configDir) {
