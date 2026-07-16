@@ -140,3 +140,6 @@ vite.config.ts.timestamp-*
 
 .claude/settings.local.json
 .mcpregistry*
+
+# Local working notes — never commit
+*.local.md

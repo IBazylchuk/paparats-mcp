@@ -1269,6 +1269,61 @@ curl http://localhost:8080/v1/models
 
 Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
 
+### Model benchmarks & methodology
+
+We benchmark embedding models on standard BEIR-format retrieval datasets before
+adopting them, on real hardware rather than trusting vendor-reported numbers.
+
+**Methodology.** Each model is served by `llama-server` (Q8_0 GGUF) and queried
+through the OpenAI-style `/v1/embeddings` endpoint — the same path the server
+uses in production. We embed the full corpus, run brute-force cosine search per
+query, and report nDCG / Recall @K against the dataset's published `qrels`. Each
+model uses its own recommended query instruction (documents are embedded
+unprefixed); pooling matches the architecture (`cls` for BERT-family, `last` for
+decoder-family). No reranking — the consumer is an agent that reads the whole
+top-K, so recall matters more than exact ordering.
+
+**Code retrieval** — CoIR CosQA (20,604 code docs, 500 queries):
+
+| Model | License | Dim | Recall@5 | nDCG@5 | Recall@10 |
+| ----- | ------- | --- | -------- | ------ | --------- |
+| **BAAI/bge-code-v1** | Apache-2.0 | 1536 | **0.480** | **0.323** | **0.722** |
+| jinaai/jina-code-embeddings-1.5b | CC-BY-NC | 1536 | 0.408 | 0.269 | 0.626 |
+
+**Prose retrieval** — SciFact (5,183 docs, 300 queries):
+
+| Model | License | Dim | Recall@5 | nDCG@5 | Recall@10 |
+| ----- | ------- | --- | -------- | ------ | --------- |
+| jinaai/jina-embeddings-v3 + retrieval-LoRA | CC-BY-NC | 1024 | 0.795 | 0.709 | 0.843 |
+| **Qwen/Qwen3-Embedding-0.6B** | Apache-2.0 | 1024 | 0.775 | 0.681 | 0.831 |
+| BAAI/bge-m3 | MIT | 1024 | 0.720 | 0.625 | 0.783 |
+
+**Prose retrieval** — FiQA business/finance (16.7k-doc subsample, 648 queries):
+
+| Model | License | Dim | Recall@5 | nDCG@5 | Recall@10 |
+| ----- | ------- | --- | -------- | ------ | --------- |
+| **Qwen/Qwen3-Embedding-0.6B** | Apache-2.0 | 1024 | **0.575** | **0.555** | **0.666** |
+| BAAI/bge-m3 | MIT | 1024 | 0.499 | 0.496 | 0.596 |
+
+**Takeaways.**
+
+- For **code**, `bge-code-v1` beats `jina-code-embeddings` by ~7pt Recall@5, is
+  permissively licensed (Apache-2.0 vs CC-BY-NC), and keeps the same 1536 dims.
+- For **prose/docs**, `Qwen3-Embedding-0.6B` beats `bge-m3` by 5–8pt Recall@5
+  (and by more on business prose), is Apache-2.0, and keeps 1024 dims — at the
+  cost of ~2× slower indexing on CPU. `jina-embeddings-v3 + LoRA` scores highest
+  but its CC-BY-NC license rules it out for commercial/self-hosted adoption.
+- A cross-encoder reranker (`bge-reranker-v2-m3`) added +4–6pt nDCG but ~2.7s per
+  query on CPU and mostly reorders rather than improving recall — not worth it
+  when an agent consumes the top-K directly.
+- **Late chunking** was evaluated and rejected: decoder-family models (Qwen3)
+  can't do it (causal attention), and it degrades multi-topic documents anyway.
+  Structural / per-topic chunking is the dominant quality lever, not the model.
+
+> Numbers were measured on Apple-silicon (Metal) with Q8_0 quantization; absolute
+> values shift with hardware, quantization, and corpus, but the relative ordering
+> between models is what drives model selection here.
+
 ---
 
 ## Comparison with Alternatives
