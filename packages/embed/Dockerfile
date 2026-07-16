@@ -13,8 +13,11 @@
 #      all CPU backends), add llama-swap + gettext (envsubst) + baked GGUFs
 #
 # Final image bakes both models so it's ready on first request:
-#   jina-code-embeddings-1.5b Q8_0 (~1.65 GB, code, --pooling last)
-#   bge-m3 Q8_0                     (~600 MB, arch/docs text, --pooling cls)
+#   bge-code-v1 Q8_0            (~1.5 GB, code, Apache-2.0, --pooling last)
+#   Qwen3-Embedding-0.6B Q8_0   (~610 MB, arch/docs text, Apache-2.0, --pooling last)
+# Both are permissively licensed (Apache-2.0). The previous jina-code (CC-BY-NC)
+# and bge-m3 models were removed in the migration — rollback is via a previously
+# published image tag, not by carrying legacy weights.
 
 # Pin llama.cpp server image — bump deliberately (tags are date-stamped upstream).
 ARG LLAMACPP_TAG=server
@@ -50,11 +53,14 @@ COPY --from=swap-fetch /usr/local/bin/llama-swap /usr/local/bin/llama-swap
 ENV PATH="/app:${PATH}"
 
 # Bake the models. Kept as separate layers so a model bump only re-pushes one.
+# Code embeddings — bge-code-v1 Q8_0 (~1.5 GB, Apache-2.0, --pooling last).
 RUN mkdir -p /models && \
-    curl -fsSL -o /models/jina-code-embeddings-1.5b-Q8_0.gguf \
-      "https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF/resolve/main/jina-code-embeddings-1.5b-Q8_0.gguf"
-RUN curl -fsSL -o /models/bge-m3-Q8_0.gguf \
-      "https://huggingface.co/KimChen/bge-m3-GGUF/resolve/main/bge-m3-q8_0.gguf"
+    curl -fsSL -o /models/bge-code-v1-Q8_0.gguf \
+      "https://huggingface.co/taylor-jones/bge-code-v1-Q8_0-GGUF/resolve/main/bge-code-v1-q8_0.gguf"
+# Arch/docs text embeddings — Qwen3-Embedding-0.6B Q8_0 (~610 MB, Apache-2.0,
+# --pooling last).
+RUN curl -fsSL -o /models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+      "https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf"
 
 COPY llama-swap.template.yaml /config/llama-swap.template.yaml
 COPY entrypoint.sh /usr/local/bin/paparats-embed-entrypoint

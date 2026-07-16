@@ -120,11 +120,11 @@ const DEFAULT_WATCHER: Required<WatcherConfig> = {
   stabilityThreshold: 1000,
 };
 
-// Default model: jinaai/jina-code-embeddings-1.5b-GGUF (HuggingFace)
+// Default model: BAAI/bge-code-v1 (Apache-2.0, 1536d, --pooling last).
 // Served by llama-server (fronted by llama-swap) in the ibaz/paparats-embed image.
 const DEFAULT_EMBEDDINGS: Required<EmbeddingsConfig> = {
   provider: 'llama',
-  model: 'jina-code-embeddings', // llama-swap route → jina-code-embeddings-1.5b
+  model: 'bge-code-v1', // llama-swap route → bge-code-v1
   dimensions: 1536,
 };
 
@@ -176,11 +176,11 @@ export const CONFIG_FILE = '.paparats.yml';
 
 const VALID_EMBEDDING_PROVIDERS = ['llama', 'openai', 'voyage'] as const;
 
-// Known embedding model dimensions (for validation warning)
+// Known embedding model dimensions (for validation warning). The two models
+// baked into paparats-embed. Add a row when introducing a new baked model.
 const MODEL_DIMENSIONS: Record<string, number> = {
-  'jina-code-embeddings': 1536,
-  'all-minilm-l6-v2': 384,
-  'bge-base-en-v1.5': 768,
+  'bge-code-v1': 1536,
+  'qwen3-embedding-0.6b': 1024,
 };
 
 /**

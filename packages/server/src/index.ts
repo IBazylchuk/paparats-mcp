@@ -177,6 +177,15 @@ server.on('error', (err: NodeJS.ErrnoException) => {
   }
 });
 
+// Self-heal arch memory after a text-model swap. Runs in the background so it
+// never blocks startup; re-embeds only groups whose stamped model differs from
+// the running one, preserving every card (see ArchStore.healAllArchModels).
+tctx.run(systemContext('arch-heal'), () =>
+  archStore.healAllArchModels().catch((err) => {
+    console.warn(`[arch] model-heal pass failed (non-fatal): ${(err as Error).message}`);
+  })
+);
+
 // ── Graceful shutdown ──────────────────────────────────────────────────────
 
 async function shutdown(): Promise<void> {
