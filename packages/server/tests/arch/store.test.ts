@@ -1478,9 +1478,8 @@ describe('ArchStore.healArchModel', () => {
     qdrant.retrieve.mockResolvedValue([
       { id: 'meta', payload: { __meta: true, model: 'jina-code-embeddings', dimensions: 512 } },
     ]);
-    // One real card to re-embed. healArchModel scrolls twice (stats, then
-    // reindexArch), so return the card on every scroll (next_page_offset: null
-    // stops pagination each time).
+    // One real card to re-embed. reindexArch scrolls the collection
+    // (next_page_offset: null stops pagination).
     qdrant.scroll.mockResolvedValue({
       points: [
         {
@@ -1506,7 +1505,7 @@ describe('ArchStore.healArchModel', () => {
 
   it('is a no-op when there is no meta and the collection is empty', async () => {
     qdrant.retrieve.mockResolvedValue([]); // no sentinel
-    qdrant.scroll.mockResolvedValue({ points: [] }); // empty stats scan
+    qdrant.scroll.mockResolvedValue({ points: [] }); // reindexArch finds 0 cards
     const n = await store.healArchModel('g');
     expect(n).toBe(0);
   });
