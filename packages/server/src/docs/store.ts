@@ -81,12 +81,7 @@ export class DocsStore {
     const docTitle = input.docTitle ?? basename(input.file);
     const chunks = chunkMarkdown(input.content, { docTitle });
 
-    await ensureDocsCollection(
-      this.qdrant,
-      group,
-      this.provider.dimensions,
-      this.provider.model
-    );
+    await ensureDocsCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
 
     // Remove the file's previous chunks (and their IDF contribution) first.
     await this.deleteDocument(group, input.project, input.file);
@@ -347,9 +342,7 @@ export class DocsStore {
     let dimensionChanged: boolean;
     try {
       const info = await this.qdrant.getCollection(collection);
-      const vectors = info.config?.params?.vectors as
-        | Record<string, { size?: number }>
-        | undefined;
+      const vectors = info.config?.params?.vectors as Record<string, { size?: number }> | undefined;
       const size = vectors?.[DOCS_DENSE_VECTOR]?.size;
       dimensionChanged = typeof size === 'number' && size !== this.provider.dimensions;
     } catch {
@@ -388,7 +381,11 @@ export class DocsStore {
   /** Heal one group if its stored model differs from the running provider. */
   async healDocsModel(group: string): Promise<number> {
     const meta = await readDocsCollectionMeta(this.qdrant, group);
-    if (meta && meta.model === this.provider.model && meta.dimensions === this.provider.dimensions) {
+    if (
+      meta &&
+      meta.model === this.provider.model &&
+      meta.dimensions === this.provider.dimensions
+    ) {
       return 0;
     }
     return this.reindexDocs(group);

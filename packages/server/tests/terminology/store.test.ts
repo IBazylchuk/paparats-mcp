@@ -133,9 +133,15 @@ describe('TerminologyStore.search', () => {
 
   it('soft-filters by project (global terms surface too)', async () => {
     qdrant.search.mockResolvedValueOnce([
-      { score: 0.9, payload: { id: 'a', term: 'A', definition: 'x', aliases: [], project: 'billing' } },
+      {
+        score: 0.9,
+        payload: { id: 'a', term: 'A', definition: 'x', aliases: [], project: 'billing' },
+      },
       { score: 0.8, payload: { id: 'b', term: 'B', definition: 'y', aliases: [] } },
-      { score: 0.7, payload: { id: 'c', term: 'C', definition: 'z', aliases: [], project: 'other' } },
+      {
+        score: 0.7,
+        payload: { id: 'c', term: 'C', definition: 'z', aliases: [], project: 'other' },
+      },
     ]);
     const hits = await store.search('g', 'q', { project: 'billing' });
     const terms = hits.map((h) => h.term);

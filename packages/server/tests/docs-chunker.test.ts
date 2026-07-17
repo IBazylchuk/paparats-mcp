@@ -24,9 +24,9 @@ describe('detectMarkdown', () => {
   });
 
   it('rejects plain prose with no markdown structure', () => {
-    expect(
-      detectMarkdown('This is just a paragraph of plain text with no structure at all.')
-    ).toBe(false);
+    expect(detectMarkdown('This is just a paragraph of plain text with no structure at all.')).toBe(
+      false
+    );
   });
 
   it('rejects prose with a single weak signal (a lone URL is not enough)', () => {
@@ -62,13 +62,25 @@ describe('estimateTokens', () => {
 
 describe('chunkMarkdown', () => {
   it('throws NotMarkdownError on plain text', () => {
-    expect(() => chunkMarkdown('just plain prose, nothing markdown here')).toThrow(NotMarkdownError);
+    expect(() => chunkMarkdown('just plain prose, nothing markdown here')).toThrow(
+      NotMarkdownError
+    );
   });
 
   it('splits by heading into sections', () => {
-    const md = ['# Doc', '', 'intro para', '', '## Section A', '', 'body a', '', '## Section B', '', 'body b'].join(
-      '\n'
-    );
+    const md = [
+      '# Doc',
+      '',
+      'intro para',
+      '',
+      '## Section A',
+      '',
+      'body a',
+      '',
+      '## Section B',
+      '',
+      'body b',
+    ].join('\n');
     const chunks = chunkMarkdown(md);
     // Preamble under H1 + Section A + Section B → at least 3 chunks with distinct paths.
     const paths = chunks.map((c) => c.headingPath.join(' > '));
@@ -80,14 +92,18 @@ describe('chunkMarkdown', () => {
   it('prepends the heading breadcrumb to chunk content', () => {
     const md = '# Runbook\n\n## Deploy\n\n### Rollback\n\nrun the rollback script';
     const chunks = chunkMarkdown(md, { docTitle: 'Ops Guide' });
-    const rollback = chunks.find((c) => c.headingPath.join(' > ') === 'Runbook > Deploy > Rollback');
+    const rollback = chunks.find(
+      (c) => c.headingPath.join(' > ') === 'Runbook > Deploy > Rollback'
+    );
     expect(rollback).toBeDefined();
     expect(rollback!.content.startsWith('Ops Guide > Runbook > Deploy > Rollback')).toBe(true);
     expect(rollback!.content).toContain('run the rollback script');
   });
 
   it('computes ancestor heading paths correctly (skips sibling headings)', () => {
-    const md = ['# A', '', '## B1', '', 'b1 body', '', '## B2', '', '### C', '', 'c body'].join('\n');
+    const md = ['# A', '', '## B1', '', 'b1 body', '', '## B2', '', '### C', '', 'c body'].join(
+      '\n'
+    );
     const chunks = chunkMarkdown(md);
     const c = chunks.find((x) => x.content.includes('c body'));
     expect(c!.headingPath).toEqual(['A', 'B2', 'C']);

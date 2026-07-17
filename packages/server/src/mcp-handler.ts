@@ -33,6 +33,7 @@ import {
 import { ArchStore } from './arch/store.js';
 import { DocsStore } from './docs/store.js';
 import { TerminologyStore } from './terminology/store.js';
+import { expandQueryWithGlossary } from './query-expansion.js';
 import {
   buildArchContextWithVector,
   DEFAULT_MIN_SCORE,
@@ -2975,9 +2976,28 @@ export class McpHandler {
         },
         async ({ query, project, group, limit }) => {
           const groupNames = group ? [group] : this.getGroupNames();
+          const termStore = this.terminologyStore;
           const all = [];
           for (const g of groupNames) {
-            const hits = await docsStore.search(g, query, {
+            // Glossary-enrich the query with matched term definitions/aliases,
+            // opt-in and per-group. A lookup failure falls back to the raw query.
+            const queries = termStore
+              ? await expandQueryWithGlossary(query, async (q) => {
+                  const terms = await termStore.search(g, q, {
+                    ...(project !== undefined ? { project } : {}),
+                    limit: 3,
+                  });
+                  return terms.map((t) => ({
+                    term: t.term,
+                    definition: t.definition,
+                    aliases: t.aliases,
+                  }));
+                })
+              : [query];
+            // The first entry is the original query; the glossary variant (if any)
+            // is the last. Search with the enriched query when present.
+            const effectiveQuery = queries[queries.length - 1] ?? query;
+            const hits = await docsStore.search(g, effectiveQuery, {
               ...(project !== undefined ? { project } : {}),
               ...(limit !== undefined ? { limit } : {}),
             });
@@ -2994,7 +3014,7 @@ export class McpHandler {
             .map((h) => {
               const crumb = [h.docTitle, ...h.headingPath].filter(Boolean).join(' > ');
               const src = h.sourceUrl ? `\nSource: ${h.sourceUrl}` : '';
-              return `### ${crumb} (${(h.score).toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}\n\n${h.content}`;
+              return `### ${crumb} (${h.score.toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}\n\n${h.content}`;
             })
             .join('\n\n---\n\n');
           return { content: [{ type: 'text' as const, text: md }] };
@@ -3028,7 +3048,9 @@ export class McpHandler {
           all.sort((a, b) => b.score - a.score);
           const top = all.slice(0, limit ?? 8);
           if (top.length === 0) {
-            return { content: [{ type: 'text' as const, text: `No glossary term found for "${query}".` }] };
+            return {
+              content: [{ type: 'text' as const, text: `No glossary term found for "${query}".` }],
+            };
           }
           const md = top
             .map((t) => {
@@ -3063,7 +3085,9 @@ export class McpHandler {
             all.push(...terms);
           }
           if (all.length === 0) {
-            return { content: [{ type: 'text' as const, text: 'No glossary terms recorded yet.' }] };
+            return {
+              content: [{ type: 'text' as const, text: 'No glossary terms recorded yet.' }],
+            };
           }
           const md = all
             .sort((a, b) => a.term.localeCompare(b.term))

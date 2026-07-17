@@ -109,8 +109,7 @@ export class DocsIdfStore {
       for (const term of terms) this.lowerDfStmt.run(group, term);
       this.deleteZeroDfStmt.run(group);
       const cur = this.getCorpusStmt.get(group) as
-        | { doc_count: number; total_length: number }
-        | undefined;
+        { doc_count: number; total_length: number } | undefined;
       if (cur) {
         const docCount = Math.max(0, cur.doc_count - 1);
         const totalLength = Math.max(0, cur.total_length - length);
@@ -136,8 +135,7 @@ export class DocsIdfStore {
    */
   getCorpusStats(group: string): CorpusStats {
     const row = this.getCorpusStmt.get(group) as
-      | { doc_count: number; total_length: number }
-      | undefined;
+      { doc_count: number; total_length: number } | undefined;
     const docCount = row?.doc_count ?? 0;
     const totalLength = row?.total_length ?? 0;
     const avgDocLength = docCount > 0 ? totalLength / docCount : 0;
