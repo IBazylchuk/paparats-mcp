@@ -2,6 +2,9 @@ import { createEmbeddingProvider, resolveEmbeddingConfigFromEnv } from './embedd
 import { Indexer, createQdrantClient } from './indexer.js';
 import { ArchStore } from './arch/store.js';
 import { createArchEmbeddingProvider, resolveArchEmbeddingConfig } from './arch/text-embeddings.js';
+import { DocsStore } from './docs/store.js';
+import { DocsIdfStore } from './docs/idf-store.js';
+import { TerminologyStore } from './terminology/store.js';
 import { Searcher } from './searcher.js';
 import { WatcherManager } from './watcher.js';
 import { MetadataStore } from './metadata-db.js';
@@ -92,6 +95,19 @@ const archStore = new ArchStore({
   provider: archEmbeddingProvider,
 });
 
+// The docs and terminology layers share arch's qwen3 text provider (same model,
+// same dims) — the prose embedder is one instance, three consumers.
+const docsIdfStore = new DocsIdfStore();
+const docsStore = new DocsStore({
+  qdrant: qdrantClient,
+  provider: archEmbeddingProvider,
+  idf: docsIdfStore,
+});
+const terminologyStore = new TerminologyStore({
+  qdrant: qdrantClient,
+  provider: archEmbeddingProvider,
+});
+
 const searcher = new Searcher({
   qdrantUrl: QDRANT_URL,
   embeddingProvider,
@@ -134,6 +150,8 @@ const { app, mcpHandler, setShuttingDown, getShuttingDown, stopGroupPoll } = cre
   telemetry,
   analytics: analytics ?? undefined,
   archStore,
+  docsStore,
+  terminologyStore,
 });
 
 const GAUGE_REFRESH_INTERVAL_MS = 15_000;
@@ -191,6 +209,18 @@ server.on('error', (err: NodeJS.ErrnoException) => {
 tctx.run(systemContext('arch-heal'), () =>
   archStore.healAllArchModels().catch((err) => {
     console.warn(`[arch] model-heal pass failed (non-fatal): ${(err as Error).message}`);
+  })
+);
+
+// Same self-heal for the docs and terminology layers (also qwen3-backed).
+tctx.run(systemContext('docs-heal'), () =>
+  docsStore.healAllDocsModels().catch((err) => {
+    console.warn(`[docs] model-heal pass failed (non-fatal): ${(err as Error).message}`);
+  })
+);
+tctx.run(systemContext('terms-heal'), () =>
+  terminologyStore.healAllTermsModels().catch((err) => {
+    console.warn(`[terms] model-heal pass failed (non-fatal): ${(err as Error).message}`);
   })
 );
 

@@ -122,6 +122,10 @@ export interface CreateAppOptions {
   analytics?: AnalyticsStore;
   /** Optional arch-layer store. Pass to enable the arch_* MCP tools. */
   archStore?: import('./arch/store.js').ArchStore;
+  /** Optional docs-layer store. Pass to enable the search_docs MCP tool. */
+  docsStore?: import('./docs/store.js').DocsStore;
+  /** Optional terminology-layer store. Pass to enable the term_* MCP tools. */
+  terminologyStore?: import('./terminology/store.js').TerminologyStore;
 }
 
 export interface CreateAppResult {
@@ -147,6 +151,8 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     telemetry,
     analytics,
     archStore,
+    docsStore,
+    terminologyStore,
   } = options;
 
   // ── Group discovery from Qdrant ───────────────────────────────────────────
@@ -693,6 +699,8 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     telemetry,
     analytics,
     archStore,
+    docsStore,
+    terminologyStore,
     ...(metrics ? { metrics } : {}),
   });
   mcpHandler.mount(app);
