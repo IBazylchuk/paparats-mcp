@@ -82,9 +82,11 @@ export interface SearchOpts {
 export type ArchSearchHit = ArchPoint & { score: number };
 
 // ── Similarity gate thresholds ─────────────────────────────────────────────
-// Calibrated on bge-m3 against a labelled probe set (offline measurement) and
-// confirmed against a live e2e run (lessons + decisions about embeddings,
-// chunking, ids, caching):
+// Originally calibrated on bge-m3 against a labelled probe set (offline
+// measurement) and confirmed against a live e2e run (lessons + decisions about
+// embeddings, chunking, ids, caching). The arch layer now embeds with
+// qwen3-embedding-0.6b; these bands are carried over unchanged and have NOT
+// been re-calibrated — treat them as a reasonable default, not a tuned value:
 //   - Duplicates (same idea, different words):  cosine ∈ [0.84, 0.94]
 //   - Similar (overlapping topic, distinct):    cosine ∈ [0.65, 0.78]
 //   - Different (same domain, distinct topic):  cosine ∈ [0.55, 0.65]
@@ -103,7 +105,7 @@ const SIMILAR_THRESHOLD = 0.7;
 // to break the short-text cosine bias that lets globally-scoped one-line
 // decisions outrank longer project-scoped components.
 //
-// Sized at roughly one tier of the calibrated bge-m3 score bands (the gap
+// Sized at roughly one tier of the bge-m3-calibrated score bands (the gap
 // between "different topic" and "overlapping topic") so it nudges ranking
 // without rewriting the ordering of genuinely stronger matches. Applies
 // to ranking only; the similarity gate (findNearest) uses raw cosine.
@@ -607,7 +609,7 @@ export class ArchStore {
       const matchesProject = makeProjectPredicate(opts.project);
       // Project-scoped retrieval boost.
       //
-      // bge-m3 cosine systematically favours short generic text — a one-line
+      // Decoder-embedder cosine systematically favours short generic text — a one-line
       // global decision often outscores a longer project-scoped component
       // even when the component is what the caller actually wants. When the
       // caller asked for a specific project, bias the ranking toward cards
@@ -619,7 +621,7 @@ export class ArchStore {
       //
       // The boost is additive (not multiplicative) so a strong global card
       // (e.g. 0.85) still beats a weak project-scoped one (e.g. 0.45 + 0.05 =
-      // 0.50). 0.05 ≈ one tier in the calibrated bge-m3 score bands — enough
+      // 0.50). 0.05 ≈ one tier in the bge-m3-calibrated score bands — enough
       // to break ties on short-text bias without rewriting the ordering of
       // genuinely better matches. minScore is applied AFTER the boost so a
       // borderline project-scoped card can still surface.

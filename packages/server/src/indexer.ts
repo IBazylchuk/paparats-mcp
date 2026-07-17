@@ -76,16 +76,14 @@ export function createQdrantClient(opts: {
  *
  * On the next upgrade (v3 → v4) only the suffix value changes; no code edits.
  *
- * Known limitation: a project whose clean name already ends with the configured
- * suffix (e.g. a real project literally named `foo-v3` while suffix is `-v3`)
- * collides — it is stored un-doubled as `foo-v3` and strips back to `foo` at the
- * boundary. Don't name projects with the active suffix. This is acceptable for
- * the stand-isolation use case (suffixes like `-v3` are not real project names).
+ * Callers always pass a CLEAN project name — the suffix is appended in exactly
+ * one place (the `stored()` chokepoint on the write path) and stripped in
+ * exactly one place (the display boundary), so a plain append is correct and
+ * there is no double-append to guard against. An empty suffix is a no-op.
  */
 export function applyProjectSuffix(projectName: string, suffix: string): string {
-  if (!suffix) return projectName;
-  // Idempotent: never double-append if the name already carries the suffix.
-  return projectName.endsWith(suffix) ? projectName : `${projectName}${suffix}`;
+  if (suffix === '') return projectName;
+  return `${projectName}${suffix}`;
 }
 
 /**
@@ -94,7 +92,7 @@ export function applyProjectSuffix(projectName: string, suffix: string): string 
  * actually ends with the configured suffix (empty suffix is a no-op).
  */
 export function stripProjectSuffix(storedName: string, suffix: string): string {
-  if (!suffix || !storedName.endsWith(suffix)) return storedName;
+  if (suffix === '' || !storedName.endsWith(suffix)) return storedName;
   return storedName.slice(0, -suffix.length);
 }
 
@@ -441,6 +439,10 @@ export class Indexer {
    * key, breaking find_usages.
    */
   private async evictProjectFromOtherGroups(keepGroup: string, projectName: string): Promise<void> {
+    // `projectName` is the clean name; all storage-layer lookups use the stored
+    // (suffixed) form, so both stands search for their own suffixed chunks and
+    // never touch each other's on a shared Qdrant.
+    const storedName = this.stored(projectName);
     let groups: Record<string, number>;
     try {
       groups = await this.listGroups();
@@ -455,7 +457,7 @@ export class Indexer {
       try {
         const probe = await this.retryQdrant(() =>
           this.qdrant.scroll(this.col(otherGroup), {
-            filter: { must: [{ key: 'project', match: { value: projectName } }] },
+            filter: { must: [{ key: 'project', match: { value: storedName } }] },
             with_payload: false,
             with_vector: false,
             limit: 1,
@@ -466,7 +468,7 @@ export class Indexer {
           `  [indexer] Evicting stale chunks for "${projectName}" from group "${otherGroup}" (now lives in "${keepGroup}")`
         );
         await this.deleteProjectChunks(otherGroup, projectName);
-        this.metadataStore?.deleteByProject(otherGroup, projectName);
+        this.metadataStore?.deleteByProject(otherGroup, storedName);
       } catch (err) {
         console.warn(
           `  [indexer] Stale-group eviction failed for ${otherGroup}/${projectName} (non-fatal): ${(err as Error).message}`
@@ -913,7 +915,7 @@ export class Indexer {
     }
 
     await this.ensureCollection(groupName);
-    await this.evictProjectFromOtherGroups(groupName, storedName);
+    await this.evictProjectFromOtherGroups(groupName, project.name);
 
     const fileSet = new Set<string>();
     for (const pattern of project.patterns) {
@@ -1429,9 +1431,9 @@ export class Indexer {
 
   /**
    * Content-based: delete all chunks for a project (used when force re-index).
-   * `projectName` may arrive clean (delete_project / force reindex) or already
-   * suffixed (eviction path); {@link applyProjectSuffix} is idempotent so both
-   * resolve to the same stored name.
+   * `projectName` is always the clean name — every call-site (delete_project,
+   * force reindex, cross-group eviction) passes the un-suffixed name and this
+   * method resolves the stored form via {@link stored} for the Qdrant filter.
    */
   async deleteProjectChunks(groupName: string, projectName: string): Promise<void> {
     const storedName = this.stored(projectName);
@@ -1520,12 +1522,13 @@ export class Indexer {
 
       const point = result.points[0];
       if (!point) return null;
-      const payload = point.payload as Record<string, unknown>;
+      const payload = point.payload as Record<string, unknown> | undefined;
+      if (!payload) return null;
       // Strip the storage suffix from the display `project` field so callers
       // (get_chunk, get_chunk_meta, find_usages edge rows) render the clean
       // name. `chunk_id` is deliberately left suffixed — it round-trips back
       // through parseChunkId for adjacent-chunk / edge lookups.
-      if (this.projectSuffix && typeof payload['project'] === 'string') {
+      if (this.projectSuffix !== '' && typeof payload['project'] === 'string') {
         payload['project'] = stripProjectSuffix(payload['project'], this.projectSuffix);
       }
       return payload;

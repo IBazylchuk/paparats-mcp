@@ -3,7 +3,7 @@ import type { ArchContextResult, ArchKind } from './types.js';
 
 export const DEFAULT_PER_KIND_LIMIT = 5;
 
-/** Default min cosine score for arch_context. Calibrated against bge-m3 — see store.ts. */
+/** Default min cosine score for arch_context. Inherited from bge-m3 calibration; not re-tuned for qwen3 — see store.ts. */
 export const DEFAULT_MIN_SCORE = 0.45;
 
 const INIT_HINT =

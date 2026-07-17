@@ -2560,7 +2560,9 @@ export class McpHandler {
             ),
           title: z
             .string()
-            .describe('Short imperative title — e.g. "Use bge-m3 for arch-layer text embeddings".'),
+            .describe(
+              'Short imperative title — e.g. "Use qwen3-embedding-0.6b for arch-layer text embeddings".'
+            ),
           context: z.string().describe('One sentence: the problem that forced the decision.'),
           decision: z.string().describe('One sentence: what was chosen.'),
           alternatives_rejected: z

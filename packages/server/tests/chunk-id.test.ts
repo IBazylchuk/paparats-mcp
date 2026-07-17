@@ -84,20 +84,11 @@ describe('applyProjectSuffix', () => {
     expect(applyProjectSuffix('feed-poster', '-v3')).toBe('feed-poster-v3');
   });
 
-  it('is idempotent — never double-appends', () => {
-    const once = applyProjectSuffix('feed-poster', '-v3');
-    const twice = applyProjectSuffix(once, '-v3');
-    expect(twice).toBe('feed-poster-v3');
-  });
-
-  it('applying three times is still single-suffixed (eviction path safety)', () => {
-    // deleteProjectChunks may be reached via the eviction path (already
-    // suffixed) or directly (clean) — idempotency must survive repeated calls.
-    let n = 'billing';
-    n = applyProjectSuffix(n, '-v3');
-    n = applyProjectSuffix(n, '-v3');
-    n = applyProjectSuffix(n, '-v3');
-    expect(n).toBe('billing-v3');
+  it('appends unconditionally — callers always pass a clean name', () => {
+    // Every call-site (write chokepoint, delete_project, eviction) passes the
+    // un-suffixed name, so a plain append is correct and there is no
+    // double-append to guard against.
+    expect(applyProjectSuffix('feed-poster', '-v3')).toBe('feed-poster-v3');
   });
 
   it('leaves an empty project name empty when suffix is empty', () => {
@@ -124,11 +115,12 @@ describe('applyProjectSuffix', () => {
     expect(applyProjectSuffix('billing-V3', '-v3')).toBe('billing-V3-v3');
   });
 
-  it('KNOWN LIMITATION: a name that already ends with the suffix is not doubled', () => {
-    // A real project literally named "foo-v3" collides with suffix "-v3": it is
-    // stored un-doubled. Documented in applyProjectSuffix — do not name projects
-    // with the active suffix.
-    expect(applyProjectSuffix('foo-v3', '-v3')).toBe('foo-v3');
+  it('appends even when the name already ends with the suffix (no idempotency)', () => {
+    // Callers never pass an already-suffixed name, so the function does not
+    // special-case it. A project literally named "foo-v3" would be stored as
+    // "foo-v3-v3" and round-trips cleanly back to "foo-v3".
+    expect(applyProjectSuffix('foo-v3', '-v3')).toBe('foo-v3-v3');
+    expect(stripProjectSuffix(applyProjectSuffix('foo-v3', '-v3'), '-v3')).toBe('foo-v3');
   });
 });
 
@@ -170,8 +162,10 @@ describe('stripProjectSuffix', () => {
     expect(stripProjectSuffix('-v3', '-v3')).toBe('');
   });
 
-  it('KNOWN LIMITATION: over-strips a real name that ends with the suffix', () => {
-    // Mirror of the applyProjectSuffix collision: "foo-v3" strips to "foo".
+  it('strips exactly one trailing suffix occurrence', () => {
+    // A stored name only ever carries a single appended suffix, so stripping a
+    // lone trailing occurrence is the inverse of applyProjectSuffix. (A raw
+    // "foo-v3" here is a stored "foo" that was suffixed once.)
     expect(stripProjectSuffix('foo-v3', '-v3')).toBe('foo');
   });
 
