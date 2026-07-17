@@ -8,6 +8,7 @@ import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
 import type { WatcherManager } from '../src/watcher.js';
 import type { CachedEmbeddingProvider } from '../src/embeddings.js';
+import type { MetadataStore } from '../src/metadata-db.js';
 import type { ProjectConfig } from '../src/types.js';
 // ── Test helpers ───────────────────────────────────────────────────────────
 
@@ -75,7 +76,9 @@ function createMockSearcher(): Searcher {
   } as unknown as Searcher;
 }
 
-function createMockIndexer(): Indexer {
+/** Mock indexer. `suffix` mimics PAPARATS_PROJECT_SUFFIX: storedProjectName
+ * appends the literal suffix (empty = identity), matching applyProjectSuffix. */
+function createMockIndexer(suffix = ''): Indexer {
   return {
     listGroups: vi.fn().mockResolvedValue({}),
     getGroupStats: vi.fn().mockResolvedValue({ points: 0, status: 'not_indexed' }),
@@ -83,9 +86,16 @@ function createMockIndexer(): Indexer {
     updateFileContent: vi.fn().mockResolvedValue(0),
     deleteFileByPath: vi.fn().mockResolvedValue(undefined),
     deleteProjectChunks: vi.fn().mockResolvedValue(undefined),
+    storedProjectName: vi.fn((name: string) => (suffix ? `${name}${suffix}` : name)),
     reindexGroup: vi.fn().mockResolvedValue(0),
     stats: { files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 },
   } as unknown as Indexer;
+}
+
+function createMockMetadataStore(): MetadataStore {
+  return {
+    deleteByProject: vi.fn(),
+  } as unknown as MetadataStore;
 }
 
 function createMockWatcherManager(): WatcherManager {
@@ -375,6 +385,64 @@ describe('Server API', () => {
         'test-project',
         'src/foo.ts'
       );
+    });
+  });
+
+  describe('DELETE /api/project/:group/:name (suffix behavior)', () => {
+    /** Build an app with a metadataStore + suffixed indexer, call the delete
+     * route, return the mocks so tests can assert wiring. */
+    async function runDelete(
+      suffix: string,
+      group: string,
+      name: string
+    ): Promise<{ indexer: Indexer; metadataStore: MetadataStore; status: number }> {
+      const indexer = createMockIndexer(suffix);
+      const metadataStore = createMockMetadataStore();
+      const { app } = createApp({
+        searcher: createMockSearcher(),
+        indexer,
+        watcherManager: createMockWatcherManager(),
+        embeddingProvider: createMockEmbeddingProvider(),
+        projectsByGroup: new Map(),
+        metadataStore,
+      });
+      const srv = app.listen(0);
+      const p = (srv.address() as { port: number }).port;
+      try {
+        const res = await fetch(`http://127.0.0.1:${p}/api/project/${group}/${name}`, {
+          method: 'DELETE',
+        });
+        return { indexer, metadataStore, status: res.status };
+      } finally {
+        await new Promise<void>((resolve, reject) => {
+          srv.close((err) => (err ? reject(err) : resolve()));
+        });
+      }
+    }
+
+    it('passes the SUFFIXED name to metadataStore.deleteByProject when a suffix is set', async () => {
+      const { indexer, metadataStore, status } = await runDelete('-v3', 'g1', 'billing');
+      expect(status).toBe(200);
+      // Qdrant side gets the CLEAN name — deleteProjectChunks suffixes internally.
+      expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'billing');
+      // Metadata side must get the STORED (suffixed) name — chunk_id embeds it.
+      expect(indexer.storedProjectName).toHaveBeenCalledWith('billing');
+      expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', 'billing-v3');
+    });
+
+    it('passes the clean name unchanged when no suffix is set', async () => {
+      const { indexer, metadataStore, status } = await runDelete('', 'g1', 'billing');
+      expect(status).toBe(200);
+      expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'billing');
+      expect(indexer.storedProjectName).toHaveBeenCalledWith('billing');
+      expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', 'billing');
+    });
+
+    it('routes metadata deletion through storedProjectName (single source of truth)', async () => {
+      const { indexer, metadataStore } = await runDelete('-v3', 'g1', 'billing');
+      const returned = vi.mocked(indexer.storedProjectName).mock.results[0]?.value;
+      expect(returned).toBe('billing-v3');
+      expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', returned);
     });
   });
 

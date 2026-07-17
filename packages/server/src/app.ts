@@ -566,8 +566,10 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
       // Delete chunks from Qdrant
       await indexer.deleteProjectChunks(group, projectName);
 
-      // Delete metadata from SQLite
-      metadataStore?.deleteByProject(group, projectName);
+      // Delete metadata from SQLite. Rows are keyed by chunk_id, which embeds
+      // the *stored* (suffixed) project name — map through the indexer so the
+      // delete pattern matches. (deleteProjectChunks suffixes Qdrant-side.)
+      metadataStore?.deleteByProject(group, indexer.storedProjectName(projectName));
 
       // Invalidate query cache for the group
       searcher.invalidateGroupCache(group);

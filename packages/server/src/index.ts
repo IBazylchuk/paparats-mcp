@@ -31,6 +31,12 @@ const PAPARATS_PROJECTS = process.env.PAPARATS_PROJECTS
       .map((p) => p.trim())
       .filter(Boolean)
   : undefined;
+/**
+ * Suffix appended to project names in the storage layer so two stands can
+ * share one Qdrant without their eviction scans deleting each other's chunks.
+ * Default '' = upstream behavior unchanged. See applyProjectSuffix in indexer.ts.
+ */
+const PAPARATS_PROJECT_SUFFIX = process.env.PAPARATS_PROJECT_SUFFIX?.trim() ?? '';
 
 const embeddingConfig = resolveEmbeddingConfigFromEnv();
 const embeddingProvider = createEmbeddingProvider(embeddingConfig);
@@ -71,6 +77,7 @@ const indexer = new Indexer({
   qdrantClient,
   telemetry,
   metrics,
+  projectSuffix: PAPARATS_PROJECT_SUFFIX,
 });
 
 const archEmbeddingConfig = resolveArchEmbeddingConfig(process.env);
@@ -94,6 +101,7 @@ const searcher = new Searcher({
   allowedProjects: PAPARATS_PROJECTS,
   telemetry,
   analytics: analytics ?? undefined,
+  projectSuffix: PAPARATS_PROJECT_SUFFIX,
 });
 
 const watcherManager = new WatcherManager({

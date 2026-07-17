@@ -59,6 +59,45 @@ export function createQdrantClient(opts: {
   });
 }
 
+// ── Project-name suffix helpers ─────────────────────────────────────────────
+
+/**
+ * Optional suffix appended to a project's name in the STORAGE layer (Qdrant
+ * payload `project`, chunk_id, SQLite metadata rows) while the clean name is
+ * exposed at the MCP boundary. Set via `PAPARATS_PROJECT_SUFFIX`.
+ *
+ * Why this exists: two paparats stands can share one Qdrant, isolated only by
+ * group (e.g. `appcast-v2` / `appcast-v3`). `evictProjectFromOtherGroups`
+ * matches by the stored `project` name across ALL groups, so with identical
+ * names each stand deletes the other's chunks. Suffixing the stored name (e.g.
+ * `foo` → `foo-v3`) makes the eviction scan miss the other stand's copy from
+ * BOTH sides — even the old stand, whose eviction is hard-wired, looks for the
+ * un-suffixed name and finds nothing. Default `''` = upstream behavior 1:1.
+ *
+ * On the next upgrade (v3 → v4) only the suffix value changes; no code edits.
+ *
+ * Known limitation: a project whose clean name already ends with the configured
+ * suffix (e.g. a real project literally named `foo-v3` while suffix is `-v3`)
+ * collides — it is stored un-doubled as `foo-v3` and strips back to `foo` at the
+ * boundary. Don't name projects with the active suffix. This is acceptable for
+ * the stand-isolation use case (suffixes like `-v3` are not real project names).
+ */
+export function applyProjectSuffix(projectName: string, suffix: string): string {
+  if (!suffix) return projectName;
+  // Idempotent: never double-append if the name already carries the suffix.
+  return projectName.endsWith(suffix) ? projectName : `${projectName}${suffix}`;
+}
+
+/**
+ * Inverse of {@link applyProjectSuffix} — strip the storage suffix so the
+ * clean project name surfaces at the MCP boundary. Only strips when the name
+ * actually ends with the configured suffix (empty suffix is a no-op).
+ */
+export function stripProjectSuffix(storedName: string, suffix: string): string {
+  if (!suffix || !storedName.endsWith(suffix)) return storedName;
+  return storedName.slice(0, -suffix.length);
+}
+
 // ── Chunk ID helpers ────────────────────────────────────────────────────────
 
 /**
@@ -127,6 +166,11 @@ export interface IndexerConfig {
   telemetry?: Telemetry;
   /** Optional Prometheus metrics registry. NoOp by default. */
   metrics?: MetricsRegistry;
+  /**
+   * Optional suffix appended to project names in the storage layer (see
+   * {@link applyProjectSuffix}). Default '' = upstream behavior unchanged.
+   */
+  projectSuffix?: string;
 }
 
 /** Metadata stamped on each Qdrant collection so we can detect provider
@@ -185,6 +229,8 @@ export class Indexer {
   private treeSitter: TreeSitterManager | null;
   private telemetry: Telemetry | null;
   private metrics: MetricsRegistry;
+  /** Suffix appended to project names in the storage layer ('' = disabled). */
+  private readonly projectSuffix: string;
   stats: IndexerStats;
 
   constructor(config: IndexerConfig) {
@@ -203,7 +249,30 @@ export class Indexer {
     this.treeSitter = config.treeSitter ?? null;
     this.telemetry = config.telemetry ?? null;
     this.metrics = config.metrics ?? new NoOpMetrics();
+    this.projectSuffix = config.projectSuffix ?? '';
     this.stats = { files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 };
+  }
+
+  /**
+   * Map a logical project name to its STORAGE name (with suffix applied).
+   * Every place that writes/filters/deletes by project name in Qdrant,
+   * chunk_id, or SQLite metadata must go through this — that's how the
+   * suffix stays consistent across the whole persistence layer.
+   */
+  private stored(projectName: string): string {
+    return applyProjectSuffix(projectName, this.projectSuffix);
+  }
+
+  /**
+   * Public form of {@link stored}: map a clean project name to its storage
+   * name. Callers that touch the SQLite metadata store directly (e.g.
+   * `delete_project` calling `metadataStore.deleteByProject`) need this so
+   * their chunk_id prefix patterns match the suffixed rows written at index
+   * time. Qdrant-side deletes go through `deleteProjectChunks`, which already
+   * suffixes internally — no need to pre-apply for those.
+   */
+  storedProjectName(projectName: string): string {
+    return this.stored(projectName);
   }
 
   /** Expose Qdrant client for git-metadata enrichment */
@@ -737,6 +806,9 @@ export class Indexer {
   /** Index a single file into its group collection */
   async indexFile(groupName: string, project: ProjectConfig, filePath: string): Promise<number> {
     const relPath = path.relative(project.path, filePath);
+    // Storage-layer project name (suffix applied). Use for all Qdrant/chunk_id/
+    // metadata calls; keep `project.name` for logging & telemetry (logical name).
+    const storedName = this.stored(project.name);
 
     let content: string;
     try {
@@ -760,7 +832,7 @@ export class Indexer {
 
     // Compare chunk hashes to skip unchanged files
     const newHashes = new Set(chunks.map((c) => c.hash));
-    const existingHashes = await this.getFileChunkHashes(groupName, project.name, relPath);
+    const existingHashes = await this.getFileChunkHashes(groupName, storedName, relPath);
     if (this.hashSetsEqual(newHashes, existingHashes)) {
       this.stats.skipped++;
       return 0;
@@ -772,7 +844,7 @@ export class Indexer {
         this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
-              { key: 'project', match: { value: project.name } },
+              { key: 'project', match: { value: storedName } },
               { key: 'file', match: { value: relPath } },
             ],
           },
@@ -796,7 +868,7 @@ export class Indexer {
       chunks,
       embeddings,
       groupName,
-      project.name,
+      storedName,
       relPath,
       language,
       tags,
@@ -832,6 +904,8 @@ export class Indexer {
   /** Index all files in a project into its group collection */
   async indexProject(project: ProjectConfig): Promise<number> {
     const groupName = project.group;
+    // Storage-layer project name (suffix applied) — see indexFile.
+    const storedName = this.stored(project.name);
 
     if (!fs.existsSync(project.path)) {
       console.error(`  Project path not found: ${project.path}`);
@@ -839,7 +913,7 @@ export class Indexer {
     }
 
     await this.ensureCollection(groupName);
-    await this.evictProjectFromOtherGroups(groupName, project.name);
+    await this.evictProjectFromOtherGroups(groupName, storedName);
 
     const fileSet = new Set<string>();
     for (const pattern of project.patterns) {
@@ -903,7 +977,7 @@ export class Indexer {
 
     // Clean up orphaned chunks (files deleted from disk but still in Qdrant)
     const currentRelPaths = new Set(files.map((f) => path.relative(project.path, f)));
-    await this.cleanupOrphanedChunks(groupName, project.name, currentRelPaths);
+    await this.cleanupOrphanedChunks(groupName, storedName, currentRelPaths);
 
     // Post-indexing: git metadata + symbol graph (single Qdrant scan for both)
     const needsGit = this.metadataStore && project.metadata.git.enabled && totalChunks > 0;
@@ -913,7 +987,7 @@ export class Indexer {
       try {
         const { chunksByFile, chunkSymbols } = await this.collectProjectChunksForPostIndex(
           groupName,
-          project.name,
+          storedName,
           !!needsGit,
           !!needsSymbols
         );
@@ -931,7 +1005,7 @@ export class Indexer {
             const result = await extractGitMetadata({
               projectPath: project.path,
               group: groupName,
-              project: project.name,
+              project: storedName,
               maxCommitsPerFile: project.metadata.git.maxCommitsPerFile,
               ticketPatterns: project.metadata.git.ticketPatterns,
               metadataStore: this.metadataStore!,
@@ -952,7 +1026,7 @@ export class Indexer {
         if (needsSymbols && chunkSymbols.length > 0) {
           try {
             const { edges, stats } = buildSymbolEdges(chunkSymbols);
-            this.metadataStore!.deleteEdgesByProject(groupName, project.name);
+            this.metadataStore!.deleteEdgesByProject(groupName, storedName);
             if (edges.length > 0) {
               await this.metadataStore!.upsertSymbolEdges(edges);
             }
@@ -1085,13 +1159,14 @@ export class Indexer {
   /** Update a single file (delete old chunks + re-index) */
   async updateFile(groupName: string, project: ProjectConfig, filePath: string): Promise<void> {
     const relPath = path.relative(project.path, filePath);
+    const storedName = this.stored(project.name);
 
     try {
       await this.retryQdrant(() =>
         this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
-              { key: 'project', match: { value: project.name } },
+              { key: 'project', match: { value: storedName } },
               { key: 'file', match: { value: relPath } },
             ],
           },
@@ -1115,13 +1190,14 @@ export class Indexer {
   /** Remove all chunks for a file */
   async deleteFile(groupName: string, project: ProjectConfig, filePath: string): Promise<void> {
     const relPath = path.relative(project.path, filePath);
+    const storedName = this.stored(project.name);
 
     try {
       await this.retryQdrant(() =>
         this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
-              { key: 'project', match: { value: project.name } },
+              { key: 'project', match: { value: storedName } },
               { key: 'file', match: { value: relPath } },
             ],
           },
@@ -1141,6 +1217,8 @@ export class Indexer {
   ): Promise<number> {
     const groupName = project.group;
     await this.ensureCollection(groupName);
+    // Storage-layer project name (suffix applied) — see indexFile.
+    const storedName = this.stored(project.name);
 
     const defaultLang = project.languages[0] ?? 'generic';
     let totalChunks = 0;
@@ -1176,7 +1254,7 @@ export class Indexer {
 
         // Compare chunk hashes to skip unchanged files
         const newHashes = new Set(chunks.map((c) => c.hash));
-        const existingHashes = await this.getFileChunkHashes(groupName, project.name, relPath);
+        const existingHashes = await this.getFileChunkHashes(groupName, storedName, relPath);
         if (this.hashSetsEqual(newHashes, existingHashes)) {
           this.stats.skipped++;
           await yieldIfDue();
@@ -1189,7 +1267,7 @@ export class Indexer {
             this.qdrant.delete(this.col(groupName), {
               filter: {
                 must: [
-                  { key: 'project', match: { value: project.name } },
+                  { key: 'project', match: { value: storedName } },
                   { key: 'file', match: { value: relPath } },
                 ],
               },
@@ -1213,7 +1291,7 @@ export class Indexer {
           chunks,
           embeddings,
           groupName,
-          project.name,
+          storedName,
           relPath,
           lang,
           tags,
@@ -1264,12 +1342,13 @@ export class Indexer {
     language: string,
     project: ProjectConfig
   ): Promise<number> {
+    const storedName = this.stored(projectName);
     try {
       await this.retryQdrant(() =>
         this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
-              { key: 'project', match: { value: projectName } },
+              { key: 'project', match: { value: storedName } },
               { key: 'file', match: { value: relPath } },
             ],
           },
@@ -1311,7 +1390,7 @@ export class Indexer {
       chunks,
       embeddings,
       groupName,
-      projectName,
+      storedName,
       relPath,
       language,
       tags,
@@ -1348,13 +1427,19 @@ export class Indexer {
     return points.length;
   }
 
-  /** Content-based: delete all chunks for a project (used when force re-index) */
+  /**
+   * Content-based: delete all chunks for a project (used when force re-index).
+   * `projectName` may arrive clean (delete_project / force reindex) or already
+   * suffixed (eviction path); {@link applyProjectSuffix} is idempotent so both
+   * resolve to the same stored name.
+   */
   async deleteProjectChunks(groupName: string, projectName: string): Promise<void> {
+    const storedName = this.stored(projectName);
     try {
       await this.retryQdrant(() =>
         this.qdrant.delete(this.col(groupName), {
           filter: {
-            must: [{ key: 'project', match: { value: projectName } }],
+            must: [{ key: 'project', match: { value: storedName } }],
           },
           wait: true,
         })
@@ -1367,12 +1452,13 @@ export class Indexer {
 
   /** Content-based: delete chunks by group, project, and relative path (no filesystem) */
   async deleteFileByPath(groupName: string, projectName: string, relPath: string): Promise<void> {
+    const storedName = this.stored(projectName);
     try {
       await this.retryQdrant(() =>
         this.qdrant.delete(this.col(groupName), {
           filter: {
             must: [
-              { key: 'project', match: { value: projectName } },
+              { key: 'project', match: { value: storedName } },
               { key: 'file', match: { value: relPath } },
             ],
           },
@@ -1434,7 +1520,15 @@ export class Indexer {
 
       const point = result.points[0];
       if (!point) return null;
-      return point.payload as Record<string, unknown>;
+      const payload = point.payload as Record<string, unknown>;
+      // Strip the storage suffix from the display `project` field so callers
+      // (get_chunk, get_chunk_meta, find_usages edge rows) render the clean
+      // name. `chunk_id` is deliberately left suffixed — it round-trips back
+      // through parseChunkId for adjacent-chunk / edge lookups.
+      if (this.projectSuffix && typeof payload['project'] === 'string') {
+        payload['project'] = stripProjectSuffix(payload['project'], this.projectSuffix);
+      }
+      return payload;
     } catch (err) {
       console.error(`[indexer] Failed to get chunk by ID ${chunkId}:`, err);
       return null;
@@ -1506,7 +1600,11 @@ export class Indexer {
 
       const projects = await Promise.all(
         projectFacet.hits.map(async (hit) => {
-          const projectName = String(hit.value);
+          // Facet returns the STORED name (suffix applied); the lang sub-filter
+          // must use it verbatim, but the returned `name` is stripped clean so
+          // the suffix never leaks to list_projects / clients.
+          const storedName = String(hit.value);
+          const projectName = stripProjectSuffix(storedName, this.projectSuffix);
           const chunks = hit.count;
 
           let languages: string[] = [];
@@ -1516,7 +1614,7 @@ export class Indexer {
               limit: 50, // bounded by supported language count
               exact: true,
               filter: {
-                must: [{ key: 'project', match: { value: projectName } }],
+                must: [{ key: 'project', match: { value: storedName } }],
               },
             });
             languages = langFacet.hits.map((h) => String(h.value));
