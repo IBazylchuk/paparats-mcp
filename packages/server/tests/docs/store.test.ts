@@ -141,6 +141,21 @@ describe('DocsStore.indexDocument', () => {
     expect(stats.docCount).toBeGreaterThan(0);
     expect(stats.docFreq('rollback')).toBeGreaterThan(0);
   });
+
+  it('feeds raw token length (not unique-term count) into avgDocLength', async () => {
+    // A single-chunk doc whose tokens repeat: raw token count > unique count.
+    // avgDocLength must reflect the RAW count so BM25 length normalisation
+    // (docLength / avgDocLength) uses matching units.
+    const content = '# Repeats\n\nalpha alpha alpha beta beta gamma';
+    await store.indexDocument('g', { project: 'p', file: 'rep.md', content });
+    const stats = idf.getCorpusStats('g');
+    // Body tokens repeat (alpha×3, beta×2, gamma×1 → 6 raw vs 3 unique). With the
+    // old bug avgDocLength tracked unique-term count; the fix makes it track raw
+    // token length, which is strictly greater whenever any token repeats.
+    const uniqueBody = new Set('alpha alpha alpha beta beta gamma'.split(' ')).size;
+    expect(stats.docCount).toBe(1);
+    expect(stats.avgDocLength).toBeGreaterThan(uniqueBody);
+  });
 });
 
 describe('DocsStore.search', () => {
