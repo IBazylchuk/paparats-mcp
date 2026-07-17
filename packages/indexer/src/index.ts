@@ -45,6 +45,11 @@ const STATE_DB_PATH =
 const PORT = parseInt(process.env['PORT'] ?? '9877', 10);
 /** When set, all repos share this single Qdrant collection (group) */
 const PAPARATS_GROUP = process.env['PAPARATS_GROUP']?.trim() || undefined;
+/**
+ * Suffix appended to project names in the storage layer so two stands sharing
+ * one Qdrant don't evict each other's chunks. Default '' = unchanged behavior.
+ */
+const PAPARATS_PROJECT_SUFFIX = process.env['PAPARATS_PROJECT_SUFFIX']?.trim() ?? '';
 
 if (EMBED_URL !== 'http://127.0.0.1:18434') {
   process.env['EMBED_URL'] = EMBED_URL;
@@ -114,6 +119,7 @@ const indexer = new Indexer({
   treeSitter,
   qdrantClient,
   metrics,
+  projectSuffix: PAPARATS_PROJECT_SUFFIX,
 });
 
 const stateStore = new StateStore(STATE_DB_PATH);

@@ -232,6 +232,116 @@ describe('MetadataStore', () => {
     expect(store.getCommits('mygroup//proj2//c.ts//1-5//h3')).toHaveLength(1);
   });
 
+  // ── Suffixed project coexistence (PAPARATS_PROJECT_SUFFIX) ────────────────
+  // A suffixed project (`billing-v3`, a second stand) and its un-suffixed twin
+  // (`billing`, the old stand) share one store. chunk_id embeds the (possibly
+  // suffixed) project name, so a prefix-scoped delete on one must never touch
+  // the other — otherwise the two stands corrupt each other's metadata.
+
+  it('deleteByProject on a suffixed project leaves the un-suffixed twin intact', () => {
+    // billing-v3 (suffixed stand) and billing (old un-suffixed stand) coexist.
+    store.upsertCommits('g//billing-v3//a.ts//1-5//h1', [
+      {
+        commit_hash: 'v3',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'suffixed',
+      },
+    ]);
+    store.upsertTickets('g//billing-v3//a.ts//1-5//h1', [{ ticket_key: 'V3-1', source: 'jira' }]);
+    store.upsertCommits('g//billing//a.ts//1-5//h1', [
+      {
+        commit_hash: 'old',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'un-suffixed',
+      },
+    ]);
+    store.upsertTickets('g//billing//a.ts//1-5//h1', [{ ticket_key: 'OLD-1', source: 'jira' }]);
+
+    store.deleteByProject('g', 'billing-v3');
+
+    // Suffixed stand's data is gone.
+    expect(store.getCommits('g//billing-v3//a.ts//1-5//h1')).toHaveLength(0);
+    expect(store.getTickets('g//billing-v3//a.ts//1-5//h1')).toHaveLength(0);
+    // Un-suffixed twin — `billing//` is NOT a prefix of `billing-v3//` — survives.
+    expect(store.getCommits('g//billing//a.ts//1-5//h1')).toHaveLength(1);
+    expect(store.getTickets('g//billing//a.ts//1-5//h1')).toHaveLength(1);
+  });
+
+  it('deleteByProject on the un-suffixed twin leaves the suffixed stand intact', () => {
+    store.upsertCommits('g//billing-v3//a.ts//1-5//h1', [
+      {
+        commit_hash: 'v3',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'suffixed',
+      },
+    ]);
+    store.upsertCommits('g//billing//a.ts//1-5//h1', [
+      {
+        commit_hash: 'old',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'un-suffixed',
+      },
+    ]);
+
+    store.deleteByProject('g', 'billing');
+
+    // Deleting `billing` must not sweep up `billing-v3` via a loose prefix.
+    expect(store.getCommits('g//billing//a.ts//1-5//h1')).toHaveLength(0);
+    expect(store.getCommits('g//billing-v3//a.ts//1-5//h1')).toHaveLength(1);
+  });
+
+  it('deleteByFile on a suffixed project leaves the un-suffixed twin intact', () => {
+    store.upsertCommits('g//billing-v3//src/pay.ts//1-5//h1', [
+      {
+        commit_hash: 'v3',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'suffixed',
+      },
+    ]);
+    store.upsertCommits('g//billing//src/pay.ts//1-5//h1', [
+      {
+        commit_hash: 'old',
+        committed_at: '2024-01-15T10:00:00Z',
+        author_email: 'a@b.com',
+        message_summary: 'un-suffixed',
+      },
+    ]);
+
+    store.deleteByFile('g', 'billing-v3', 'src/pay.ts');
+
+    expect(store.getCommits('g//billing-v3//src/pay.ts//1-5//h1')).toHaveLength(0);
+    // Same file path, un-suffixed project — untouched.
+    expect(store.getCommits('g//billing//src/pay.ts//1-5//h1')).toHaveLength(1);
+  });
+
+  it('deleteEdgesByProject on a suffixed project leaves the un-suffixed twin intact', async () => {
+    await store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//billing-v3//a.ts//1-5//h1',
+        to_chunk_id: 'g//billing-v3//b.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+      },
+      {
+        from_chunk_id: 'g//billing//a.ts//1-5//h1',
+        to_chunk_id: 'g//billing//b.ts//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'foo',
+      },
+    ]);
+
+    store.deleteEdgesByProject('g', 'billing-v3');
+
+    expect(store.getEdgesFrom('g//billing-v3//a.ts//1-5//h1')).toHaveLength(0);
+    // `billing//` is not a prefix of `billing-v3//` — the old stand's edges survive.
+    expect(store.getEdgesFrom('g//billing//a.ts//1-5//h1')).toHaveLength(1);
+  });
+
   it('close is idempotent', () => {
     expect(() => store.close()).not.toThrow();
     expect(() => store.close()).not.toThrow();
@@ -700,6 +810,29 @@ describe('MetadataStore git file cache', () => {
     store.deleteByProject('g', 'p');
     expect(store.getGitFileCache('g', 'p', 'src/a.ts', 'head1')).toBeNull();
     expect(store.getGitFileCache('g', 'other', 'src/a.ts', 'head1')).not.toBeNull();
+  });
+
+  // git_file_cache keys on real (grp, project) columns rather than a chunk_id
+  // prefix, but the same coexistence invariant must hold: a suffixed stand and
+  // its un-suffixed twin cache independently and delete independently.
+  it('round-trips a suffixed project name isolated from the un-suffixed twin', () => {
+    const v3Commits = [
+      { hash: 'v3', date: '2024-01-15T10:00:00Z', email: 'a@b.com', subject: 'suffixed' },
+    ];
+    store.setGitFileCache('g', 'billing-v3', 'src/a.ts', 'head1', v3Commits, hunks);
+    store.setGitFileCache('g', 'billing', 'src/a.ts', 'head1', commits, hunks);
+
+    // Each project reads back exactly its own payload.
+    expect(store.getGitFileCache('g', 'billing-v3', 'src/a.ts', 'head1')).toEqual({
+      commits: v3Commits,
+      hunks,
+    });
+    expect(store.getGitFileCache('g', 'billing', 'src/a.ts', 'head1')).toEqual({ commits, hunks });
+
+    // Deleting the suffixed project's cache leaves the twin's entry intact.
+    store.deleteByProject('g', 'billing-v3');
+    expect(store.getGitFileCache('g', 'billing-v3', 'src/a.ts', 'head1')).toBeNull();
+    expect(store.getGitFileCache('g', 'billing', 'src/a.ts', 'head1')).not.toBeNull();
   });
 
   // Regression: the composite (grp, …) indexes must be created AFTER the grp

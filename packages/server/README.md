@@ -52,8 +52,7 @@ Code search tells the agent **what the code does**. The arch-memory layer tells 
 authoring a single doc.
 
 Three card kinds in a separate Qdrant collection per group (`paparats_<group>_arch`),
-embedded with [`bge-m3`](https://huggingface.co/BAAI/bge-m3) (1024d, cls-pooled,
-multilingual):
+embedded with [`qwen3-embedding-0.6b`](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) (1024d, last-pooled):
 
 | Kind          | Fields                                                                            | Idempotency                     |
 | :------------ | :-------------------------------------------------------------------------------- | :------------------------------ |
@@ -61,7 +60,7 @@ multilingual):
 | **Decision**  | `title`, `context`, `decision`, `alternatives_rejected`, `consequences`, `scope`, `supersedes` | Server-side similarity gate    |
 | **Lesson**    | `rule`, `why`, `when`, `scope`, `severity`, `evidence`                            | Server-side similarity gate    |
 
-**Similarity gate** (cosine on `bge-m3`):
+**Similarity gate** (cosine on `qwen3-embedding-0.6b`):
 
 - `>= 0.85` → duplicate. Decisions are refused so the agent must reconcile or
   supersede. Lessons bump `updatedAt` on the existing card (Reflexion "rule
@@ -128,7 +127,7 @@ support-only — recording belongs to the architectural-review workflow.
 | `watcher.ts`                        | `ProjectWatcher` (chokidar) + `WatcherManager`                                                          |
 | `arch/types.ts`                     | Architectural-memory types                                                                              |
 | `arch/collection.ts`                | Per-group `paparats_<group>_arch` collection lifecycle                                                  |
-| `arch/text-embeddings.ts`           | `bge-m3` text embedder via llama-server                                                                 |
+| `arch/text-embeddings.ts`           | `qwen3-embedding-0.6b` text embedder via llama-server                                                   |
 | `arch/store.ts`                     | CRUD + server-side similarity gate + `stats()` aggregation                                              |
 | `arch/context.ts`                   | `arch_context` query — top-N across kinds with `min_score` and age stamps                               |
 
@@ -143,10 +142,10 @@ support-only — recording belongs to the architectural-review workflow.
 | `EMBED_BATCH_SIZE`          | —                                      | Embeddings per llama-server call                            |
 | `EMBED_TTL`                 | `300`                                  | Seconds a model stays resident before idle-unload           |
 | `EMBEDDING_PROVIDER`        | `llama`                                | Code embedding provider: `llama` \| `openai` \| `voyage`    |
-| `EMBEDDING_MODEL`           | `jina-code-embeddings`                 | Code embedding model                                         |
+| `EMBEDDING_MODEL`           | `bge-code-v1`                          | Code embedding model                                         |
 | `EMBEDDING_DIMENSIONS`      | `1536`                                 | Code embedding dimensions                                    |
 | `TEXT_EMBEDDING_PROVIDER`   | `llama`                                | `llama` or `openai` for the arch layer                      |
-| `TEXT_EMBEDDING_MODEL`      | `bge-m3`                               | Arch-layer text embedding model                              |
+| `TEXT_EMBEDDING_MODEL`      | `qwen3-embedding-0.6b`                 | Arch-layer text embedding model                              |
 | `TEXT_EMBEDDING_DIMENSIONS` | `1024`                                 | Arch-layer text embedding dimensions                         |
 | `PAPARATS_METRICS`          | `false`                                | Set to `true` to expose `/metrics`                           |
 | `PAPARATS_PROJECTS`         | —                                      | Comma-separated allow-list of project names                  |
@@ -196,7 +195,7 @@ yarn workspace @paparats/server typecheck
 | [@paparats/cli](https://www.npmjs.com/package/@paparats/cli)            | One-command installer, project management, search       |
 | [@paparats/indexer](https://hub.docker.com/r/ibaz/paparats-indexer)     | Automated multi-repo indexer (uses this as a library)   |
 | [@paparats/shared](https://www.npmjs.com/package/@paparats/shared)      | Shared utilities (path validation, gitignore, excludes) |
-| [ibaz/paparats-embed](https://hub.docker.com/r/ibaz/paparats-embed)     | llama.cpp llama-server + llama-swap with pre-baked `jina-code-embeddings` and `bge-m3` |
+| [ibaz/paparats-embed](https://hub.docker.com/r/ibaz/paparats-embed)     | llama.cpp llama-server + llama-swap with pre-baked `bge-code-v1` and `qwen3-embedding-0.6b` |
 
 ## License
 
