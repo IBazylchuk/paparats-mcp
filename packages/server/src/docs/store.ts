@@ -103,9 +103,12 @@ export class DocsStore {
         },
         payload: buildPayload(docId, docTitle, input, chunk),
       });
-      // Update corpus stats with this chunk's DISTINCT terms.
-      const terms = new Set(tokenize(chunk.content));
-      this.idf.addDocument(group, terms, terms.size);
+      // Update corpus stats: df bumps use the DISTINCT term set, but the corpus
+      // length total must be the RAW token count (matches docLength in the BM25
+      // builder — avgDocLength is meaningless if the units differ).
+      const tokens = tokenize(chunk.content);
+      const terms = new Set(tokens);
+      this.idf.addDocument(group, terms, tokens.length);
     }
 
     await this.qdrant.upsert(toDocsCollectionName(group), { wait: true, points });
@@ -138,8 +141,8 @@ export class DocsStore {
         for (const p of page.points) {
           const content = (p.payload as { content?: unknown } | undefined)?.content;
           if (typeof content === 'string') {
-            const terms = new Set(tokenize(content));
-            this.idf.removeDocument(group, terms, terms.size);
+            const tokens = tokenize(content);
+            this.idf.removeDocument(group, new Set(tokens), tokens.length);
           }
         }
         if (!page.next_page_offset) break;
@@ -334,8 +337,8 @@ export class DocsStore {
     this.idf.clearGroup(group);
     for (const r of rows) {
       const content = typeof r.payload['content'] === 'string' ? r.payload['content'] : '';
-      const terms = new Set(tokenize(content));
-      this.idf.addDocument(group, terms, terms.size);
+      const tokens = tokenize(content);
+      this.idf.addDocument(group, new Set(tokens), tokens.length);
     }
     const stats = this.idf.getCorpusStats(group);
 
