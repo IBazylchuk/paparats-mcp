@@ -66,9 +66,12 @@ COPY llama-swap.template.yaml /config/llama-swap.template.yaml
 COPY entrypoint.sh /usr/local/bin/paparats-embed-entrypoint
 RUN chmod +x /usr/local/bin/paparats-embed-entrypoint
 
-# Idle seconds before a model is unloaded from RAM. Override per deployment:
-# short on a laptop (save RAM), long on a server. 0 = never unload.
-ENV EMBED_TTL=300
+# Idle seconds before a model is unloaded from RAM. 0 (default) = never
+# unload: both models stay resident (~2.2 GB) and llama-swap's unload path —
+# which can deadlock when a client abort lands mid-unload — is never
+# exercised. Set a positive value (e.g. 300) to trade that safety for RAM
+# on a laptop.
+ENV EMBED_TTL=0
 
 EXPOSE 8080
 

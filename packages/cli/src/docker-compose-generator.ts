@@ -101,9 +101,10 @@ function embedService(port: number): ComposeService {
     image: 'ibaz/paparats-embed:latest',
     container_name: 'paparats-embed',
     ports: [`\${EMBED_PORT:-${port}}:8080`],
-    // EMBED_TTL: idle seconds before a model unloads. Short on a laptop, long on
-    // a server. Models are baked into the image — no data volume needed.
-    environment: { EMBED_TTL: '${EMBED_TTL:-300}' },
+    // EMBED_TTL: idle seconds before a model unloads. 0 = never (default) —
+    // llama-swap's unload path can deadlock under load. Models are baked into
+    // the image — no data volume needed.
+    environment: { EMBED_TTL: '${EMBED_TTL:-0}' },
     healthcheck: {
       test: ['CMD', 'curl', '-fsS', 'http://localhost:8080/health'],
       interval: '10s',

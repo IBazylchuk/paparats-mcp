@@ -140,7 +140,7 @@ support-only — recording belongs to the architectural-review workflow.
 | `QDRANT_API_KEY`            | —                                      | Qdrant Cloud API key                                         |
 | `EMBED_URL`                 | `http://127.0.0.1:11434`               | Embed server endpoint (llama-swap; internal port 8080 mapped to host 11434) |
 | `EMBED_BATCH_SIZE`          | —                                      | Embeddings per llama-server call                            |
-| `EMBED_TTL`                 | `300`                                  | Seconds a model stays resident before idle-unload           |
+| `EMBED_TTL`                 | `0`                                    | Idle seconds before a model unloads; `0` = never (default)  |
 | `EMBEDDING_PROVIDER`        | `llama`                                | Code embedding provider: `llama` \| `openai` \| `voyage`    |
 | `EMBEDDING_MODEL`           | `bge-code-v1`                          | Code embedding model                                         |
 | `EMBEDDING_DIMENSIONS`      | `1536`                                 | Code embedding dimensions                                    |

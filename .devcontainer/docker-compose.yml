@@ -49,7 +49,7 @@ services:
     networks:
       - paparats-net
     environment:
-      EMBED_TTL: ${EMBED_TTL:-300}
+      EMBED_TTL: ${EMBED_TTL:-0}
     healthcheck:
       test: ['CMD', 'curl', '-fsS', 'http://localhost:8080/health']
       interval: 10s
