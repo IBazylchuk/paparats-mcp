@@ -71,11 +71,19 @@ export function termToIndex(term: string): number {
   return h & 0x7fffffff;
 }
 
-/** Robertson-Spärck-Jones IDF with the +0.5 smoothing used by Lucene/BM25. */
+/**
+ * Robertson-Spärck-Jones IDF with the +0.5 smoothing used by Lucene/BM25.
+ *
+ * Cold-start: when the corpus is empty (docCount 0) — which happens for the very
+ * first document indexed, before any corpus stats exist — every term is treated
+ * as maximally rare (df 0 in a size-1 corpus), so the first document still gets
+ * non-zero sparse weights instead of an all-zero vector. Subsequent documents
+ * see real corpus stats. The self-heal reindex rebuilds IDF from the full corpus
+ * anyway, so this bootstrap value is never load-bearing long-term.
+ */
 export function idf(docFreq: number, docCount: number): number {
-  // Guard the degenerate empty-corpus case.
-  if (docCount <= 0) return 0;
-  return Math.log(1 + (docCount - docFreq + 0.5) / (docFreq + 0.5));
+  const n = docCount <= 0 ? 1 : docCount;
+  return Math.log(1 + (n - docFreq + 0.5) / (docFreq + 0.5));
 }
 
 /**

@@ -52,8 +52,10 @@ describe('idf', () => {
     expect(rare).toBeGreaterThan(common);
   });
 
-  it('returns 0 for an empty corpus', () => {
-    expect(idf(0, 0)).toBe(0);
+  it('cold-start: returns a positive weight on an empty corpus (bootstrap)', () => {
+    // First-ever document must still get non-zero sparse weights, so idf treats
+    // an empty corpus as a size-1 corpus rather than returning 0.
+    expect(idf(0, 0)).toBeGreaterThan(0);
   });
 });
 
