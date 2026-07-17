@@ -44,3 +44,14 @@ models:
       --model /models/Qwen3-Embedding-0.6B-Q8_0.gguf
       --pooling last
     ttl: ${EMBED_TTL}
+
+# Both models may run concurrently — one never swaps the other out. Swapping
+# is llama-swap's fragile path: a client abort landing mid-swap can deadlock
+# its state machine (every request then hangs until restart). TTL idle-unload
+# still applies per model; set EMBED_TTL=0 to remove the unload path entirely.
+groups:
+  embeddings:
+    swap: false
+    members:
+      - bge-code-v1
+      - qwen3-embedding-0.6b
