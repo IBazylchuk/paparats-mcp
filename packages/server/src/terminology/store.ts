@@ -61,12 +61,7 @@ export class TerminologyStore {
    * the write and returns the matched term so the agent can reconcile.
    */
   async recordTerm(group: string, input: RecordTermInput): Promise<TermWriteResult> {
-    await ensureTermsCollection(
-      this.qdrant,
-      group,
-      this.provider.dimensions,
-      this.provider.model
-    );
+    await ensureTermsCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
 
     // Idempotent by exact term name within the project scope.
     const existing = await this.findByTerm(group, input.term, input.project);
@@ -76,10 +71,20 @@ export class TerminologyStore {
     if (!existing) {
       const match = await this.findNearest(group, vector, input.project);
       if (match && match.score >= DUPLICATE_THRESHOLD) {
-        return { status: 'duplicate', id: match.id, similarity: match.score, matchedLabel: match.label };
+        return {
+          status: 'duplicate',
+          id: match.id,
+          similarity: match.score,
+          matchedLabel: match.label,
+        };
       }
       if (match && match.score >= SIMILAR_THRESHOLD) {
-        return { status: 'similar', id: match.id, similarity: match.score, matchedLabel: match.label };
+        return {
+          status: 'similar',
+          id: match.id,
+          similarity: match.score,
+          matchedLabel: match.label,
+        };
       }
     }
 
@@ -182,7 +187,8 @@ export class TerminologyStore {
       const point = res.points[0];
       if (!point) return null;
       const rawId = point.id;
-      const id = typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : null;
+      const id =
+        typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : null;
       if (!id) return null;
       const createdAt = (point.payload as { createdAt?: unknown } | undefined)?.createdAt;
       return typeof createdAt === 'number' ? { id, createdAt } : { id };
@@ -212,9 +218,14 @@ export class TerminologyStore {
           if (hitProject !== undefined && hitProject !== null && hitProject !== project) continue;
         }
         const rawId = hit.id;
-        const id = typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : null;
+        const id =
+          typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : null;
         if (!id) continue;
-        return { id, score: hit.score, label: typeof payload.term === 'string' ? payload.term : '' };
+        return {
+          id,
+          score: hit.score,
+          label: typeof payload.term === 'string' ? payload.term : '',
+        };
       }
       return null;
     } catch {
@@ -286,7 +297,11 @@ export class TerminologyStore {
 
   async healTermsModel(group: string): Promise<number> {
     const meta = await readTermsCollectionMeta(this.qdrant, group);
-    if (meta && meta.model === this.provider.model && meta.dimensions === this.provider.dimensions) {
+    if (
+      meta &&
+      meta.model === this.provider.model &&
+      meta.dimensions === this.provider.dimensions
+    ) {
       return 0;
     }
     return this.reindexTerms(group);
@@ -327,7 +342,8 @@ function renderTermForEmbedding(input: {
   definition: string;
   aliases?: string[];
 }): string {
-  const aliases = input.aliases && input.aliases.length > 0 ? `\nAliases: ${input.aliases.join(', ')}` : '';
+  const aliases =
+    input.aliases && input.aliases.length > 0 ? `\nAliases: ${input.aliases.join(', ')}` : '';
   return `Term: ${input.term}\n\n${input.definition}${aliases}`;
 }
 
