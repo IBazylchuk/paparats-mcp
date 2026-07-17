@@ -1,9 +1,11 @@
 # paparats-embed — llama-swap config (rendered from this template at container start)
 #
 # ${EMBED_TTL} is substituted by entrypoint.sh from the EMBED_TTL env var.
-# TTL is seconds of idle before a model is unloaded from RAM. Lazy loading means
-# a model nobody queries (e.g. the arch/docs text model for a code-only user)
-# never spins up. Tune per deployment: short on a laptop, long on a server.
+# TTL is seconds of idle before a model is unloaded from RAM; 0 (the default)
+# means never unload. Lazy loading means a model nobody queries (e.g. the
+# arch/docs text model for a code-only user) never spins up. Set a positive
+# TTL to save RAM on a laptop — at the cost of cold starts and of exercising
+# llama-swap's unload path (see the groups note at the bottom).
 #
 # Pooling is dictated by model architecture — cosine-verify against the
 # reference (sentence-transformers) output before trusting a new GGUF:
