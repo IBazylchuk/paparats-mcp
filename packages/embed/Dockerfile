@@ -79,5 +79,5 @@ HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
 ENTRYPOINT ["/usr/local/bin/paparats-embed-entrypoint"]
 
 LABEL org.opencontainers.image.title="paparats-embed"
-LABEL org.opencontainers.image.description="llama.cpp + llama-swap with pre-baked Jina Code Embeddings 1.5B and BGE-M3 for Paparats MCP"
+LABEL org.opencontainers.image.description="llama.cpp + llama-swap with pre-baked bge-code-v1 (code) and Qwen3-Embedding-0.6B (arch/docs text) — both Apache-2.0 — for Paparats MCP"
 LABEL org.opencontainers.image.source="https://github.com/ibaz/paparats-mcp"

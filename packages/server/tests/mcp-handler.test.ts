@@ -47,12 +47,15 @@ function createMockSearcher(): Searcher {
   } as unknown as Searcher;
 }
 
-function createMockIndexer(): Indexer {
+/** Mock indexer. `suffix` mimics PAPARATS_PROJECT_SUFFIX: storedProjectName
+ * appends the literal suffix (empty = identity), matching applyProjectSuffix. */
+function createMockIndexer(suffix = ''): Indexer {
   return {
     listGroups: vi.fn().mockResolvedValue({}),
     getGroupStats: vi.fn().mockResolvedValue({ points: 0, status: 'not_indexed' }),
     deleteProjectChunks: vi.fn().mockResolvedValue(undefined),
     getChunkById: vi.fn().mockResolvedValue(null),
+    storedProjectName: vi.fn((name: string) => (suffix ? `${name}${suffix}` : name)),
   } as unknown as Indexer;
 }
 
@@ -62,6 +65,7 @@ function createMockMetadataStore(): MetadataStore {
     getTickets: vi.fn().mockReturnValue([]),
     getEdgesTo: vi.fn().mockReturnValue([]),
     getEdgesFrom: vi.fn().mockReturnValue([]),
+    deleteByProject: vi.fn(),
   } as unknown as MetadataStore;
 }
 
@@ -588,6 +592,82 @@ describe('McpHandler', () => {
       server.close();
       handler2.destroy();
     }
+  });
+
+  // ── delete_project suffix behavior (PAPARATS_PROJECT_SUFFIX) ───────────────
+
+  /** Spin up a handler + server, call delete_project, return metadataStore. */
+  async function runDeleteProject(
+    indexer: Indexer,
+    metadataStore: MetadataStore,
+    args: { group: string; project: string }
+  ): Promise<{ text: string }> {
+    const app = express();
+    app.use(express.json());
+
+    const handler2 = new McpHandler({
+      searcher: createMockSearcher(),
+      indexer,
+      getProjects: () => new Map([[args.group, [createProjectConfig()]]]),
+      getGroupNames: () => [args.group],
+      metadataStore,
+    });
+    handler2.mount(app);
+
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      const { text } = await callTool(port, 'delete_project', args);
+      return { text };
+    } finally {
+      server.close();
+      handler2.destroy();
+    }
+  }
+
+  it('delete_project passes the SUFFIXED name to metadataStore.deleteByProject when a suffix is set', async () => {
+    const indexer = createMockIndexer('-v3');
+    const metadataStore = createMockMetadataStore();
+
+    const { text } = await runDeleteProject(indexer, metadataStore, {
+      group: 'g1',
+      project: 'billing',
+    });
+
+    // Clean name surfaces at the MCP boundary + user-facing text.
+    expect(text).toContain('Deleted project');
+    expect(text).toContain('billing');
+    // Qdrant side gets the CLEAN name — deleteProjectChunks suffixes internally.
+    expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'billing');
+    // Metadata side must get the STORED (suffixed) name — chunk_id embeds it.
+    expect(indexer.storedProjectName).toHaveBeenCalledWith('billing');
+    expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', 'billing-v3');
+  });
+
+  it('delete_project passes the clean name unchanged when no suffix is set', async () => {
+    const indexer = createMockIndexer(''); // empty suffix = identity
+    const metadataStore = createMockMetadataStore();
+
+    await runDeleteProject(indexer, metadataStore, { group: 'g1', project: 'billing' });
+
+    expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'billing');
+    expect(indexer.storedProjectName).toHaveBeenCalledWith('billing');
+    // No suffix → metadata gets the clean name.
+    expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', 'billing');
+  });
+
+  it('delete_project routes metadata deletion through storedProjectName (single source of truth)', async () => {
+    const indexer = createMockIndexer('-v3');
+    const metadataStore = createMockMetadataStore();
+
+    await runDeleteProject(indexer, metadataStore, { group: 'g1', project: 'billing' });
+
+    // The handler never constructs the stored name itself — the name handed to
+    // deleteByProject is exactly what storedProjectName returned.
+    const returned = vi.mocked(indexer.storedProjectName).mock.results[0]?.value;
+    expect(returned).toBe('billing-v3');
+    expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', returned);
   });
 
   // ── Orchestration tools ──────────────────────────────────────────────────

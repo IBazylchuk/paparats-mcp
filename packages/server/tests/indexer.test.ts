@@ -95,13 +95,17 @@ function createMockQdrant() {
       };
       const fileMatch = filter?.must?.find((m) => m.key === 'file');
       const projectMatch = filter?.must?.find((m) => m.key === 'project');
+      const chunkIdMatch = filter?.must?.find((m) => m.key === 'chunk_id');
       const points = collections.get(groupName)!;
       const matched: unknown[] = [];
       for (const point of points.values()) {
-        const payload = (point as { payload?: { file?: string; project?: string } }).payload;
+        const payload = (
+          point as { payload?: { file?: string; project?: string; chunk_id?: string } }
+        ).payload;
         if (
           (!fileMatch || payload?.file === fileMatch.match.value) &&
-          (!projectMatch || payload?.project === projectMatch.match.value)
+          (!projectMatch || payload?.project === projectMatch.match.value) &&
+          (!chunkIdMatch || payload?.chunk_id === chunkIdMatch.match.value)
         ) {
           matched.push(point);
         }
@@ -807,6 +811,450 @@ describe('Indexer', () => {
     // so this point only goes if the file no longer exists in `currentRelPaths`)
     expect(keepPoints.has('preexisting')).toBe(false); // orphan-cleanup reaped it
   });
+
+  describe('projectSuffix (shared-Qdrant stand isolation)', () => {
+    it('stores the suffixed project name in payload and chunk_id', async () => {
+      fs.writeFileSync(path.join(projectDir, 'a.ts'), 'export const x = 1;\n');
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const project = createProjectConfig(projectDir, {
+        name: 'billing',
+        group: 'g',
+        patterns: ['**/*.ts'],
+      });
+      await indexer.indexProject(project);
+
+      const chunks = mockQdrant.upsertedPoints
+        .flatMap((u) => u.points as Array<{ payload: { project: string; chunk_id: string } }>)
+        .filter((p) => !(p.payload as Record<string, unknown>)['__meta']);
+      expect(chunks.length).toBeGreaterThan(0);
+      for (const c of chunks) {
+        expect(c.payload.project).toBe('billing-v3');
+        // chunk_id must embed the suffixed name so find_usages / get_chunk
+        // resolve consistently against the stored payload.
+        expect(c.payload.chunk_id).toContain('//billing-v3//');
+      }
+    });
+
+    it('eviction does NOT touch another stand that stored the un-suffixed name', async () => {
+      // Simulates the real incident: the OLD stand (no suffix) indexed
+      // "billing" into group "appcast-v2". The NEW stand (suffix "-v3")
+      // indexes the same project into "appcast-v3". Its eviction scan looks
+      // for "billing-v3" in other groups — which the old stand never wrote —
+      // so the old stand's chunks survive. Without the suffix this is the
+      // ping-pong war where each stand deletes the other's data.
+      fs.writeFileSync(path.join(projectDir, 'a.ts'), 'export const x = 1;\n');
+
+      const oldCollection = toCollectionName('appcast-v2');
+      mockQdrant.collections.set(oldCollection, new Map());
+      mockQdrant.collections.get(oldCollection)!.set('old-1', {
+        id: 'old-1',
+        payload: { project: 'billing', file: 'a.ts' }, // un-suffixed = old stand
+      });
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const project = createProjectConfig(projectDir, {
+        name: 'billing',
+        group: 'appcast-v3',
+        patterns: ['**/*.ts'],
+      });
+      await indexer.indexProject(project);
+
+      // The old stand's chunk MUST survive — the eviction scan searched for
+      // "billing-v3" and found nothing in appcast-v2.
+      const oldPoints = mockQdrant.collections.get(oldCollection)!;
+      expect(oldPoints.has('old-1')).toBe(true);
+    });
+
+    it('with no suffix, eviction still removes same-named chunks (upstream behavior preserved)', async () => {
+      fs.writeFileSync(path.join(projectDir, 'a.ts'), 'export const x = 1;\n');
+
+      const oldCollection = toCollectionName('other-group');
+      mockQdrant.collections.set(oldCollection, new Map());
+      mockQdrant.collections.get(oldCollection)!.set('stale-1', {
+        id: 'stale-1',
+        payload: { project: 'billing', file: 'a.ts' },
+      });
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        // no projectSuffix → default '' → legacy cross-group eviction
+      });
+
+      const project = createProjectConfig(projectDir, {
+        name: 'billing',
+        group: 'new-group',
+        patterns: ['**/*.ts'],
+      });
+      await indexer.indexProject(project);
+
+      // Default behavior: the same-named chunk in the other group is evicted.
+      const oldPoints = mockQdrant.collections.get(oldCollection)!;
+      expect(oldPoints.has('stale-1')).toBe(false);
+    });
+
+    it('updateFile deletes old chunks by the suffixed name', async () => {
+      const srcDir = path.join(projectDir, 'src');
+      fs.mkdirSync(srcDir, { recursive: true });
+      const tsPath = path.join(srcDir, 'foo.ts');
+      fs.writeFileSync(tsPath, 'export const x = 1;\n');
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const project = createProjectConfig(projectDir, { name: 'billing', patterns: ['**/*.ts'] });
+      await indexer.updateFile('test-group', project, tsPath);
+
+      const deleteCalls = mockQdrant.client.delete.mock.calls as Array<
+        [string, { filter?: { must?: Array<{ key: string; match: { value: string } }> } }]
+      >;
+      const projectFilters = deleteCalls
+        .flatMap(([, opts]) => opts.filter?.must ?? [])
+        .filter((m) => m.key === 'project')
+        .map((m) => m.match.value);
+      // Every project filter this method issued must target the suffixed name.
+      expect(projectFilters.length).toBeGreaterThan(0);
+      for (const v of projectFilters) expect(v).toBe('billing-v3');
+    });
+
+    it('deleteFile filters by the suffixed name', async () => {
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const project = createProjectConfig(projectDir, { name: 'billing' });
+      await indexer.deleteFile('test-group', project, path.join(projectDir, 'src', 'gone.ts'));
+
+      expect(mockQdrant.client.delete).toHaveBeenCalledWith(toCollectionName('test-group'), {
+        filter: {
+          must: [
+            { key: 'project', match: { value: 'billing-v3' } },
+            { key: 'file', match: { value: 'src/gone.ts' } },
+          ],
+        },
+        wait: true,
+      });
+    });
+
+    it('deleteProjectChunks suffixes a clean name (direct delete_project path)', async () => {
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      // Caller passes the CLEAN name (as delete_project / force-reindex do).
+      await indexer.deleteProjectChunks('test-group', 'billing');
+
+      expect(mockQdrant.client.delete).toHaveBeenCalledWith(toCollectionName('test-group'), {
+        filter: { must: [{ key: 'project', match: { value: 'billing-v3' } }] },
+        wait: true,
+      });
+    });
+
+    it('deleteProjectChunks suffixes exactly once — callers always pass a clean name', async () => {
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      // Every call-site (delete_project, force-reindex, eviction) passes the
+      // clean name, so the stored filter is suffixed exactly once — never
+      // "billing-v3-v3".
+      await indexer.deleteProjectChunks('test-group', 'billing');
+
+      expect(mockQdrant.client.delete).toHaveBeenCalledWith(toCollectionName('test-group'), {
+        filter: { must: [{ key: 'project', match: { value: 'billing-v3' } }] },
+        wait: true,
+      });
+    });
+
+    it('deleteFileByPath filters by the suffixed name', async () => {
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      await indexer.deleteFileByPath('test-group', 'billing', 'src/x.ts');
+
+      expect(mockQdrant.client.delete).toHaveBeenCalledWith(toCollectionName('test-group'), {
+        filter: {
+          must: [
+            { key: 'project', match: { value: 'billing-v3' } },
+            { key: 'file', match: { value: 'src/x.ts' } },
+          ],
+        },
+        wait: true,
+      });
+    });
+
+    it('re-index of an already-suffixed corpus skips unchanged files (round-trip stable)', async () => {
+      // Guards against a suffix mismatch between write and the skip-probe read:
+      // getFileChunkHashes must query the SAME (suffixed) name that was written,
+      // otherwise every file would look "new" and re-embed forever.
+      const srcDir = path.join(projectDir, 'src');
+      fs.mkdirSync(srcDir, { recursive: true });
+      fs.writeFileSync(path.join(srcDir, 'same.ts'), 'export const x = 1;\n');
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const project = createProjectConfig(projectDir, { name: 'billing', patterns: ['**/*.ts'] });
+
+      await indexer.indexProject(project);
+      const skippedAfterFirst = indexer.stats.skipped;
+
+      await indexer.indexProject(project);
+      // Second pass over identical content must skip (not re-embed).
+      expect(indexer.stats.skipped).toBeGreaterThan(skippedAfterFirst);
+    });
+
+    it('an empty suffix stores the clean name (explicit default guard)', async () => {
+      fs.writeFileSync(path.join(projectDir, 'a.ts'), 'export const x = 1;\n');
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '',
+      });
+
+      const project = createProjectConfig(projectDir, { name: 'billing', patterns: ['**/*.ts'] });
+      await indexer.indexProject(project);
+
+      const chunks = mockQdrant.upsertedPoints
+        .flatMap((u) => u.points as Array<{ payload: { project: string; chunk_id: string } }>)
+        .filter((p) => !(p.payload as Record<string, unknown>)['__meta']);
+      expect(chunks.length).toBeGreaterThan(0);
+      for (const c of chunks) {
+        expect(c.payload.project).toBe('billing');
+        expect(c.payload.chunk_id).toContain('//billing//');
+      }
+    });
+
+    it('getChunkById strips the suffix from the display project but keeps chunk_id suffixed', async () => {
+      // Regression: get_chunk / get_chunk_meta / find_usages render
+      // payload.project verbatim. Without stripping at the source, a suffixed
+      // stand would leak "billing-v3" into the user-facing [project] header.
+      // chunk_id must stay suffixed so it round-trips through parseChunkId.
+      const collection = toCollectionName('appcast-v3');
+      const chunkId = 'appcast-v3//billing-v3//src/pay.ts//1-5//h1';
+      mockQdrant.collections.set(collection, new Map());
+      mockQdrant.collections.get(collection)!.set('pt-1', {
+        id: 'pt-1',
+        payload: {
+          project: 'billing-v3', // stored (suffixed) name
+          file: 'src/pay.ts',
+          chunk_id: chunkId,
+          startLine: 1,
+          endLine: 5,
+          content: 'const x = 1;',
+        },
+      });
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const payload = await indexer.getChunkById(chunkId);
+      expect(payload).not.toBeNull();
+      // Display name is clean...
+      expect(payload!['project']).toBe('billing');
+      // ...but chunk_id stays suffixed for round-trip lookups.
+      expect(payload!['chunk_id']).toBe(chunkId);
+    });
+
+    it('getChunkById leaves the project untouched when no suffix is configured', async () => {
+      const collection = toCollectionName('g');
+      const chunkId = 'g//billing//src/pay.ts//1-5//h1';
+      mockQdrant.collections.set(collection, new Map());
+      mockQdrant.collections.get(collection)!.set('pt-1', {
+        id: 'pt-1',
+        payload: {
+          project: 'billing',
+          file: 'src/pay.ts',
+          chunk_id: chunkId,
+          startLine: 1,
+          endLine: 5,
+        },
+      });
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+      });
+
+      const payload = await indexer.getChunkById(chunkId);
+      expect(payload!['project']).toBe('billing');
+    });
+
+    it('getChunkById leaves an old un-suffixed chunk untouched even with a suffix set', async () => {
+      // A v3 stand may fetch a chunk the OLD stand wrote (no suffix). The
+      // display name must pass through unchanged — stripProjectSuffix is a
+      // no-op on names that don't end with the suffix.
+      const collection = toCollectionName('appcast-v3');
+      const chunkId = 'appcast-v3//legacy-proj//src/old.ts//1-2//h9';
+      mockQdrant.collections.set(collection, new Map());
+      mockQdrant.collections.get(collection)!.set('pt-1', {
+        id: 'pt-1',
+        payload: {
+          project: 'legacy-proj',
+          file: 'src/old.ts',
+          chunk_id: chunkId,
+          startLine: 1,
+          endLine: 2,
+        },
+      });
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const payload = await indexer.getChunkById(chunkId);
+      expect(payload!['project']).toBe('legacy-proj');
+    });
+
+    it('getChunkById returns null (not a crash) when the matched point has no payload', async () => {
+      // Regression: the Qdrant client types a point's `payload` as nullable. If
+      // a matched point comes back with a null payload, casting it and reading
+      // payload['project'] would throw a TypeError — the guard must return null
+      // instead. We stub scroll directly so the point is *matched* yet payload
+      // is null (the mock's chunk_id filter reads payload.chunk_id, which a
+      // null-payload point can't satisfy).
+      const chunkId = 'appcast-v3//billing-v3//src/pay.ts//1-5//h1';
+      mockQdrant.client.scroll.mockResolvedValueOnce({
+        points: [{ id: 'pt-1', payload: null }],
+        next_page_offset: null,
+      });
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const payload = await indexer.getChunkById(chunkId);
+      expect(payload).toBeNull();
+    });
+
+    it('indexFilesContent stores chunks under the suffixed name', async () => {
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const project = createProjectConfig(projectDir, { name: 'billing' });
+      await indexer.indexFilesContent(project, [
+        { path: 'src/a.ts', content: 'export const a = 1;\n' },
+      ]);
+
+      const chunks = mockQdrant.upsertedPoints
+        .flatMap((u) => u.points as Array<{ payload: { project: string; chunk_id: string } }>)
+        .filter((p) => !(p.payload as Record<string, unknown>)['__meta']);
+      expect(chunks.length).toBeGreaterThan(0);
+      for (const c of chunks) {
+        expect(c.payload.project).toBe('billing-v3');
+        expect(c.payload.chunk_id).toContain('//billing-v3//');
+      }
+    });
+
+    it('updateFileContent deletes old chunks and writes new ones under the suffixed name', async () => {
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const project = createProjectConfig(projectDir, { name: 'billing' });
+      // Caller passes the CLEAN name (as the content-update HTTP path does).
+      await indexer.updateFileContent(
+        'test-group',
+        'billing',
+        'src/a.ts',
+        'export const a = 2;\n',
+        'typescript',
+        project
+      );
+
+      // Delete filter targets the suffixed name.
+      expect(mockQdrant.client.delete).toHaveBeenCalledWith(toCollectionName('test-group'), {
+        filter: {
+          must: [
+            { key: 'project', match: { value: 'billing-v3' } },
+            { key: 'file', match: { value: 'src/a.ts' } },
+          ],
+        },
+        wait: true,
+      });
+
+      // New chunks are written under the suffixed name.
+      const chunks = mockQdrant.upsertedPoints
+        .flatMap((u) => u.points as Array<{ payload: { project: string; chunk_id: string } }>)
+        .filter((p) => !(p.payload as Record<string, unknown>)['__meta']);
+      expect(chunks.length).toBeGreaterThan(0);
+      for (const c of chunks) {
+        expect(c.payload.project).toBe('billing-v3');
+        expect(c.payload.chunk_id).toContain('//billing-v3//');
+      }
+    });
+  });
 });
 
 describe('Indexer collection metadata sentinel', () => {
@@ -952,5 +1400,103 @@ describe('Indexer collection metadata sentinel', () => {
     const groups = await indexer.listGroups();
     expect(groups['a']).toBe(10);
     expect(groups['b']).toBe(0);
+  });
+});
+
+describe('listProjectsInGroup with projectSuffix', () => {
+  let cache: EmbeddingCache;
+  let cacheDbPath: string;
+  let provider: CachedEmbeddingProvider;
+
+  beforeEach(() => {
+    const tmp = createTempDir();
+    cacheDbPath = path.join(tmp, 'cache.db');
+    cache = new EmbeddingCache(cacheDbPath, 100);
+    provider = new CachedEmbeddingProvider(new MockEmbeddingProvider(), cache);
+  });
+
+  afterEach(() => {
+    provider.close();
+    fs.rmSync(path.dirname(cacheDbPath), { recursive: true, force: true });
+  });
+
+  /** Minimal Qdrant stub exposing only `facet` (what listProjectsInGroup needs). */
+  function facetMock(projectHits: Array<{ value: string; count: number }>) {
+    return {
+      facet: vi.fn().mockImplementation((_col: string, opts: { key: string }) => {
+        if (opts.key === 'project') {
+          return Promise.resolve({ hits: projectHits });
+        }
+        // language facet — irrelevant to the suffix assertion
+        return Promise.resolve({ hits: [{ value: 'typescript', count: 1 }] });
+      }),
+    };
+  }
+
+  it('strips the suffix from returned names but keeps the stored name in the lang sub-filter', async () => {
+    const client = facetMock([
+      { value: 'billing-v3', count: 12 },
+      { value: 'feed-poster-v3', count: 5 },
+    ]);
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      qdrantClient: client as never,
+      projectSuffix: '-v3',
+    });
+
+    const projects = await indexer.listProjectsInGroup('appcast-v3');
+
+    // Clients see clean names.
+    expect(projects.map((p) => p.name).sort()).toEqual(['billing', 'feed-poster']);
+    expect(projects.find((p) => p.name === 'billing')!.chunks).toBe(12);
+
+    // The language sub-facet must filter by the STORED (suffixed) name, else it
+    // would return zero languages for every project.
+    const langFacetCalls = client.facet.mock.calls.filter(
+      (c) => (c[1] as { key: string }).key === 'language'
+    ) as Array<[string, { filter?: { must?: Array<{ match: { value: string } }> } }]>;
+    const filterValues = langFacetCalls.flatMap(
+      ([, opts]) => opts.filter?.must?.map((m) => m.match.value) ?? []
+    );
+    expect(filterValues).toContain('billing-v3');
+    expect(filterValues).toContain('feed-poster-v3');
+    expect(filterValues).not.toContain('billing'); // never the clean name
+  });
+
+  it('leaves an old un-suffixed project name untouched (mixed corpus on shared Qdrant)', async () => {
+    // A group may contain both suffixed (this stand) and un-suffixed (old
+    // stand) names. Only the suffixed ones get stripped; the rest pass through.
+    const client = facetMock([
+      { value: 'billing-v3', count: 3 },
+      { value: 'legacy-proj', count: 4 }, // no suffix
+    ]);
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      qdrantClient: client as never,
+      projectSuffix: '-v3',
+    });
+
+    const projects = await indexer.listProjectsInGroup('mixed');
+    expect(projects.map((p) => p.name).sort()).toEqual(['billing', 'legacy-proj']);
+  });
+
+  it('with no suffix returns facet names verbatim (default guard)', async () => {
+    const client = facetMock([{ value: 'billing', count: 7 }]);
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      qdrantClient: client as never,
+    });
+
+    const projects = await indexer.listProjectsInGroup('g');
+    expect(projects.map((p) => p.name)).toEqual(['billing']);
   });
 });

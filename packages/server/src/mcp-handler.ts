@@ -1215,7 +1215,10 @@ export class McpHandler {
         async ({ group, project }) => {
           try {
             await this.indexer.deleteProjectChunks(group, project);
-            this.metadataStore?.deleteByProject(group, project);
+            // Metadata rows are keyed by chunk_id, which embeds the *stored*
+            // (suffixed) project name — map through the indexer so the delete
+            // pattern matches. Qdrant side is suffixed inside deleteProjectChunks.
+            this.metadataStore?.deleteByProject(group, this.indexer.storedProjectName(project));
             this.searcher.invalidateGroupCache(group);
             this.removeProject?.(group, project);
 
@@ -2557,7 +2560,9 @@ export class McpHandler {
             ),
           title: z
             .string()
-            .describe('Short imperative title — e.g. "Use bge-m3 for arch-layer text embeddings".'),
+            .describe(
+              'Short imperative title — e.g. "Use qwen3-embedding-0.6b for arch-layer text embeddings".'
+            ),
           context: z.string().describe('One sentence: the problem that forced the decision.'),
           decision: z.string().describe('One sentence: what was chosen.'),
           alternatives_rejected: z

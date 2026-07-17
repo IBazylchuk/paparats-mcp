@@ -349,6 +349,44 @@ describe('extractGitMetadata git cache', () => {
     expect(cached!.commits.map((c) => c.hash)).toContain(realHash);
   });
 
+  // PAPARATS_PROJECT_SUFFIX: the indexer passes the SUFFIXED project name (e.g.
+  // `p-v3`) as `project`. That name must flow into both the git_file_cache
+  // (real project column) and the chunk_id-keyed commits, so a second stand
+  // never reads or overwrites the un-suffixed stand's git enrichment.
+  it('writes git_file_cache and commits under the suffixed project name', async () => {
+    gitInit(tmpDir);
+    gitAdd(
+      tmpDir,
+      'src/auth.ts',
+      'export function login() { return true; }\nexport const x = 1;\n'
+    );
+    const realHash = gitCommit(tmpDir, 'feat: real commit');
+
+    const suffixedChunkId = 'g//p-v3//src/auth.ts//1-2//h1';
+    const mockQdrantClient = { setPayload: vi.fn().mockResolvedValue(undefined) };
+    await extractGitMetadata({
+      projectPath: tmpDir,
+      group: 'g',
+      project: 'p-v3',
+      maxCommitsPerFile: 50,
+      ticketPatterns: [],
+      metadataStore: store,
+      qdrantClient: mockQdrantClient as never,
+      chunksByFile: new Map([
+        ['src/auth.ts', [{ chunk_id: suffixedChunkId, startLine: 1, endLine: 2 }]],
+      ]),
+    });
+
+    // Cache is keyed by the suffixed name; the un-suffixed name misses.
+    const cached = store.getGitFileCache('g', 'p-v3', 'src/auth.ts', currentHead(tmpDir));
+    expect(cached).not.toBeNull();
+    expect(cached!.commits.map((c) => c.hash)).toContain(realHash);
+    expect(store.getGitFileCache('g', 'p', 'src/auth.ts', currentHead(tmpDir))).toBeNull();
+
+    // Commits land on the suffixed chunk_id.
+    expect(store.getCommits(suffixedChunkId).map((c) => c.commit_hash)).toContain(realHash);
+  });
+
   it('ignores stale cache when HEAD changed', async () => {
     gitInit(tmpDir);
     gitAdd(

@@ -4,7 +4,12 @@ import type { SearchResult, SearchMetrics, SearchResponse, ChunkKind } from './t
 import { expandQuery } from './query-expansion.js';
 import type { QueryCache } from './query-cache.js';
 import type { MetricsRegistry } from './metrics.js';
-import { toCollectionName, createQdrantClient } from './indexer.js';
+import {
+  toCollectionName,
+  createQdrantClient,
+  applyProjectSuffix,
+  stripProjectSuffix,
+} from './indexer.js';
 import type { Telemetry } from './telemetry/facade.js';
 import type { AnalyticsStore } from './telemetry/analytics-store.js';
 import type { SearchResultRecord } from './telemetry/types.js';
@@ -30,6 +35,13 @@ export interface SearcherConfig {
   telemetry?: Telemetry;
   /** Optional analytics store for file_total_lines lookup */
   analytics?: AnalyticsStore;
+  /**
+   * Suffix used in the storage layer for project names (see applyProjectSuffix
+   * in indexer.ts). Applied to the project filter on the way IN so a search by
+   * the clean name matches suffixed chunks, and stripped from results on the
+   * way OUT so clients never see the suffix. Default '' = unchanged behavior.
+   */
+  projectSuffix?: string;
 }
 
 const QDRANT_TIMEOUT_MS = 30_000;
@@ -67,6 +79,8 @@ export class Searcher {
   private telemetry?: Telemetry;
   private analytics?: AnalyticsStore;
   private readonly allowedProjects: string[] | null;
+  /** Storage-layer project-name suffix ('' = disabled). */
+  private readonly projectSuffix: string;
 
   constructor(config: SearcherConfig) {
     this.qdrant =
@@ -83,6 +97,7 @@ export class Searcher {
     this.analytics = config.analytics;
     this.allowedProjects =
       config.allowedProjects && config.allowedProjects.length > 0 ? config.allowedProjects : null;
+    this.projectSuffix = config.projectSuffix ?? '';
   }
 
   /** Search within a group collection, optionally filtering by project */
@@ -571,12 +586,15 @@ export class Searcher {
     return { projects: [explicitProject], forbidden: false };
   }
 
-  /** Build a single Qdrant condition from a project list */
+  /** Build a single Qdrant condition from a project list. Project names are
+   *  mapped to their storage form (suffix applied) so a search by the clean
+   *  name matches the suffixed chunks written at index time. */
   private buildProjectCondition(projects: string[]): Record<string, unknown> {
-    if (projects.length === 1) {
-      return { key: 'project', match: { value: projects[0] } };
+    const stored = projects.map((p) => applyProjectSuffix(p, this.projectSuffix));
+    if (stored.length === 1) {
+      return { key: 'project', match: { value: stored[0] } };
     }
-    return { key: 'project', match: { any: projects } };
+    return { key: 'project', match: { any: stored } };
   }
 
   /** Filter clause that excludes the per-collection metadata sentinel point.
@@ -592,7 +610,10 @@ export class Searcher {
 
   private mapPayload(p: QdrantPayload, score: number): SearchResult {
     return {
-      project: p.project,
+      // Strip the storage suffix so clients see the clean project name. The
+      // chunk_id below is left opaque/suffixed on purpose: it round-trips back
+      // through get_chunk / find_usages, which re-parse it to the stored name.
+      project: stripProjectSuffix(p.project, this.projectSuffix),
       file: p.file,
       language: p.language,
       startLine: p.startLine,

@@ -183,7 +183,7 @@ to reconfigure — it diffs the existing compose and asks before overwriting han
 ├── projects.yml        project list (CLI rewrites it; comments survive your manual edits)
 ├── install.json                install flags persisted so add/remove can regenerate compose
 ├── .env                        secrets — Qdrant API key, GitHub token; chmod 600
-├── models/                     jina-code-embeddings GGUF + Modelfile
+├── models/                     bge-code-v1 + qwen3-embedding-0.6b GGUF (native embed mode)
 └── data/                       Docker volumes (mounted by name from compose)
     ├── qdrant/                 vector index
     ├── sqlite/                 metadata.db, embeddings.db, analytics.db
@@ -197,7 +197,7 @@ Inside the Docker stack:
 | `paparats-mcp`     | `ibaz/paparats-server:latest`  | 9876  | MCP HTTP/SSE endpoints, search, metadata API             |
 | `paparats-indexer` | `ibaz/paparats-indexer:latest` | 9877  | Cron + on-demand indexing, hot-reload of project list    |
 | `qdrant`           | `qdrant/qdrant:latest`         | 6333  | Vector DB (skipped when you pass `--qdrant-url`)         |
-| `embed`            | `ibaz/paparats-embed:latest`   | 11434 | Embed server — llama-server + llama-swap, `jina-code-embeddings` + `bge-m3` pre-baked (Linux default; macOS uses native embed server). llama-swap listens on 8080 inside the container |
+| `embed`            | `ibaz/paparats-embed:latest`   | 11434 | Embed server — llama-server + llama-swap, `bge-code-v1` + `qwen3-embedding-0.6b` pre-baked (Linux default; macOS uses native embed server). llama-swap listens on 8080 inside the container |
 
 The indexer hot-reloads `projects.yml`. Edits that **change project metadata
 only** (group, language, indexing tweaks) reindex in place. Edits that **add or remove
@@ -234,7 +234,7 @@ paparats install --embed-url http://10.0.0.5:11434
 
 Skips both the native and Docker embed server.
 
-> **The remote endpoint must serve the `jina-code-embeddings` model (and `bge-m3` for the
+> **The remote endpoint must serve the `bge-code-v1` model (and `qwen3-embedding-0.6b` for the
 > arch-memory layer) over an OpenAI-style `/v1/embeddings` API.** The installer will not
 > touch a remote instance. The simplest way is to run the pre-baked image on that host —
 > no model registration needed, llama-swap loads GGUF by name on first request:
@@ -469,7 +469,7 @@ writes them via **`arch_record_component`**, **`arch_record_decision`**, and
 correction. Each card carries an `updated N ago` stamp in the read tool so the agent
 can spot stale memory and verify against current code.
 
-**Server-side similarity gate** (cosine over [bge-m3](https://huggingface.co/BAAI/bge-m3)
+**Server-side similarity gate** (cosine over [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)
 text embeddings, 1024d):
 
 - `≥ 0.85` is a **duplicate** — decisions are refused (the agent must reconcile or
@@ -497,7 +497,7 @@ about prior decisions before refactoring. Writing (`arch_record_*`) is **support
 recording belongs to the architectural-review workflow, not to every line edit.
 
 **`arch_context` accepts a `min_score` parameter** (default `0.45`, cosine over
-[bge-m3](https://huggingface.co/BAAI/bge-m3)). Lower it to broaden recall on a sparse
+[Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)). Lower it to broaden recall on a sparse
 arch memory; raise it to demand only high-confidence cards. The tool also emits an
 explicit low-confidence hint when the question matched nothing above the threshold,
 so the agent knows to either rephrase or lower `min_score` instead of inventing
@@ -740,7 +740,7 @@ change history, cost reporting — all in plain language.
 **Architectural memory (support agent):**
 
 ```
-1. arch_context "why do we use bge-m3 for the arch layer?"
+1. arch_context "why do we use qwen3-embedding-0.6b for the arch layer?"
                                                      → top components / decisions / lessons,
                                                        each with an "updated N ago" stamp
 2. arch_record_decision { title, context, decision, alternatives_rejected, consequences }
@@ -1101,7 +1101,7 @@ paparats-mcp/
 │   │   │   ├── arch/                 # Architectural memory layer (components, decisions, lessons)
 │   │   │   │   ├── types.ts          # ArchComponent, ArchDecision, ArchLesson, ArchWriteResult
 │   │   │   │   ├── collection.ts     # Per-group Qdrant collection (`paparats_<group>_arch`) lifecycle
-│   │   │   │   ├── text-embeddings.ts # bge-m3 text embedder (1024d, mean-pooled, llama-server)
+│   │   │   │   ├── text-embeddings.ts # qwen3-embedding-0.6b text embedder (1024d, last-pooled, llama-server)
 │   │   │   │   ├── store.ts          # CRUD + server-side similarity gate (cosine 0.85 / 0.70)
 │   │   │   │   └── context.ts        # `arch_context` query — top-N across kinds with age stamps
 │   │   │   └── types.ts              # Shared types
@@ -1138,7 +1138,7 @@ paparats-mcp/
 ## Stack
 
 - **Qdrant** — vector database (1 collection per group with `paparats_` prefix for code, plus a separate `paparats_<group>_arch` collection per group for the architectural memory layer; cosine similarity, payload filtering)
-- **Embed server** — llama.cpp `llama-server` + `llama-swap` serving local embeddings via Jina Code Embeddings 1.5B for code (task-specific prefixes) **and bge-m3 for the architectural memory layer** (1024d, mean-pooled, multilingual). llama-swap routes by model name and idle-unloads after `EMBED_TTL` seconds
+- **Embed server** — llama.cpp `llama-server` + `llama-swap` serving local embeddings via `bge-code-v1` for code (1536d, task-specific prefixes) **and `qwen3-embedding-0.6b` for the architectural memory layer** (1024d, last-pooled). Both Apache-2.0. llama-swap routes by model name and idle-unloads after `EMBED_TTL` seconds
 - **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata + symbol edges store (`~/.paparats/metadata.db`)
 - **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
 - **TypeScript** monorepo with Yarn workspaces
@@ -1211,7 +1211,7 @@ refuses to mix providers in one collection and surfaces a clear error).
 
 | Provider     | Model                       | Dims  | Privacy        | Speed (1k chunks)        | Cost                  |
 | ------------ | --------------------------- | ----- | -------------- | ------------------------ | --------------------- |
-| **llama**    | `jina-code-embeddings` 1.5B | 1536  | 100% local     | ~2–4 min (CPU)           | Free, ~2.3 GB on disk |
+| **llama**    | `bge-code-v1`               | 1536  | 100% local     | ~2–4 min (CPU)           | Free, ~1.5 GB on disk |
 | **OpenAI**   | `text-embedding-3-small`    | 1536  | Sent to OpenAI | ~30 s                    | ~$0.02 / 1 M tokens   |
 | **Voyage**   | `voyage-code-3`             | 1024  | Sent to Voyage | ~30 s                    | ~$0.18 / 1 M tokens   |
 
@@ -1234,18 +1234,18 @@ export EMBEDDING_PROVIDER=voyage
 ```
 
 Overrides: `EMBEDDING_MODEL` (defaults: `text-embedding-3-small`,
-`voyage-code-3`, `jina-code-embeddings`) and `EMBEDDING_DIMENSIONS` (1536 /
+`voyage-code-3`, `bge-code-v1`) and `EMBEDDING_DIMENSIONS` (1536 /
 1024 / 1536). Voyage `voyage-code-3` supports 256/512/1024/2048 via
 Matryoshka — set `EMBEDDING_DIMENSIONS` to opt into a non-default size.
 
 ### Local (llama) — defaults below
 
-Default model: [jinaai/jina-code-embeddings-1.5b-GGUF](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — code-optimized, 1.5B params, 1536 dims, 32k context. The embed server is llama.cpp `llama-server` + `llama-swap`: `llama-server` loads the GGUF directly and `llama-swap` routes by model name and lazy-loads it on first request. There is **no Modelfile and no model-registration step** — llama-swap discovers the model by name.
+Default model: [BAAI/bge-code-v1](https://huggingface.co/BAAI/bge-code-v1) (served as a Q8_0 GGUF) — code-optimized, Apache-2.0, 1536 dims, 32k context. The embed server is llama.cpp `llama-server` + `llama-swap`: `llama-server` loads the GGUF directly and `llama-swap` routes by model name and lazy-loads it on first request. There is **no Modelfile and no model-registration step** — llama-swap discovers the model by name.
 
 **Recommended:** `paparats install` automates this:
 
 - **Native mode** (`--embed-mode native`, default on macOS): installs the embed server via `brew install llama.cpp mostlygeek/llama-swap/llama-swap` (Metal-accelerated) and downloads the GGUF to `~/.paparats/models/`
-- **Docker mode** (`--embed-mode docker`, default on Linux): Uses the `ibaz/paparats-embed` image with `jina-code-embeddings` + `bge-m3` pre-baked — zero setup
+- **Docker mode** (`--embed-mode docker`, default on Linux): Uses the `ibaz/paparats-embed` image with `bge-code-v1` + `qwen3-embedding-0.6b` pre-baked — zero setup
 
 **Manual setup (Docker):**
 
@@ -1261,10 +1261,10 @@ curl http://localhost:8080/v1/models
 
 | Spec         | Value                               |
 | ------------ | ----------------------------------- |
-| Parameters   | 1.5B                                |
+| Model        | BAAI/bge-code-v1 (Apache-2.0)       |
 | Dimensions   | 1536                                |
 | Context      | 32,768 tokens (recommended ≤ 8,192) |
-| Quantization | Q8_0 (~1.6 GB)                      |
+| Quantization | Q8_0 (~1.5 GB)                      |
 | Languages    | 15+ programming languages           |
 
 Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
@@ -1512,7 +1512,8 @@ Open an issue or pull request to get started.
 
 ## Links
 
-- [Jina Code Embeddings](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF) — embedding model
+- [BAAI/bge-code-v1](https://huggingface.co/BAAI/bge-code-v1) — code embedding model
+- [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B) — arch/docs text embedding model
 - [Qdrant](https://qdrant.tech) — vector database
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) — local embedding runtime (`llama-server`)
 - [llama-swap](https://github.com/mostlygeek/llama-swap) — model router / lazy loader in front of llama-server
