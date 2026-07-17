@@ -150,6 +150,144 @@ describe('Searcher', () => {
     );
   });
 
+  it('with projectSuffix, search by clean name filters on the suffixed name', async () => {
+    mockQdrant.client.search.mockResolvedValue([]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+      projectSuffix: '-v3',
+    });
+
+    // Client searches by the CLEAN name; the filter must target the stored
+    // (suffixed) name so it matches chunks the suffixed indexer wrote.
+    await searcher.search('test-group', 'query', { project: 'my-project' });
+
+    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      toCollectionName('test-group'),
+      expect.objectContaining({
+        filter: {
+          must: [{ key: 'project', match: { value: 'my-project-v3' } }],
+          must_not: META_NOT,
+        },
+      })
+    );
+  });
+
+  it('with projectSuffix, results strip the suffix so clients see the clean name', async () => {
+    mockQdrant.client.search.mockResolvedValue([
+      {
+        id: '1',
+        score: 0.9,
+        payload: {
+          project: 'my-project-v3', // stored (suffixed) name in Qdrant
+          file: 'src/foo.ts',
+          language: 'typescript',
+          startLine: 1,
+          endLine: 5,
+          content: 'const x = 1;',
+          hash: 'abc',
+          chunk_id: 'test-group//my-project-v3//src/foo.ts//1-5//abc',
+        },
+      },
+    ]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+      projectSuffix: '-v3',
+    });
+
+    const response = await searcher.search('test-group', 'foo');
+
+    expect(response.results[0]!.project).toBe('my-project');
+    // chunk_id stays opaque/suffixed so it round-trips through get_chunk /
+    // find_usages, which re-parse it back to the stored name.
+    expect(response.results[0]!.chunk_id).toBe('test-group//my-project-v3//src/foo.ts//1-5//abc');
+  });
+
+  it('with projectSuffix + allowedProjects, the "all" scope suffixes every project in the any-filter', async () => {
+    mockQdrant.client.search.mockResolvedValue([]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+      allowedProjects: ['billing', 'feed-poster'], // clean names from PAPARATS_PROJECTS
+      projectSuffix: '-v3',
+    });
+
+    // project="all" expands to the allowed set → multi-value `any` filter,
+    // and each entry must be suffixed to match stored chunks.
+    await searcher.search('test-group', 'query', { project: 'all' });
+
+    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      toCollectionName('test-group'),
+      expect.objectContaining({
+        filter: {
+          must: [{ key: 'project', match: { any: ['billing-v3', 'feed-poster-v3'] } }],
+          must_not: META_NOT,
+        },
+      })
+    );
+  });
+
+  it('with projectSuffix, an old un-suffixed chunk surfacing in results is returned verbatim', async () => {
+    // On the shared Qdrant a v3 search can still hit a stale chunk the OLD
+    // stand wrote (project "my-project", no suffix). stripProjectSuffix must
+    // leave it untouched — never mangle a name that lacks the suffix.
+    mockQdrant.client.search.mockResolvedValue([
+      {
+        id: '1',
+        score: 0.8,
+        payload: {
+          project: 'my-project', // no suffix (written by the old stand)
+          file: 'src/legacy.ts',
+          language: 'typescript',
+          startLine: 1,
+          endLine: 3,
+          content: 'const y = 2;',
+          hash: 'leg',
+        },
+      },
+    ]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+      projectSuffix: '-v3',
+    });
+
+    const response = await searcher.search('test-group', 'foo');
+    expect(response.results[0]!.project).toBe('my-project');
+  });
+
+  it('with an empty projectSuffix, the project filter is the clean name (default guard)', async () => {
+    mockQdrant.client.search.mockResolvedValue([]);
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+      projectSuffix: '',
+    });
+
+    await searcher.search('test-group', 'query', { project: 'my-project' });
+
+    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      toCollectionName('test-group'),
+      expect.objectContaining({
+        filter: {
+          must: [{ key: 'project', match: { value: 'my-project' } }],
+          must_not: META_NOT,
+        },
+      })
+    );
+  });
+
   it('search uses limit option', async () => {
     mockQdrant.client.search.mockResolvedValue([]);
 

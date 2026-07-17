@@ -34,6 +34,8 @@ export {
   Indexer,
   buildChunkId,
   parseChunkId,
+  applyProjectSuffix,
+  stripProjectSuffix,
   toCollectionName,
   fromCollectionName,
   createQdrantClient,
