@@ -4,7 +4,7 @@
 # both a short-lived laptop deployment and a long-lived server via one env var.
 set -eu
 
-: "${EMBED_TTL:=300}"
+: "${EMBED_TTL:=0}"
 export EMBED_TTL
 
 # Only EMBED_TTL is substituted — llama-swap's own ${PORT}/${macro} tokens must

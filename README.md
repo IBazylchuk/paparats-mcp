@@ -240,7 +240,7 @@ Skips both the native and Docker embed server.
 > no model registration needed, llama-swap loads GGUF by name on first request:
 >
 > ```bash
-> docker run -d -p 11434:8080 -e EMBED_TTL=300 ibaz/paparats-embed:latest
+> docker run -d -p 11434:8080 ibaz/paparats-embed:latest
 > ```
 >
 > Then `paparats install --embed-url http://that-host:11434` and Paparats will use it.
@@ -1138,7 +1138,7 @@ paparats-mcp/
 ## Stack
 
 - **Qdrant** — vector database (1 collection per group with `paparats_` prefix for code, plus a separate `paparats_<group>_arch` collection per group for the architectural memory layer; cosine similarity, payload filtering)
-- **Embed server** — llama.cpp `llama-server` + `llama-swap` serving local embeddings via `bge-code-v1` for code (1536d, task-specific prefixes) **and `qwen3-embedding-0.6b` for the architectural memory layer** (1024d, last-pooled). Both Apache-2.0. llama-swap routes by model name and idle-unloads after `EMBED_TTL` seconds
+- **Embed server** — llama.cpp `llama-server` + `llama-swap` serving local embeddings via `bge-code-v1` for code (1536d, task-specific prefixes) **and `qwen3-embedding-0.6b` for the architectural memory layer** (1024d, last-pooled). Both Apache-2.0. llama-swap routes by model name; models stay resident by default (`EMBED_TTL=0`), with opt-in idle unload via `EMBED_TTL`
 - **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata + symbol edges store (`~/.paparats/metadata.db`)
 - **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
 - **TypeScript** monorepo with Yarn workspaces
@@ -1252,7 +1252,7 @@ Default model: [BAAI/bge-code-v1](https://huggingface.co/BAAI/bge-code-v1) (serv
 ```bash
 # Run the pre-baked embed server. llama-swap serves on 8080 inside the container
 # (mapped to host 11434) and loads models by name — nothing else to configure.
-docker run -d -p 11434:8080 -e EMBED_TTL=300 ibaz/paparats-embed:latest
+docker run -d -p 11434:8080 ibaz/paparats-embed:latest
 
 # Verify (llama-swap exposes an OpenAI-style API)
 curl http://localhost:8080/health

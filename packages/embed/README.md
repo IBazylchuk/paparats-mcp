@@ -11,7 +11,7 @@ Paparats used to embed with Ollama, then briefly with CC-BY-NC jina models. This
 - ⚖️ **Permissive licenses.** `bge-code-v1` and `Qwen3-Embedding-0.6B` are both Apache-2.0 — safe for commercial/enterprise use (the previous jina models were CC-BY-NC).
 - ⚡ **~5–9× faster than Ollama on the same hardware.** The win is *bigger* on weak servers, where Ollama's per-request overhead dominates.
 - 🎯 **Correct pooling.** Both models are decoder-based → `--pooling last`, baked in and cosine-verified. Wrong pooling silently corrupts the vector space.
-- 💤 **Lazy load + idle unload.** Models load on first request and unload after `EMBED_TTL` seconds idle. A code-only user never spins up the text model; RAM is freed when nobody's searching.
+- 💤 **Lazy load, resident by default.** Models load on first request and stay resident (~2.2 GB total) — no idle unload, so llama-swap's unload path (which can deadlock under concurrent load) is never exercised. Opt into idle unload with `EMBED_TTL` to save RAM on a laptop.
 - 🧊 **Zero-config, CPU-only.** No CUDA, no model registry, no Modelfile. Both GGUFs are baked in.
 
 ## Models
@@ -30,7 +30,6 @@ Swapping in a different model? Follow [docs/replacing-embedding-models.md](../..
 ```bash
 docker run -d --name paparats-embed \
   -p 11434:8080 \
-  -e EMBED_TTL=300 \
   ibaz/paparats-embed:latest
 ```
 
@@ -46,9 +45,9 @@ curl http://localhost:11434/v1/embeddings \
 
 | Env | Default | What it does |
 | --- | --- | --- |
-| `EMBED_TTL` | `300` | Seconds a model stays resident after its last request before unloading. Short on a laptop to save RAM; long (or `0` = never) on a busy server to avoid cold starts. |
+| `EMBED_TTL` | `0` | Seconds a model stays resident after its last request before unloading. `0` (default) = never unload — safest under load, since llama-swap's unload/swap path can deadlock when a client abort lands mid-unload. Set e.g. `300` on a laptop to save RAM at the cost of cold starts and that risk. |
 
-Cold start (first request after idle/unload) is a few seconds while the model loads; every request after that is hot until `EMBED_TTL` elapses.
+Cold start (first request, or first after an idle unload when `EMBED_TTL` > 0) is a few seconds while the model loads; every request after that is hot.
 
 ## Ports
 
