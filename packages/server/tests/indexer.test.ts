@@ -980,7 +980,7 @@ describe('Indexer', () => {
       });
     });
 
-    it('deleteProjectChunks does not double-suffix an already-suffixed name (eviction path)', async () => {
+    it('deleteProjectChunks suffixes exactly once — callers always pass a clean name', async () => {
       const indexer = new Indexer({
         qdrantUrl: 'http://127.0.0.1:6333',
         embeddingProvider,
@@ -989,8 +989,10 @@ describe('Indexer', () => {
         projectSuffix: '-v3',
       });
 
-      // The eviction path calls this with the ALREADY-suffixed name.
-      await indexer.deleteProjectChunks('test-group', 'billing-v3');
+      // Every call-site (delete_project, force-reindex, eviction) passes the
+      // clean name, so the stored filter is suffixed exactly once — never
+      // "billing-v3-v3".
+      await indexer.deleteProjectChunks('test-group', 'billing');
 
       expect(mockQdrant.client.delete).toHaveBeenCalledWith(toCollectionName('test-group'), {
         filter: { must: [{ key: 'project', match: { value: 'billing-v3' } }] },
@@ -1160,6 +1162,31 @@ describe('Indexer', () => {
 
       const payload = await indexer.getChunkById(chunkId);
       expect(payload!['project']).toBe('legacy-proj');
+    });
+
+    it('getChunkById returns null (not a crash) when the matched point has no payload', async () => {
+      // Regression: the Qdrant client types a point's `payload` as nullable. If
+      // a matched point comes back with a null payload, casting it and reading
+      // payload['project'] would throw a TypeError — the guard must return null
+      // instead. We stub scroll directly so the point is *matched* yet payload
+      // is null (the mock's chunk_id filter reads payload.chunk_id, which a
+      // null-payload point can't satisfy).
+      const chunkId = 'appcast-v3//billing-v3//src/pay.ts//1-5//h1';
+      mockQdrant.client.scroll.mockResolvedValueOnce({
+        points: [{ id: 'pt-1', payload: null }],
+        next_page_offset: null,
+      });
+
+      const indexer = new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        projectSuffix: '-v3',
+      });
+
+      const payload = await indexer.getChunkById(chunkId);
+      expect(payload).toBeNull();
     });
 
     it('indexFilesContent stores chunks under the suffixed name', async () => {

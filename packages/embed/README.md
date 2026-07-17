@@ -39,7 +39,7 @@ Then embed via the OpenAI-style API:
 ```bash
 curl http://localhost:11434/v1/embeddings \
   -H 'Content-Type: application/json' \
-  -d '{"model":"jina-code-embeddings","input":"def add(a, b): return a + b"}'
+  -d '{"model":"bge-code-v1","input":"def add(a, b): return a + b"}'
 ```
 
 ## Configuration

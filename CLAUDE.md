@@ -130,7 +130,7 @@ Releases are driven by [Changesets](https://github.com/changesets/changesets) in
 
 - `packages/server/Dockerfile` — builds and runs the server (`ibaz/paparats-server`)
 - `packages/indexer/Dockerfile` — builds the indexer (`ibaz/paparats-indexer`)
-- `packages/embed/Dockerfile` — builds llama.cpp `llama-server` + `llama-swap` with pre-baked `jina-code-embeddings` + `bge-m3` GGUF models (`ibaz/paparats-embed`)
+- `packages/embed/Dockerfile` — builds llama.cpp `llama-server` + `llama-swap` with pre-baked `bge-code-v1` + `qwen3-embedding-0.6b` GGUF models (`ibaz/paparats-embed`)
 - `packages/server/docker-compose.template.yml` — reference template (install uses generator now)
 - `packages/cli/src/docker-compose-generator.ts` — generates docker-compose.yml at install time
 - Qdrant at `:6333`, MCP server at `:9876`, Indexer at `:9877`
