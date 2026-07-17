@@ -257,3 +257,51 @@ export function expandQuery(query: string): string[] {
 
   return Array.from(results).slice(0, 3);
 }
+
+/** A glossary term surfaced for query expansion. */
+export interface GlossaryMatch {
+  term: string;
+  definition: string;
+  aliases: string[];
+}
+
+/**
+ * Async, OPT-IN glossary-aware query expansion. Deliberately separate from the
+ * synchronous {@link expandQuery} so the code-search hot path stays LLM-free and
+ * non-async — callers that want glossary enrichment (docs search, or an explicit
+ * opt-in flag) call this instead of / in addition to expandQuery.
+ *
+ * The glossary lookup is dependency-injected (a function returning matched
+ * terms) so this module keeps no hard dependency on TerminologyStore. For each
+ * matched term it appends a variant that folds the definition and aliases into
+ * the query text, so a query mentioning an opaque acronym ("what does CLIC do")
+ * also searches with the acronym's expansion. Returns the base expansion first,
+ * then up to `maxGlossary` glossary-enriched variants.
+ */
+export async function expandQueryWithGlossary(
+  query: string,
+  lookup: (q: string) => Promise<GlossaryMatch[]>,
+  maxGlossary = 2
+): Promise<string[]> {
+  const base = expandQuery(query);
+  const trimmed = query.trim();
+  if (!trimmed) return base;
+
+  let matches: GlossaryMatch[];
+  try {
+    matches = await lookup(trimmed);
+  } catch {
+    // A glossary lookup failure must never break search — fall back to base.
+    return base;
+  }
+  if (matches.length === 0) return base;
+
+  const results = new Set(base);
+  for (const m of matches.slice(0, maxGlossary)) {
+    const extras = [m.definition, ...m.aliases].filter((s) => s && s.length > 0).join(' ');
+    if (!extras) continue;
+    const variant = `${trimmed} ${extras}`.trim();
+    if (!results.has(variant)) results.add(variant);
+  }
+  return Array.from(results);
+}

@@ -31,6 +31,9 @@ import {
   failedChunks,
 } from './telemetry/queries.js';
 import { ArchStore } from './arch/store.js';
+import { DocsStore } from './docs/store.js';
+import { TerminologyStore } from './terminology/store.js';
+import { expandQueryWithGlossary } from './query-expansion.js';
 import {
   buildArchContextWithVector,
   DEFAULT_MIN_SCORE,
@@ -204,6 +207,10 @@ export interface McpHandlerConfig {
   analytics?: AnalyticsStore;
   /** Optional arch-layer store. When unset, arch_* tools are skipped at registration time. */
   archStore?: ArchStore;
+  /** Optional docs-layer store. When unset, search_docs is skipped at registration time. */
+  docsStore?: DocsStore;
+  /** Optional terminology-layer store. When unset, term_* tools are skipped. */
+  terminologyStore?: TerminologyStore;
   /** Optional metrics registry. NoOp by default — see metrics.ts. */
   metrics?: MetricsRegistry;
 }
@@ -367,6 +374,13 @@ export const CODING_TOOLS = new Set([
   'arch_record_lesson',
   'arch_suggest_components',
   'arch_delete',
+  // docs layer — read.
+  'search_docs',
+  // terminology (glossary) — read + write.
+  'term_record',
+  'term_search',
+  'term_list',
+  'term_delete',
 ]);
 
 export const SUPPORT_TOOLS = new Set([
@@ -389,6 +403,10 @@ export const SUPPORT_TOOLS = new Set([
   'failed_chunks',
   // arch memory — read only.
   'arch_context',
+  // docs + glossary — read only (support needs docs & terminology too).
+  'search_docs',
+  'term_search',
+  'term_list',
 ]);
 
 /** Workflow-prompt names available in each mode. Content lives in prompts.json. */
@@ -421,6 +439,8 @@ export class McpHandler {
   private telemetry: Telemetry | null;
   private analytics: AnalyticsStore | null;
   private archStore: ArchStore | null;
+  private docsStore: DocsStore | null;
+  private terminologyStore: TerminologyStore | null;
   private metrics: MetricsRegistry;
   private sessionIdentity = new Map<
     string,
@@ -445,6 +465,8 @@ export class McpHandler {
     this.telemetry = config.telemetry ?? null;
     this.analytics = config.analytics ?? null;
     this.archStore = config.archStore ?? null;
+    this.docsStore = config.docsStore ?? null;
+    this.terminologyStore = config.terminologyStore ?? null;
     this.metrics = config.metrics ?? new NoOpMetrics();
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000);
@@ -2929,6 +2951,206 @@ export class McpHandler {
             lines.push(`Not found (already removed?): ${notFound.join(', ')}.`);
           }
           return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+        }
+      );
+    }
+
+    // ── Tool: search_docs ────────────────────────────────────────────────────
+    if (tools.has('search_docs') && this.docsStore) {
+      const docsStore = this.docsStore;
+      server.tool(
+        'search_docs',
+        prompts.tools['search_docs']?.description ??
+          'Hybrid (semantic + keyword) search over indexed markdown documentation. Returns doc-merged passages with title, heading path, and source link.',
+        {
+          query: z.string().min(1).describe('Natural-language documentation query.'),
+          project: z
+            .string()
+            .optional()
+            .describe('Restrict to a single project (directory basename), or omit for all.'),
+          group: z
+            .string()
+            .optional()
+            .describe('Specific group, or omit to search all known groups.'),
+          limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
+        },
+        async ({ query, project, group, limit }) => {
+          const groupNames = group ? [group] : this.getGroupNames();
+          const termStore = this.terminologyStore;
+          const all = [];
+          for (const g of groupNames) {
+            // Glossary-enrich the query with matched term definitions/aliases,
+            // opt-in and per-group. A lookup failure falls back to the raw query.
+            const queries = termStore
+              ? await expandQueryWithGlossary(query, async (q) => {
+                  const terms = await termStore.search(g, q, {
+                    ...(project !== undefined ? { project } : {}),
+                    limit: 3,
+                  });
+                  return terms.map((t) => ({
+                    term: t.term,
+                    definition: t.definition,
+                    aliases: t.aliases,
+                  }));
+                })
+              : [query];
+            // The first entry is the original query; the glossary variant (if any)
+            // is the last. Search with the enriched query when present.
+            const effectiveQuery = queries[queries.length - 1] ?? query;
+            const hits = await docsStore.search(g, effectiveQuery, {
+              ...(project !== undefined ? { project } : {}),
+              ...(limit !== undefined ? { limit } : {}),
+            });
+            for (const h of hits) all.push({ group: g, ...h });
+          }
+          all.sort((a, b) => b.score - a.score);
+          const top = all.slice(0, limit ?? 8);
+          if (top.length === 0) {
+            return {
+              content: [{ type: 'text' as const, text: `No documentation found for "${query}".` }],
+            };
+          }
+          const md = top
+            .map((h) => {
+              const crumb = [h.docTitle, ...h.headingPath].filter(Boolean).join(' > ');
+              const src = h.sourceUrl ? `\nSource: ${h.sourceUrl}` : '';
+              return `### ${crumb} (${h.score.toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}\n\n${h.content}`;
+            })
+            .join('\n\n---\n\n');
+          return { content: [{ type: 'text' as const, text: md }] };
+        }
+      );
+    }
+
+    // ── Tool: term_search ────────────────────────────────────────────────────
+    if (tools.has('term_search') && this.terminologyStore) {
+      const termStore = this.terminologyStore;
+      server.tool(
+        'term_search',
+        prompts.tools['term_search']?.description ??
+          'Search the company glossary for a term, abbreviation, or domain concept.',
+        {
+          query: z.string().min(1).describe('Term, abbreviation, or concept to look up.'),
+          project: z.string().optional().describe('Restrict to a project, or omit for all.'),
+          group: z.string().optional().describe('Specific group, or omit for all groups.'),
+          limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
+        },
+        async ({ query, project, group, limit }) => {
+          const groupNames = group ? [group] : this.getGroupNames();
+          const all = [];
+          for (const g of groupNames) {
+            const hits = await termStore.search(g, query, {
+              ...(project !== undefined ? { project } : {}),
+              ...(limit !== undefined ? { limit } : {}),
+            });
+            all.push(...hits);
+          }
+          all.sort((a, b) => b.score - a.score);
+          const top = all.slice(0, limit ?? 8);
+          if (top.length === 0) {
+            return {
+              content: [{ type: 'text' as const, text: `No glossary term found for "${query}".` }],
+            };
+          }
+          const md = top
+            .map((t) => {
+              const aliases = t.aliases.length > 0 ? ` _(aka: ${t.aliases.join(', ')})_` : '';
+              return `**${t.term}**${aliases}\n${t.definition}`;
+            })
+            .join('\n\n');
+          return { content: [{ type: 'text' as const, text: md }] };
+        }
+      );
+    }
+
+    // ── Tool: term_list ──────────────────────────────────────────────────────
+    if (tools.has('term_list') && this.terminologyStore) {
+      const termStore = this.terminologyStore;
+      server.tool(
+        'term_list',
+        prompts.tools['term_list']?.description ?? 'List glossary terms in a group.',
+        {
+          group: z.string().optional().describe('Specific group, or omit for all groups.'),
+          project: z.string().optional().describe('Restrict to a project, or omit for all.'),
+          limit: z.number().int().min(1).max(500).optional().describe('Max terms. Default 200.'),
+        },
+        async ({ group, project, limit }) => {
+          const groupNames = group ? [group] : this.getGroupNames();
+          const all = [];
+          for (const g of groupNames) {
+            const terms = await termStore.list(g, {
+              ...(project !== undefined ? { project } : {}),
+              ...(limit !== undefined ? { limit } : {}),
+            });
+            all.push(...terms);
+          }
+          if (all.length === 0) {
+            return {
+              content: [{ type: 'text' as const, text: 'No glossary terms recorded yet.' }],
+            };
+          }
+          const md = all
+            .sort((a, b) => a.term.localeCompare(b.term))
+            .map((t) => `- **${t.term}**: ${t.definition}`)
+            .join('\n');
+          return { content: [{ type: 'text' as const, text: md }] };
+        }
+      );
+    }
+
+    // ── Tool: term_record ────────────────────────────────────────────────────
+    if (tools.has('term_record') && this.terminologyStore) {
+      const termStore = this.terminologyStore;
+      server.tool(
+        'term_record',
+        prompts.tools['term_record']?.description ??
+          'Record a glossary term. Goes through a duplicate/similar gate — reconcile with the matched term if one is returned.',
+        {
+          group: z.string().min(1).describe('Group the term belongs to.'),
+          term: z.string().min(1).describe('The canonical term, e.g. "feed-poster".'),
+          definition: z.string().min(1).describe('Plain-language definition.'),
+          aliases: z.array(z.string()).optional().describe('Alternate spellings / abbreviations.'),
+          project: z.string().optional().describe('Project scope, or omit for group-wide.'),
+        },
+        async ({ group, term, definition, aliases, project }) => {
+          const res = await termStore.recordTerm(group, {
+            term,
+            definition,
+            ...(aliases !== undefined ? { aliases } : {}),
+            ...(project !== undefined ? { project } : {}),
+          });
+          const lines = [`Term "${term}": ${res.status} (id ${res.id}).`];
+          if (res.status === 'duplicate' || res.status === 'similar') {
+            lines.push(
+              `Matched existing term "${res.matchedLabel}" (similarity ${(res.similarity ?? 0).toFixed(3)}). ` +
+                `Update that term instead of adding a near-duplicate.`
+            );
+          }
+          return { content: [{ type: 'text' as const, text: lines.join('\n') }] };
+        }
+      );
+    }
+
+    // ── Tool: term_delete ────────────────────────────────────────────────────
+    if (tools.has('term_delete') && this.terminologyStore) {
+      const termStore = this.terminologyStore;
+      server.tool(
+        'term_delete',
+        prompts.tools['term_delete']?.description ?? 'Delete a glossary term by id.',
+        {
+          group: z.string().min(1).describe('Group the term lives in.'),
+          id: z.string().min(1).describe('Term id to delete.'),
+        },
+        async ({ group, id }) => {
+          const ok = await termStore.deleteTerm(group, id);
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: ok ? `Deleted term ${id} from \`${group}\`.` : `Could not delete term ${id}.`,
+              },
+            ],
+          };
         }
       );
     }

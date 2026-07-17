@@ -16,6 +16,8 @@ import { resolveAstLanguage } from './ast-language.js';
 import type { SymbolExtractionResult } from './ast-symbol-extractor.js';
 import { buildSymbolEdges } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
+import type { DocsStore } from './docs/store.js';
+import { NotMarkdownError } from './docs/chunker.js';
 import type { ChunkResult, ProjectConfig, IndexerStats } from './types.js';
 import type { Telemetry } from './telemetry/facade.js';
 import type { MetricsRegistry } from './metrics.js';
@@ -169,6 +171,12 @@ export interface IndexerConfig {
    * {@link applyProjectSuffix}). Default '' = upstream behavior unchanged.
    */
   projectSuffix?: string;
+  /**
+   * Optional docs-layer store. When set, {@link Indexer.indexDocsProject} walks
+   * the project's `.md` files into the docs collection. Left unset by default so
+   * the code-only indexing path is unchanged; the daemon opts in via INDEX_DOCS.
+   */
+  docsStore?: DocsStore;
 }
 
 /** Metadata stamped on each Qdrant collection so we can detect provider
@@ -229,6 +237,7 @@ export class Indexer {
   private metrics: MetricsRegistry;
   /** Suffix appended to project names in the storage layer ('' = disabled). */
   private readonly projectSuffix: string;
+  private docsStore: DocsStore | null;
   stats: IndexerStats;
 
   constructor(config: IndexerConfig) {
@@ -248,6 +257,7 @@ export class Indexer {
     this.telemetry = config.telemetry ?? null;
     this.metrics = config.metrics ?? new NoOpMetrics();
     this.projectSuffix = config.projectSuffix ?? '';
+    this.docsStore = config.docsStore ?? null;
     this.stats = { files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 };
   }
 
@@ -1052,6 +1062,80 @@ export class Indexer {
       }
     }
 
+    return totalChunks;
+  }
+
+  /**
+   * Walk a project's markdown files into the docs layer. Separate from
+   * {@link indexProject} (which handles code) — docs use a different collection,
+   * embedder (qwen3), and chunker (structural markdown). No-op when no docsStore
+   * was configured (the default), so the code path is never affected.
+   *
+   * Only `.md`/`.markdown` files are considered. Each is markdown-detected by the
+   * chunker; a file that isn't markdown (plain text, HTML, etc.) throws
+   * NotMarkdownError and is logged-and-skipped — never indexed. The stored
+   * (suffixed) project name is used so v2/v3 isolation holds on a shared Qdrant.
+   *
+   * @returns the number of chunks written across all docs files.
+   */
+  async indexDocsProject(project: ProjectConfig): Promise<number> {
+    if (!this.docsStore) return 0;
+    const groupName = project.group;
+    // Docs use the CLEAN project name (no storage suffix). The suffix exists to
+    // stop cross-group eviction in the SHARED code collection; docs live in a
+    // per-group `_docs` collection with no eviction, and search_docs filters by
+    // the clean name the client sends — so writing clean keeps read/write in
+    // sync without a strip step.
+    const cleanName = project.name;
+
+    if (!fs.existsSync(project.path)) {
+      console.error(`  [docs] Project path not found: ${project.path}`);
+      return 0;
+    }
+
+    const found = await glob(['**/*.md', '**/*.markdown'], {
+      cwd: project.path,
+      absolute: true,
+      ignore: project.exclude,
+      nodir: true,
+    });
+    let files = Array.from(new Set(found));
+    if (project.indexing.respectGitignore) {
+      files = filterFilesByGitignore(files, project.path);
+    }
+    if (files.length === 0) return 0;
+    console.log(`  [docs] ${files.length} markdown file(s) found`);
+
+    let totalChunks = 0;
+    let skipped = 0;
+    for (const file of files) {
+      const rel = path.relative(project.path, file);
+      let content: string;
+      try {
+        content = fs.readFileSync(file, 'utf-8');
+      } catch (err) {
+        console.warn(`  [docs] Could not read ${rel}: ${(err as Error).message}`);
+        continue;
+      }
+      try {
+        const n = await this.docsStore.indexDocument(groupName, {
+          project: cleanName,
+          file: rel,
+          content,
+        });
+        totalChunks += n;
+      } catch (err) {
+        if (err instanceof NotMarkdownError) {
+          skipped++;
+          continue; // not markdown — skip, never index
+        }
+        console.warn(`  [docs] Failed to index ${rel} (non-fatal): ${(err as Error).message}`);
+      }
+    }
+    if (skipped > 0) {
+      console.log(`  [docs] Skipped ${skipped} non-markdown file(s)`);
+    }
+    console.log(`  [docs] Indexed ${totalChunks} chunk(s) from ${files.length - skipped} file(s)`);
     return totalChunks;
   }
 

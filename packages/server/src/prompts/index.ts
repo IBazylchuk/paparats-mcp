@@ -41,6 +41,13 @@ export interface Prompts {
     arch_list: { description: string };
     arch_suggest_components: { description: string };
     arch_delete: { description: string };
+    // docs + terminology layers — optional so a prompts.json predating them
+    // still validates; the handler reads these via optional chaining + fallback.
+    search_docs?: { description: string };
+    term_search?: { description: string };
+    term_list?: { description: string };
+    term_record?: { description: string };
+    term_delete?: { description: string };
   };
   resources: {
     projectOverview: {
