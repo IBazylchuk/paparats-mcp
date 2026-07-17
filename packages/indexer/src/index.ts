@@ -13,6 +13,10 @@ import {
   resolveProject,
   detectLanguages,
   createMetrics,
+  DocsStore,
+  DocsIdfStore,
+  createArchEmbeddingProvider,
+  resolveArchEmbeddingConfig,
 } from '@paparats/server';
 import type { TreeSitterManager, ProjectConfig, PaparatsConfig } from '@paparats/server';
 import { DEFAULT_GROUP, normalizeExcludePatterns } from '@paparats/shared';
@@ -36,6 +40,8 @@ const CRON_FAST = process.env['CRON_FAST'] ?? '*/10 * * * *';
 /** Set to "false" to disable change-detection entirely and rely on CRON only. */
 const CHANGE_DETECTION_ENABLED =
   (process.env['CHANGE_DETECTION'] ?? 'true').toLowerCase() !== 'false';
+/** Opt-in: also walk each repo's markdown into the docs layer. Off by default. */
+const INDEX_DOCS = (process.env['INDEX_DOCS'] ?? 'false').toLowerCase() === 'true';
 const QDRANT_URL = process.env['QDRANT_URL'] ?? 'http://localhost:6333';
 const QDRANT_API_KEY = process.env['QDRANT_API_KEY'] || undefined;
 const EMBED_URL = process.env['EMBED_URL'] ?? 'http://127.0.0.1:18434';
@@ -111,6 +117,24 @@ try {
   );
 }
 
+// Docs layer (opt-in). Uses the qwen3 text provider — a second embedder next to
+// the code one — and its own IDF store. Only built when INDEX_DOCS is set so the
+// default code-only path pulls in nothing extra.
+let docsStore: DocsStore | undefined;
+if (INDEX_DOCS) {
+  const textConfig = resolveArchEmbeddingConfig(process.env);
+  const textProvider = createArchEmbeddingProvider(textConfig);
+  textProvider.attachMetrics(metrics);
+  console.log(
+    `[indexer] Docs embedding provider: ${textConfig.provider} (${textConfig.model}, ${textConfig.dimensions}d)`
+  );
+  docsStore = new DocsStore({
+    qdrant: qdrantClient,
+    provider: textProvider,
+    idf: new DocsIdfStore(),
+  });
+}
+
 const indexer = new Indexer({
   qdrantUrl: QDRANT_URL,
   embeddingProvider,
@@ -120,6 +144,7 @@ const indexer = new Indexer({
   qdrantClient,
   metrics,
   projectSuffix: PAPARATS_PROJECT_SUFFIX,
+  ...(docsStore ? { docsStore } : {}),
 });
 
 const stateStore = new StateStore(STATE_DB_PATH);
@@ -256,6 +281,19 @@ async function indexRepo(repo: RepoConfig, opts?: { force?: boolean }): Promise<
     }
 
     const chunks = await indexer.indexProject(project);
+
+    // Docs pass (opt-in). Non-fatal: a docs failure must not fail the code index.
+    if (INDEX_DOCS) {
+      try {
+        const docChunks = await indexer.indexDocsProject(project);
+        console.log(`[indexer] ${repo.fullName}: indexed ${docChunks} docs chunks`);
+      } catch (err) {
+        console.warn(
+          `[indexer] ${repo.fullName}: docs indexing failed (non-fatal): ${(err as Error).message}`
+        );
+      }
+    }
+
     status.status = 'success';
     status.lastRun = new Date().toISOString();
     status.chunksIndexed = chunks;

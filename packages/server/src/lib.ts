@@ -81,6 +81,37 @@ export type {
   ArchLesson,
   ArchContextResult,
 } from './arch/types.js';
+
+// ── Docs layer ─────────────────────────────────────────────────────────────
+export { DocsStore } from './docs/store.js';
+export type { DocsStoreConfig, IndexDocumentInput, DocsSearchOpts } from './docs/store.js';
+export { DocsIdfStore } from './docs/idf-store.js';
+export { chunkMarkdown, detectMarkdown, NotMarkdownError } from './docs/chunker.js';
+export {
+  toDocsCollectionName,
+  fromDocsCollectionName,
+  isDocsCollection,
+  ensureDocsCollection,
+  dropDocsCollection,
+} from './docs/collection.js';
+export type { DocsChunk, DocsSearchHit, MarkdownChunkOptions } from './docs/types.js';
+
+// ── Terminology layer ──────────────────────────────────────────────────────
+export { TerminologyStore } from './terminology/store.js';
+export type {
+  TerminologyStoreConfig,
+  RecordTermInput,
+  TermSearchOpts,
+} from './terminology/store.js';
+export {
+  toTermsCollectionName,
+  fromTermsCollectionName,
+  isTermsCollection,
+  ensureTermsCollection,
+  dropTermsCollection,
+} from './terminology/collection.js';
+export type { Term, TermSearchHit, TermWriteResult } from './terminology/types.js';
+
 export { createTreeSitterManager } from './tree-sitter-parser.js';
 export type { TreeSitterManager, ParsedFile } from './tree-sitter-parser.js';
 export { extractSymbolsForChunks } from './ast-symbol-extractor.js';
