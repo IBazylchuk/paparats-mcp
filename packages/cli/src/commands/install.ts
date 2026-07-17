@@ -393,14 +393,23 @@ models:
       \${llama-embed}
       --model ${CODE_GGUF_FILE}
       --pooling last
-    ttl: 300
 
   ${TEXT_MODEL_NAME}:
     cmd: |
       \${llama-embed}
       --model ${TEXT_GGUF_FILE}
       --pooling last
-    ttl: 300
+
+# Both models stay resident (~2.2 GB total) — no TTL unload, no swapping.
+# llama-swap's swap/unload state machine can deadlock when a client abort
+# lands mid-swap under concurrent load; with swap: false and no ttl that
+# code path is never exercised.
+groups:
+  embeddings:
+    swap: false
+    members:
+      - ${CODE_MODEL_NAME}
+      - ${TEXT_MODEL_NAME}
 `;
 }
 
