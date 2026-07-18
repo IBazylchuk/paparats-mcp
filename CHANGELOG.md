@@ -4,6 +4,21 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.1.1] - 2026-07-18
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 977f854: fix(indexer): exclude docs and terminology sidecar collections from listGroups
+
+  `listGroups()` only filtered out `_arch` collections, so `paparats_<group>_docs`
+  and `paparats_<group>_terms` surfaced as phantom code groups. search_code without
+  an explicit group fanned out into them and Qdrant rejected the unnamed-vector
+  query with "Not existing vector name" (Bad Request). The same leak let
+  stale-group cleanup probe docs/terms collections and potentially evict a
+  project's docs chunks during re-indexing.
+
 ## [2.1.0] - 2026-07-17
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -38,7 +53,7 @@
 
 - @paparats/shared@2.0.3
 
-## [2.0.2] - 2026-07-17
+## [2.0.2] - 2026-07-18
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -219,7 +234,7 @@
 
 - @paparats/shared@1.7.2
 
-## [1.7.1] - 2026-07-17
+## [1.7.1] - 2026-07-18
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -318,7 +333,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [1.4.0] - 2026-07-17
+## [1.4.0] - 2026-07-18
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -732,7 +747,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [0.7.0] - 2026-07-17
+## [0.7.0] - 2026-07-18
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -779,7 +794,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-07-17
+## [0.5.0] - 2026-07-18
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -872,7 +887,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-07-17
+## [0.3.0] - 2026-07-18
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
