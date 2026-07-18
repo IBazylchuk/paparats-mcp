@@ -4,6 +4,8 @@ import path from 'path';
 import os from 'os';
 import { Indexer, toCollectionName, CollectionMetaMismatchError } from '../src/indexer.js';
 import { toArchCollectionName } from '../src/arch/collection.js';
+import { toDocsCollectionName } from '../src/docs/collection.js';
+import { toTermsCollectionName } from '../src/terminology/collection.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { EmbeddingProvider, ProjectConfig } from '../src/types.js';
 
@@ -721,6 +723,35 @@ describe('Indexer', () => {
     const groups = await indexer.listGroups();
     expect(Object.keys(groups)).toEqual(['g1']);
     expect(groups).not.toHaveProperty('default_arch');
+  });
+
+  it('listGroups excludes docs and terminology collections', async () => {
+    // Docs (`paparats_<group>_docs`) and terminology (`paparats_<group>_terms`)
+    // collections carry the same prefix but use named vectors. If they leak
+    // into listGroups, search_code fans out into them with an unnamed code
+    // vector and Qdrant rejects it: "Not existing vector name".
+    const codeCol = toCollectionName('g1');
+    const docsCol = toDocsCollectionName('default'); // paparats_default_docs
+    const termsCol = toTermsCollectionName('default'); // paparats_default_terms
+    mockQdrant.collections.set(codeCol, new Map());
+    mockQdrant.collections.set(docsCol, new Map());
+    mockQdrant.collections.set(termsCol, new Map());
+    mockQdrant.client.getCollections.mockResolvedValue({
+      collections: [{ name: codeCol }, { name: docsCol }, { name: termsCol }],
+    });
+    mockQdrant.client.getCollection.mockResolvedValue({ points_count: 5, status: 'green' });
+
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const groups = await indexer.listGroups();
+    expect(Object.keys(groups)).toEqual(['g1']);
+    expect(groups).not.toHaveProperty('default_docs');
+    expect(groups).not.toHaveProperty('default_terms');
   });
 
   it('evicts project chunks from old group when re-indexing under a new group', async () => {
