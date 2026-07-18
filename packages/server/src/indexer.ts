@@ -23,6 +23,8 @@ import type { Telemetry } from './telemetry/facade.js';
 import type { MetricsRegistry } from './metrics.js';
 import { NoOpMetrics } from './metrics.js';
 import { isArchCollection } from './arch/collection.js';
+import { isDocsCollection } from './docs/collection.js';
+import { isTermsCollection } from './terminology/collection.js';
 
 // ── Collection name helpers ──────────────────────────────────────────────────
 
@@ -1725,12 +1727,17 @@ export class Indexer {
    *  so reported counts reflect real chunks. */
   async listGroups(): Promise<Record<string, number>> {
     const collections = await this.qdrant.getCollections();
-    // Arch-memory collections (`paparats_<group>_arch`) also carry the prefix —
-    // exclude them so they never surface as phantom code groups. Otherwise
-    // search_code iterates over a `<group>_arch` name and runs a code-vector
-    // search against the arch collection, which fails with Bad Request.
+    // Sidecar collections (`paparats_<group>_arch`, `_docs`, `_terms`) also
+    // carry the prefix — exclude them so they never surface as phantom code
+    // groups. Otherwise search_code iterates over e.g. `<group>_docs` and runs
+    // a code-vector search against a named-vector collection, which Qdrant
+    // rejects with "Not existing vector name" (Bad Request).
     const paparatsCollections = collections.collections.filter(
-      (col) => col.name.startsWith(COLLECTION_PREFIX) && !isArchCollection(col.name)
+      (col) =>
+        col.name.startsWith(COLLECTION_PREFIX) &&
+        !isArchCollection(col.name) &&
+        !isDocsCollection(col.name) &&
+        !isTermsCollection(col.name)
     );
     const infos = await Promise.all(
       paparatsCollections.map((col) => this.qdrant.getCollection(col.name))
