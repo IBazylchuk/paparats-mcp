@@ -46,8 +46,12 @@ curl http://localhost:11434/v1/embeddings \
 | Env | Default | What it does |
 | --- | --- | --- |
 | `EMBED_TTL` | `0` | Seconds a model stays resident after its last request before unloading. `0` (default) = never unload — safest under load, since llama-swap's unload/swap path can deadlock when a client abort lands mid-unload. Set e.g. `300` on a laptop to save RAM at the cost of cold starts and that risk. |
+| `LLAMA_BATCH` | `2048` | Per-model `--batch-size`/`--ubatch-size`. Sizes the compute buffer llama-server allocates up front, **per resident model**, regardless of the real payload. Embedding chunks are short, so a large batch never fills but its buffers still cost gigabytes of RSS — `8192` (the old value) was the direct cause of the embed-container OOM. Raise only for genuinely long inputs. |
+| `LLAMA_THREADS` | `-1` | CPU threads per model. `-1` = llama-server auto-detects. Set a positive cap to stop the two resident models oversubscribing a shared host. |
 
 Cold start (first request, or first after an idle unload when `EMBED_TTL` > 0) is a few seconds while the model loads; every request after that is hot.
+
+Memory footprint scales with `LLAMA_BATCH` × the two resident models. At the `2048` default both fit comfortably in ~6 GB; the compose generator sets an explicit `6G` limit on the embed service (override with `EMBED_MEMORY`/`EMBED_CPUS`).
 
 ## Ports
 

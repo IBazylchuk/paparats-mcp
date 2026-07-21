@@ -33,6 +33,16 @@ export const LANGUAGE_EXCLUDE_DEFAULTS: Record<string, string[]> = {
     '.vercel',
     '.swc',
     '*.tsbuildinfo',
+    // Machine-generated / bundled artifacts: source-file extensions but no
+    // source structure (minified bundles, base64 asset blobs). A dense wall of
+    // tokens is worthless for retrieval and pathological for the embedder. The
+    // structural detector (non-source-detect.ts) is the content-based backstop;
+    // these globs skip the obvious classes without reading the file.
+    '**/*.min.js',
+    '**/*.min.css',
+    '**/*.bundle.js',
+    '**/*.data.ts',
+    '**/*.data.js',
   ],
   javascript: [
     'node_modules',
@@ -44,6 +54,9 @@ export const LANGUAGE_EXCLUDE_DEFAULTS: Record<string, string[]> = {
     'out',
     '.nuxt',
     '.output',
+    '**/*.min.js',
+    '**/*.min.css',
+    '**/*.bundle.js',
   ],
   python: [
     'venv',
