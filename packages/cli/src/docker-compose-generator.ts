@@ -104,13 +104,31 @@ function embedService(port: number): ComposeService {
     // EMBED_TTL: idle seconds before a model unloads. 0 = never (default) —
     // llama-swap's unload path can deadlock under load. Models are baked into
     // the image — no data volume needed.
-    environment: { EMBED_TTL: '${EMBED_TTL:-0}' },
+    // LLAMA_BATCH: per-model compute-buffer batch size (default 2048). Larger
+    // values inflate RSS with no gain on short embedding chunks — 8192 was the
+    // cgroup-OOM culprit. LLAMA_THREADS: CPU threads per model (-1 = auto).
+    environment: {
+      EMBED_TTL: '${EMBED_TTL:-0}',
+      LLAMA_BATCH: '${LLAMA_BATCH:-2048}',
+      LLAMA_THREADS: '${LLAMA_THREADS:--1}',
+    },
     healthcheck: {
       test: ['CMD', 'curl', '-fsS', 'http://localhost:8080/health'],
       interval: '10s',
       timeout: '5s',
       retries: 5,
       start_period: '30s',
+    },
+    // Two resident embedding models (bge-code-v1 + qwen3) each hold a compute
+    // buffer sized by LLAMA_BATCH. With the 2048 default they fit comfortably in
+    // 6G; raise the limit (and LLAMA_BATCH) for very large corpora, or lower it
+    // on a constrained host. An explicit limit prevents a runaway model from
+    // starving its siblings — the earlier OOM was an unbounded 8k-batch buffer.
+    deploy: {
+      resources: {
+        limits: { cpus: '${EMBED_CPUS:-6.0}', memory: '${EMBED_MEMORY:-6G}' },
+        reservations: { cpus: '1.0', memory: '2G' },
+      },
     },
     logging: { driver: 'json-file', options: { 'max-size': '10m', 'max-file': '3' } },
     restart: 'unless-stopped',

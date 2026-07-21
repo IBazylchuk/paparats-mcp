@@ -17,13 +17,21 @@ healthCheckTimeout: 300
 startPort: 10001
 
 macros:
+  # --batch-size / --ubatch-size gate the compute + KV buffers llama-server
+  # allocates PER MODEL up front, regardless of the real payload. Embedding
+  # chunks are short (hundreds of tokens), so a large batch never fills but its
+  # buffers still cost gigabytes of RSS — the direct cause of the embed-container
+  # cgroup OOM (two resident models each holding an 8k-batch buffer). 2048 covers
+  # any single chunk with headroom at a fraction of the memory. Tune via
+  # LLAMA_BATCH; LLAMA_THREADS caps CPU threads per model (default: llama picks).
   llama-embed: >
     llama-server
     --host 127.0.0.1 --port ${PORT}
     --embeddings
     --ctx-size 8192
-    --batch-size 8192
-    --ubatch-size 8192
+    --batch-size ${LLAMA_BATCH}
+    --ubatch-size ${LLAMA_BATCH}
+    --threads ${LLAMA_THREADS}
 
 models:
   # Code embeddings — bge-code-v1 (1536d, Apache-2.0). qwen2-based → --pooling

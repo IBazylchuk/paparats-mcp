@@ -7,5 +7,6 @@ export {
   getDefaultExcludeForLanguages,
 } from './language-excludes.js';
 export { createGitignoreFilter, filterFilesByGitignore } from './gitignore.js';
+export { detectNonSource, type NonSourceVerdict } from './non-source-detect.js';
 export { detectLanguageByPath, detectProjectLanguage } from './language-detect.js';
 export { DEFAULT_GROUP } from './group.js';
