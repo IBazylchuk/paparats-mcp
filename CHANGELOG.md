@@ -4,6 +4,32 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.2.0] - 2026-07-21
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- 9588d46: Harden indexing against non-source content and embed-server memory blow-ups.
+
+  - **Skip machine-generated / non-source content** — files with a source-file
+    extension but no source structure (base64 asset blobs, minified bundles, e.g.
+    `convex/export/pptx/assets/*.data.ts`) were being fed to the embedder as a
+    single multi-hundred-KB token wall, driving `llama-server` into 502s, 240s
+    timeouts, and OOM — indexing stalled at `0 chunks`. A new structural detector
+    (`detectNonSource` in `@paparats/shared`) judges content by line length,
+    whitespace ratio, and base64-alphabet dominance (name-independent). The indexer
+    skips such files before chunking and drops individual non-source chunks before
+    embedding, with telemetry. Known classes (`*.min.js`, `*.bundle.js`,
+    `*.data.ts`, …) are also added to the default TypeScript/JavaScript excludes.
+  - **Embed server memory** — the `paparats-embed` image now sizes the per-model
+    llama-server compute buffer via `LLAMA_BATCH` (default 2048, was a hardcoded
+    8192 that caused cgroup OOM with two resident models) and exposes
+    `LLAMA_THREADS`. The compose generator wires both through and sets an explicit
+    memory/CPU limit on the embed service (`EMBED_MEMORY`/`EMBED_CPUS`).
+
+### Patch Changes
+
 ## [2.1.1] - 2026-07-18
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -53,7 +79,7 @@
 
 - @paparats/shared@2.0.3
 
-## [2.0.2] - 2026-07-18
+## [2.0.2] - 2026-07-21
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -234,7 +260,7 @@
 
 - @paparats/shared@1.7.2
 
-## [1.7.1] - 2026-07-18
+## [1.7.1] - 2026-07-21
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -333,7 +359,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [1.4.0] - 2026-07-18
+## [1.4.0] - 2026-07-21
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -747,7 +773,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [0.7.0] - 2026-07-18
+## [0.7.0] - 2026-07-21
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -794,7 +820,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-07-18
+## [0.5.0] - 2026-07-21
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -887,7 +913,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-07-18
+## [0.3.0] - 2026-07-21
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
