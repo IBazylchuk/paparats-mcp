@@ -2,7 +2,7 @@ import { QdrantClient } from '@qdrant/js-client-rest';
 import { glob } from 'glob';
 import fs from 'fs';
 import path from 'path';
-import { filterFilesByGitignore, detectLanguageByPath } from '@paparats/shared';
+import { filterFilesByGitignore, detectLanguageByPath, detectNonSource } from '@paparats/shared';
 import { v7 as uuidv7 } from 'uuid';
 import PQueue from 'p-queue';
 import { Chunker } from './chunker.js';
@@ -551,6 +551,10 @@ export class Indexer {
               chunks = chunker.chunk(content, language);
             }
 
+            // Drop non-source chunks (embedded base64/minified blobs) before
+            // symbol extraction so symbols stay positionally aligned with chunks.
+            chunks = this.dropNonSourceChunks(chunks, fileContext?.file);
+
             // Extract symbols from the same tree (no re-parse)
             const symbolResults = extractSymbolsForChunks(
               parsed.tree,
@@ -566,7 +570,10 @@ export class Indexer {
             reportError('regex_fallback', (err as Error).message);
             // Fall back to regex chunker, no symbols (tree may be in bad state)
             const chunker = this.getChunker(project);
-            const chunks = chunker.chunk(content, language);
+            const chunks = this.dropNonSourceChunks(
+              chunker.chunk(content, language),
+              fileContext?.file
+            );
             return { chunks, symbolResults: null };
           } finally {
             parsed.tree.delete();
@@ -580,8 +587,25 @@ export class Indexer {
 
     // No tree-sitter available — regex chunker only, no symbols
     const chunker = this.getChunker(project);
-    const chunks = chunker.chunk(content, language);
+    const chunks = this.dropNonSourceChunks(chunker.chunk(content, language), fileContext?.file);
     return { chunks, symbolResults: null };
+  }
+
+  /**
+   * Filter out chunks whose content is non-source machine data (embedded
+   * base64/minified blobs) before embedding. A mostly-clean file can still hold
+   * one such chunk (e.g. an inline data-URI); dropping it keeps one bad chunk
+   * from stalling the file's whole embedding batch. Logs the count when > 0.
+   */
+  private dropNonSourceChunks(chunks: ChunkResult[], file?: string): ChunkResult[] {
+    const clean = chunks.filter((c) => !detectNonSource(c.content).isNonSource);
+    if (clean.length < chunks.length) {
+      console.warn(
+        `  [indexer] Dropped ${chunks.length - clean.length} non-source chunk(s)` +
+          (file ? ` from ${file}` : '')
+      );
+    }
+    return clean;
   }
 
   /** Build Qdrant point payloads from chunks, embeddings, and symbol results */
@@ -836,6 +860,29 @@ export class Indexer {
     }
 
     if (!content.trim()) return 0;
+
+    // Skip machine-generated / non-source content (base64 asset blobs, minified
+    // bundles) before it reaches the chunker or embedder. Such files have a
+    // source extension but no source structure — embedding them is worthless for
+    // retrieval and drives llama-server into timeouts/OOM on the token wall.
+    const nonSource = detectNonSource(content);
+    if (nonSource.isNonSource) {
+      console.warn(`  [indexer] Skipping non-source file ${relPath}: ${nonSource.reason}`);
+      if (this.telemetry) {
+        this.telemetry.recordChunkingError({
+          ts: Date.now(),
+          runId: null,
+          groupName,
+          projectName: project.name,
+          file: relPath,
+          language: detectLanguageByPath(relPath, content) ?? project.languages[0] ?? 'generic',
+          errorClass: 'binary',
+          message: `non-source: ${nonSource.reason}`,
+        });
+      }
+      this.stats.skipped++;
+      return 0;
+    }
 
     const language = detectLanguageByPath(relPath, content) ?? project.languages[0] ?? 'generic';
     const { chunks, symbolResults } = await this.chunkFile(content, language, project, {
