@@ -124,6 +124,11 @@ export interface CreateAppOptions {
   archStore?: import('./arch/store.js').ArchStore;
   /** Optional docs-layer store. Pass to enable the search_docs MCP tool. */
   docsStore?: import('./docs/store.js').DocsStore;
+  /**
+   * Server-enforced docs audience ceiling (forwarded to the MCP handler). When
+   * set, search_docs can only return chunks whose audience is in this list.
+   */
+  docsAudienceScope?: string[];
   /** Optional terminology-layer store. Pass to enable the term_* MCP tools. */
   terminologyStore?: import('./terminology/store.js').TerminologyStore;
 }
@@ -152,6 +157,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     analytics,
     archStore,
     docsStore,
+    docsAudienceScope,
     terminologyStore,
   } = options;
 
@@ -700,6 +706,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     analytics,
     archStore,
     docsStore,
+    ...(docsAudienceScope ? { docsAudienceScope } : {}),
     terminologyStore,
     ...(metrics ? { metrics } : {}),
   });

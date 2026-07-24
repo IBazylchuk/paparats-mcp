@@ -92,7 +92,7 @@ export async function writeDocsCollectionMeta(
   });
 }
 
-const PAYLOAD_INDEXES = ['project', 'file', 'doc_id'] as const;
+const PAYLOAD_INDEXES = ['project', 'file', 'doc_id', 'audience'] as const;
 
 export async function ensureDocsCollection(
   qdrant: QdrantClient,
