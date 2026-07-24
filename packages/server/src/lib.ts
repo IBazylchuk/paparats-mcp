@@ -83,7 +83,12 @@ export type {
 } from './arch/types.js';
 
 // ── Docs layer ─────────────────────────────────────────────────────────────
-export { DocsStore } from './docs/store.js';
+export {
+  DocsStore,
+  DEFAULT_AUDIENCE,
+  normalizeAudience,
+  applyAudienceScope,
+} from './docs/store.js';
 export type { DocsStoreConfig, IndexDocumentInput, DocsSearchOpts } from './docs/store.js';
 export { DocsIdfStore } from './docs/idf-store.js';
 export { chunkMarkdown, detectMarkdown, NotMarkdownError } from './docs/chunker.js';

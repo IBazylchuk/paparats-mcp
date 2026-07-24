@@ -31,7 +31,7 @@ import {
   failedChunks,
 } from './telemetry/queries.js';
 import { ArchStore } from './arch/store.js';
-import { DocsStore } from './docs/store.js';
+import { DocsStore, applyAudienceScope, normalizeAudience } from './docs/store.js';
 import { TerminologyStore } from './terminology/store.js';
 import { expandQueryWithGlossary } from './query-expansion.js';
 import {
@@ -209,6 +209,14 @@ export interface McpHandlerConfig {
   archStore?: ArchStore;
   /** Optional docs-layer store. When unset, search_docs is skipped at registration time. */
   docsStore?: DocsStore;
+  /**
+   * Server-enforced docs audience ceiling. When set, `search_docs` can only ever
+   * return chunks whose `audience` is in this list — a request's own `audience`
+   * param is intersected with it, never allowed to widen past it. Unset → no
+   * ceiling (search every audience). This is the mechanism a future client-facing
+   * endpoint uses to make internal docs physically unreachable, not just filtered.
+   */
+  docsAudienceScope?: string[];
   /** Optional terminology-layer store. When unset, term_* tools are skipped. */
   terminologyStore?: TerminologyStore;
   /** Optional metrics registry. NoOp by default — see metrics.ts. */
@@ -440,6 +448,7 @@ export class McpHandler {
   private analytics: AnalyticsStore | null;
   private archStore: ArchStore | null;
   private docsStore: DocsStore | null;
+  private docsAudienceScope: string[] | null;
   private terminologyStore: TerminologyStore | null;
   private metrics: MetricsRegistry;
   private sessionIdentity = new Map<
@@ -466,6 +475,10 @@ export class McpHandler {
     this.analytics = config.analytics ?? null;
     this.archStore = config.archStore ?? null;
     this.docsStore = config.docsStore ?? null;
+    this.docsAudienceScope =
+      config.docsAudienceScope && config.docsAudienceScope.length > 0
+        ? config.docsAudienceScope
+        : null;
     this.terminologyStore = config.terminologyStore ?? null;
     this.metrics = config.metrics ?? new NoOpMetrics();
 
@@ -2972,9 +2985,35 @@ export class McpHandler {
             .string()
             .optional()
             .describe('Specific group, or omit to search all known groups.'),
+          audience: z
+            .array(z.string())
+            .optional()
+            .describe(
+              'Restrict to these visibility labels (e.g. ["internal"], ["client","public"]). ' +
+                'Omit to search every audience this endpoint is allowed to see. Un-labelled docs ' +
+                'count as "internal". If the server enforces an audience ceiling, this can only ' +
+                'narrow within it, never widen past it.'
+            ),
           limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
         },
-        async ({ query, project, group, limit }) => {
+        async ({ query, project, group, audience, limit }) => {
+          // Intersect the caller's audience with the server-enforced ceiling
+          // (fail-closed). A disjoint request → empty set → no results, rather
+          // than silently widening to the ceiling.
+          const effectiveAudience = applyAudienceScope(
+            normalizeAudience(audience),
+            this.docsAudienceScope
+          );
+          if (effectiveAudience !== null && effectiveAudience.length === 0) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No documentation found for "${query}".`,
+                },
+              ],
+            };
+          }
           const groupNames = group ? [group] : this.getGroupNames();
           const termStore = this.terminologyStore;
           const all = [];
@@ -2999,6 +3038,7 @@ export class McpHandler {
             const effectiveQuery = queries[queries.length - 1] ?? query;
             const hits = await docsStore.search(g, effectiveQuery, {
               ...(project !== undefined ? { project } : {}),
+              ...(effectiveAudience !== null ? { audience: effectiveAudience } : {}),
               ...(limit !== undefined ? { limit } : {}),
             });
             for (const h of hits) all.push({ group: g, ...h });

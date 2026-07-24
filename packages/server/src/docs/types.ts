@@ -55,6 +55,14 @@ export interface DocsSearchHit {
   sourceUrl: string | null;
   file: string;
   project: string;
+  /**
+   * Visibility label for this chunk (e.g. `internal`, `client`, `public`). A
+   * free-form string — the core stores and filters on it but does not prescribe
+   * a taxonomy; the indexer that writes the doc decides its meaning. Chunks with
+   * no stored audience read back as `internal` (fail-closed — un-labelled docs
+   * never leak to a narrower audience by default). See {@link DocsSearchOpts.audience}.
+   */
+  audience: string;
   chunkIndex: number;
   content: string;
   startLine: number;
