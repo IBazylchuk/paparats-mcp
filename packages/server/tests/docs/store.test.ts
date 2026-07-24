@@ -2,7 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
-import { DocsStore } from '../../src/docs/store.js';
+import {
+  DocsStore,
+  DEFAULT_AUDIENCE,
+  normalizeAudience,
+  applyAudienceScope,
+} from '../../src/docs/store.js';
 import { DocsIdfStore } from '../../src/docs/idf-store.js';
 import { NotMarkdownError } from '../../src/docs/chunker.js';
 import {
@@ -358,5 +363,135 @@ describe('DocsStore.healAllDocsModels', () => {
     await store.healAllDocsModels();
     // Re-upserted the chunk + re-stamped the meta.
     expect(qdrant.upsert).toHaveBeenCalled();
+  });
+});
+
+describe('normalizeAudience', () => {
+  it('returns null for undefined (unrestricted)', () => {
+    expect(normalizeAudience(undefined)).toBeNull();
+  });
+
+  it('wraps a single string into a one-element list', () => {
+    expect(normalizeAudience('client')).toEqual(['client']);
+  });
+
+  it('trims, drops empties, and dedupes', () => {
+    expect(normalizeAudience([' client ', 'client', '', '  ', 'public'])).toEqual([
+      'client',
+      'public',
+    ]);
+  });
+
+  it('collapses an all-empty input to null (never an impossible filter)', () => {
+    expect(normalizeAudience(['', '   '])).toBeNull();
+  });
+});
+
+describe('applyAudienceScope (fail-closed intersection)', () => {
+  it('no scope → request stands (including unrestricted null)', () => {
+    expect(applyAudienceScope(null, null)).toBeNull();
+    expect(applyAudienceScope(['client'], null)).toEqual(['client']);
+  });
+
+  it('scope but no request → scope applies (a request cannot opt out of the ceiling)', () => {
+    expect(applyAudienceScope(null, ['client', 'public'])).toEqual(['client', 'public']);
+  });
+
+  it('intersects both, never widening past the scope', () => {
+    // request asks for internal+client, scope only allows client → client only
+    expect(applyAudienceScope(['internal', 'client'], ['client', 'public'])).toEqual(['client']);
+  });
+
+  it('disjoint request/scope → empty set (match nothing), not a silent widen', () => {
+    expect(applyAudienceScope(['internal'], ['client'])).toEqual([]);
+  });
+});
+
+describe('DocsStore audience — payload + search filter', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let idf: DocsIdfStore;
+  let store: DocsStore;
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    idf = mkIdf();
+    store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf,
+    });
+  });
+
+  it('stamps the explicit audience into every chunk payload', async () => {
+    await store.indexDocument('g', {
+      project: 'p',
+      file: 'x.md',
+      content: '# Title\n\nSome prose that is long enough to chunk.',
+      audience: 'client',
+    });
+    const call = qdrant.upsert.mock.calls.at(-1)![1] as {
+      points: Array<{ payload: Record<string, unknown> }>;
+    };
+    expect(call.points.length).toBeGreaterThan(0);
+    for (const pt of call.points) expect(pt.payload.audience).toBe('client');
+  });
+
+  it('defaults a missing audience to internal (fail-closed)', async () => {
+    await store.indexDocument('g', {
+      project: 'p',
+      file: 'x.md',
+      content: '# Title\n\nSome prose that is long enough to chunk.',
+    });
+    const call = qdrant.upsert.mock.calls.at(-1)![1] as {
+      points: Array<{ payload: Record<string, unknown> }>;
+    };
+    for (const pt of call.points) expect(pt.payload.audience).toBe(DEFAULT_AUDIENCE);
+  });
+
+  it('reads back a missing payload audience as internal', async () => {
+    qdrant.query.mockResolvedValueOnce({
+      points: [
+        {
+          score: 0.5,
+          payload: {
+            doc_id: 'd1',
+            doc_title: 'T',
+            project: 'p',
+            file: 'x.md',
+            heading_path: [],
+            chunk_index: 0,
+            content: 'legacy chunk with no audience field',
+            startLine: 0,
+            endLine: 1,
+          },
+        },
+      ],
+    });
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0 });
+    expect(hits[0]!.audience).toBe(DEFAULT_AUDIENCE);
+  });
+
+  it('adds a match-any audience clause to every prefetch when filtered', async () => {
+    idf.addDocument('g', new Set(['rollback']), 1);
+    await store.search('g', 'rollback', { audience: ['client', 'public'], mergeNeighbours: 0 });
+    const arg = qdrant.query.mock.calls[0]![1] as {
+      prefetch: Array<{ filter?: { must: Array<Record<string, unknown>> } }>;
+    };
+    for (const pf of arg.prefetch) {
+      const clause = pf.filter?.must.find((m) => m['key'] === 'audience');
+      expect(clause).toBeDefined();
+      expect((clause as { match: { any: string[] } }).match.any).toEqual(['client', 'public']);
+    }
+  });
+
+  it('omits the audience clause entirely when unrestricted', async () => {
+    await store.search('g', 'q', { mergeNeighbours: 0 });
+    const arg = qdrant.query.mock.calls[0]![1] as {
+      prefetch: Array<{ filter?: { must: Array<Record<string, unknown>> } }>;
+    };
+    for (const pf of arg.prefetch) {
+      const clause = pf.filter?.must?.find((m) => m['key'] === 'audience');
+      expect(clause).toBeUndefined();
+    }
   });
 });
