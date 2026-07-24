@@ -35,6 +35,18 @@ const PAPARATS_PROJECTS = process.env.PAPARATS_PROJECTS
       .filter(Boolean)
   : undefined;
 /**
+ * Server-enforced docs audience ceiling. When set, `search_docs` on this server
+ * can only ever return chunks whose `audience` is in this list (a request can
+ * narrow within it but never widen past it). Leave unset for an unrestricted
+ * internal server; set e.g. `client,public` on a client-facing deployment so
+ * internal docs are physically unreachable through it.
+ */
+const PAPARATS_DOCS_AUDIENCE = process.env.PAPARATS_DOCS_AUDIENCE
+  ? process.env.PAPARATS_DOCS_AUDIENCE.split(',')
+      .map((a) => a.trim())
+      .filter(Boolean)
+  : undefined;
+/**
  * Suffix appended to project names in the storage layer so two stands can
  * share one Qdrant without their eviction scans deleting each other's chunks.
  * Default '' = upstream behavior unchanged. See applyProjectSuffix in indexer.ts.
@@ -151,6 +163,7 @@ const { app, mcpHandler, setShuttingDown, getShuttingDown, stopGroupPoll } = cre
   analytics: analytics ?? undefined,
   archStore,
   docsStore,
+  ...(PAPARATS_DOCS_AUDIENCE ? { docsAudienceScope: PAPARATS_DOCS_AUDIENCE } : {}),
   terminologyStore,
 });
 
@@ -189,6 +202,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
       console.warn(`    Project names are directory basenames (e.g. "billing" not "org/billing").`);
       console.warn(`    Check your PAPARATS_PROJECTS values match actual indexed project names.`);
     }
+  }
+  if (PAPARATS_DOCS_AUDIENCE?.length) {
+    console.log(`  Docs audience scope:      ${PAPARATS_DOCS_AUDIENCE.join(', ')}`);
   }
 });
 

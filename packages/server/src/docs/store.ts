@@ -27,6 +27,14 @@ export interface DocsStoreConfig {
   idf: DocsIdfStore;
 }
 
+/**
+ * Default visibility for a chunk that carries no explicit `audience`. Deliberately
+ * the most restrictive label: un-labelled docs (and every chunk indexed before
+ * this field existed) read back as `internal`, so a narrower-audience search
+ * never surfaces them by accident. Fail-closed by construction.
+ */
+export const DEFAULT_AUDIENCE = 'internal';
+
 /** Input describing one markdown document to index (or re-index). */
 export interface IndexDocumentInput {
   project: string;
@@ -37,6 +45,11 @@ export interface IndexDocumentInput {
   docTitle?: string;
   /** Canonical link (e.g. Confluence page URL) surfaced in search results. */
   sourceUrl?: string | null;
+  /**
+   * Visibility label for the document (e.g. `internal`, `client`, `public`).
+   * Free-form; the core does not prescribe values. Omitted → {@link DEFAULT_AUDIENCE}.
+   */
+  audience?: string;
 }
 
 export interface DocsSearchOpts {
@@ -44,6 +57,12 @@ export interface DocsSearchOpts {
   limit?: number;
   /** Number of neighbouring chunks to merge around each hit for context. Default 1. */
   mergeNeighbours?: number;
+  /**
+   * Restrict results to these visibility labels (match-any). Omit to search every
+   * audience. A chunk with no stored audience is treated as {@link DEFAULT_AUDIENCE},
+   * so passing e.g. `['client']` will NOT surface un-labelled (internal) docs.
+   */
+  audience?: string | string[];
 }
 
 /**
@@ -180,10 +199,19 @@ export class DocsStore {
     const stats = this.idf.getCorpusStats(group);
     const sparse = buildQuerySparseVector(query, stats);
 
-    const projectFilter =
-      opts.project !== undefined
-        ? { must: [{ key: 'project', match: { value: opts.project } }] }
-        : undefined;
+    // Build the prefetch filter from project + audience clauses. Both are `must`
+    // (AND). The audience clause is match-any over the requested labels; a chunk
+    // with no stored `audience` field does NOT match it — so `audience: ['client']`
+    // never surfaces un-labelled (internal) docs. Fail-closed by construction.
+    const must: Array<Record<string, unknown>> = [];
+    if (opts.project !== undefined) {
+      must.push({ key: 'project', match: { value: opts.project } });
+    }
+    const audiences = normalizeAudience(opts.audience);
+    if (audiences) {
+      must.push({ key: 'audience', match: { any: audiences } });
+    }
+    const searchFilter = must.length > 0 ? { must } : undefined;
 
     // Overfetch on each prefetch so RRF has candidates and neighbour-merge has
     // material. Exclude the meta sentinel from results.
@@ -193,7 +221,7 @@ export class DocsStore {
         query: dense,
         using: DOCS_DENSE_VECTOR,
         limit: prefetchLimit,
-        ...(projectFilter ? { filter: projectFilter } : {}),
+        ...(searchFilter ? { filter: searchFilter } : {}),
       },
     ];
     if (sparse.indices.length > 0) {
@@ -201,7 +229,7 @@ export class DocsStore {
         query: sparse as SparseVector,
         using: DOCS_SPARSE_VECTOR,
         limit: prefetchLimit,
-        ...(projectFilter ? { filter: projectFilter } : {}),
+        ...(searchFilter ? { filter: searchFilter } : {}),
       });
     }
 
@@ -423,6 +451,43 @@ export class DocsStore {
   }
 }
 
+// ── Audience helpers ─────────────────────────────────────────────────────────
+
+/**
+ * Normalize an audience filter into a clean, deduped label list, or `null` when
+ * there is no effective restriction. `null` means "search every audience";
+ * a non-empty array means "match any of these labels". Empty strings are dropped
+ * (an all-empty input collapses to `null` rather than an impossible filter).
+ */
+export function normalizeAudience(audience?: string | string[]): string[] | null {
+  if (audience === undefined) return null;
+  const list = (Array.isArray(audience) ? audience : [audience])
+    .map((a) => a.trim())
+    .filter((a) => a.length > 0);
+  if (list.length === 0) return null;
+  return Array.from(new Set(list));
+}
+
+/**
+ * Combine a caller-supplied audience with a server-enforced scope, fail-closed.
+ * The scope is a hard ceiling: the result is the INTERSECTION, so a request can
+ * only ever narrow within the scope, never widen past it.
+ *
+ * - no scope → the request stands as-is (may be `null` = unrestricted).
+ * - scope but no request → the scope applies.
+ * - both → intersection; if disjoint, returns `[]` (match nothing) rather than
+ *   silently falling back to the wider set.
+ */
+export function applyAudienceScope(
+  requested: string[] | null,
+  scope: string[] | null
+): string[] | null {
+  if (!scope) return requested;
+  if (!requested) return scope;
+  const allow = new Set(scope);
+  return requested.filter((a) => allow.has(a));
+}
+
 // ── Payload helpers ─────────────────────────────────────────────────────────
 
 function buildPayload(
@@ -437,6 +502,7 @@ function buildPayload(
     project: input.project,
     file: input.file,
     source_url: input.sourceUrl ?? null,
+    audience: input.audience ?? DEFAULT_AUDIENCE,
     heading_path: chunk.headingPath,
     chunk_index: chunk.chunkIndex,
     content: chunk.content,
@@ -456,6 +522,7 @@ function toHit(payload: Record<string, unknown>, score: number): DocsSearchHit {
     sourceUrl: typeof payload['source_url'] === 'string' ? payload['source_url'] : null,
     file: str(payload['file']),
     project: str(payload['project']),
+    audience: str(payload['audience'], DEFAULT_AUDIENCE),
     chunkIndex: num(payload['chunk_index']),
     content: str(payload['content']),
     startLine: num(payload['startLine']),
