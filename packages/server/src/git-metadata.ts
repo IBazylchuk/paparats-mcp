@@ -225,6 +225,50 @@ function getChunksForCommit(
 
 // ── Main extraction ────────────────────────────────────────────────────────
 
+/**
+ * Last commit time per file, as Unix epoch milliseconds, for every file touched
+ * by the repository's history.
+ *
+ * One `git log --name-only` walk for the whole repo rather than a `git log` per
+ * file: a docs pass covers every `.md` in the tree, and per-file subprocesses
+ * cost more than the entire walk. Because the log is newest-first, the first time
+ * a path appears is its latest change, so later mentions are ignored.
+ *
+ * Renames are not followed (`--follow` cannot be batched). A renamed file
+ * therefore dates from its rename, which overstates freshness — acceptable for a
+ * staleness hint, and it never invents a date for a file with no history.
+ *
+ * Best-effort: returns an empty map when the directory is not a git repository or
+ * git is unavailable. Callers treat a missing entry as "age unknown".
+ */
+export async function collectFileModifiedTimes(projectPath: string): Promise<Map<string, number>> {
+  const times = new Map<string, number>();
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['log', '--name-only', '--pretty=format:%x00%aI', '--no-renames'],
+      { cwd: projectPath, maxBuffer: 64 * 1024 * 1024 }
+    );
+    let currentMs: number | null = null;
+    for (const raw of stdout.split('\n')) {
+      const line = raw.replace(/\r$/, '');
+      if (line.length === 0) continue;
+      // A NUL prefix (from `%x00`) marks a commit header line; every other line is
+      // a path. Filenames cannot contain NUL, so the split is unambiguous.
+      if (line.startsWith('\u0000')) {
+        const parsed = Date.parse(line.slice(1));
+        currentMs = Number.isNaN(parsed) ? null : parsed;
+        continue;
+      }
+      // Newest-first: the first time a path appears is its latest change.
+      if (currentMs !== null && !times.has(line)) times.set(line, currentMs);
+    }
+  } catch {
+    return times; // not a git repo, or git missing — age simply stays unknown
+  }
+  return times;
+}
+
 export async function extractGitMetadata(
   options: ExtractGitMetadataOptions
 ): Promise<ExtractGitMetadataResult> {
