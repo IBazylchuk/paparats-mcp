@@ -4,7 +4,7 @@ import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
 import { MetadataStore } from '../src/metadata-db.js';
-import { extractGitMetadata } from '../src/git-metadata.js';
+import { extractGitMetadata, collectFileModifiedTimes } from '../src/git-metadata.js';
 import { toCollectionName } from '../src/indexer.js';
 
 function createTempDir(): string {
@@ -473,5 +473,73 @@ describe('extractGitMetadata on non-git directories', () => {
     expect(mockQdrantClient.setPayload).not.toHaveBeenCalled();
 
     warnSpy.mockRestore();
+  });
+});
+
+describe('collectFileModifiedTimes', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = createTempDir();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns an empty map for a directory that is not a git repo', async () => {
+    // Age simply stays unknown — never a thrown error, never a guessed date.
+    const times = await collectFileModifiedTimes(tmpDir);
+    expect(times.size).toBe(0);
+  });
+
+  it('dates every file touched by history, keyed by repo-relative path', async () => {
+    gitInit(tmpDir);
+    gitAdd(tmpDir, 'README.md', '# hello');
+    gitAdd(tmpDir, 'docs/deep/guide.md', '# guide');
+    gitCommit(tmpDir, 'first');
+
+    const times = await collectFileModifiedTimes(tmpDir);
+    expect(times.has('README.md')).toBe(true);
+    expect(times.has('docs/deep/guide.md')).toBe(true);
+    // A real epoch-ms timestamp, not NaN — the commit-header line must parse.
+    const ts = times.get('README.md')!;
+    expect(Number.isFinite(ts)).toBe(true);
+    expect(ts).toBeGreaterThan(0);
+    expect(Math.abs(Date.now() - ts)).toBeLessThan(5 * 60 * 1000);
+  });
+
+  it('reports the LATEST commit for a file changed more than once', async () => {
+    gitInit(tmpDir);
+    gitAdd(tmpDir, 'a.md', '# v1');
+    gitCommit(tmpDir, 'first');
+    const firstTimes = await collectFileModifiedTimes(tmpDir);
+
+    // Backdate a second commit so newest-first ordering is actually exercised;
+    // committing twice in the same second would not distinguish them.
+    fs.writeFileSync(path.join(tmpDir, 'a.md'), '# v2', 'utf8');
+    execSync('git add a.md', { cwd: tmpDir, stdio: 'ignore' });
+    execSync('git commit -m second --date="2030-01-01T00:00:00Z"', {
+      cwd: tmpDir,
+      stdio: 'ignore',
+      env: { ...process.env, GIT_AUTHOR_DATE: '2030-01-01T00:00:00Z' },
+    });
+
+    const times = await collectFileModifiedTimes(tmpDir);
+    expect(times.get('a.md')).toBeGreaterThan(firstTimes.get('a.md')!);
+    expect(times.get('a.md')).toBe(Date.parse('2030-01-01T00:00:00Z'));
+  });
+
+  it('does not mistake a commit subject for a filename', async () => {
+    // Subjects are not emitted at all (only %aI is), so a subject that looks like
+    // a path must never end up as a key.
+    gitInit(tmpDir);
+    gitAdd(tmpDir, 'real.md', '# real');
+    gitCommit(tmpDir, 'fix docs/fake.md typo');
+
+    const times = await collectFileModifiedTimes(tmpDir);
+    expect(times.has('real.md')).toBe(true);
+    expect(times.has('docs/fake.md')).toBe(false);
+    expect(times.size).toBe(1);
   });
 });

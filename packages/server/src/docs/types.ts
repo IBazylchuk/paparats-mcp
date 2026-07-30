@@ -83,4 +83,34 @@ export interface DocsSearchHit {
   docChunkCount: number;
   /** Chunk indices actually included in {@link content}, ascending. */
   includedChunks: number[];
+  /**
+   * Which kind of prose this document is — see {@link DocsKind}. Chunks stored
+   * before this field existed read back as `prose`.
+   */
+  kind: DocsKind;
+  /**
+   * Unix epoch milliseconds of the document's last content change (typically the
+   * authoring commit date), or `null` when unknown.
+   *
+   * Docs checked into code repositories go stale quietly: a README describing a
+   * long-since-changed design reads exactly as authoritative as a page updated
+   * last week. Surfacing the age lets the caller discount it instead of quoting
+   * it as current.
+   */
+  lastModifiedAt: number | null;
 }
+
+/**
+ * What kind of prose a document is, which decides how sceptically its similarity
+ * scores should be read.
+ *
+ * - `prose` — long-form documentation written to be read on its own (exported
+ *   wiki pages, runbooks, RFCs).
+ * - `code` — markdown living beside source in a code repository (`README.md`,
+ *   `CLAUDE.md`, design notes). These are written as overviews and mention many
+ *   topics in passing, so they score deceptively well against questions they do
+ *   not actually answer — measured on 30 verified absent-topic queries, code
+ *   prose produced the top hit for 21 of them (median cosine 0.471, max 0.591)
+ *   versus 0.383/0.547 for `prose`. Hence the higher default floor.
+ */
+export type DocsKind = 'prose' | 'code';

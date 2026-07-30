@@ -7,7 +7,7 @@ import { v7 as uuidv7 } from 'uuid';
 import PQueue from 'p-queue';
 import { Chunker } from './chunker.js';
 import { resolveTags } from './metadata.js';
-import { extractGitMetadata } from './git-metadata.js';
+import { collectFileModifiedTimes, extractGitMetadata } from './git-metadata.js';
 import type { MetadataStore } from './metadata-db.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
@@ -18,6 +18,7 @@ import { buildSymbolEdges } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
 import type { DocsStore } from './docs/store.js';
 import { NotMarkdownError } from './docs/chunker.js';
+import type { DocsKind } from './docs/types.js';
 import type { ChunkResult, ProjectConfig, IndexerStats } from './types.js';
 import type { Telemetry } from './telemetry/facade.js';
 import type { MetricsRegistry } from './metrics.js';
@@ -1155,6 +1156,24 @@ export class Indexer {
     if (files.length === 0) return 0;
     console.log(`  [docs] ${files.length} markdown file(s) found`);
 
+    // One git walk for the repo, reused for every file below. Empty for
+    // non-git trees, which leaves each document's age unknown.
+    const modifiedTimes = await collectFileModifiedTimes(project.path);
+
+    // Docs that ship alongside source are classified separately from long-form
+    // prose: they score deceptively well against questions they don't answer, so
+    // search holds them to a higher relevance floor (DEFAULT_DOCS_CODE_MIN_COSINE).
+    //
+    // The signal is whether the repo contains code at all. A documentation mirror
+    // detects no languages, so it is `prose`; anything with source is `code`. This
+    // needs no configuration and errs toward `code` (the stricter floor) when
+    // detection is uncertain. `.paparats.yml` can override via `docs.kind`.
+    // `docs` is optional at runtime: callers outside this package build
+    // ProjectConfig objects by hand, so it may be absent despite the type.
+    const kind: DocsKind =
+      project.docs?.kind ?? (project.languages.length === 0 ? 'prose' : 'code');
+    console.log(`  [docs] classified as ${kind}`);
+
     let totalChunks = 0;
     let skipped = 0;
     for (const file of files) {
@@ -1171,6 +1190,8 @@ export class Indexer {
           project: cleanName,
           file: rel,
           content,
+          kind,
+          lastModifiedAt: modifiedTimes.get(rel) ?? null,
         });
         totalChunks += n;
       } catch (err) {

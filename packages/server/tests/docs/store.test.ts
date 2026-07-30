@@ -106,6 +106,39 @@ describe('DocsStore.indexDocument', () => {
     expect(qdrant.upsert).not.toHaveBeenCalled();
   });
 
+  it('stores kind and lastModifiedAt on every chunk', async () => {
+    await store.indexDocument('g', {
+      project: 'billing',
+      file: 'README.md',
+      content: '# Title\n\nSome prose.\n\n## Second\n\nMore prose.\n',
+      kind: 'code',
+      lastModifiedAt: 1_700_000_000_000,
+    });
+    const points = qdrant.upsert.mock.calls[0]![1].points as Array<{
+      payload: Record<string, unknown>;
+    }>;
+    expect(points.length).toBeGreaterThan(0);
+    for (const pt of points) {
+      expect(pt.payload['kind']).toBe('code');
+      expect(pt.payload['last_modified_at']).toBe(1_700_000_000_000);
+    }
+  });
+
+  it('defaults to prose and a null date when not classified', async () => {
+    // An un-classified corpus must behave exactly as it did before per-kind
+    // floors existed, and must never be given an invented timestamp.
+    await store.indexDocument('g', {
+      project: 'billing',
+      file: 'docs/runbook.md',
+      content: '# Title\n\nSome prose.\n',
+    });
+    const points = qdrant.upsert.mock.calls[0]![1].points as Array<{
+      payload: Record<string, unknown>;
+    }>;
+    expect(points[0]!.payload['kind']).toBe('prose');
+    expect(points[0]!.payload['last_modified_at']).toBeNull();
+  });
+
   it('chunks, embeds, and upserts dense+sparse points with a shared doc_id', async () => {
     const n = await store.indexDocument('g', {
       project: 'billing',
@@ -326,7 +359,7 @@ describe('DocsStore.search — cosine relevance gate', () => {
   let store: DocsStore;
 
   /** One RRF hit, then the rescore response that assigns it `cosine`. */
-  function mockHitWithCosine(cosine: number, id = 'p1') {
+  function mockHitWithCosine(cosine: number, id = 'p1', kind?: 'prose' | 'code') {
     qdrant.query
       .mockResolvedValueOnce({
         points: [
@@ -344,6 +377,7 @@ describe('DocsStore.search — cosine relevance gate', () => {
               startLine: 0,
               endLine: 1,
               source_url: null,
+              ...(kind !== undefined ? { kind } : {}),
             },
           },
         ],
@@ -385,18 +419,62 @@ describe('DocsStore.search — cosine relevance gate', () => {
     expect(hits[0]!.score).toBe(1.0);
   });
 
+  it('holds code docs to the stricter default floor', async () => {
+    // 0.5 clears the prose floor (0.45) but not the code floor (0.6). Measured on
+    // 30 verified absent-topic queries, code prose produced the top hit for 21 of
+    // them with a median cosine of 0.471 — squarely in this band.
+    mockHitWithCosine(0.5, 'p1', 'code');
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0 });
+    expect(hits).toHaveLength(0);
+  });
+
+  it('keeps the same-cosine hit when it is prose rather than code', async () => {
+    // Same cosine, different kind, opposite outcome — that is the whole point of
+    // calibrating the two corpora separately.
+    mockHitWithCosine(0.5, 'p1', 'prose');
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0 });
+    expect(hits).toHaveLength(1);
+  });
+
+  it('treats a chunk with no stored kind as prose', async () => {
+    // Chunks written before `kind` existed must keep the floor they were indexed
+    // under, not be retroactively held to the stricter one.
+    mockHitWithCosine(0.5);
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0 });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.kind).toBe('prose');
+  });
+
+  it('honours an explicit minCosineCode over the default', async () => {
+    mockHitWithCosine(0.5, 'p1', 'code');
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0, minCosineCode: 0.45 });
+    expect(hits).toHaveLength(1);
+  });
+
   it('honours an explicit minCosine over the default', async () => {
     mockHitWithCosine(0.5);
     const hits = await store.search('g', 'q', { mergeNeighbours: 0, minCosine: 0.6 });
     expect(hits).toHaveLength(0);
   });
 
-  it('skips the gate entirely when minCosine is 0', async () => {
+  it('skips the gate entirely when both floors are 0', async () => {
     mockHitWithCosine(0.01);
-    const hits = await store.search('g', 'q', { mergeNeighbours: 0, minCosine: 0 });
+    const hits = await store.search('g', 'q', {
+      mergeNeighbours: 0,
+      minCosine: 0,
+      minCosineCode: 0,
+    });
     expect(hits).toHaveLength(1);
     // No rescore request at all — one query, not two.
     expect(qdrant.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('still gates code docs when only the prose floor is disabled', async () => {
+    // minCosine: 0 must not silently switch off the stricter code floor — the two
+    // corpora are calibrated independently.
+    mockHitWithCosine(0.5, 'p1', 'code');
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0, minCosine: 0 });
+    expect(hits).toHaveLength(0);
   });
 
   it('fails open when the rescore request errors', async () => {

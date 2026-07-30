@@ -1,3 +1,5 @@
+import type { DocsKind } from './docs/types.js';
+
 // ── Chunk kind / symbol types ─────────────────────────────────────────────
 
 export type ChunkKind =
@@ -47,6 +49,18 @@ export interface PaparatsConfig {
   watcher?: WatcherConfig;
   embeddings?: EmbeddingsConfig;
   metadata?: MetadataConfig;
+  docs?: DocsConfig;
+}
+
+/** Per-project docs-layer settings from `.paparats.yml`. */
+export interface DocsConfig {
+  /**
+   * Override how this project's markdown is classified. Omit to auto-detect:
+   * a repo with no detected code languages is `prose`, anything else is `code`.
+   * Set this when auto-detection is wrong — e.g. a docs site that also ships a
+   * small build script, which would otherwise be treated as `code`.
+   */
+  kind?: DocsKind;
 }
 
 export interface IndexingConfig {
@@ -87,6 +101,17 @@ export interface ProjectConfig {
   watcher: Required<WatcherConfig>;
   embeddings: Required<EmbeddingsConfig>;
   metadata: ResolvedMetadataConfig;
+  /**
+   * Docs-layer settings. Optional because callers outside this package construct
+   * ProjectConfig by hand; absent means "auto-detect everything".
+   */
+  docs?: ResolvedDocsConfig;
+}
+
+/** Docs-layer settings after merging config with defaults. */
+export interface ResolvedDocsConfig {
+  /** Explicit classification, or null to let the indexer auto-detect. */
+  kind: DocsKind | null;
 }
 
 export interface ResolvedIndexingConfig {
