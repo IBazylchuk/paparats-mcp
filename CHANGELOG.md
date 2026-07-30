@@ -4,6 +4,67 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.3.2] - 2026-07-30
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 0a42522: fix(docs): filter docs search by a semantic relevance floor
+
+  `search_docs` answered questions the corpus does not cover with a confident,
+  unrelated page. Asked about a topic absent from the corpus, it returned an
+  unrelated page that merely shared one common word, at the maximum score of 1.000.
+
+  The cause is that the returned score is RRF (`1/(k+rank)`), a function of position
+  alone: whatever ranks first scores high, even when nothing relevant matched. Over
+  a 41-query set, topics deliberately absent from the corpus produced RRF scores of
+  0.500/0.700/1.000 — indistinguishable from real answers (0.500–1.000), so no
+  threshold on that score can exist.
+
+  The dense cosine does separate them: absent topics peaked at 0.410 while real
+  answers ran from 0.474 up. Hits below `minCosine` (default 0.45, in the empty band
+  between the two) are now dropped, while ranking stays on RRF — which measured
+  better on precision@1 than ranking by cosine (100% vs 94% on the first query set),
+  so it is kept as the ranker and the cosine is used only as a filter.
+
+  Exposed as `min_score` on the MCP tool; pass 0 to disable. The gate fails open on
+  a rescore error, since an empty result set is indistinguishable from "not
+  documented" — the very confusion this prevents.
+
+  Measured on the full 41-query set: absent-topic answers 3/3 → 0/3, with
+  precision@1 (87%) and recall@5 (97%) unchanged and no real answer lost.
+
+- ccef033: feat(docs): tell the caller when a docs hit is only an excerpt
+
+  A `search_docs` hit is the best-matching chunk plus its immediate neighbours, not
+  the whole document — but nothing said so. Measured over one corpus, a hit is a
+  median of 60% of its document and as little as 17% for the largest ones; only 25%
+  of documents fit entirely in one hit.
+
+  That gap is easy to misread. An agent can take an excerpt as the document's full
+  position and conclude it says nothing about a detail that lives in a section never
+  returned.
+
+  Hits now carry `docChunkCount` and `includedChunks`, and the MCP tool renders a
+  line naming what was left out:
+
+  ```
+  Excerpt: sections 31-33 of 65 — read `docs/general/.../big.md` for the rest
+  (this passage may not be the document's full answer).
+  ```
+
+  Silent when the excerpt IS the whole document, and silent when the count is
+  unknown — an invented "0 of 0" would be worse than saying nothing. The count is
+  best-effort: a failure leaves it unset rather than failing the search.
+
+  Also states in the result footer, and in the tool description, that the top hit is
+  not always the right one and the alternatives are worth scanning. On a 112-query
+  measured set the top hit is correct 89% of the time while the right document is in
+  the top 3 for 96% — so stopping at the first result loses answers that were
+  retrieved.
+  - @paparats/shared@2.3.2
+
 ## [2.3.1] - 2026-07-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
