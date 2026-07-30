@@ -4,6 +4,25 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.4.1] - 2026-07-30
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 71caa4a: `projects.yml` now accepts a per-repo `docs.kind` override for the docs relevance floor.
+
+  Auto-detection classifies a repo's markdown by whether the repo contains code, which misreads a documentation repository that also ships its own tooling: the tooling makes it look like `code`, so long-form prose gets held to the stricter floor intended for READMEs. `.paparats.yml` already accepted `docs.kind`, but the indexer configures repos through `projects.yml`, leaving the escape hatch unreachable for exactly the deployments that need it.
+
+  ```yaml
+  repos:
+    - url: org/handbook
+      docs:
+        kind: prose
+  ```
+
+  Works in the `defaults` block as well as per repo.
+
 ## [2.4.0] - 2026-07-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
