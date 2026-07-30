@@ -70,6 +70,47 @@ export function detectMarkdown(content: string): boolean {
   return weak >= 2;
 }
 
+// ── Opaque-blob elision ─────────────────────────────────────────────────────
+
+/**
+ * Runs shorter than this are left alone: real prose never gets this long without
+ * a space, but short unbroken tokens (hashes, ids, long URLs) carry real signal.
+ */
+const OPAQUE_RUN_MIN_CHARS = 500;
+
+/**
+ * A long unbroken run over the base64/base64url/hex alphabet — an embedded
+ * payload rather than text. Both alphabets are covered by one class (base64url
+ * adds `-`/`_`, and `%` catches percent-encoded blobs); `=` allows the padding.
+ */
+const OPAQUE_RUN_RE = new RegExp(`[A-Za-z0-9+/\\-_%]{${OPAQUE_RUN_MIN_CHARS},}={0,2}`, 'g');
+
+/** What replaces an elided run, so the surrounding text still reads sensibly. */
+function opaquePlaceholder(length: number): string {
+  return `[binary data elided, ${length} chars]`;
+}
+
+/**
+ * Replace embedded binary payloads with a short placeholder.
+ *
+ * Documentation regularly embeds base64 — an example request carrying a file
+ * upload, an inline `data:` image, a certificate. Such a run is pure noise for
+ * retrieval: it has no natural language to match a query, yet it dominates its
+ * chunk's embedding and (before this) could produce a single 4k-token chunk that
+ * crowded the page's actual prose out of the index.
+ *
+ * It also can't be fixed downstream: a payload is typically ONE line, and the
+ * oversized-block fallback splits by lines, so it had nothing to cut.
+ *
+ * Elision is length-preserving at line granularity — the replacement contains no
+ * newline — so every chunk's reported startLine/endLine still matches the source
+ * file. The placeholder keeps the length, which is the only part a reader might
+ * care about ("a PDF was attached here").
+ */
+export function elideOpaqueRuns(content: string): string {
+  return content.replace(OPAQUE_RUN_RE, (run) => opaquePlaceholder(run.length));
+}
+
 // ── Token counting (heuristic) ──────────────────────────────────────────────
 
 /**
@@ -235,7 +276,10 @@ export function chunkMarkdown(content: string, opts: MarkdownChunkOptions = {}):
   const targetTokens = opts.targetTokens ?? DEFAULT_TARGET_TOKENS;
   const maxTokens = opts.maxTokens ?? Math.ceil(targetTokens * 1.5);
 
-  const sections = splitIntoSections(content);
+  // Detection runs on the raw input (elision must not change what counts as
+  // markdown), but chunking runs on the elided text so embedded payloads never
+  // reach an embedding. Line numbering is unaffected — see elideOpaqueRuns.
+  const sections = splitIntoSections(elideOpaqueRuns(content));
   const chunks: DocsChunk[] = [];
   let chunkIndex = 0;
 
@@ -299,29 +343,74 @@ export function chunkMarkdown(content: string, opts: MarkdownChunkOptions = {}):
   return chunks;
 }
 
-/** Hard-split a single oversized block by lines into <=maxTokens pieces (overlap 0). */
+/**
+ * Hard-split a single oversized block by lines into <=maxTokens pieces (overlap 0).
+ *
+ * Splitting by line alone is not sufficient: a block can be a SINGLE line longer
+ * than maxTokens (a one-line table, a minified asset, a payload that survived
+ * elision), which leaves nothing to cut between. Such a line is therefore split
+ * on character count as a last resort, preferring a whitespace boundary so words
+ * stay intact where possible.
+ */
 function forceSplitBlock(block: Block, maxTokens: number): Block[] {
-  const lines = block.text.split('\n');
+  // Each entry carries the SOURCE line it came from. One source line can yield
+  // several entries, so a piece's line number cannot be derived from its index
+  // in this array — deriving it would silently shift every subsequent chunk's
+  // reported range.
+  const units: Array<{ text: string; line: number }> = [];
+  const rawLines = block.text.split('\n');
+  for (let i = 0; i < rawLines.length; i++) {
+    const sourceLine = block.startLine + i;
+    for (const part of splitLongLine(rawLines[i] ?? '', maxTokens)) {
+      units.push({ text: part, line: sourceLine });
+    }
+  }
+
   const pieces: Block[] = [];
-  let buf: string[] = [];
-  let bufStart = block.startLine;
-  let offset = 0;
+  let buf: Array<{ text: string; line: number }> = [];
 
   const flush = () => {
-    const text = buf.join('\n').trim();
-    if (text.length > 0) {
-      pieces.push({ text, startLine: bufStart, endLine: block.startLine + offset - 1 });
+    const text = buf
+      .map((u) => u.text)
+      .join('\n')
+      .trim();
+    const first = buf[0];
+    const last = buf[buf.length - 1];
+    if (text.length > 0 && first && last) {
+      pieces.push({ text, startLine: first.line, endLine: last.line });
     }
     buf = [];
   };
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    if (buf.length === 0) bufStart = block.startLine + i;
-    buf.push(line);
-    offset = i + 1;
-    if (estimateTokens(buf.join('\n')) >= maxTokens) flush();
+  for (const unit of units) {
+    buf.push(unit);
+    if (estimateTokens(buf.map((u) => u.text).join('\n')) >= maxTokens) flush();
   }
   flush();
   return pieces;
+}
+
+/**
+ * Split one line into pieces of at most maxTokens, or return it as-is when it
+ * already fits. Prefers cutting at the last whitespace inside the window so
+ * words survive; falls back to a hard character cut when there is none (which is
+ * the normal case for the opaque payloads this exists for).
+ */
+function splitLongLine(line: string, maxTokens: number): string[] {
+  const maxChars = maxTokens * 4; // inverse of estimateTokens
+  if (line.length <= maxChars) return [line];
+
+  const parts: string[] = [];
+  let rest = line;
+  while (rest.length > maxChars) {
+    const window = rest.slice(0, maxChars);
+    const ws = window.lastIndexOf(' ');
+    // Only honour a space that is reasonably deep into the window; a space near
+    // the start would produce a long tail of tiny fragments.
+    const cut = ws > maxChars / 2 ? ws : maxChars;
+    parts.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest.length > 0) parts.push(rest);
+  return parts;
 }
