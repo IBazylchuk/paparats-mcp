@@ -1,3 +1,5 @@
+import type { DocsKind } from '@paparats/server';
+
 export interface RepoConfig {
   /** Repository URL (e.g. https://github.com/org/repo.git). Empty string for local-path projects. */
   url: string;
@@ -17,6 +19,18 @@ export interface RepoConfig {
 export interface RepoOverrides {
   group?: string;
   language?: string | string[];
+  /**
+   * Docs-layer settings for this repo.
+   *
+   * Needed because the auto-detected classification keys off whether the repo
+   * contains code, which misreads a documentation repo that also ships its own
+   * tooling: the tooling makes it look like `code`, so its prose would be held to
+   * the stricter relevance floor meant for READMEs.
+   */
+  docs?: {
+    /** `prose` for long-form documentation, `code` for docs shipped beside source. */
+    kind?: DocsKind;
+  };
   indexing?: {
     paths?: string[];
     exclude?: string[];
@@ -65,6 +79,7 @@ export interface IndexerFileConfig {
     cron_fast?: string;
     indexing?: RepoOverrides['indexing'];
     metadata?: RepoOverrides['metadata'];
+    docs?: RepoOverrides['docs'];
   };
 }
 

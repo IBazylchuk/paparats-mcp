@@ -46,6 +46,11 @@ function mergeOverrides(
     }
   }
 
+  // docs: repo wins per-field
+  if (defaults.docs || repo.docs) {
+    merged.docs = { ...defaults.docs, ...repo.docs };
+  }
+
   // metadata: merge objects, repo wins per-field
   if (defaults.metadata || repo.metadata) {
     merged.metadata = {

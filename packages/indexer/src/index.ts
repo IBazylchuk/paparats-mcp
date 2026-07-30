@@ -168,6 +168,7 @@ function buildConfigFromOverrides(
   const config: PaparatsConfig = { group, language };
   if (overrides.indexing) config.indexing = overrides.indexing;
   if (overrides.metadata) config.metadata = overrides.metadata;
+  if (overrides.docs) config.docs = overrides.docs;
 
   return config;
 }
@@ -180,6 +181,12 @@ function applyOverrides(project: ProjectConfig, overrides: RepoOverrides): Proje
   const result = { ...project };
 
   if (overrides.group) result.group = overrides.group;
+
+  // An explicit kind wins over auto-detection, which keys off whether the repo
+  // contains code and so misreads a docs repo that ships its own tooling.
+  if (overrides.docs?.kind !== undefined) {
+    result.docs = { ...result.docs, kind: overrides.docs.kind };
+  }
 
   if (overrides.indexing) {
     result.indexing = { ...result.indexing };
