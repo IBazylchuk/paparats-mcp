@@ -19,7 +19,7 @@ import {
 } from './bm25.js';
 import type { DocsIdfStore } from './idf-store.js';
 import { chunkMarkdown, NotMarkdownError } from './chunker.js';
-import type { DocsChunk, DocsSearchHit } from './types.js';
+import type { DocsChunk, DocsKind, DocsSearchHit } from './types.js';
 
 export interface DocsStoreConfig {
   qdrant: QdrantClient;
@@ -50,6 +50,17 @@ export interface IndexDocumentInput {
    * Free-form; the core does not prescribe values. Omitted → {@link DEFAULT_AUDIENCE}.
    */
   audience?: string;
+  /**
+   * Which kind of prose this is. Omitted → {@link DEFAULT_DOCS_KIND}, so callers
+   * that don't classify keep the permissive floor they had before.
+   */
+  kind?: DocsKind;
+  /**
+   * Unix epoch milliseconds of the document's last content change (e.g. the
+   * authoring commit date). Omitted → stored as `null`, which reads back as
+   * "age unknown" and suppresses any staleness notice rather than guessing.
+   */
+  lastModifiedAt?: number | null;
 }
 
 export interface DocsSearchOpts {
@@ -73,8 +84,17 @@ export interface DocsSearchOpts {
    * absent from the corpus still produced RRF 0.500/0.700/1.000, indistinguishable
    * from real answers. Cosine separates them cleanly (absent ≤0.410 vs real
    * ≥0.474), which is why the gate reads the cosine and the ranking keeps RRF.
+   *
+   * Applies to `prose` documents. `code` documents use {@link minCosineCode},
+   * which defaults higher — see {@link DEFAULT_DOCS_CODE_MIN_COSINE}.
    */
   minCosine?: number;
+  /**
+   * Relevance floor applied to `code`-kind documents instead of {@link minCosine}.
+   * Defaults to {@link DEFAULT_DOCS_CODE_MIN_COSINE}; pass 0 to disable for this
+   * kind only.
+   */
+  minCosineCode?: number;
 }
 
 /**
@@ -88,6 +108,47 @@ export interface DocsSearchOpts {
  * as fact.
  */
 export const DEFAULT_DOCS_MIN_COSINE = 0.45;
+
+/**
+ * Relevance floor for `code`-kind documents — markdown that lives beside source.
+ *
+ * Higher than {@link DEFAULT_DOCS_MIN_COSINE} because the two corpora are
+ * calibrated differently. Measured over 102 answerable queries and 30 verified
+ * absent-topic ones against a mixed index (57% long-form prose, 43% code prose):
+ *
+ * - A single global floor forces a bad trade. 0.45 blocked 16/30 absent topics;
+ *   pushing it to 0.60 blocked 30/30 but dropped precision@1 from 87.3% to 76.5%.
+ * - Per-kind floors make the trade disappear: prose at 0.45 with code at 0.60
+ *   blocked 29/30 absent topics and lost *zero* real answers, leaving
+ *   precision@1 unchanged.
+ *
+ * That works because code prose is almost never the right first answer but often
+ * a confident wrong one: across 102 answerable queries it produced the top hit
+ * twice, and was wrong both times. So raising its floor costs nothing.
+ *
+ * The one absent topic that still gets through scores 0.547 in long-form prose;
+ * blocking it would mean raising the prose floor to 0.55, which does cost real
+ * answers. Left through deliberately.
+ */
+export const DEFAULT_DOCS_CODE_MIN_COSINE = 0.6;
+
+/**
+ * Kind assumed for a document indexed without an explicit one, and for chunks
+ * written before the field existed. `prose` keeps the permissive floor, so an
+ * un-classified corpus behaves exactly as it did before per-kind floors existed.
+ */
+export const DEFAULT_DOCS_KIND: DocsKind = 'prose';
+
+/**
+ * Age past which a document is reported as possibly out of date.
+ *
+ * A year is long enough that ordinary docs are not perpetually flagged (which
+ * would train the reader to ignore the notice) and short enough to catch prose
+ * describing a design that has since moved on. It is a disclosure threshold, not
+ * a ranking input: an old document is frequently the only one on its topic, so
+ * demoting it would lose answers that flagging merely qualifies.
+ */
+export const DEFAULT_DOCS_STALE_AFTER_MS = 365 * 24 * 60 * 60 * 1000;
 
 /**
  * The docs layer store: indexes markdown documents into a hybrid (dense qwen3 +
@@ -281,8 +342,14 @@ export class DocsStore {
     }
 
     const minCosine = opts.minCosine ?? DEFAULT_DOCS_MIN_COSINE;
+    const minCosineCode = opts.minCosineCode ?? DEFAULT_DOCS_CODE_MIN_COSINE;
+    const floorFor = (hit: DocsSearchHit): number =>
+      hit.kind === 'code' ? minCosineCode : minCosine;
+    // Skip the rescore round-trip only when BOTH floors are off.
     const gated =
-      minCosine > 0 ? await this.gateByCosine(collection, dense, base, ids, minCosine) : base;
+      minCosine > 0 || minCosineCode > 0
+        ? await this.gateByCosine(collection, dense, base, ids, floorFor)
+        : base;
 
     return this.mergeNeighbours(group, gated, limit, opts.mergeNeighbours ?? 1);
   }
@@ -306,7 +373,7 @@ export class DocsStore {
     dense: number[],
     hits: DocsSearchHit[],
     ids: Array<string | number>,
-    minCosine: number
+    floorFor: (hit: DocsSearchHit) => number
   ): Promise<DocsSearchHit[]> {
     if (hits.length === 0) return hits;
     let cosineById: Map<string | number, number>;
@@ -322,12 +389,14 @@ export class DocsStore {
     } catch {
       return hits; // fail open — see above
     }
-    const kept = hits.filter((_, i) => {
+    const kept = hits.filter((hit, i) => {
       const id = ids[i];
       if (id === undefined) return true;
       const cos = cosineById.get(id);
       // A hit missing from the rescore is kept rather than silently dropped.
-      return cos === undefined || cos >= minCosine;
+      if (cos === undefined) return true;
+      const floor = floorFor(hit);
+      return floor <= 0 || cos >= floor;
     });
     return kept;
   }
@@ -618,6 +687,8 @@ function buildPayload(
     file: input.file,
     source_url: input.sourceUrl ?? null,
     audience: input.audience ?? DEFAULT_AUDIENCE,
+    kind: input.kind ?? DEFAULT_DOCS_KIND,
+    last_modified_at: input.lastModifiedAt ?? null,
     heading_path: chunk.headingPath,
     chunk_index: chunk.chunkIndex,
     content: chunk.content,
@@ -647,6 +718,9 @@ function toHit(payload: Record<string, unknown>, score: number): DocsSearchHit {
     // document's full extent and which chunks ended up in `content`.
     docChunkCount: 0,
     includedChunks: [num(payload['chunk_index'])],
+    kind: payload['kind'] === 'code' ? 'code' : DEFAULT_DOCS_KIND,
+    lastModifiedAt:
+      typeof payload['last_modified_at'] === 'number' ? payload['last_modified_at'] : null,
   };
 }
 

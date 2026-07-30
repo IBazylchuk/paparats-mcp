@@ -86,10 +86,15 @@ export type {
 export {
   DocsStore,
   DEFAULT_AUDIENCE,
+  DEFAULT_DOCS_MIN_COSINE,
+  DEFAULT_DOCS_CODE_MIN_COSINE,
+  DEFAULT_DOCS_KIND,
+  DEFAULT_DOCS_STALE_AFTER_MS,
   normalizeAudience,
   applyAudienceScope,
 } from './docs/store.js';
 export type { DocsStoreConfig, IndexDocumentInput, DocsSearchOpts } from './docs/store.js';
+export type { DocsKind } from './docs/types.js';
 export { DocsIdfStore } from './docs/idf-store.js';
 export { chunkMarkdown, detectMarkdown, NotMarkdownError } from './docs/chunker.js';
 export {
@@ -126,7 +131,11 @@ export { LANGUAGE_QUERIES } from './ast-queries.js';
 export type { LanguageQuerySet } from './ast-queries.js';
 export { extractTickets, validateTicketPatterns } from './ticket-extractor.js';
 export type { ExtractedTicket } from './ticket-extractor.js';
-export { extractGitMetadata, collectIndexedChunks } from './git-metadata.js';
+export {
+  extractGitMetadata,
+  collectIndexedChunks,
+  collectFileModifiedTimes,
+} from './git-metadata.js';
 export type { ExtractGitMetadataOptions, ExtractGitMetadataResult } from './git-metadata.js';
 
 export { ProjectWatcher, WatcherManager } from './watcher.js';
