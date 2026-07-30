@@ -63,7 +63,31 @@ export interface DocsSearchOpts {
    * so passing e.g. `['client']` will NOT surface un-labelled (internal) docs.
    */
   audience?: string | string[];
+  /**
+   * Drop hits whose dense cosine to the query is below this, as a relevance
+   * floor. Defaults to {@link DEFAULT_DOCS_MIN_COSINE}; pass 0 to disable.
+   *
+   * This is a floor on the COSINE, deliberately not on the returned RRF score.
+   * RRF is `1/(k+rank)`, a function of position alone, so the top hit scores high
+   * even when nothing relevant matched — measured on a 41-query set, topics
+   * absent from the corpus still produced RRF 0.500/0.700/1.000, indistinguishable
+   * from real answers. Cosine separates them cleanly (absent ≤0.410 vs real
+   * ≥0.474), which is why the gate reads the cosine and the ranking keeps RRF.
+   */
+  minCosine?: number;
 }
+
+/**
+ * Relevance floor for docs search, as a dense cosine.
+ *
+ * Chosen from a 41-query measurement (37 answerable, 4 deliberately absent):
+ * absent-topic top hits scored 0.332–0.410, real answers 0.474 upward, so 0.45
+ * sits in the empty band between them — it kept 36/37 real answers and dropped
+ * 4/4 absent ones. Deliberately at the permissive end of that band: a missing
+ * answer costs the caller a search, while a confidently-wrong one can be quoted
+ * as fact.
+ */
+export const DEFAULT_DOCS_MIN_COSINE = 0.45;
 
 /**
  * The docs layer store: indexes markdown documents into a hybrid (dense qwen3 +
@@ -248,13 +272,64 @@ export class DocsStore {
     }
 
     const base: DocsSearchHit[] = [];
+    const ids: Array<string | number> = [];
     for (const h of hits) {
       const payload = h.payload as Record<string, unknown> | null;
       if (!payload || payload['__meta'] === true) continue;
       base.push(toHit(payload, h.score));
+      ids.push(h.id);
     }
 
-    return this.mergeNeighbours(group, base, limit, opts.mergeNeighbours ?? 1);
+    const minCosine = opts.minCosine ?? DEFAULT_DOCS_MIN_COSINE;
+    const gated =
+      minCosine > 0 ? await this.gateByCosine(collection, dense, base, ids, minCosine) : base;
+
+    return this.mergeNeighbours(group, gated, limit, opts.mergeNeighbours ?? 1);
+  }
+
+  /**
+   * Drop hits whose dense cosine to the query is below `minCosine`, preserving the
+   * RRF order of the survivors.
+   *
+   * The cosine needs a second request: the fused response carries the RRF score,
+   * not the per-vector similarity. It is one extra query over an explicit id set
+   * (already-fetched points, no re-search), so the cost is a round-trip rather
+   * than another ANN traversal.
+   *
+   * Fails OPEN — if the rescore errors, the un-gated hits are returned. A gate
+   * that silently empties the result set on a transient error would look exactly
+   * like "the docs don't cover this", which is the very confusion it exists to
+   * prevent.
+   */
+  private async gateByCosine(
+    collection: string,
+    dense: number[],
+    hits: DocsSearchHit[],
+    ids: Array<string | number>,
+    minCosine: number
+  ): Promise<DocsSearchHit[]> {
+    if (hits.length === 0) return hits;
+    let cosineById: Map<string | number, number>;
+    try {
+      const res = await this.qdrant.query(collection, {
+        query: dense,
+        using: DOCS_DENSE_VECTOR,
+        limit: ids.length,
+        with_payload: false,
+        filter: { must: [{ has_id: ids }] } as never,
+      });
+      cosineById = new Map(res.points.map((p) => [p.id, p.score]));
+    } catch {
+      return hits; // fail open — see above
+    }
+    const kept = hits.filter((_, i) => {
+      const id = ids[i];
+      if (id === undefined) return true;
+      const cos = cosineById.get(id);
+      // A hit missing from the rescore is kept rather than silently dropped.
+      return cos === undefined || cos >= minCosine;
+    });
+    return kept;
   }
 
   /**

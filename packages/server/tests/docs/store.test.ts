@@ -319,6 +319,126 @@ describe('DocsStore.search', () => {
   });
 });
 
+describe('DocsStore.search — cosine relevance gate', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let idf: DocsIdfStore;
+  let store: DocsStore;
+
+  /** One RRF hit, then the rescore response that assigns it `cosine`. */
+  function mockHitWithCosine(cosine: number, id = 'p1') {
+    qdrant.query
+      .mockResolvedValueOnce({
+        points: [
+          {
+            id,
+            score: 1.0, // RRF top-1 always scores high — that is the whole problem
+            payload: {
+              doc_id: 'd1',
+              doc_title: 'Unrelated',
+              project: 'p',
+              file: 'other.md',
+              heading_path: ['Unrelated'],
+              chunk_index: 0,
+              content: 'Unrelated > something else entirely',
+              startLine: 0,
+              endLine: 1,
+              source_url: null,
+            },
+          },
+        ],
+      })
+      .mockResolvedValueOnce({ points: [{ id, score: cosine }] });
+  }
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    idf = mkIdf();
+    store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf,
+    });
+  });
+
+  it('drops a hit whose cosine is below the default floor', async () => {
+    // 0.38 is the range absent-from-corpus topics actually scored when measured;
+    // RRF still ranked such a hit first with score 1.0.
+    mockHitWithCosine(0.38);
+    const hits = await store.search('g', 'a topic this corpus does not document', {
+      mergeNeighbours: 0,
+    });
+    expect(hits).toHaveLength(0);
+  });
+
+  it('keeps a hit at or above the floor', async () => {
+    mockHitWithCosine(0.62);
+    const hits = await store.search('g', 'how does rollback work', { mergeNeighbours: 0 });
+    expect(hits).toHaveLength(1);
+  });
+
+  it('keeps the RRF score as the returned score, not the cosine', async () => {
+    // Ranking stays RRF (it measured better on precision@1); the cosine is only a
+    // filter, so it must not leak into the reported score.
+    mockHitWithCosine(0.62);
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0 });
+    expect(hits[0]!.score).toBe(1.0);
+  });
+
+  it('honours an explicit minCosine over the default', async () => {
+    mockHitWithCosine(0.5);
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0, minCosine: 0.6 });
+    expect(hits).toHaveLength(0);
+  });
+
+  it('skips the gate entirely when minCosine is 0', async () => {
+    mockHitWithCosine(0.01);
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0, minCosine: 0 });
+    expect(hits).toHaveLength(1);
+    // No rescore request at all — one query, not two.
+    expect(qdrant.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails open when the rescore request errors', async () => {
+    // An empty result set would be indistinguishable from "the docs don't cover
+    // this", which is exactly the confusion the gate exists to prevent.
+    qdrant.query
+      .mockResolvedValueOnce({
+        points: [
+          {
+            id: 'p1',
+            score: 0.9,
+            payload: {
+              doc_id: 'd1',
+              doc_title: 'Runbook',
+              project: 'p',
+              file: 'x.md',
+              heading_path: ['Runbook'],
+              chunk_index: 0,
+              content: 'Runbook > Rollback',
+              startLine: 0,
+              endLine: 1,
+              source_url: null,
+            },
+          },
+        ],
+      })
+      .mockRejectedValueOnce(new Error('qdrant down'));
+    const hits = await store.search('g', 'q', { mergeNeighbours: 0 });
+    expect(hits).toHaveLength(1);
+  });
+
+  it('rescores over the already-fetched ids rather than re-searching', async () => {
+    mockHitWithCosine(0.7, 'pX');
+    await store.search('g', 'q', { mergeNeighbours: 0 });
+    const rescore = qdrant.query.mock.calls[1]![1] as {
+      filter: { must: Array<{ has_id: string[] }> };
+      using: string;
+    };
+    expect(rescore.using).toBe(DOCS_DENSE_VECTOR);
+    expect(rescore.filter.must[0]!.has_id).toEqual(['pX']);
+  });
+});
+
 describe('DocsStore.healAllDocsModels', () => {
   it('re-embeds a group whose stored model differs', async () => {
     const qdrant = fakeQdrant();

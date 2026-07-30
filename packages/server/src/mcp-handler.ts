@@ -2995,8 +2995,18 @@ export class McpHandler {
                 'narrow within it, never widen past it.'
             ),
           limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
+          min_score: z
+            .number()
+            .min(0)
+            .max(1)
+            .optional()
+            .describe(
+              'Relevance floor as a semantic cosine (default 0.45). Hits below it are dropped, ' +
+                'so a question the docs do not cover returns nothing instead of the closest ' +
+                'unrelated page. Raise toward 0.6 to demand near-exact matches; pass 0 to disable.'
+            ),
         },
-        async ({ query, project, group, audience, limit }) => {
+        async ({ query, project, group, audience, limit, min_score }) => {
           // Intersect the caller's audience with the server-enforced ceiling
           // (fail-closed). A disjoint request → empty set → no results, rather
           // than silently widening to the ceiling.
@@ -3040,6 +3050,7 @@ export class McpHandler {
               ...(project !== undefined ? { project } : {}),
               ...(effectiveAudience !== null ? { audience: effectiveAudience } : {}),
               ...(limit !== undefined ? { limit } : {}),
+              ...(min_score !== undefined ? { minCosine: min_score } : {}),
             });
             for (const h of hits) all.push({ group: g, ...h });
           }
