@@ -4,6 +4,36 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.3.1] - 2026-07-30
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 032c6b8: fix(docs): elide embedded binary payloads before chunking markdown
+
+  Documentation often embeds base64 — an API example carrying a file upload, an
+  inline `data:` image, a certificate. Such a run has no natural language to match
+  a query, yet it dominated its chunk's embedding and crowded the page's real prose
+  out of the index.
+
+  It could not be fixed downstream either: a payload is typically a single line,
+  and the oversized-block fallback splits by lines, so it had nothing to cut. A
+  single 16,898-character line produced one ~4225-token chunk.
+
+  Long runs over the base64/base64url/hex alphabet are now replaced with a short
+  `[binary data elided, N chars]` placeholder before sectioning. The replacement
+  contains no newline, so reported chunk line numbers still match the source.
+
+  Also bounds the remaining case the by-line split could not handle: a single line
+  longer than `maxTokens` (a one-line table, a minified asset) is now split on
+  character count, preferring a whitespace boundary.
+
+  Measured over a markdown corpus: largest chunk 4225 → 706 tokens, chunks over
+  1024 tokens 1 → 0, with p50/p95 chunk size unchanged (405/1331 chars) — only the
+  degenerate chunk is affected.
+  - @paparats/shared@2.3.1
+
 ## [2.3.0] - 2026-07-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -97,7 +127,7 @@
 
 - @paparats/shared@2.0.3
 
-## [2.0.2] - 2026-07-24
+## [2.0.2] - 2026-07-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -278,7 +308,7 @@
 
 - @paparats/shared@1.7.2
 
-## [1.7.1] - 2026-07-24
+## [1.7.1] - 2026-07-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -377,7 +407,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [1.4.0] - 2026-07-24
+## [1.4.0] - 2026-07-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -791,7 +821,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [0.7.0] - 2026-07-24
+## [0.7.0] - 2026-07-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -838,7 +868,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-07-24
+## [0.5.0] - 2026-07-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -931,7 +961,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-07-24
+## [0.3.0] - 2026-07-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
