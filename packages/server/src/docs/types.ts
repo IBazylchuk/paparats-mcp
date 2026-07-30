@@ -69,4 +69,18 @@ export interface DocsSearchHit {
   endLine: number;
   /** Fused score from RRF over dense + sparse prefetch. Not a raw cosine. */
   score: number;
+  /**
+   * Total number of chunks the source document was split into.
+   *
+   * A hit returns the best-matching chunk plus its immediate neighbours, NOT the
+   * whole document — measured over one real corpus that is a median of 60% of the
+   * document and as little as 17% for the largest ones. Without this the caller
+   * cannot tell a complete answer from an excerpt, and may conclude the document
+   * says nothing about something covered in a section it never saw.
+   *
+   * 0 when the count could not be determined (it is best-effort, never fatal).
+   */
+  docChunkCount: number;
+  /** Chunk indices actually included in {@link content}, ascending. */
+  includedChunks: number[];
 }
