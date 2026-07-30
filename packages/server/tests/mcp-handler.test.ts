@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
-import { McpHandler } from '../src/mcp-handler.js';
+import { McpHandler, describeExcerpt, describeStaleness } from '../src/mcp-handler.js';
 import type { MetadataStore } from '../src/metadata-db.js';
 import type { ProjectConfig, ChunkKind } from '../src/types.js';
 
@@ -1204,5 +1204,56 @@ describe('McpHandler', () => {
       server.close();
       handler2.destroy();
     }
+  });
+});
+
+describe('describeStaleness', () => {
+  const YEAR = 365 * 24 * 60 * 60 * 1000;
+  const NOW = 1_800_000_000_000;
+
+  it('says nothing when the age is unknown', () => {
+    // A fabricated age is worse than none: silence must not read as "current".
+    expect(describeStaleness({ lastModifiedAt: null }, NOW, YEAR)).toBe('');
+  });
+
+  it('says nothing for a document younger than the threshold', () => {
+    expect(describeStaleness({ lastModifiedAt: NOW - YEAR + 1000 }, NOW, YEAR)).toBe('');
+  });
+
+  it('reports months once past the threshold', () => {
+    const out = describeStaleness({ lastModifiedAt: NOW - 400 * 24 * 60 * 60 * 1000 }, NOW, YEAR);
+    expect(out).toContain('13 months ago');
+    expect(out).toContain('may describe behaviour that has since changed');
+  });
+
+  it('switches to years past two years', () => {
+    const out = describeStaleness({ lastModifiedAt: NOW - 3 * YEAR }, NOW, YEAR);
+    expect(out).toContain('3 years ago');
+  });
+
+  it('ignores a non-finite timestamp instead of rendering NaN', () => {
+    expect(describeStaleness({ lastModifiedAt: NaN }, NOW, YEAR)).toBe('');
+  });
+});
+
+describe('describeExcerpt', () => {
+  it('says nothing when the excerpt is the whole document', () => {
+    expect(describeExcerpt({ docChunkCount: 2, includedChunks: [0, 1], file: 'a.md' })).toBe('');
+  });
+
+  it('says nothing when the total is unknown', () => {
+    // Better silent than "section 1 of 0".
+    expect(describeExcerpt({ docChunkCount: 0, includedChunks: [0], file: 'a.md' })).toBe('');
+  });
+
+  it('reports a single section with 1-based numbering', () => {
+    const out = describeExcerpt({ docChunkCount: 8, includedChunks: [2], file: 'a.md' });
+    expect(out).toContain('section 3 of 8');
+  });
+
+  it('reports a range when several sections are merged', () => {
+    const out = describeExcerpt({ docChunkCount: 65, includedChunks: [30, 31, 32], file: 'b.md' });
+    expect(out).toContain('sections 31-33 of 65');
+    expect(out).toContain('`b.md`');
   });
 });

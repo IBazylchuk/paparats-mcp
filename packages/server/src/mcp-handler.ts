@@ -31,7 +31,12 @@ import {
   failedChunks,
 } from './telemetry/queries.js';
 import { ArchStore } from './arch/store.js';
-import { DocsStore, applyAudienceScope, normalizeAudience } from './docs/store.js';
+import {
+  DEFAULT_DOCS_STALE_AFTER_MS,
+  DocsStore,
+  applyAudienceScope,
+  normalizeAudience,
+} from './docs/store.js';
 import { TerminologyStore } from './terminology/store.js';
 import { expandQueryWithGlossary } from './query-expansion.js';
 import {
@@ -155,7 +160,29 @@ function formatAge(ts: number | undefined): string {
  * Silent when the excerpt IS the whole document (nothing to warn about) or when
  * the count is unknown — an invented "part 0 of 0" would be worse than nothing.
  */
-function describeExcerpt(hit: {
+/**
+ * A staleness notice for a document that has not changed in a long time, or ''
+ * when it is recent or its age is unknown.
+ *
+ * Age is disclosed, never used to rank: an out-of-date page is often the only one
+ * on its topic, so demoting it would lose answers that a caveat merely qualifies.
+ * Silent when the date is missing — a fabricated age is worse than none.
+ */
+export function describeStaleness(
+  hit: { lastModifiedAt: number | null },
+  now: number,
+  staleAfterMs: number
+): string {
+  const ts = hit.lastModifiedAt;
+  if (ts === null || !Number.isFinite(ts)) return '';
+  const age = now - ts;
+  if (age < staleAfterMs) return '';
+  const months = Math.floor(age / (30 * 24 * 60 * 60 * 1000));
+  const when = months >= 24 ? `${Math.floor(months / 12)} years` : `${months} months`;
+  return `\nLast updated ${when} ago — may describe behaviour that has since changed.`;
+}
+
+export function describeExcerpt(hit: {
   docChunkCount: number;
   includedChunks: number[];
   file: string;
@@ -3032,10 +3059,23 @@ export class McpHandler {
             .describe(
               'Relevance floor as a semantic cosine (default 0.45). Hits below it are dropped, ' +
                 'so a question the docs do not cover returns nothing instead of the closest ' +
-                'unrelated page. Raise toward 0.6 to demand near-exact matches; pass 0 to disable.'
+                'unrelated page. Raise toward 0.6 to demand near-exact matches; pass 0 to disable. ' +
+                'Applies to long-form prose docs; markdown that ships inside code repositories ' +
+                'uses min_score_code instead.'
+            ),
+          min_score_code: z
+            .number()
+            .min(0)
+            .max(1)
+            .optional()
+            .describe(
+              'Relevance floor for markdown that lives in code repositories (README, CLAUDE.md, ' +
+                'design notes), default 0.6. Higher than min_score because such files are written ' +
+                'as overviews and score deceptively well against questions they do not answer. ' +
+                'Pass 0 to disable for this kind only.'
             ),
         },
-        async ({ query, project, group, audience, limit, min_score }) => {
+        async ({ query, project, group, audience, limit, min_score, min_score_code }) => {
           // Intersect the caller's audience with the server-enforced ceiling
           // (fail-closed). A disjoint request → empty set → no results, rather
           // than silently widening to the ceiling.
@@ -3080,6 +3120,7 @@ export class McpHandler {
               ...(effectiveAudience !== null ? { audience: effectiveAudience } : {}),
               ...(limit !== undefined ? { limit } : {}),
               ...(min_score !== undefined ? { minCosine: min_score } : {}),
+              ...(min_score_code !== undefined ? { minCosineCode: min_score_code } : {}),
             });
             for (const h of hits) all.push({ group: g, ...h });
           }
@@ -3090,11 +3131,14 @@ export class McpHandler {
               content: [{ type: 'text' as const, text: `No documentation found for "${query}".` }],
             };
           }
+          // One clock read for the whole result set, so two hits of the same age
+          // can never be described differently.
+          const now = Date.now();
           const md = top
             .map((h) => {
               const crumb = [h.docTitle, ...h.headingPath].filter(Boolean).join(' > ');
               const src = h.sourceUrl ? `\nSource: ${h.sourceUrl}` : '';
-              return `### ${crumb} (${h.score.toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}${describeExcerpt(h)}\n\n${h.content}`;
+              return `### ${crumb} (${h.score.toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}${describeExcerpt(h)}${describeStaleness(h, now, DEFAULT_DOCS_STALE_AFTER_MS)}\n\n${h.content}`;
             })
             .join('\n\n---\n\n');
           // Ranking is good but not perfect (the top hit is right ~89% of the

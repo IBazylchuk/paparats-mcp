@@ -378,6 +378,7 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
     watcher,
     embeddings,
     metadata,
+    docs: { kind: raw.docs?.kind ?? null },
   };
 }
 
@@ -506,5 +507,6 @@ export function buildProjectConfigFromContent(
     watcher: DEFAULT_WATCHER,
     embeddings: DEFAULT_EMBEDDINGS,
     metadata: resolveMetadata(undefined, projectName),
+    docs: { kind: null },
   };
 }
