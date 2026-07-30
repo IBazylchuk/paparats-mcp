@@ -128,6 +128,44 @@ repos:
     expect(b!.indexing?.exclude).toEqual(['vendor']); // repo wins entirely
   });
 
+  it('carries docs.kind through the defaults merge', () => {
+    // mergeOverrides rebuilds the object field by field, so a field it does not
+    // know about is dropped whenever a `defaults` block exists. That silent loss
+    // is worse than a parse error: a documentation repo would keep the stricter
+    // code floor and quietly lose real answers.
+    writeConfig(`
+defaults:
+  group: shared-group
+
+repos:
+  - url: org/docs-only
+    docs:
+      kind: prose
+  - url: org/service
+`);
+    const result = loadIndexerConfig(configPath);
+    expect(result.repos[0]!.overrides?.docs?.kind).toBe('prose');
+    // Unset stays unset, so the indexer still auto-detects.
+    expect(result.repos[1]!.overrides?.docs?.kind).toBeUndefined();
+  });
+
+  it('lets a repo override docs.kind inherited from defaults', () => {
+    writeConfig(`
+defaults:
+  docs:
+    kind: code
+
+repos:
+  - url: org/a
+  - url: org/b
+    docs:
+      kind: prose
+`);
+    const result = loadIndexerConfig(configPath);
+    expect(result.repos[0]!.overrides?.docs?.kind).toBe('code');
+    expect(result.repos[1]!.overrides?.docs?.kind).toBe('prose');
+  });
+
   it('parses cron from defaults', () => {
     writeConfig(`
 defaults:
