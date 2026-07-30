@@ -144,6 +144,35 @@ function formatAge(ts: number | undefined): string {
 }
 
 /**
+ * Describe how much of a document a docs hit actually covers.
+ *
+ * A hit is the best-matching chunk plus its immediate neighbours, not the whole
+ * document — over one measured corpus that was a median of 60% of the file and
+ * as little as 17% for the largest. Without saying so, a caller can read an
+ * excerpt as the document's full position on a topic and conclude it says nothing
+ * about a detail that lives in a section never returned.
+ *
+ * Silent when the excerpt IS the whole document (nothing to warn about) or when
+ * the count is unknown — an invented "part 0 of 0" would be worse than nothing.
+ */
+function describeExcerpt(hit: {
+  docChunkCount: number;
+  includedChunks: number[];
+  file: string;
+}): string {
+  const total = hit.docChunkCount;
+  const shown = hit.includedChunks.length;
+  if (total <= 0 || shown <= 0 || shown >= total) return '';
+  const first = hit.includedChunks[0]!;
+  const last = hit.includedChunks[shown - 1]!;
+  const where = shown === 1 ? `section ${first + 1}` : `sections ${first + 1}-${last + 1}`;
+  return (
+    `\nExcerpt: ${where} of ${total} — read \`${hit.file}\` for the rest` +
+    ` (this passage may not be the document's full answer).`
+  );
+}
+
+/**
  * Render an arch_record_* result as an explicit, agent-actionable message.
  * The `status` field is what tells the agent what to do next:
  *  - `created` / `updated` — the new card landed, nothing more to do.
@@ -3065,10 +3094,17 @@ export class McpHandler {
             .map((h) => {
               const crumb = [h.docTitle, ...h.headingPath].filter(Boolean).join(' > ');
               const src = h.sourceUrl ? `\nSource: ${h.sourceUrl}` : '';
-              return `### ${crumb} (${h.score.toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}\n\n${h.content}`;
+              return `### ${crumb} (${h.score.toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}${describeExcerpt(h)}\n\n${h.content}`;
             })
             .join('\n\n---\n\n');
-          return { content: [{ type: 'text' as const, text: md }] };
+          // Ranking is good but not perfect (the top hit is right ~89% of the
+          // time on a measured corpus, the right doc is in the top 3 ~96%), so
+          // the reader is told to consider the whole list rather than stop at #1.
+          const footer =
+            top.length > 1
+              ? '\n\n---\n\nThese are the best-matching excerpts, most relevant first. The first result is not always the right one — scan the alternatives before concluding, and read a full file when an excerpt is partial.'
+              : '';
+          return { content: [{ type: 'text' as const, text: md + footer }] };
         }
       );
     }

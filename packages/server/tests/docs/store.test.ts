@@ -46,6 +46,7 @@ function fakeQdrant() {
     retrieve: vi.fn().mockResolvedValue([]),
     delete: vi.fn().mockResolvedValue(undefined),
     getCollections: vi.fn().mockResolvedValue({ collections: [] }),
+    count: vi.fn().mockResolvedValue({ count: 0 }),
   };
 }
 
@@ -436,6 +437,78 @@ describe('DocsStore.search — cosine relevance gate', () => {
     };
     expect(rescore.using).toBe(DOCS_DENSE_VECTOR);
     expect(rescore.filter.must[0]!.has_id).toEqual(['pX']);
+  });
+});
+
+describe('DocsStore.search — excerpt coverage metadata', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let idf: DocsIdfStore;
+  let store: DocsStore;
+
+  function chunkPayload(chunkIndex: number) {
+    return {
+      doc_id: 'd1',
+      doc_title: 'Runbook',
+      project: 'p',
+      file: 'runbook.md',
+      heading_path: ['Runbook'],
+      chunk_index: chunkIndex,
+      content: `Runbook\n\nbody of chunk ${chunkIndex}`,
+      startLine: chunkIndex * 10,
+      endLine: chunkIndex * 10 + 5,
+      source_url: null,
+    };
+  }
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    idf = mkIdf();
+    store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf,
+    });
+    // Fused hit, then the cosine rescore that lets it through the gate.
+    qdrant.query
+      .mockResolvedValueOnce({ points: [{ id: 'p3', score: 0.9, payload: chunkPayload(3) }] })
+      .mockResolvedValueOnce({ points: [{ id: 'p3', score: 0.8 }] });
+  });
+
+  it('reports the document total and which chunks were included', async () => {
+    qdrant.count.mockResolvedValue({ count: 12 });
+    qdrant.scroll.mockResolvedValue({
+      points: [2, 3, 4].map((i) => ({ payload: chunkPayload(i) })),
+      next_page_offset: null,
+    });
+    const hits = await store.search('g', 'rollback');
+    expect(hits[0]!.docChunkCount).toBe(12);
+    expect(hits[0]!.includedChunks).toEqual([2, 3, 4]);
+  });
+
+  it('counts only the requested document, excluding the meta sentinel', async () => {
+    qdrant.count.mockResolvedValue({ count: 5 });
+    await store.search('g', 'rollback');
+    const arg = qdrant.count.mock.calls[0]![1] as {
+      filter: { must: Array<Record<string, unknown>>; must_not: Array<Record<string, unknown>> };
+    };
+    expect(arg.filter.must).toContainEqual({ key: 'doc_id', match: { value: 'd1' } });
+    expect(arg.filter.must_not).toContainEqual({ key: '__meta', match: { value: true } });
+  });
+
+  it('reports a single-chunk excerpt when neighbour merge is off', async () => {
+    qdrant.count.mockResolvedValue({ count: 9 });
+    const hits = await store.search('g', 'rollback', { mergeNeighbours: 0 });
+    expect(hits[0]!.docChunkCount).toBe(9);
+    expect(hits[0]!.includedChunks).toEqual([3]);
+  });
+
+  it('leaves the count at 0 when it cannot be determined, never failing the search', async () => {
+    // 0 must read back as "unknown" — a caller that treated it as "empty document"
+    // would be drawing a conclusion from a transient Qdrant error.
+    qdrant.count.mockRejectedValue(new Error('qdrant down'));
+    const hits = await store.search('g', 'rollback', { mergeNeighbours: 0 });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.docChunkCount).toBe(0);
   });
 });
 

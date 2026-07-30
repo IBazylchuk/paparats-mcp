@@ -356,10 +356,23 @@ export class DocsStore {
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
 
-    if (n <= 0) return top;
+    // Total chunk count per document, so the caller can see that a hit is an
+    // EXCERPT and how much of the document is missing. Best-effort: a failure
+    // leaves the count at 0 rather than failing the search.
+    const counts = await this.docChunkCounts(
+      collection,
+      top.map((h) => h.docId)
+    );
+    const withCounts = top.map((h) => ({
+      ...h,
+      docChunkCount: counts.get(h.docId) ?? 0,
+      includedChunks: [h.chunkIndex],
+    }));
+
+    if (n <= 0) return withCounts;
 
     const merged: DocsSearchHit[] = [];
-    for (const hit of top) {
+    for (const hit of withCounts) {
       const lo = Math.max(0, hit.chunkIndex - n);
       const hi = hit.chunkIndex + n;
       try {
@@ -388,6 +401,7 @@ export class DocsStore {
             content: `${breadcrumbOf(hit)}\n\n${content}`.trimStart(),
             startLine: first.startLine,
             endLine: last.endLine,
+            includedChunks: neighbours.map((c) => c.chunkIndex),
           });
           continue;
         }
@@ -397,6 +411,32 @@ export class DocsStore {
       merged.push(hit);
     }
     return merged;
+  }
+
+  /**
+   * Total chunk count for each document id. Best-effort — any failure yields no
+   * entry for that document, which the caller reads back as 0 ("unknown"), never
+   * as "the document is empty".
+   */
+  private async docChunkCounts(collection: string, docIds: string[]): Promise<Map<string, number>> {
+    const out = new Map<string, number>();
+    await Promise.all(
+      Array.from(new Set(docIds)).map(async (docId) => {
+        try {
+          const res = await this.qdrant.count(collection, {
+            filter: {
+              must: [{ key: 'doc_id', match: { value: docId } }],
+              must_not: [{ key: '__meta', match: { value: true } }],
+            },
+            exact: true,
+          });
+          out.set(docId, res.count);
+        } catch {
+          // leave unset — reads back as unknown
+        }
+      })
+    );
+    return out;
   }
 
   // ── Model self-heal (mirror arch) ─────────────────────────────────────────
@@ -603,6 +643,10 @@ function toHit(payload: Record<string, unknown>, score: number): DocsSearchHit {
     startLine: num(payload['startLine']),
     endLine: num(payload['endLine']),
     score,
+    // Filled in by mergeNeighbours, which is the only place that knows the
+    // document's full extent and which chunks ended up in `content`.
+    docChunkCount: 0,
+    includedChunks: [num(payload['chunk_index'])],
   };
 }
 
