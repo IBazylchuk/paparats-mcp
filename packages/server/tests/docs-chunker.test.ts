@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   detectMarkdown,
   chunkMarkdown,
+  elideOpaqueRuns,
   estimateTokens,
   NotMarkdownError,
 } from '../src/docs/chunker.js';
@@ -157,5 +158,89 @@ describe('chunkMarkdown', () => {
     const chunks = chunkMarkdown(md);
     expect(chunks.length).toBe(1);
     expect(chunks[0]!.headingPath).toEqual([]);
+  });
+});
+
+describe('elideOpaqueRuns', () => {
+  // The shape this exists for: an API example embedding a base64 file upload on
+  // a single line, where the payload is the overwhelming majority of the file.
+  const payload = 'JVBERi0xLjMKJcTl8uXr' + 'aGVsbG8gd29ybGQ'.repeat(200);
+
+  it('replaces a long base64 run with a length-bearing placeholder', () => {
+    const out = elideOpaqueRuns(`"data": "${payload}"`);
+    expect(out).not.toContain(payload);
+    expect(out).toMatch(/\[binary data elided, \d+ chars\]/);
+    // Surrounding context survives, so the chunk still says what was there.
+    expect(out).toContain('"data"');
+  });
+
+  it('leaves short unbroken tokens alone (hashes, ids, ordinary URLs)', () => {
+    const sha = 'a'.repeat(40);
+    const url = 'https://example.com/' + 'p'.repeat(120);
+    const text = `commit ${sha} at ${url}`;
+    expect(elideOpaqueRuns(text)).toBe(text);
+  });
+
+  it('leaves ordinary prose untouched', () => {
+    const prose = 'The quick brown fox jumps over the lazy dog. '.repeat(60);
+    expect(elideOpaqueRuns(prose)).toBe(prose);
+  });
+
+  it('introduces no newline, so source line numbers cannot shift', () => {
+    const before = `a\n"x": "${payload}"\nb`;
+    const after = elideOpaqueRuns(before);
+    expect(after.split('\n').length).toBe(before.split('\n').length);
+  });
+});
+
+describe('chunkMarkdown with embedded payloads', () => {
+  const payload = 'JVBERi0xLjMKJcTl8uXr' + 'aGVsbG8gd29ybGQ'.repeat(300);
+
+  it('never emits a chunk containing the raw payload', () => {
+    const md = `# Onboarding\n\n## Testing environment\n\n{\n"file_name": "cv.pdf",\n"data": "${payload}"\n}`;
+    for (const chunk of chunkMarkdown(md)) {
+      expect(chunk.content).not.toContain(payload);
+    }
+  });
+
+  it('keeps the payload chunk within the token bound', () => {
+    // Before elision this produced ONE ~4.2k-token chunk from a single line,
+    // which the by-line force-split could not cut and which crowded the page's
+    // real prose out of the index.
+    const md = `# Onboarding\n\n## Testing environment\n\n"data": "${payload}"`;
+    const maxTokens = Math.ceil(320 * 1.5);
+    for (const chunk of chunkMarkdown(md)) {
+      expect(estimateTokens(chunk.content)).toBeLessThanOrEqual(maxTokens * 1.1);
+    }
+  });
+
+  it('still indexes the prose around a payload', () => {
+    const md = `# Onboarding\n\n## Testing environment\n\nPost the applicant payload to the sandbox endpoint.\n\n"data": "${payload}"`;
+    const text = chunkMarkdown(md)
+      .map((c) => c.content)
+      .join('\n');
+    expect(text).toContain('sandbox endpoint');
+  });
+
+  it('reports line numbers that still point into the original source', () => {
+    const md = `# T\n\nintro line\n\n"data": "${payload}"\n\ntail line`;
+    const sourceLines = md.split('\n').length;
+    for (const chunk of chunkMarkdown(md)) {
+      expect(chunk.endLine).toBeLessThan(sourceLines);
+      expect(chunk.startLine).toBeLessThanOrEqual(chunk.endLine);
+    }
+  });
+
+  it('bounds a single line too long to fit even after elision', () => {
+    // No payload here — one enormous prose line (a one-line table, a minified
+    // asset). Splitting by line has nothing to cut, so it must fall back to a
+    // character split rather than emit an unbounded chunk.
+    const oneLine = 'word '.repeat(4000).trim();
+    const md = `# T\n\n${oneLine}`;
+    const chunks = chunkMarkdown(md, { targetTokens: 100 });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(estimateTokens(chunk.content)).toBeLessThanOrEqual(200);
+    }
   });
 });
