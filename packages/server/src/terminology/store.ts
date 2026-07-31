@@ -36,6 +36,21 @@ const DUPLICATE_THRESHOLD = 0.85;
 const SIMILAR_THRESHOLD = 0.7;
 
 /**
+ * Is this error just "the glossary doesn't exist yet"?
+ *
+ * That case is genuinely an empty glossary and must read as one — a group that has
+ * never had a term recorded has no collection. Everything else (auth rejected,
+ * host unreachable, timeout) is a failure that happens to *look* identical if
+ * swallowed: callers cannot tell "no terms" from "could not ask", so query
+ * expansion silently stops enriching and `term_list` reports an empty glossary the
+ * agent may then re-populate. Qdrant answers 404 for the missing collection and
+ * 401/5xx/network for the rest, so the two are cleanly separable.
+ */
+function isMissingCollection(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { status?: unknown }).status === 404;
+}
+
+/**
  * The glossary store. Agent-authored via MCP `term_record`; searched via
  * `term_search`. Records go through a similarity gate (like arch decisions) so
  * the agent doesn't silently pile up near-duplicate definitions. Terms are
@@ -127,8 +142,9 @@ export class TerminologyStore {
         .filter((h) => matchesProject(h.term!))
         .map((h) => ({ ...(h.term as Term), score: h.score }))
         .slice(0, limit);
-    } catch {
-      return [];
+    } catch (err) {
+      if (isMissingCollection(err)) return [];
+      throw err;
     }
   }
 
@@ -154,8 +170,9 @@ export class TerminologyStore {
         if (!page.next_page_offset) break;
         offset = page.next_page_offset;
       }
-    } catch {
-      return [];
+    } catch (err) {
+      if (isMissingCollection(err)) return [];
+      throw err;
     }
     return out.slice(0, limit);
   }
@@ -192,8 +209,12 @@ export class TerminologyStore {
       if (!id) return null;
       const createdAt = (point.payload as { createdAt?: unknown } | undefined)?.createdAt;
       return typeof createdAt === 'number' ? { id, createdAt } : { id };
-    } catch {
-      return null;
+    } catch (err) {
+      // Must not degrade to null on a real failure: recordTerm reads null as
+      // "no such term yet" and mints a fresh id, so a transient error would
+      // write a duplicate of an existing term and reset its createdAt.
+      if (isMissingCollection(err)) return null;
+      throw err;
     }
   }
 
@@ -228,8 +249,11 @@ export class TerminologyStore {
         };
       }
       return null;
-    } catch {
-      return null;
+    } catch (err) {
+      // Null here means "nothing similar", which lets the write through. On a real
+      // failure that silently disables the duplicate/similar gate.
+      if (isMissingCollection(err)) return null;
+      throw err;
     }
   }
 
