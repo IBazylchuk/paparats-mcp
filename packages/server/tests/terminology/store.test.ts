@@ -105,13 +105,33 @@ describe('TerminologyStore.recordTerm', () => {
     expect(qdrant.upsert).not.toHaveBeenCalled();
   });
 
-  it('flags a similar (not duplicate) definition', async () => {
+  it('admits a distinct term scoring just below the gate', async () => {
+    // 0.709 is the highest score measured between two genuinely different terms
+    // (CPM vs CPC). The old 0.70 gate sat inside that band and refused real
+    // writes — CPC, CPM and ATS were each rejected as near-duplicates.
     qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
     qdrant.search.mockResolvedValueOnce([
-      { id: 'sim-id', score: 0.75, payload: { term: 'poster' } },
+      { id: 'other-id', score: 0.709, payload: { term: 'CPC' } },
     ]);
-    const res = await store.recordTerm('g', { term: 'feed-poster', definition: 'posts feeds' });
-    expect(res.status).toBe('similar');
+    const res = await store.recordTerm('g', {
+      term: 'CPM',
+      definition: 'cost per thousand impressions',
+    });
+    expect(res.status).toBe('created');
+    expect(qdrant.upsert).toHaveBeenCalled();
+  });
+
+  it('blocks at the lowest score a real duplicate was measured at', async () => {
+    // 0.739 is the weakest genuine duplicate measured on a real glossary — the same
+    // concept reworded — so the gate has to catch it. Only ~0.03 separates it from
+    // the highest-scoring pair of genuinely different terms.
+    qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
+    qdrant.search.mockResolvedValueOnce([{ id: 'dup-id', score: 0.739, payload: { term: 'ABC' } }]);
+    const res = await store.recordTerm('g', {
+      term: 'ABC spelled out',
+      definition: 'the same concept, reworded',
+    });
+    expect(res.status).toBe('duplicate');
     expect(qdrant.upsert).not.toHaveBeenCalled();
   });
 });
