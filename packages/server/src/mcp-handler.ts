@@ -102,18 +102,33 @@ export const STALE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000;
  * Minimum similarity for a glossary term to be shown alongside docs results.
  *
  * Term search returns the nearest entries regardless of distance, so without a
- * floor every query gets a definition attached: measured on one corpus over 132
- * queries, a single-term glossary fired on 132/132 and was unrelated to the
- * question every time.
+ * floor every query gets a definition attached: measured on one corpus, an
+ * unthresholded lookup fired on 132/132 queries and was unrelated to the question
+ * every time.
  *
- * 0.55 comes from that measurement — over 8 genuinely on-term probes and 132
- * off-term queries it kept 8/8 while cutting noise to 5/132. The distributions
- * overlap (worst on-term 0.595, worst off-term 0.629), so no threshold is clean;
- * 0.55 errs toward showing the term, because the cost is a paragraph of unused
- * context rather than a missing definition. Calibrated on ONE term — worth
- * re-measuring once the glossary is populated.
+ * The floor has to be calibrated against a populated glossary, not a small one: it
+ * is applied per candidate term, so the chance that *some* entry clears it rises
+ * with vocabulary size. An earlier 0.55, calibrated when the store held a single
+ * term, attached to 5/102 answerable queries then — and to 85/102 plus 5/30
+ * absent-topic queries once the glossary reached 75 terms.
+ *
+ * Re-measured at 75 terms over 102 answerable queries, 30 verified absent-topic
+ * ones, and 10 probes phrased directly about a term:
+ *
+ *   floor   term shown for a probe   answerable   absent-topic
+ *   0.55            10/10              85/102        5/30
+ *   0.60             8/10              67/102        2/30
+ *   0.65             8/10              43/102        0/30
+ *   0.70             6/10              27/102        0/30
+ *
+ * 0.65 is the lowest floor that never fires on an absent topic — the highest score
+ * any of those reached was 0.645 — while still surfacing the term for 8 of 10
+ * direct questions. Going higher mainly costs on-term coverage.
+ *
+ * Worth re-measuring again if the glossary grows several-fold, for the same reason
+ * this value changed.
  */
-export const GLOSSARY_MIN_SCORE = 0.55;
+export const GLOSSARY_MIN_SCORE = 0.65;
 
 /**
  * Returns true when `updatedAt` is older than {@link STALE_THRESHOLD_MS}.
