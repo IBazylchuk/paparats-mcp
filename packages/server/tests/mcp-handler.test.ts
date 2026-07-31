@@ -2,7 +2,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
-import { McpHandler, describeExcerpt, describeStaleness } from '../src/mcp-handler.js';
+import {
+  McpHandler,
+  describeExcerpt,
+  describeGlossary,
+  describeStaleness,
+  GLOSSARY_MIN_SCORE,
+} from '../src/mcp-handler.js';
 import type { MetadataStore } from '../src/metadata-db.js';
 import type { ProjectConfig, ChunkKind } from '../src/types.js';
 
@@ -1233,6 +1239,45 @@ describe('describeStaleness', () => {
 
   it('ignores a non-finite timestamp instead of rendering NaN', () => {
     expect(describeStaleness({ lastModifiedAt: NaN }, NOW, YEAR)).toBe('');
+  });
+});
+
+describe('describeGlossary', () => {
+  it('renders nothing when no term matched', () => {
+    expect(describeGlossary([])).toBe('');
+  });
+
+  it('renders term, aliases and definition ahead of the results', () => {
+    const out = describeGlossary([
+      { term: 'ACO', definition: 'Automated campaign optimiser.', aliases: ['auto-opt'] },
+    ]);
+    expect(out).toContain('## Glossary');
+    expect(out).toContain('**ACO**');
+    expect(out).toContain('auto-opt');
+    expect(out).toContain('Automated campaign optimiser.');
+    // Separator so the terms never read as part of the first excerpt.
+    expect(out.endsWith('---\n\n')).toBe(true);
+  });
+
+  it('omits the aliases clause when there are none', () => {
+    const out = describeGlossary([{ term: 'ACO', definition: 'A thing.', aliases: [] }]);
+    expect(out).not.toContain('aka');
+  });
+
+  it('keeps the glossary above the results, not merged into them', () => {
+    // The terms are context, not an answer — a term can match a question it does
+    // not resolve, so it must be visibly separate from the retrieved excerpts.
+    const out = describeGlossary([{ term: 'A', definition: 'd', aliases: [] }]);
+    expect(out.indexOf('## Glossary')).toBeLessThan(out.indexOf('---'));
+  });
+});
+
+describe('GLOSSARY_MIN_SCORE', () => {
+  it('sits between the measured on-term and off-term bands', () => {
+    // Guards the calibration: 8/8 on-term probes scored >=0.595, and dropping to
+    // 0 attached a definition to 132/132 queries, none of them on-term.
+    expect(GLOSSARY_MIN_SCORE).toBeGreaterThan(0);
+    expect(GLOSSARY_MIN_SCORE).toBeLessThanOrEqual(0.595);
   });
 });
 

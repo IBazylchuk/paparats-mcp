@@ -82,6 +82,17 @@ describe('TerminologyStore.recordTerm', () => {
     expect(res.id).toBe('existing-id');
   });
 
+  it('refuses to write a duplicate when the existence lookup fails', async () => {
+    // A swallowed error here reads as "no such term yet", so recordTerm would mint
+    // a fresh id: the existing term gets shadowed by a copy and loses its
+    // createdAt. Failing loudly is the only safe answer.
+    qdrant.scroll.mockRejectedValueOnce(Object.assign(new Error('Unauthorized'), { status: 401 }));
+    await expect(
+      store.recordTerm('g', { term: 'feed-poster', definition: 'new def' })
+    ).rejects.toThrow('Unauthorized');
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+
   it('blocks a duplicate definition via the similarity gate', async () => {
     // No exact-name match (findByTerm), but findNearest returns a high score.
     qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
@@ -151,8 +162,15 @@ describe('TerminologyStore.search', () => {
   });
 
   it('returns [] gracefully on a missing collection', async () => {
-    qdrant.search.mockRejectedValueOnce(new Error('missing'));
+    qdrant.search.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }));
     expect(await store.search('g', 'q')).toEqual([]);
+  });
+
+  it('propagates a real failure instead of reporting an empty glossary', async () => {
+    // An empty result and an unreachable store are indistinguishable to the
+    // caller, so swallowing this silently disables glossary enrichment.
+    qdrant.search.mockRejectedValueOnce(Object.assign(new Error('Unauthorized'), { status: 401 }));
+    await expect(store.search('g', 'q')).rejects.toThrow('Unauthorized');
   });
 });
 
