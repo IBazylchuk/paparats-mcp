@@ -29,11 +29,37 @@ export interface TermSearchOpts {
   minScore?: number;
 }
 
-// Similarity gate — carried over from the arch bands (calibrated on bge-m3,
-// re-used here with qwen3, not re-tuned). A near-identical term is a duplicate;
-// an overlapping-but-distinct one is "similar".
-const DUPLICATE_THRESHOLD = 0.85;
-const SIMILAR_THRESHOLD = 0.7;
+/**
+ * Similarity gate bands, calibrated on qwen3 against a real 27-term glossary.
+ *
+ * Measured over all 351 distinct pairs in that glossary plus 7 hand-written
+ * restatements of existing entries (same concept, different wording):
+ *
+ * - genuine duplicates scored 0.739 upward (lowest: a reworded org-structure term)
+ * - distinct terms reached 0.709 (`CPM` vs `CPC`), with `CPA` vs `CPC` at 0.707
+ *
+ * The bands are adjacent, not separated — only ~0.03 apart — because glossary
+ * entries share heavy structural boilerplate ("Cost Per X — spend divided by Y"),
+ * so a whole family of real, different metrics sits just under the duplicate band.
+ *
+ * The previous 0.85 / 0.70 pair came from the arch layer, calibrated on bge-m3 and
+ * never re-tuned for qwen3. 0.70 landed *inside* the distinct-term band and blocked
+ * legitimate writes: recording `CPC`, `CPM` and `ATS` was each refused as a
+ * near-duplicate of an unrelated term.
+ *
+ * 0.72 is the widest gap between the two measured bands. It stays below every
+ * observed duplicate (0.739) and above every observed distinct pair (0.709), and
+ * catches 7/7 duplicate probes with 0/351 false blocks. The margin is thin on both
+ * sides, so re-measure after the glossary grows substantially — that is what
+ * `scripts/` style one-off calibration runs are for, not a guess.
+ *
+ * There is deliberately only ONE band now. The old code had a second, lower
+ * "similar" tier, but with a 0.03 window between duplicates and distinct terms
+ * there is nowhere to put it: any value low enough to mean "similar" is already
+ * inside the distinct-term band and blocks legitimate writes. `TermWriteStatus`
+ * still carries `'similar'` for wire compatibility, but nothing produces it.
+ */
+const DUPLICATE_THRESHOLD = 0.72;
 
 /**
  * Is this error just "the glossary doesn't exist yet"?
@@ -88,14 +114,6 @@ export class TerminologyStore {
       if (match && match.score >= DUPLICATE_THRESHOLD) {
         return {
           status: 'duplicate',
-          id: match.id,
-          similarity: match.score,
-          matchedLabel: match.label,
-        };
-      }
-      if (match && match.score >= SIMILAR_THRESHOLD) {
-        return {
-          status: 'similar',
           id: match.id,
           similarity: match.score,
           matchedLabel: match.label,
