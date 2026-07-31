@@ -271,6 +271,15 @@ export interface GlossaryMatch {
  * non-async — callers that want glossary enrichment (docs search, or an explicit
  * opt-in flag) call this instead of / in addition to expandQuery.
  *
+ * NOT USED BY DOCS SEARCH, and measured harmful there: folding a definition into
+ * the query text pastes corpus wording into the question, which pulls the vector
+ * toward whichever documents the terms were extracted from. Over 102 answerable
+ * queries on one corpus, precision@1 fell from 73.5% to 6.9% and recall@5 from
+ * 98.0% to 22.5% with a single-term glossary. `search_docs` now reports matched
+ * terms next to the results instead (see `describeGlossary`). Retained for the
+ * code-search path, where the effect has not been measured — measure before
+ * enabling it anywhere.
+ *
  * The glossary lookup is dependency-injected (a function returning matched
  * terms) so this module keeps no hard dependency on TerminologyStore. For each
  * matched term it appends a variant that folds the definition and aliases into

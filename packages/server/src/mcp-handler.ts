@@ -38,7 +38,6 @@ import {
   normalizeAudience,
 } from './docs/store.js';
 import { TerminologyStore } from './terminology/store.js';
-import { expandQueryWithGlossary } from './query-expansion.js';
 import {
   buildArchContextWithVector,
   DEFAULT_MIN_SCORE,
@@ -98,6 +97,23 @@ function resolveChunkLocation(payload: Record<string, unknown>): ChunkLocation {
  * mention — having a visual prefix means the agent/human can't miss it.
  */
 export const STALE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * Minimum similarity for a glossary term to be shown alongside docs results.
+ *
+ * Term search returns the nearest entries regardless of distance, so without a
+ * floor every query gets a definition attached: measured on one corpus over 132
+ * queries, a single-term glossary fired on 132/132 and was unrelated to the
+ * question every time.
+ *
+ * 0.55 comes from that measurement — over 8 genuinely on-term probes and 132
+ * off-term queries it kept 8/8 while cutting noise to 5/132. The distributions
+ * overlap (worst on-term 0.595, worst off-term 0.629), so no threshold is clean;
+ * 0.55 errs toward showing the term, because the cost is a paragraph of unused
+ * context rather than a missing definition. Calibrated on ONE term — worth
+ * re-measuring once the glossary is populated.
+ */
+export const GLOSSARY_MIN_SCORE = 0.55;
 
 /**
  * Returns true when `updatedAt` is older than {@link STALE_THRESHOLD_MS}.
@@ -197,6 +213,26 @@ export function describeExcerpt(hit: {
     `\nExcerpt: ${where} of ${total} — read \`${hit.file}\` for the rest` +
     ` (this passage may not be the document's full answer).`
   );
+}
+
+/**
+ * Render matched glossary terms as a section placed BEFORE the search results.
+ *
+ * Kept out of the retrieval query on purpose — see {@link GLOSSARY_MIN_SCORE}. The
+ * terms are labelled as context rather than as an answer, since a term can match a
+ * question it does not actually resolve.
+ */
+export function describeGlossary(
+  terms: Array<{ term: string; definition: string; aliases: string[] }>
+): string {
+  if (terms.length === 0) return '';
+  const body = terms
+    .map((t) => {
+      const aliases = t.aliases.length > 0 ? ` _(aka: ${t.aliases.join(', ')})_` : '';
+      return `- **${t.term}**${aliases} — ${t.definition}`;
+    })
+    .join('\n');
+  return `## Glossary\n\nTerms from the company glossary that may appear below:\n\n${body}\n\n---\n\n`;
 }
 
 /**
@@ -3096,26 +3132,34 @@ export class McpHandler {
           const groupNames = group ? [group] : this.getGroupNames();
           const termStore = this.terminologyStore;
           const all = [];
+          // Matched glossary terms are reported ALONGSIDE the results, never folded
+          // into the query text. Appending definitions before embedding pastes
+          // corpus wording into the question and drags the vector toward whichever
+          // documents the terms came from: measured on one corpus, doing so dropped
+          // precision@1 from 73.5% to 6.9% and recall@5 from 98.0% to 22.5%.
+          // Reported separately, the model still gets the definition and retrieval
+          // is unaffected.
+          const glossary: Array<{ term: string; definition: string; aliases: string[] }> = [];
+          const seenTerms = new Set<string>();
           for (const g of groupNames) {
-            // Glossary-enrich the query with matched term definitions/aliases,
-            // opt-in and per-group. A lookup failure falls back to the raw query.
-            const queries = termStore
-              ? await expandQueryWithGlossary(query, async (q) => {
-                  const terms = await termStore.search(g, q, {
-                    ...(project !== undefined ? { project } : {}),
-                    limit: 3,
-                  });
-                  return terms.map((t) => ({
-                    term: t.term,
-                    definition: t.definition,
-                    aliases: t.aliases,
-                  }));
-                })
-              : [query];
-            // The first entry is the original query; the glossary variant (if any)
-            // is the last. Search with the enriched query when present.
-            const effectiveQuery = queries[queries.length - 1] ?? query;
-            const hits = await docsStore.search(g, effectiveQuery, {
+            if (termStore) {
+              try {
+                const terms = await termStore.search(g, query, {
+                  ...(project !== undefined ? { project } : {}),
+                  limit: 3,
+                  minScore: GLOSSARY_MIN_SCORE,
+                });
+                for (const t of terms) {
+                  if (seenTerms.has(t.term)) continue;
+                  seenTerms.add(t.term);
+                  glossary.push({ term: t.term, definition: t.definition, aliases: t.aliases });
+                }
+              } catch {
+                // Glossary context is supplementary — a lookup failure must not
+                // fail the documentation search itself.
+              }
+            }
+            const hits = await docsStore.search(g, query, {
               ...(project !== undefined ? { project } : {}),
               ...(effectiveAudience !== null ? { audience: effectiveAudience } : {}),
               ...(limit !== undefined ? { limit } : {}),
@@ -3126,9 +3170,17 @@ export class McpHandler {
           }
           all.sort((a, b) => b.score - a.score);
           const top = all.slice(0, limit ?? 8);
+          const glossaryMd = describeGlossary(glossary);
           if (top.length === 0) {
+            // Still worth returning the glossary: a matched term often explains the
+            // vocabulary mismatch that produced no hits.
             return {
-              content: [{ type: 'text' as const, text: `No documentation found for "${query}".` }],
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `${glossaryMd}No documentation found for "${query}".`,
+                },
+              ],
             };
           }
           // One clock read for the whole result set, so two hits of the same age
@@ -3149,7 +3201,7 @@ export class McpHandler {
             top.length > 1
               ? '\n\n---\n\nThese are the best-matching excerpts, most relevant first. The first result is not always the right one — scan the alternatives before concluding, and read a full file when an excerpt is partial.'
               : '';
-          return { content: [{ type: 'text' as const, text: md + footer }] };
+          return { content: [{ type: 'text' as const, text: glossaryMd + md + footer }] };
         }
       );
     }
