@@ -766,3 +766,68 @@ describe('DocsStore audience — payload + search filter', () => {
     }
   });
 });
+
+describe('DocsStore.rebuildIdfIfEmpty', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let idf: DocsIdfStore;
+  let store: DocsStore;
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    idf = mkIdf();
+    store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf,
+    });
+  });
+
+  it('folds stored chunks into empty corpus stats', async () => {
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [
+        { id: 'a', payload: { content: 'alpha beta gamma' } },
+        { id: 'b', payload: { content: 'beta delta' } },
+      ],
+      next_page_offset: null,
+    });
+    const n = await store.rebuildIdfIfEmpty('g');
+    expect(n).toBe(2);
+    const stats = idf.getCorpusStats('g');
+    expect(stats.docCount).toBe(2);
+    // 'beta' appears in both chunks, 'alpha' in one — df must distinguish them.
+    expect(stats.docFreq('beta')).toBe(2);
+    expect(stats.docFreq('alpha')).toBe(1);
+  });
+
+  it('does nothing when stats already exist', async () => {
+    idf.addDocument('g', new Set(['already']), 1);
+    const n = await store.rebuildIdfIfEmpty('g');
+    expect(n).toBe(0);
+    // No scan at all — a normal indexer restart must not pay for this.
+    expect(qdrant.scroll).not.toHaveBeenCalled();
+  });
+
+  it('skips the meta sentinel rather than counting it as a document', async () => {
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [{ id: 'a', payload: { content: 'real text' } }],
+      next_page_offset: null,
+    });
+    await store.rebuildIdfIfEmpty('g');
+    const filter = qdrant.scroll.mock.calls[0]![1].filter as {
+      must_not?: Array<Record<string, unknown>>;
+    };
+    expect(filter.must_not).toBeDefined();
+  });
+
+  it('returns what it managed to fold when the scan fails midway', async () => {
+    qdrant.scroll
+      .mockResolvedValueOnce({
+        points: [{ id: 'a', payload: { content: 'one two' } }],
+        next_page_offset: 'next',
+      })
+      .mockRejectedValueOnce(new Error('qdrant down'));
+    const n = await store.rebuildIdfIfEmpty('g');
+    // Partial stats beat none: search stays hybrid, just less precisely weighted.
+    expect(n).toBe(1);
+  });
+});

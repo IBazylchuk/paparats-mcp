@@ -174,3 +174,39 @@ describe('DocsIdfStore', () => {
     s.close();
   });
 });
+
+describe('buildQuerySparseVector — empty corpus', () => {
+  const emptyStats: CorpusStats = { docCount: 0, avgDocLength: 0, docFreq: () => 0 };
+
+  it('returns an empty vector instead of equal weights for every term', () => {
+    // With no corpus, idf()'s cold-start clamp reports every term as maximally
+    // rare, so all terms score identically and the sparse half stops ranking —
+    // it just matches any of the words. Overview files (README, CLAUDE.md) are
+    // full of common words like "group" and "service", so they would dominate
+    // fusion while the dense half is ignored.
+    const v = buildQuerySparseVector('setting up a Kafka consumer group', emptyStats);
+    expect(v.indices).toEqual([]);
+    expect(v.values).toEqual([]);
+  });
+
+  it('still weights terms once the corpus is non-empty', () => {
+    const stats: CorpusStats = {
+      docCount: 1000,
+      avgDocLength: 200,
+      docFreq: (t) => (t === 'common' ? 900 : 2),
+    };
+    const v = buildQuerySparseVector('common rare', stats);
+    expect(v.indices).toHaveLength(2);
+    // A rare term must outweigh a common one, which is the whole point of IDF.
+    const byIdx = new Map(v.indices.map((ix, i) => [ix, v.values[i]!]));
+    expect(byIdx.get(termToIndex('rare'))!).toBeGreaterThan(byIdx.get(termToIndex('common'))!);
+  });
+
+  it('keeps the cold-start clamp on the INDEXING side', () => {
+    // The first document written into an empty corpus legitimately needs
+    // non-zero weights, so the document builder must NOT be gated the same way.
+    const v = buildDocumentSparseVector('alpha beta gamma', emptyStats);
+    expect(v.indices.length).toBeGreaterThan(0);
+    expect(idf(0, 0)).toBeGreaterThan(0);
+  });
+});
