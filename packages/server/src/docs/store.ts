@@ -606,6 +606,85 @@ export class DocsStore {
     return this.reindexDocs(group);
   }
 
+  /**
+   * Rebuild this group's BM25 corpus statistics from the chunks already in Qdrant,
+   * but only when they are missing.
+   *
+   * The stats live in a local SQLite file written by whoever indexes. A process
+   * that only SEARCHES (the MCP server, in the usual split-container deployment)
+   * therefore starts with an empty store and never fills it — nothing on the read
+   * path writes df. With no stats, `buildQuerySparseVector` cannot weight terms
+   * and returns an empty vector, so search silently degrades to dense-only:
+   * correct, but it throws away the keyword half of a hybrid index.
+   *
+   * Rebuilding is a pure function of the stored chunks, so it is safe to run on
+   * any process and idempotent. Skipped when stats already exist, so a normal
+   * indexer restart costs nothing.
+   *
+   * @returns the number of chunks folded into the stats (0 when already present).
+   */
+  async rebuildIdfIfEmpty(group: string): Promise<number> {
+    if (this.idf.getCorpusStats(group).docCount > 0) return 0;
+    const collection = toDocsCollectionName(group);
+    let offset: string | number | Record<string, unknown> | undefined | null = undefined;
+    let folded = 0;
+    try {
+      for (;;) {
+        const page = await this.qdrant.scroll(collection, {
+          limit: 256,
+          with_payload: { include: ['content'] },
+          with_vector: false,
+          filter: { must_not: [{ key: '__meta', match: { value: true } }] },
+          ...(offset !== undefined && offset !== null ? { offset } : {}),
+        });
+        for (const point of page.points) {
+          const content = (point.payload as { content?: unknown } | undefined)?.content;
+          if (typeof content !== 'string') continue;
+          const tokens = tokenize(content);
+          // Same split as the indexer: df counts DISTINCT terms, the corpus total
+          // counts RAW tokens — mixing them corrupts avgDocLength.
+          this.idf.addDocument(group, new Set(tokens), tokens.length);
+          folded++;
+        }
+        if (!page.next_page_offset) break;
+        offset = page.next_page_offset;
+      }
+    } catch (err) {
+      console.warn(`[docs] IDF rebuild failed for group "${group}": ${(err as Error).message}`);
+      return folded;
+    }
+    return folded;
+  }
+
+  /**
+   * Rebuild missing BM25 stats for every docs collection. Best-effort: a failure
+   * on one group leaves search dense-only there rather than failing startup.
+   */
+  async rebuildAllIdf(): Promise<void> {
+    let collections: string[];
+    try {
+      const res = await this.qdrant.getCollections();
+      collections = res.collections.map((c) => c.name);
+    } catch (err) {
+      console.warn(
+        `[docs] IDF rebuild skipped — could not list collections: ${(err as Error).message}`
+      );
+      return;
+    }
+    for (const name of collections) {
+      const group = fromDocsCollectionName(name);
+      if (group === null) continue;
+      try {
+        const n = await this.rebuildIdfIfEmpty(group);
+        if (n > 0) {
+          console.log(`[docs] rebuilt BM25 stats for group "${group}" from ${n} chunk(s)`);
+        }
+      } catch (err) {
+        console.warn(`[docs] IDF rebuild failed for group "${group}": ${(err as Error).message}`);
+      }
+    }
+  }
+
   /** Heal every docs collection whose text model no longer matches. Best-effort. */
   async healAllDocsModels(): Promise<void> {
     let collections: string[];
