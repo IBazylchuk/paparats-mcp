@@ -1273,11 +1273,17 @@ describe('describeGlossary', () => {
 });
 
 describe('GLOSSARY_MIN_SCORE', () => {
-  it('sits between the measured on-term and off-term bands', () => {
-    // Guards the calibration: 8/8 on-term probes scored >=0.595, and dropping to
-    // 0 attached a definition to 132/132 queries, none of them on-term.
-    expect(GLOSSARY_MIN_SCORE).toBeGreaterThan(0);
-    expect(GLOSSARY_MIN_SCORE).toBeLessThanOrEqual(0.595);
+  it('clears the highest score an absent-topic query reached', () => {
+    // Measured at 75 terms: absent-topic queries topped out at 0.645, so anything
+    // at or below that attaches definitions to questions the corpus cannot answer.
+    // The earlier 0.55 did exactly that once the glossary grew — 5/30 absent topics.
+    expect(GLOSSARY_MIN_SCORE).toBeGreaterThan(0.645);
+  });
+
+  it('stays low enough to still answer direct questions about a term', () => {
+    // At 0.70 only 6 of 10 probes phrased directly about a term still surfaced it;
+    // 0.65 keeps 8/10. Above ~0.68 the floor mainly costs on-term coverage.
+    expect(GLOSSARY_MIN_SCORE).toBeLessThanOrEqual(0.68);
   });
 });
 

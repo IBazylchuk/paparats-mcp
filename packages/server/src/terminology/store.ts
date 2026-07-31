@@ -30,36 +30,38 @@ export interface TermSearchOpts {
 }
 
 /**
- * Similarity gate bands, calibrated on qwen3 against a real 27-term glossary.
+ * Similarity floor above which a write is refused as a duplicate.
  *
- * Measured over all 351 distinct pairs in that glossary plus 7 hand-written
- * restatements of existing entries (same concept, different wording):
+ * Deliberately very high, because cosine similarity between rendered glossary
+ * entries does not separate "same concept" from "same kind of concept". Entries
+ * share their structure and their domain ("ACO template that...", "Jobs in the
+ * inbound feed that...", "Cost Per X — spend divided by Y"), so the vector largely
+ * reflects the genre of the text rather than which term it defines — and the effect
+ * worsens as the glossary grows, because more legitimate neighbours crowd the top
+ * of the range.
  *
- * - genuine duplicates scored 0.739 upward (lowest: a reworded org-structure term)
- * - distinct terms reached 0.709 (`CPM` vs `CPC`), with `CPA` vs `CPC` at 0.707
+ * Measured while importing a 53-entry glossary into a store that already held 26
+ * terms. The previous 0.72 floor refused 19 of the 53; on inspection only 3 were
+ * genuine (a canonical name colliding with an existing alias), so 16/19 — 84% —
+ * were false, spread across 0.724–0.889. Blocked pairs included a campaign-strategy
+ * template against a publisher-side bidding mode, a volume metric against a scoring
+ * subsystem, and two separate cost metrics from the same family: all distinct
+ * concepts that merely read alike.
  *
- * The bands are adjacent, not separated — only ~0.03 apart — because glossary
- * entries share heavy structural boilerplate ("Cost Per X — spend divided by Y"),
- * so a whole family of real, different metrics sits just under the duplicate band.
+ * That 0.72 came from an earlier calibration on a 27-term glossary, where genuine
+ * duplicates appeared to start at 0.739. At 75 terms that band is simply full of
+ * legitimate pairs, so the earlier number did not survive scale.
  *
- * The previous 0.85 / 0.70 pair came from the arch layer, calibrated on bge-m3 and
- * never re-tuned for qwen3. 0.70 landed *inside* the distinct-term band and blocked
- * legitimate writes: recording `CPC`, `CPM` and `ATS` was each refused as a
- * near-duplicate of an unrelated term.
+ * At 0.95 the gate only catches near-verbatim restatements. It gives up on
+ * detecting reworded duplicates on purpose: the three genuine collisions it would
+ * have caught are all already handled by name idempotency (recording an existing
+ * `term` overwrites in place), whereas a false block silently costs a real term.
+ * Losing a term is worse than admitting a near-duplicate an author can merge.
  *
- * 0.72 is the widest gap between the two measured bands. It stays below every
- * observed duplicate (0.739) and above every observed distinct pair (0.709), and
- * catches 7/7 duplicate probes with 0/351 false blocks. The margin is thin on both
- * sides, so re-measure after the glossary grows substantially — that is what
- * `scripts/` style one-off calibration runs are for, not a guess.
- *
- * There is deliberately only ONE band now. The old code had a second, lower
- * "similar" tier, but with a 0.03 window between duplicates and distinct terms
- * there is nowhere to put it: any value low enough to mean "similar" is already
- * inside the distinct-term band and blocks legitimate writes. `TermWriteStatus`
- * still carries `'similar'` for wire compatibility, but nothing produces it.
+ * `TermWriteStatus` still carries `'similar'` for wire compatibility, but nothing
+ * produces it.
  */
-const DUPLICATE_THRESHOLD = 0.72;
+const DUPLICATE_THRESHOLD = 0.95;
 
 /**
  * Is this error just "the glossary doesn't exist yet"?

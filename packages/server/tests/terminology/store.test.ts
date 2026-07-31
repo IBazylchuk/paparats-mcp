@@ -93,11 +93,12 @@ describe('TerminologyStore.recordTerm', () => {
     expect(qdrant.upsert).not.toHaveBeenCalled();
   });
 
-  it('blocks a duplicate definition via the similarity gate', async () => {
-    // No exact-name match (findByTerm), but findNearest returns a high score.
+  it('blocks a near-verbatim restatement', async () => {
+    // No exact-name match (findByTerm), but findNearest scores high enough that the
+    // two texts are effectively the same entry.
     qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
     qdrant.search.mockResolvedValueOnce([
-      { id: 'dup-id', score: 0.92, payload: { term: 'poster', project: undefined } },
+      { id: 'dup-id', score: 0.97, payload: { term: 'poster', project: undefined } },
     ]);
     const res = await store.recordTerm('g', { term: 'feed-poster', definition: 'posts feeds' });
     expect(res.status).toBe('duplicate');
@@ -105,34 +106,19 @@ describe('TerminologyStore.recordTerm', () => {
     expect(qdrant.upsert).not.toHaveBeenCalled();
   });
 
-  it('admits a distinct term scoring just below the gate', async () => {
-    // 0.709 is the highest score measured between two genuinely different terms
-    // (CPM vs CPC). The old 0.70 gate sat inside that band and refused real
-    // writes — CPC, CPM and ATS were each rejected as near-duplicates.
+  // Scores observed while importing a 53-entry glossary under the old 0.72 floor,
+  // where 16 of 19 refusals were distinct concepts spread over 0.724-0.889. Glossary
+  // entries share structure and domain, so cosine tracks the genre of the text more
+  // than which term it defines — these must all still be admitted.
+  it.each([0.724, 0.781, 0.804, 0.889])('admits a distinct term scoring %s', async (score) => {
     qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
-    qdrant.search.mockResolvedValueOnce([
-      { id: 'other-id', score: 0.709, payload: { term: 'CPC' } },
-    ]);
+    qdrant.search.mockResolvedValueOnce([{ id: 'other-id', score, payload: { term: 'OTHER' } }]);
     const res = await store.recordTerm('g', {
-      term: 'CPM',
-      definition: 'cost per thousand impressions',
+      term: `TERM-${score}`,
+      definition: 'a distinct concept that happens to read like its neighbour',
     });
     expect(res.status).toBe('created');
     expect(qdrant.upsert).toHaveBeenCalled();
-  });
-
-  it('blocks at the lowest score a real duplicate was measured at', async () => {
-    // 0.739 is the weakest genuine duplicate measured on a real glossary — the same
-    // concept reworded — so the gate has to catch it. Only ~0.03 separates it from
-    // the highest-scoring pair of genuinely different terms.
-    qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
-    qdrant.search.mockResolvedValueOnce([{ id: 'dup-id', score: 0.739, payload: { term: 'ABC' } }]);
-    const res = await store.recordTerm('g', {
-      term: 'ABC spelled out',
-      definition: 'the same concept, reworded',
-    });
-    expect(res.status).toBe('duplicate');
-    expect(qdrant.upsert).not.toHaveBeenCalled();
   });
 });
 
