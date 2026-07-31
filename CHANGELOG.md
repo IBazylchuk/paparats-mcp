@@ -4,6 +4,18 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.4.2] - 2026-07-31
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 2f63499: Fix docs search returning confident matches for undocumented topics when BM25 statistics are missing.
+
+  Corpus statistics are written by whoever indexes, so a search-only process (the MCP server, whenever indexing runs in a separate container) started with an empty store that nothing ever filled. With no statistics every term looked equally rare, so the keyword half of hybrid search stopped ranking and degenerated into "match any of these words" — which favours overview files like README and CLAUDE.md, because they mention many topics in passing. Those then dominated the fused ranking and the semantic half was effectively ignored.
+
+  The query builder now returns an empty sparse vector when the corpus is empty, so search ranks on semantics alone rather than on a meaningless keyword vector. The server also rebuilds missing statistics from the chunks already indexed on startup, restoring the keyword half instead of leaving search permanently dense-only. Indexing behaviour is unchanged.
+
 ## [2.4.1] - 2026-07-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -23,7 +35,7 @@
 
   Works in the `defaults` block as well as per repo.
 
-## [2.4.0] - 2026-07-30
+## [2.4.0] - 2026-07-31
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -221,7 +233,7 @@
 
 - @paparats/shared@2.0.3
 
-## [2.0.2] - 2026-07-30
+## [2.0.2] - 2026-07-31
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -402,7 +414,7 @@
 
 - @paparats/shared@1.7.2
 
-## [1.7.1] - 2026-07-30
+## [1.7.1] - 2026-07-31
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -501,7 +513,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [1.4.0] - 2026-07-30
+## [1.4.0] - 2026-07-31
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -915,7 +927,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [0.7.0] - 2026-07-30
+## [0.7.0] - 2026-07-31
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -962,7 +974,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-07-30
+## [0.5.0] - 2026-07-31
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1055,7 +1067,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-07-30
+## [0.3.0] - 2026-07-31
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
