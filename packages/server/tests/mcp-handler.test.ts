@@ -8,6 +8,7 @@ import {
   describeGlossary,
   describeStaleness,
   GLOSSARY_MIN_SCORE,
+  TERM_LOOKUP_MIN_SCORE,
 } from '../src/mcp-handler.js';
 import type { MetadataStore } from '../src/metadata-db.js';
 import type { ProjectConfig, ChunkKind } from '../src/types.js';
@@ -1284,6 +1285,25 @@ describe('GLOSSARY_MIN_SCORE', () => {
     // At 0.70 only 6 of 10 probes phrased directly about a term still surfaced it;
     // 0.65 keeps 8/10. Above ~0.68 the floor mainly costs on-term coverage.
     expect(GLOSSARY_MIN_SCORE).toBeLessThanOrEqual(0.68);
+  });
+});
+
+describe('TERM_LOOKUP_MIN_SCORE', () => {
+  it('clears every invented-acronym score measured against a live glossary', () => {
+    // A bare unknown acronym lands in the centre of the glossary's genre rather
+    // than far from it: three invented four-letter acronyms scored 0.590, 0.605 and
+    // 0.623 against unrelated entries. Below this the tool reports a neighbour as
+    // the definition of a term the glossary does not contain.
+    expect(TERM_LOOKUP_MIN_SCORE).toBeGreaterThan(0.623);
+  });
+
+  it('is stricter than the docs sidecar floor', () => {
+    // Different failure costs: the sidecar volunteers context and a near-miss is
+    // merely noise beside real results, whereas term_search was asked directly and
+    // a near-miss *is* the answer. Real terms fall below this floor — the lowest
+    // measured was 0.576 for its own name — and are reachable only because exact
+    // name/alias matches bypass it entirely.
+    expect(TERM_LOOKUP_MIN_SCORE).toBeGreaterThan(GLOSSARY_MIN_SCORE);
   });
 });
 

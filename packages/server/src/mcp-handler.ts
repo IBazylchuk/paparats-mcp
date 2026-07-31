@@ -131,6 +131,30 @@ export const STALE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000;
 export const GLOSSARY_MIN_SCORE = 0.65;
 
 /**
+ * Minimum similarity for a direct `term_search` lookup to report a match.
+ *
+ * Distinct from {@link GLOSSARY_MIN_SCORE}, which gates unsolicited enrichment of a
+ * docs search. Here the caller asked about a term explicitly, so a wrong answer is
+ * worse than no answer: an agent handed an unrelated entry as the definition of the
+ * acronym it asked about has been actively misinformed, whereas "not found" prompts
+ * it to search the code and docs instead.
+ *
+ * Without any floor the tool could not say "not found" at all — `TerminologyStore`
+ * defaults `minScore` to 0, so a non-empty glossary always yielded the nearest 8
+ * entries. Measured against a live 75-term glossary, invented four-letter acronyms
+ * scored 0.590–0.623 against unrelated entries, and off-domain phrases (a recipe, a
+ * piece of infrastructure, a biology term) 0.460–0.508.
+ *
+ * 0.70 sits above every invented-acronym score measured. Real terms score *below*
+ * it — the lowest was 0.576 queried by its own name — which would be fatal if the
+ * vector were the only path, but exact name/alias matches never reach this floor:
+ * they short-circuit in
+ * `TerminologyStore.search` with `score: 1`. So this only ever judges paraphrases
+ * and descriptive questions, where a strict floor is the right trade.
+ */
+export const TERM_LOOKUP_MIN_SCORE = 0.7;
+
+/**
  * Returns true when `updatedAt` is older than {@link STALE_THRESHOLD_MS}.
  * Returns false for missing / non-finite timestamps — "unknown age" is not
  * the same as "known to be stale".
@@ -3239,6 +3263,7 @@ export class McpHandler {
           const all = [];
           for (const g of groupNames) {
             const hits = await termStore.search(g, query, {
+              minScore: TERM_LOOKUP_MIN_SCORE,
               ...(project !== undefined ? { project } : {}),
               ...(limit !== undefined ? { limit } : {}),
             });
@@ -3248,13 +3273,21 @@ export class McpHandler {
           const top = all.slice(0, limit ?? 8);
           if (top.length === 0) {
             return {
-              content: [{ type: 'text' as const, text: `No glossary term found for "${query}".` }],
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `No glossary term found for "${query}". The glossary is agent-authored and incomplete — search the code and docs before concluding the term is unused, and record it with term_record once confirmed.`,
+                },
+              ],
             };
           }
+          // An exact name/alias match scores 1; anything lower is the vector's guess.
+          // Saying which is which stops a near-miss from being read as a definition.
           const md = top
             .map((t) => {
               const aliases = t.aliases.length > 0 ? ` _(aka: ${t.aliases.join(', ')})_` : '';
-              return `**${t.term}**${aliases}\n${t.definition}`;
+              const how = t.score >= 1 ? 'exact match' : `similar, ${t.score.toFixed(3)}`;
+              return `**${t.term}**${aliases} _(${how})_\n${t.definition}`;
             })
             .join('\n\n');
           return { content: [{ type: 'text' as const, text: md }] };

@@ -141,9 +141,36 @@ export class TerminologyStore {
     return { status: existing ? 'updated' : 'created', id };
   }
 
-  /** Semantic search over the glossary. */
+  /**
+   * Look up the glossary: exact name/alias match first, vector search as fallback.
+   *
+   * A glossary lookup is overwhelmingly "what does <acronym> mean", and that is the
+   * one query shape the vector is worst at. Embedding a bare token gives the model
+   * nothing to condition on, so the vector lands in the centre of the glossary's
+   * genre rather than near the entry that defines it. Measured against a live
+   * 75-term glossary: a three-letter acronym queried on its own ranked its own entry
+   * 21st (0.469), behind an unrelated volume metric at 0.620 — while the same acronym
+   * wrapped as "what is X" ranked it 1st. Two cost metrics likewise returned a
+   * same-family neighbour above their own entry.
+   *
+   * A score floor cannot rescue this, because the bands overlap: invented acronyms
+   * (0.605, 0.623) outscore real entries queried by name (0.576, 0.597), so any
+   * floor that suppresses noise also deletes real terms. Exact match sidesteps
+   * the vector entirely for the queries that matter, and leaves the vector to do what
+   * it is good at — paraphrases and descriptive questions — with a floor applied.
+   *
+   * Priority is canonical name over alias: 7 of the live glossary's alias keys shadow
+   * some other entry's canonical name — a cost metric that is also listed as an alias
+   * of a broader quality concept, a campaign template that is also an alias of the
+   * subsystem owning it — and returning the alias holder for an exact name query hides
+   * the entry the caller asked for.
+   */
   async search(group: string, query: string, opts: TermSearchOpts = {}): Promise<TermSearchHit[]> {
     const limit = opts.limit ?? 8;
+
+    const exact = await this.findExactMatches(group, query, opts.project, limit);
+    if (exact.length > 0) return exact;
+
     const vector = await this.provider.embed(query);
     const must_not: unknown[] = [{ key: '__meta', match: { value: true } }];
     const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
@@ -205,6 +232,39 @@ export class TerminologyStore {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Terms whose canonical name or alias equals `query`, case- and space-insensitively.
+   *
+   * Matching happens client-side over the group's terms rather than as a Qdrant
+   * filter: `match: { value }` is exact and case-sensitive, so it would miss a
+   * lowercased acronym, and there is no portable case-folding filter. A glossary is small
+   * (hundreds of entries) and `list` already pages it, so the scan is cheap.
+   *
+   * Exact matches carry `score: 1` — they are identity, not similarity, and callers
+   * applying a `minScore` floor must never filter them out.
+   */
+  private async findExactMatches(
+    group: string,
+    query: string,
+    project: string | undefined,
+    limit: number
+  ): Promise<TermSearchHit[]> {
+    const wanted = normalizeLookupKey(query);
+    if (wanted === '') return [];
+
+    const all = await this.list(group, { ...(project !== undefined ? { project } : {}) });
+    const byName: Term[] = [];
+    const byAlias: Term[] = [];
+    for (const term of all) {
+      if (normalizeLookupKey(term.term) === wanted) byName.push(term);
+      else if (term.aliases.some((a) => normalizeLookupKey(a) === wanted)) byAlias.push(term);
+    }
+    // Name beats alias; an alias claimed by several terms returns all of them so the
+    // caller can disambiguate instead of silently getting whichever came back first.
+    const matches = byName.length > 0 ? byName : byAlias;
+    return matches.slice(0, limit).map((term) => ({ ...term, score: 1 }));
   }
 
   private async findByTerm(
@@ -389,6 +449,11 @@ function renderTermForEmbedding(input: {
   const aliases =
     input.aliases && input.aliases.length > 0 ? `\nAliases: ${input.aliases.join(', ')}` : '';
   return `Term: ${input.term}\n\n${input.definition}${aliases}`;
+}
+
+/** Fold a term name or alias to a comparison key: trimmed, collapsed, lowercased. */
+function normalizeLookupKey(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 function toTerm(payload: unknown): Term | null {
