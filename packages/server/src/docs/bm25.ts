@@ -160,6 +160,18 @@ export function buildDocumentSparseVector(text: string, stats: CorpusStats): Spa
 export function buildQuerySparseVector(query: string, stats: CorpusStats): SparseVector {
   const tokens = tokenize(query);
   if (tokens.length === 0) return { indices: [], values: [] };
+  // No corpus stats means BM25 cannot rank: idf()'s cold-start clamp treats every
+  // term as maximally rare, so each one gets the SAME weight and the sparse half
+  // degenerates into "match any of these words". That is actively harmful on the
+  // query side — overview-style files (README, CLAUDE.md) are dense with common
+  // words like "group", "service" and "queue", so they dominate the fusion while
+  // the dense half is ignored. Returning an empty vector makes the caller skip
+  // the sparse prefetch entirely and rank on semantics alone, which is the
+  // correct degraded behaviour.
+  //
+  // Indexing keeps the clamp: the first document written into an empty corpus
+  // legitimately needs non-zero weights.
+  if (stats.docCount <= 0) return { indices: [], values: [] };
   const seen = new Map<number, number>();
   for (const term of new Set(tokens)) {
     const termIdf = idf(stats.docFreq(term), stats.docCount);

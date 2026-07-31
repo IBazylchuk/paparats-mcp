@@ -234,6 +234,15 @@ tctx.run(systemContext('docs-heal'), () =>
     console.warn(`[docs] model-heal pass failed (non-fatal): ${(err as Error).message}`);
   })
 );
+// Recover BM25 stats when this process only searches (they are written by
+// whoever indexes, which in a split-container deployment is not us). Without
+// them the sparse half of hybrid search is unusable and docs search silently
+// falls back to dense-only.
+tctx.run(systemContext('docs-heal'), () =>
+  docsStore.rebuildAllIdf().catch((err) => {
+    console.warn(`[docs] IDF rebuild pass failed (non-fatal): ${(err as Error).message}`);
+  })
+);
 tctx.run(systemContext('terms-heal'), () =>
   terminologyStore.healAllTermsModels().catch((err) => {
     console.warn(`[terms] model-heal pass failed (non-fatal): ${(err as Error).message}`);
