@@ -3141,9 +3141,10 @@ export class McpHandler {
               return `### ${crumb} (${h.score.toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}${describeExcerpt(h)}${describeStaleness(h, now, DEFAULT_DOCS_STALE_AFTER_MS)}\n\n${h.content}`;
             })
             .join('\n\n---\n\n');
-          // Ranking is good but not perfect (the top hit is right ~89% of the
-          // time on a measured corpus, the right doc is in the top 3 ~96%), so
-          // the reader is told to consider the whole list rather than stop at #1.
+          // Ranking is good but not perfect (measured on one corpus over 102
+          // answerable queries: the top hit is right ~87% of the time, the right
+          // doc is in the top 5 ~97%), so the reader is told to consider the
+          // whole list rather than stop at #1.
           const footer =
             top.length > 1
               ? '\n\n---\n\nThese are the best-matching excerpts, most relevant first. The first result is not always the right one — scan the alternatives before concluding, and read a full file when an excerpt is partial.'

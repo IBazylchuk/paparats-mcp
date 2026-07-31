@@ -280,7 +280,14 @@ export class DocsStore {
   async search(group: string, query: string, opts: DocsSearchOpts = {}): Promise<DocsSearchHit[]> {
     const limit = opts.limit ?? 8;
     const collection = toDocsCollectionName(group);
-    const dense = await this.provider.embed(query);
+    // embedQuery, NOT embed: qwen3 is a decoder with last-token pooling, so the
+    // card's retrieval instruction is part of its trained query interface, not
+    // decoration. Embedding the bare query put it in a different region of the
+    // space than the instruction-conditioned one the floors were calibrated on.
+    // Measured on one deployment over 102 answerable + 30 absent-topic queries:
+    // bare 74.5% precision@1 with 28/30 absent topics leaking past the floor,
+    // instructed 87.3% with 5/30. Documents stay unprefixed — see prefixPassage.
+    const dense = await this.provider.embedQuery(query);
     const stats = this.idf.getCorpusStats(group);
     const sparse = buildQuerySparseVector(query, stats);
 

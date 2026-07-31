@@ -23,7 +23,13 @@ function fakeProvider(): CachedEmbeddingProvider {
     dimensions: 1024,
     model: 'qwen3-embedding-0.6b',
     embed: vi.fn(async () => Array(1024).fill(0.1)),
+    // Distinct fill values so a test can assert WHICH method a code path used:
+    // queries must go through embedQuery (instruction-prefixed for qwen3),
+    // documents through embed/embedPassage (unprefixed).
+    embedQuery: vi.fn(async () => Array(1024).fill(0.2)),
+    embedPassage: vi.fn(async () => Array(1024).fill(0.1)),
     embedBatch: vi.fn(async (texts: string[]) => texts.map(() => Array(1024).fill(0.1))),
+    embedBatchPassage: vi.fn(async (texts: string[]) => texts.map(() => Array(1024).fill(0.1))),
     getCacheStats: vi.fn(),
     attachTelemetry: vi.fn(),
     attachMetrics: vi.fn(),
@@ -166,6 +172,16 @@ describe('DocsStore.indexDocument', () => {
     expect(Array.isArray(points[0]!.payload['heading_path'])).toBe(true);
   });
 
+  it('embeds chunks WITHOUT the query instruction', async () => {
+    const provider = fakeProvider();
+    const s = new DocsStore({ qdrant: qdrant as unknown as QdrantClient, provider, idf });
+    await s.indexDocument('g', { project: 'p', file: 'x.md', content: MD });
+    // Asymmetric by design: qwen3 instructs queries only. Prefixing documents too
+    // would mean re-embedding the whole corpus on every instruction change.
+    expect(provider.embed).toHaveBeenCalled();
+    expect(provider.embedQuery).not.toHaveBeenCalled();
+  });
+
   it('deletes prior chunks for the same (project, file) before re-index', async () => {
     await store.indexDocument('g', { project: 'p', file: 'x.md', content: MD });
     expect(qdrant.delete).toHaveBeenCalled();
@@ -245,6 +261,17 @@ describe('DocsStore.search', () => {
     expect(arg.query.fusion).toBe('rrf');
     expect(hits).toHaveLength(1);
     expect(hits[0]!.docTitle).toBe('Runbook');
+  });
+
+  it('embeds the query through embedQuery so the qwen3 instruction is applied', async () => {
+    const provider = fakeProvider();
+    const s = new DocsStore({ qdrant: qdrant as unknown as QdrantClient, provider, idf });
+    await s.search('g', 'how to rollback', { mergeNeighbours: 0 });
+    // The instruction is a trained part of the query interface for a last-token
+    // decoder, so a bare embed() lands in a different region of the space —
+    // measured as -12.8pp precision@1 and 28/30 vs 5/30 absent topics leaking.
+    expect(provider.embedQuery).toHaveBeenCalledWith('how to rollback');
+    expect(provider.embed).not.toHaveBeenCalled();
   });
 
   it('excludes the meta sentinel from results', async () => {
