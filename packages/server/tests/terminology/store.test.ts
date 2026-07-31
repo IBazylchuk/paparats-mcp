@@ -167,6 +167,75 @@ describe('TerminologyStore.search', () => {
     expect(terms).not.toContain('C'); // other project
   });
 
+  // A bare acronym is the commonest glossary query and the one the vector handles
+  // worst: measured on a live 75-term glossary, one acronym ranked its own entry 21st
+  // at 0.469 while an unrelated metric took the top slot at 0.620. Exact name/alias
+  // matching has to run before the vector, or the tool answers with a neighbour.
+  describe('exact name/alias lookup', () => {
+    const term = (id: string, name: string, aliases: string[] = []) => ({
+      id,
+      payload: { id, term: name, definition: `def of ${name}`, aliases },
+    });
+
+    function withGlossary(points: ReturnType<typeof term>[]) {
+      qdrant.scroll.mockResolvedValue({ points, next_page_offset: null });
+    }
+
+    it('matches a canonical name without consulting the vector', async () => {
+      withGlossary([term('x', 'XYZ'), term('o', 'Other Thing')]);
+      const hits = await store.search('g', 'XYZ');
+      expect(hits.map((h) => h.term)).toEqual(['XYZ']);
+      expect(hits[0]!.score).toBe(1);
+      expect(qdrant.search).not.toHaveBeenCalled();
+    });
+
+    it.each(['xyz', '  XYZ  ', 'XyZ'])('matches case- and space-insensitively: %s', async (q) => {
+      withGlossary([term('x', 'XYZ')]);
+      expect((await store.search('g', q)).map((h) => h.term)).toEqual(['XYZ']);
+    });
+
+    it('matches an alias', async () => {
+      withGlossary([term('t', 'Canonical Name', ['Friendly Alias'])]);
+      const hits = await store.search('g', 'friendly alias');
+      expect(hits.map((h) => h.term)).toEqual(['Canonical Name']);
+      expect(qdrant.search).not.toHaveBeenCalled();
+    });
+
+    it('prefers a canonical name over another term holding it as an alias', async () => {
+      // The live glossary has 7 such shadows, where one entry lists another entry's
+      // canonical name among its aliases. Returning the alias holder would hide the
+      // entry the caller actually named.
+      withGlossary([term('broad', 'broad concept', ['NARROW']), term('narrow', 'NARROW')]);
+      expect((await store.search('g', 'NARROW')).map((h) => h.term)).toEqual(['NARROW']);
+    });
+
+    it('returns every term sharing an ambiguous alias', async () => {
+      withGlossary([term('a', 'First', ['shared alias']), term('b', 'Second', ['shared alias'])]);
+      expect((await store.search('g', 'shared alias')).map((h) => h.term).sort()).toEqual([
+        'First',
+        'Second',
+      ]);
+    });
+
+    it('falls back to the vector when nothing matches by name', async () => {
+      withGlossary([term('x', 'XYZ')]);
+      qdrant.search.mockResolvedValueOnce([
+        { id: 'x', score: 0.81, payload: { id: 'x', term: 'XYZ', definition: 'd', aliases: [] } },
+      ]);
+      const hits = await store.search('g', 'a descriptive question about the concept');
+      expect(qdrant.search).toHaveBeenCalled();
+      expect(hits[0]!.score).toBe(0.81);
+    });
+
+    it('keeps an exact match that scores below a caller minScore', async () => {
+      // Exact matches are identity, not similarity. term_search applies a 0.70 floor
+      // to suppress the vector's guesses; it must not suppress a real name match.
+      withGlossary([term('t', 'TLA')]);
+      const hits = await store.search('g', 'TLA', { minScore: 0.7 });
+      expect(hits.map((h) => h.term)).toEqual(['TLA']);
+    });
+  });
+
   it('returns [] gracefully on a missing collection', async () => {
     qdrant.search.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }));
     expect(await store.search('g', 'q')).toEqual([]);
