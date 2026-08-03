@@ -50,16 +50,33 @@ describe('workflow prompts', () => {
     expect(SUPPORT_PROMPTS).toContain('audit_architecture');
   });
 
-  it('arch write-workflows are only referenced by codingInstructions', () => {
+  it('documents the arch write path in both modes', () => {
+    // Both modes can write, so both sets of instructions must say when to. An
+    // available tool the instructions never mention is one the agent never calls.
     const coding = prompts.codingInstructions;
     const support = prompts.supportInstructions;
-    for (const tool of ['arch_record_component', 'arch_record_decision', 'arch_record_lesson']) {
+    for (const tool of ['arch_context', 'arch_record_decision', 'arch_record_lesson']) {
       expect(coding, `${tool} should be mentioned in codingInstructions`).toContain(tool);
-      expect(support, `${tool} must not appear in supportInstructions`).not.toContain(tool);
+      expect(support, `${tool} should be mentioned in supportInstructions`).toContain(tool);
     }
-    // arch_context is read-only — must remain in both.
-    expect(coding).toContain('arch_context');
-    expect(support).toContain('arch_context');
+  });
+
+  it('documents the docs and glossary layers in both modes', () => {
+    // These tools shipped registered but undocumented in either instruction set, so
+    // clients without our plugins had no idea when to reach for them.
+    for (const key of ['codingInstructions', 'supportInstructions'] as const) {
+      for (const tool of ['search_docs', 'term_search', 'term_record']) {
+        expect(prompts[key], `${tool} should be mentioned in ${key}`).toContain(tool);
+      }
+    }
+  });
+
+  it('warns in both modes that a miss on a sparse layer is not evidence', () => {
+    // Docs, glossary and arch are all incomplete. Without this, an empty result gets
+    // reported as "no such decision exists" — the failure that prompted this change.
+    for (const key of ['codingInstructions', 'supportInstructions'] as const) {
+      expect(prompts[key]).toMatch(/nobody wrote|not recorded yet|is not recorded/i);
+    }
   });
 
   it('init_arch_memory requires project — arch_record_component cannot be called without it', () => {
