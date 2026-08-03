@@ -386,29 +386,17 @@ export type McpMode = 'coding' | 'support';
  *
  * Two distinct empty states from `arch/context.ts`:
  *   - `LOW_CONFIDENCE_HINT` — cards exist, just nothing above min_score.
- *     Neutral text, safe in both modes.
  *   - `INIT_HINT` — no cards in the group at all. The default wording tells the
- *     agent to bootstrap by walking the repo, which assumes code access; support
- *     gets a variant framed around what it actually knows.
+ *     agent to bootstrap by walking the repo.
  *
- * Both modes can write now, so neither text sends the user away — an empty layer is
- * an invitation, and the mode only changes what the realistic first card is. Support
- * learns constraints from incidents and escalations, not from reading the tree.
+ * Both texts assume code access, which is correct: `arch_context` is registered in
+ * coding mode only, so there is no support-mode caller to write for.
  *
  * Identity compare against `LOW_CONFIDENCE_HINT` (not regex on the text) so
  * the routing doesn't silently drift if the hint wording changes.
  */
-export function pickArchContextEmptyText(lastHint: string | null, mode: McpMode): string {
+export function pickArchContextEmptyText(lastHint: string | null): string {
   if (lastHint === LOW_CONFIDENCE_HINT) return LOW_CONFIDENCE_HINT;
-  if (mode === 'support') {
-    return (
-      'No architectural memory recorded yet for this group. Nothing is missing ' +
-      'from your answer because of it — but if this investigation taught you ' +
-      'something a future reader would need (a constraint behind a recurring ' +
-      'escalation, why a component behaves counter-intuitively), record it with ' +
-      'arch_record_lesson or arch_record_decision so the next person starts ahead.'
-    );
-  }
   return (
     lastHint ??
     'No architectural memory recorded yet. Ask the user if you ' +
@@ -519,20 +507,19 @@ export function renderArchContextSection(group: string, ctx: ArchContextResult):
 
 /** Tool names available in each mode.
  *
- * Both modes can read and write the knowledge layers (arch memory, glossary). An
- * earlier split made support strictly read-only on the theory that non-coders
- * consume memory rather than author it. That was wrong in practice: support answers
- * "why is it built this way" questions constantly and is usually the first to learn a
- * non-obvious constraint — from an incident, a customer escalation, an AM's
- * shorthand. Denying them the write path meant the people discovering that knowledge
- * were the only ones who could not record it, which is a large part of why the arch
- * layer stayed near-empty.
+ * The arch layer is coding-only, in both directions. Architectural cards state why
+ * the code is shaped the way it is — a claim only verifiable against the code itself.
+ * Reading it from a support seat invites quoting a rationale that cannot be checked;
+ * writing it invites recording an inference drawn from search results. Support answers
+ * "why is it built this way" by asking an engineer, not by consulting a layer it
+ * cannot validate. So `arch_*` — read and write alike — stays out of `SUPPORT_TOOLS`.
  *
- * Only genuinely destructive tools stay coding-only: `arch_delete`, `delete_project`.
- * Everything else is additive and passes a similarity gate, so a bad write is
- * recoverable in a way a delete is not. `term_delete` is likewise coding-only —
- * dropping a definition someone else relies on is not obviously reversible from a
- * support seat.
+ * The glossary is different and support does have the write path. A definition is a
+ * fact about vocabulary, checkable by whoever supplied it, and support meets
+ * undocumented shorthand before anyone else (customer threads, AM emails). Only
+ * `term_delete` stays coding-only: dropping a definition others rely on is not
+ * obviously reversible from a support seat, whereas an additive write past the
+ * similarity gate is.
  */
 export const CODING_TOOLS = new Set([
   'search_code',
@@ -576,17 +563,8 @@ export const SUPPORT_TOOLS = new Set([
   'cross_project_share',
   'retry_rate',
   'failed_chunks',
-  // arch memory — read + write. Support answers "why is it like this" questions all
-  // day and is often the first to learn a non-obvious constraint from an incident;
-  // making them read-only meant that knowledge was never written down by the people
-  // discovering it. `arch_delete` stays out: destructive, and support has no way to
-  // tell a stale card from one they simply disagree with.
-  'arch_context',
-  'arch_list',
-  'arch_record_component',
-  'arch_record_decision',
-  'arch_record_lesson',
-  'arch_suggest_components',
+  // No arch tools. The layer is coding-only in both directions — see the note above
+  // `CODING_TOOLS`. Support routes "why is it built this way" to an engineer.
   // docs — read.
   'search_docs',
   // glossary — read + write. Support is where undocumented vocabulary actually
@@ -611,8 +589,9 @@ export const SUPPORT_PROMPTS = [
   'prepare_release_notes',
   'assess_change_impact',
   'onboard_to_project',
-  // arch workflows — read only.
-  'audit_architecture',
+  // No arch workflows. `audit_architecture` drives arch_context/arch_list, neither of
+  // which is registered in support mode — offering it would hand support a workflow
+  // whose every step fails.
 ];
 
 export class McpHandler {
@@ -2676,7 +2655,7 @@ export class McpHandler {
           }
           if (sections.length === 0 && anyEmpty) {
             return {
-              content: [{ type: 'text' as const, text: pickArchContextEmptyText(lastHint, mode) }],
+              content: [{ type: 'text' as const, text: pickArchContextEmptyText(lastHint) }],
             };
           }
           return { content: [{ type: 'text' as const, text: sections.join('\n') }] };
