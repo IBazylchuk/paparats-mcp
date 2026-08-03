@@ -12,7 +12,11 @@ function fakeProvider(vec: () => number[] = () => Array(1024).fill(0.1)): Cached
   return {
     dimensions: 1024,
     model: 'qwen3-embedding-0.6b',
+    // Distinct fills so a test can tell which path produced the vector. The absence
+    // of embedQuery here is what let the missing-instruction defect go unnoticed.
     embed: vi.fn(async () => vec()),
+    embedQuery: vi.fn(async () => Array(1024).fill(0.2)),
+    embedPassage: vi.fn(async () => Array(1024).fill(0.3)),
     getCacheStats: vi.fn(),
     attachTelemetry: vi.fn(),
     attachMetrics: vi.fn(),
@@ -234,6 +238,20 @@ describe('TerminologyStore.search', () => {
       const hits = await store.search('g', 'TLA', { minScore: 0.7 });
       expect(hits.map((h) => h.term)).toEqual(['TLA']);
     });
+  });
+
+  it('embeds the query with the retrieval instruction, not bare', async () => {
+    // qwen3 pools on the last token, so the card's instruction is part of its trained
+    // query interface. Measured over 75 paraphrase queries against a live glossary:
+    // bare embed ranked the right term first 46/75, instructed 68/75. Stored entries
+    // stay unprefixed, so this costs no re-index.
+    const provider = fakeProvider();
+    const s = new TerminologyStore({ qdrant: qdrant as unknown as QdrantClient, provider });
+    await s.search('g', 'a descriptive question with no exact name match');
+    expect(provider.embedQuery).toHaveBeenCalled();
+    expect(provider.embed).not.toHaveBeenCalled();
+    const used = qdrant.search.mock.calls.at(-1)![1] as { vector: number[] };
+    expect(used.vector[0]).toBe(0.2);
   });
 
   it('returns [] gracefully on a missing collection', async () => {

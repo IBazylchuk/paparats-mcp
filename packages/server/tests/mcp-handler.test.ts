@@ -1275,34 +1275,37 @@ describe('describeGlossary', () => {
 
 describe('GLOSSARY_MIN_SCORE', () => {
   it('clears the highest score an absent-topic query reached', () => {
-    // Measured at 75 terms: absent-topic queries topped out at 0.645, so anything
-    // at or below that attaches definitions to questions the corpus cannot answer.
-    // The earlier 0.55 did exactly that once the glossary grew — 5/30 absent topics.
-    expect(GLOSSARY_MIN_SCORE).toBeGreaterThan(0.645);
+    // Re-measured at 75 terms on the instructed query path, where absent topics top
+    // out at 0.399 — they reached 0.645 before the instruction was applied, which is
+    // why this floor had to move with it.
+    expect(GLOSSARY_MIN_SCORE).toBeGreaterThan(0.399);
   });
 
   it('stays low enough to still answer direct questions about a term', () => {
-    // At 0.70 only 6 of 10 probes phrased directly about a term still surfaced it;
-    // 0.65 keeps 8/10. Above ~0.68 the floor mainly costs on-term coverage.
-    expect(GLOSSARY_MIN_SCORE).toBeLessThanOrEqual(0.68);
+    // 0.50 surfaces the term for all 10 probes phrased directly about one; 0.55 drops
+    // to 9/10 and 0.65 to 6/10, all without removing any absent-topic leak.
+    expect(GLOSSARY_MIN_SCORE).toBeLessThanOrEqual(0.5);
   });
 });
 
 describe('TERM_LOOKUP_MIN_SCORE', () => {
-  it('clears every invented-acronym score measured against a live glossary', () => {
-    // A bare unknown acronym lands in the centre of the glossary's genre rather
-    // than far from it: three invented four-letter acronyms scored 0.590, 0.605 and
-    // 0.623 against unrelated entries. Below this the tool reports a neighbour as
-    // the definition of a term the glossary does not contain.
-    expect(TERM_LOOKUP_MIN_SCORE).toBeGreaterThan(0.623);
+  it('clears the highest negative measured on the instructed path', () => {
+    // Swept over 40 negatives — invented acronyms, off-domain questions, and
+    // recruiting-adjacent concepts the glossary genuinely lacks. The highest scored
+    // 0.515 (an invented acronym pulled toward a real one by letter overlap).
+    expect(TERM_LOOKUP_MIN_SCORE).toBeGreaterThan(0.515);
+  });
+
+  it('stays low enough to keep the answers the vector does find', () => {
+    // The bands overlap slightly, so this cannot be raised for safety alone: at 0.70
+    // the floor drops 16 correct answers to remove 5 wrong ones. 0.55 keeps 67/75.
+    expect(TERM_LOOKUP_MIN_SCORE).toBeLessThanOrEqual(0.6);
   });
 
   it('is stricter than the docs sidecar floor', () => {
     // Different failure costs: the sidecar volunteers context and a near-miss is
-    // merely noise beside real results, whereas term_search was asked directly and
-    // a near-miss *is* the answer. Real terms fall below this floor — the lowest
-    // measured was 0.576 for its own name — and are reachable only because exact
-    // name/alias matches bypass it entirely.
+    // merely noise beside results that already answer the question, whereas
+    // term_search was asked directly and a near-miss *is* the answer.
     expect(TERM_LOOKUP_MIN_SCORE).toBeGreaterThan(GLOSSARY_MIN_SCORE);
   });
 });

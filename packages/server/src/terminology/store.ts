@@ -159,6 +159,17 @@ export class TerminologyStore {
    * the vector entirely for the queries that matter, and leaves the vector to do what
    * it is good at — paraphrases and descriptive questions — with a floor applied.
    *
+   * The fallback embeds via `embedQuery`, not `embed`. qwen3 is a decoder with
+   * last-token pooling, so the card's retrieval instruction is part of its trained
+   * query interface rather than decoration, and the stored entries are unprefixed
+   * (see `prefixPassage`) — so this needs no re-indexing. Measured over one
+   * paraphrase per glossary entry (75 queries, each the entry's own definition with
+   * every name and alias token stripped): bare `embed` ranked the right term first
+   * 46/75 (61.3%), instructed 68/75 (90.7%), and the right term went from 65/75 to
+   * 75/75 within the top 8. It also pushes noise down hard — across 40 negatives the
+   * top score fell from the 0.59-0.62 band to 0.515 — which is what makes a
+   * meaningful floor possible at all.
+   *
    * Priority is canonical name over alias: 7 of the live glossary's alias keys shadow
    * some other entry's canonical name — a cost metric that is also listed as an alias
    * of a broader quality concept, a campaign template that is also an alias of the
@@ -171,7 +182,7 @@ export class TerminologyStore {
     const exact = await this.findExactMatches(group, query, opts.project, limit);
     if (exact.length > 0) return exact;
 
-    const vector = await this.provider.embed(query);
+    const vector = await this.provider.embedQuery(query);
     const must_not: unknown[] = [{ key: '__meta', match: { value: true } }];
     const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
     try {
