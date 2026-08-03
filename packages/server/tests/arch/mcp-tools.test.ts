@@ -47,33 +47,17 @@ function fakeQdrant() {
 }
 
 describe('pickArchContextEmptyText', () => {
-  it('returns LOW_CONFIDENCE_HINT verbatim in both modes when memory exists but matched nothing', () => {
-    expect(pickArchContextEmptyText(LOW_CONFIDENCE_HINT, 'coding')).toBe(LOW_CONFIDENCE_HINT);
-    expect(pickArchContextEmptyText(LOW_CONFIDENCE_HINT, 'support')).toBe(LOW_CONFIDENCE_HINT);
+  it('returns LOW_CONFIDENCE_HINT verbatim when memory exists but matched nothing', () => {
+    expect(pickArchContextEmptyText(LOW_CONFIDENCE_HINT)).toBe(LOW_CONFIDENCE_HINT);
   });
 
-  it('invites support to record rather than sending them elsewhere', () => {
-    // Support can write now, so an empty layer is an invitation, not a dead end.
-    // The old text told them to ask someone with coding access — which is a large
-    // part of why the layer stayed empty: the people learning constraints from
-    // escalations were the ones told they could not record them.
-    const supportText = pickArchContextEmptyText(null, 'support');
-    expect(supportText).toMatch(/arch_record_(lesson|decision)/);
-    expect(supportText).not.toMatch(/coding mode/);
-  });
-
-  it('does not imply the answer is incomplete just because the layer is empty', () => {
-    // A sparse layer must not read as a gap in the answer, or support will hedge
-    // conclusions that are actually well-supported by code and git history.
-    expect(pickArchContextEmptyText(null, 'support')).toMatch(/[Nn]othing is missing/);
-  });
-
-  it('returns the INIT_HINT (or default coding fallback) in coding mode', () => {
-    const codingDefault = pickArchContextEmptyText(null, 'coding');
-    expect(codingDefault).toMatch(/arch_record_component/);
+  it('returns the INIT_HINT, or the coding-mode default when there is no hint', () => {
+    // The text may safely assume code access: arch_context is registered in coding
+    // mode only, so there is no other caller to write for.
+    expect(pickArchContextEmptyText(null)).toMatch(/arch_record_component/);
 
     const fromHint = 'Custom init hint with arch_record_component reference.';
-    expect(pickArchContextEmptyText(fromHint, 'coding')).toBe(fromHint);
+    expect(pickArchContextEmptyText(fromHint)).toBe(fromHint);
   });
 });
 
@@ -478,9 +462,11 @@ describe('arch tool exposure per mode', () => {
     expect(CODING_TOOLS.has('arch_delete')).toBe(true);
   });
 
-  it('lets support read and write arch memory', () => {
-    // Support answers "why is it built this way" constantly and is often first to
-    // learn a non-obvious constraint, so they author cards too.
+  it('keeps the arch layer out of support mode entirely — reads included', () => {
+    // Arch cards claim why the code is shaped as it is, which is only checkable
+    // against the code. Quoting that rationale from a seat that cannot verify it is
+    // the failure mode, so support gets no arch tool in either direction. Support
+    // routes "why is it built this way" to an engineer instead.
     for (const tool of [
       'arch_context',
       'arch_list',
@@ -488,16 +474,22 @@ describe('arch tool exposure per mode', () => {
       'arch_record_decision',
       'arch_record_lesson',
       'arch_suggest_components',
+      'arch_delete',
     ]) {
-      expect(SUPPORT_TOOLS.has(tool), `${tool} should be available in support mode`).toBe(true);
+      expect(SUPPORT_TOOLS.has(tool), `${tool} must not be reachable from support`).toBe(false);
     }
+    // No arch_* leaks in by any other name.
+    expect([...SUPPORT_TOOLS].filter((t) => t.startsWith('arch_'))).toEqual([]);
   });
 
-  it('withholds only the destructive tools from support', () => {
-    // The real boundary is reversibility, not seniority: additive writes pass a
-    // similarity gate and can be refined, whereas a delete cannot be undone and
-    // support cannot tell a stale card from one they merely disagree with.
-    for (const tool of ['arch_delete', 'term_delete', 'delete_project']) {
+  it('lets support read and write the glossary, but not delete from it', () => {
+    // The glossary is not the arch layer: a definition is a fact about vocabulary,
+    // checkable by whoever supplied it, and support meets undocumented shorthand
+    // first. Only the destructive tool is withheld.
+    for (const tool of ['term_search', 'term_list', 'term_record']) {
+      expect(SUPPORT_TOOLS.has(tool), `${tool} should be available in support mode`).toBe(true);
+    }
+    for (const tool of ['term_delete', 'delete_project']) {
       expect(SUPPORT_TOOLS.has(tool), `${tool} must not be reachable from support`).toBe(false);
       expect(CODING_TOOLS.has(tool), `${tool} should stay available in coding mode`).toBe(true);
     }
