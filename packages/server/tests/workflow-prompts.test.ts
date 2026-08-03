@@ -35,30 +35,35 @@ describe('workflow prompts', () => {
     }
   });
 
-  // Arch workflows that write (init_arch_memory, record_lesson_from_correction)
-  // live in coding mode — support is read-only. audit_architecture only reads,
-  // so it stays in both. Tests below pin that invariant by inspecting both the
-  // mode-routing list in mcp-handler.ts and the instructions in prompts.json:
-  // any change to who writes arch memory should land here too.
-  it('arch write-workflows are routed to coding mode only', () => {
-    expect(CODING_PROMPTS).toContain('init_arch_memory');
-    expect(CODING_PROMPTS).toContain('record_lesson_from_correction');
-    expect(SUPPORT_PROMPTS).not.toContain('init_arch_memory');
-    expect(SUPPORT_PROMPTS).not.toContain('record_lesson_from_correction');
-    // audit_architecture is read-only — must remain in both.
-    expect(CODING_PROMPTS).toContain('audit_architecture');
-    expect(SUPPORT_PROMPTS).toContain('audit_architecture');
+  // The arch layer is coding-only in both directions, so every arch workflow is
+  // routed there. Tests below pin that invariant against both the mode-routing lists
+  // in mcp-handler.ts and the instructions in prompts.json — a workflow offered to a
+  // mode that lacks the underlying tools fails on its first step.
+  it('routes every arch workflow to coding mode only', () => {
+    for (const wf of ['init_arch_memory', 'record_lesson_from_correction', 'audit_architecture']) {
+      expect(CODING_PROMPTS, `${wf} should stay in coding mode`).toContain(wf);
+      expect(SUPPORT_PROMPTS, `${wf} must not be offered to support`).not.toContain(wf);
+    }
   });
 
-  it('documents the arch write path in both modes', () => {
-    // Both modes can write, so both sets of instructions must say when to. An
-    // available tool the instructions never mention is one the agent never calls.
+  it('documents the arch layer in coding mode and never mentions it to support', () => {
+    // An available tool the instructions never mention is one the agent never calls —
+    // and a tool the instructions mention but the mode never registers is worse: the
+    // agent tries it and reports a broken server.
     const coding = prompts.codingInstructions;
-    const support = prompts.supportInstructions;
     for (const tool of ['arch_context', 'arch_record_decision', 'arch_record_lesson']) {
       expect(coding, `${tool} should be mentioned in codingInstructions`).toContain(tool);
-      expect(support, `${tool} should be mentioned in supportInstructions`).toContain(tool);
     }
+    // \b so this does not trip on the `arch_` inside search_code / search_docs.
+    expect(prompts.supportInstructions).not.toMatch(/\barch_/);
+  });
+
+  it('gives support a route for "why is it built this way" that is not the arch layer', () => {
+    // Removing arch left the question with no destination. Without an explicit route,
+    // the model fills the gap by inferring intent from search results and stating it
+    // as fact — the exact failure the arch layer was supposed to prevent.
+    expect(prompts.supportInstructions).toMatch(/Why is it built this way/i);
+    expect(prompts.supportInstructions).toMatch(/engineer/i);
   });
 
   it('documents the docs and glossary layers in both modes', () => {
@@ -72,11 +77,12 @@ describe('workflow prompts', () => {
   });
 
   it('warns in both modes that a miss on a sparse layer is not evidence', () => {
-    // Docs, glossary and arch are all incomplete. Without this, an empty result gets
-    // reported as "no such decision exists" — the failure that prompted this change.
-    for (const key of ['codingInstructions', 'supportInstructions'] as const) {
-      expect(prompts[key]).toMatch(/nobody wrote|not recorded yet|is not recorded/i);
-    }
+    // The sparse layers are incomplete. Without this, an empty result gets reported as
+    // "no such thing exists" — the failure that prompted this wording. Each mode is
+    // checked against the layers it can actually reach: support has docs + glossary,
+    // coding has those plus arch.
+    expect(prompts.supportInstructions).toMatch(/not recorded yet|is not recorded/i);
+    expect(prompts.codingInstructions).toMatch(/nobody wrote|not recorded yet|is not recorded/i);
   });
 
   it('init_arch_memory requires project — arch_record_component cannot be called without it', () => {
