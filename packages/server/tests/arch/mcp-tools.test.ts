@@ -52,11 +52,20 @@ describe('pickArchContextEmptyText', () => {
     expect(pickArchContextEmptyText(LOW_CONFIDENCE_HINT, 'support')).toBe(LOW_CONFIDENCE_HINT);
   });
 
-  it('returns a support-safe message when the group has no memory at all', () => {
+  it('invites support to record rather than sending them elsewhere', () => {
+    // Support can write now, so an empty layer is an invitation, not a dead end.
+    // The old text told them to ask someone with coding access — which is a large
+    // part of why the layer stayed empty: the people learning constraints from
+    // escalations were the ones told they could not record them.
     const supportText = pickArchContextEmptyText(null, 'support');
-    // Must not mention any writer tool — support mode can't reach them.
-    expect(supportText).not.toMatch(/arch_record_/);
-    expect(supportText).toMatch(/coding mode/);
+    expect(supportText).toMatch(/arch_record_(lesson|decision)/);
+    expect(supportText).not.toMatch(/coding mode/);
+  });
+
+  it('does not imply the answer is incomplete just because the layer is empty', () => {
+    // A sparse layer must not read as a gap in the answer, or support will hedge
+    // conclusions that are actually well-supported by code and git history.
+    expect(pickArchContextEmptyText(null, 'support')).toMatch(/[Nn]othing is missing/);
   });
 
   it('returns the INIT_HINT (or default coding fallback) in coding mode', () => {
@@ -469,13 +478,29 @@ describe('arch tool exposure per mode', () => {
     expect(CODING_TOOLS.has('arch_delete')).toBe(true);
   });
 
-  it('support mode is read-only — only arch_context, no arch_list / arch_record_* / arch_delete', () => {
-    expect(SUPPORT_TOOLS.has('arch_context')).toBe(true);
-    expect(SUPPORT_TOOLS.has('arch_list')).toBe(false);
-    expect(SUPPORT_TOOLS.has('arch_record_component')).toBe(false);
-    expect(SUPPORT_TOOLS.has('arch_record_decision')).toBe(false);
-    expect(SUPPORT_TOOLS.has('arch_record_lesson')).toBe(false);
-    expect(SUPPORT_TOOLS.has('arch_delete')).toBe(false);
+  it('lets support read and write arch memory', () => {
+    // Support answers "why is it built this way" constantly and is often first to
+    // learn a non-obvious constraint, so they author cards too.
+    for (const tool of [
+      'arch_context',
+      'arch_list',
+      'arch_record_component',
+      'arch_record_decision',
+      'arch_record_lesson',
+      'arch_suggest_components',
+    ]) {
+      expect(SUPPORT_TOOLS.has(tool), `${tool} should be available in support mode`).toBe(true);
+    }
+  });
+
+  it('withholds only the destructive tools from support', () => {
+    // The real boundary is reversibility, not seniority: additive writes pass a
+    // similarity gate and can be refined, whereas a delete cannot be undone and
+    // support cannot tell a stale card from one they merely disagree with.
+    for (const tool of ['arch_delete', 'term_delete', 'delete_project']) {
+      expect(SUPPORT_TOOLS.has(tool), `${tool} must not be reachable from support`).toBe(false);
+      expect(CODING_TOOLS.has(tool), `${tool} should stay available in coding mode`).toBe(true);
+    }
   });
 });
 
