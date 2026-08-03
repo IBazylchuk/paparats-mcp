@@ -1,5 +1,14 @@
 # @paparats/indexer
 
+## 2.4.6
+
+### Patch Changes
+
+- Updated dependencies [4df4382]
+- Updated dependencies [ce9540d]
+  - @paparats/server@2.4.6
+  - @paparats/shared@2.4.6
+
 ## 2.4.5
 
 ### Patch Changes

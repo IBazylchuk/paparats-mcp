@@ -4,6 +4,23 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.4.6] - 2026-08-03
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 4df4382: Fix `term_search` returning an unrelated entry for a bare acronym, and never reporting "not found".
+
+  Glossary lookups now match canonical names and aliases exactly (case- and space-insensitive) before falling back to vector search, and the fallback applies a relevance floor. A bare acronym is the commonest glossary query and the one the embedder handles worst — measured on a 75-term glossary, one acronym ranked its own entry 21st while an unrelated metric took the top slot. Canonical names take priority over aliases, and an alias shared by several terms returns all of them.
+
+- ce9540d: Instruct the glossary query vector and recalibrate both relevance floors.
+
+  Glossary vector search embedded the query without the model's retrieval instruction. qwen3 pools on the last token, so that instruction is part of its trained query interface — applying it moved top-1 accuracy on paraphrase lookups from 61% to 91%, and put the right term in the top 8 for every query tested. Stored entries are unprefixed, so no re-index is needed.
+
+  Both floors were re-swept against the new score distribution: the direct `term_search` floor drops to 0.55 (keeping 16 more correct answers at no cost in false positives) and the docs sidecar floor to 0.50 (answering every direct term question instead of 6 in 10).
+  - @paparats/shared@2.4.6
+
 ## [2.4.5] - 2026-07-31
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -171,7 +188,7 @@
   surfaces the failure.
   - @paparats/shared@2.4.3
 
-## [2.4.2] - 2026-07-31
+## [2.4.2] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -202,7 +219,7 @@
 
   Works in the `defaults` block as well as per repo.
 
-## [2.4.0] - 2026-07-31
+## [2.4.0] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -400,7 +417,7 @@
 
 - @paparats/shared@2.0.3
 
-## [2.0.2] - 2026-07-31
+## [2.0.2] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -581,7 +598,7 @@
 
 - @paparats/shared@1.7.2
 
-## [1.7.1] - 2026-07-31
+## [1.7.1] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -680,7 +697,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [1.4.0] - 2026-07-31
+## [1.4.0] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1094,7 +1111,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [0.7.0] - 2026-07-31
+## [0.7.0] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1141,7 +1158,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-07-31
+## [0.5.0] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1234,7 +1251,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-07-31
+## [0.3.0] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
