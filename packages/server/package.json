@@ -1,6 +1,6 @@
 {
   "name": "@paparats/server",
-  "version": "2.4.6",
+  "version": "2.5.0",
   "private": true,
   "type": "module",
   "main": "dist/lib.js",
