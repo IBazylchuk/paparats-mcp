@@ -112,23 +112,30 @@ export const STALE_THRESHOLD_MS = 90 * 24 * 60 * 60 * 1000;
  * term, attached to 5/102 answerable queries then — and to 85/102 plus 5/30
  * absent-topic queries once the glossary reached 75 terms.
  *
- * Re-measured at 75 terms over 102 answerable queries, 30 verified absent-topic
- * ones, and 10 probes phrased directly about a term:
+ * It also has to be recalibrated whenever the query embedding changes, because the
+ * scores it compares against are not stable across that change. `TerminologyStore`
+ * now instructs the query vector, which pushed absent-topic scores down from a 0.645
+ * ceiling to 0.399 — so the previous 0.65 went from "the lowest safe floor" to one
+ * that mostly suppressed real matches.
+ *
+ * Re-measured at 75 terms on the instructed path, over 102 answerable queries, 30
+ * verified absent-topic ones, and 10 probes phrased directly about a term:
  *
  *   floor   term shown for a probe   answerable   absent-topic
- *   0.55            10/10              85/102        5/30
- *   0.60             8/10              67/102        2/30
- *   0.65             8/10              43/102        0/30
- *   0.70             6/10              27/102        0/30
+ *   0.45            10/10              65/102        0/30
+ *   0.50            10/10              44/102        0/30
+ *   0.55             9/10              23/102        0/30
+ *   0.65             6/10               3/102        0/30
  *
- * 0.65 is the lowest floor that never fires on an absent topic — the highest score
- * any of those reached was 0.645 — while still surfacing the term for 8 of 10
- * direct questions. Going higher mainly costs on-term coverage.
+ * 0.50 answers every direct question while leaking no absent topic, and clears the
+ * highest one measured (0.399) by a wide enough margin not to be fitted to it. 0.45
+ * is equally clean on negatives but attaches a definition to two thirds of all
+ * queries, which is noise beside results that already answer the question.
  *
- * Worth re-measuring again if the glossary grows several-fold, for the same reason
- * this value changed.
+ * Worth re-measuring again if the glossary grows several-fold, or if the query
+ * embedding changes again — both have invalidated this number before.
  */
-export const GLOSSARY_MIN_SCORE = 0.65;
+export const GLOSSARY_MIN_SCORE = 0.5;
 
 /**
  * Minimum similarity for a direct `term_search` lookup to report a match.
@@ -141,18 +148,30 @@ export const GLOSSARY_MIN_SCORE = 0.65;
  *
  * Without any floor the tool could not say "not found" at all — `TerminologyStore`
  * defaults `minScore` to 0, so a non-empty glossary always yielded the nearest 8
- * entries. Measured against a live 75-term glossary, invented four-letter acronyms
- * scored 0.590–0.623 against unrelated entries, and off-domain phrases (a recipe, a
- * piece of infrastructure, a biology term) 0.460–0.508.
+ * entries.
  *
- * 0.70 sits above every invented-acronym score measured. Real terms score *below*
- * it — the lowest was 0.576 queried by its own name — which would be fatal if the
- * vector were the only path, but exact name/alias matches never reach this floor:
- * they short-circuit in
- * `TerminologyStore.search` with `score: 1`. So this only ever judges paraphrases
- * and descriptive questions, where a strict floor is the right trade.
+ * Calibrated on the instruction-conditioned vector path (see
+ * `TerminologyStore.search`), which is the only thing this floor judges: exact
+ * name/alias matches short-circuit with `score: 1` and never reach it. Swept over 75
+ * paraphrase queries and 40 negatives (invented acronyms, off-domain questions, and
+ * recruiting-adjacent concepts the glossary genuinely lacks):
+ *
+ *   floor   right answer shown   wrong answer shown   negatives leaking
+ *   0.50           68/75                  7                 1/40
+ *   0.55           67/75                  7                 0/40
+ *   0.60           64/75                  4                 0/40
+ *   0.70           51/75                  2                 0/40
+ *
+ * 0.55 is the lowest floor that leaks no negative, and it clears the highest one
+ * measured (0.515) by enough not to be fitted to it. Going higher trades away real
+ * answers fast — 0.70 loses 16 of them to remove 5 wrong ones.
+ *
+ * The bands do overlap slightly (lowest correct 0.496 vs highest negative 0.515), so
+ * no floor is clean. 0.55 resolves that in favour of silence, because the failures
+ * are not symmetric: a leaked negative hands an agent a confident wrong definition,
+ * whereas a dropped correct answer reads as "not found" and sends it to the code.
  */
-export const TERM_LOOKUP_MIN_SCORE = 0.7;
+export const TERM_LOOKUP_MIN_SCORE = 0.55;
 
 /**
  * Returns true when `updatedAt` is older than {@link STALE_THRESHOLD_MS}.
