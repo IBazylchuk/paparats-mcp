@@ -1,5 +1,7 @@
 # Paparats MCP
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.IBazylchuk%2Fpaparats-mcp.svg)](https://mcptoplist.com/server/io.github.IBazylchuk%2Fpaparats-mcp)
+
 <img src="docs/paparats-kvetka.png" alt="Paparats-kvetka (fern flower)" width="200" align="right">
 
 [![npm version](https://img.shields.io/npm/v/@paparats/cli?color=01696f)](https://www.npmjs.com/package/@paparats/cli)
