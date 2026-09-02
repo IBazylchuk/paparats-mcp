@@ -18,36 +18,46 @@ export interface WorkflowPrompt {
   message: string;
 }
 
+/**
+ * One tool's client-facing strings. `title` is the MCP `Tool.title` — a display
+ * name for permission UIs and tool pickers; `name` is the fallback when it is
+ * absent, so it stays optional for a prompts.json predating it.
+ */
+export interface ToolPrompt {
+  title?: string;
+  description: string;
+}
+
 export interface Prompts {
   codingInstructions: string;
   supportInstructions: string;
   common: { searchFirst: string; noResults: string };
   tools: {
-    search_code: { description: string };
-    health_check: { description: string };
-    delete_project: { description: string };
-    get_chunk: { description: string };
-    get_chunk_meta: { description: string };
-    search_changes: { description: string };
-    find_usages: { description: string };
-    explain_feature: { description: string };
-    recent_changes: { description: string };
-    impact_analysis: { description: string };
-    list_projects: { description: string };
-    arch_context: { description: string };
-    arch_record_component: { description: string };
-    arch_record_decision: { description: string };
-    arch_record_lesson: { description: string };
-    arch_list: { description: string };
-    arch_suggest_components: { description: string };
-    arch_delete: { description: string };
+    search_code: ToolPrompt;
+    health_check: ToolPrompt;
+    delete_project: ToolPrompt;
+    get_chunk: ToolPrompt;
+    get_chunk_meta: ToolPrompt;
+    search_changes: ToolPrompt;
+    find_usages: ToolPrompt;
+    explain_feature: ToolPrompt;
+    recent_changes: ToolPrompt;
+    impact_analysis: ToolPrompt;
+    list_projects: ToolPrompt;
+    arch_context: ToolPrompt;
+    arch_record_component: ToolPrompt;
+    arch_record_decision: ToolPrompt;
+    arch_record_lesson: ToolPrompt;
+    arch_list: ToolPrompt;
+    arch_suggest_components: ToolPrompt;
+    arch_delete: ToolPrompt;
     // docs + terminology layers — optional so a prompts.json predating them
     // still validates; the handler reads these via optional chaining + fallback.
-    search_docs?: { description: string };
-    term_search?: { description: string };
-    term_list?: { description: string };
-    term_record?: { description: string };
-    term_delete?: { description: string };
+    search_docs?: ToolPrompt;
+    term_search?: ToolPrompt;
+    term_list?: ToolPrompt;
+    term_record?: ToolPrompt;
+    term_delete?: ToolPrompt;
   };
   resources: {
     projectOverview: {
