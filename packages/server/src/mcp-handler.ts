@@ -3,6 +3,7 @@ import { v7 as uuidv7 } from 'uuid';
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../package.json') as { version: string };
@@ -48,6 +49,62 @@ import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
+
+/**
+ * `ToolAnnotations` advertised in `tools/list` so a client can group tools by side
+ * effect in its permission UI. They describe intent, not enforcement: the spec
+ * requires clients to treat annotations from an untrusted server as untrusted, so
+ * nothing here is a security control.
+ *
+ * Only the reassuring values are stated. The spec's defaults are deliberately
+ * pessimistic (`readOnlyHint: false`, `destructiveHint: true`,
+ * `idempotentHint: false`, `openWorldHint: true`), so asserting a default is noise.
+ * `destructiveHint` and `idempotentHint` are "meaningful only when
+ * `readOnlyHint == false`" and are therefore absent from `READ_ONLY`.
+ *
+ * `openWorldHint: false` throughout: every tool reaches only this server's own
+ * Qdrant collections and SQLite stores — the spec's "memory tool", not its "web
+ * search". Classification follows the handlers, not the tool names: the seven
+ * non-read-only tools are exactly those reaching a mutating store call. Telemetry
+ * counters are not treated as state changes.
+ */
+const READ_ONLY: ToolAnnotations = {
+  readOnlyHint: true,
+  openWorldHint: false,
+};
+
+/**
+ * Writes a knowledge-base record keyed by name, overwriting in place: repeating
+ * the call leaves the store in the same state rather than adding a second record.
+ */
+const ADDITIVE_WRITE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+/**
+ * Writes a new record on every call. `arch_record_decision` mints a fresh id each
+ * time and only guards duplicates behind a similarity threshold, which is not a
+ * guarantee — so it cannot claim idempotency (the default `false` applies).
+ */
+const NON_IDEMPOTENT_WRITE: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  openWorldHint: false,
+};
+
+/**
+ * Removes indexed data or knowledge-base records irrecoverably. Idempotent: a
+ * second identical call finds nothing left to remove. `destructiveHint` is omitted
+ * because `true` is already the default.
+ */
+const DESTRUCTIVE: ToolAnnotations = {
+  readOnlyHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
 
 /** Sanitize a language identifier for use in markdown code fences */
 function sanitizeLang(lang: string): string {
@@ -926,14 +983,18 @@ export class McpHandler {
 
     // ── Tool: search_code ───────────────────────────────────────────────────
     if (tools.has('search_code'))
-      server.tool(
+      server.registerTool(
         'search_code',
-        prompts.tools.search_code.description,
         {
-          query: z.string().describe('Natural language query or code snippet'),
-          group: z.string().optional().describe('Specific group or omit for all'),
-          project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.coerce.number().min(1).max(20).default(5).describe('Max results'),
+          title: prompts.tools.search_code.title,
+          description: prompts.tools.search_code.description,
+          inputSchema: {
+            query: z.string().describe('Natural language query or code snippet'),
+            group: z.string().optional().describe('Specific group or omit for all'),
+            project: z.string().default('all').describe('Project name or "all"'),
+            limit: z.coerce.number().min(1).max(20).default(5).describe('Max results'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ query, group, project, limit }) => {
           try {
@@ -1041,44 +1102,57 @@ export class McpHandler {
 
     // ── Tool: health_check ──────────────────────────────────────────────────
     if (tools.has('health_check'))
-      server.tool('health_check', prompts.tools.health_check.description, {}, async () => {
-        try {
-          const groups = await this.indexer.listGroups();
+      server.registerTool(
+        'health_check',
+        {
+          title: prompts.tools.health_check.title,
+          description: prompts.tools.health_check.description,
+          inputSchema: {},
+          annotations: READ_ONLY,
+        },
+        async () => {
+          try {
+            const groups = await this.indexer.listGroups();
 
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({ status: 'ok', groups }, null, 2),
-              },
-            ],
-          };
-        } catch (err) {
-          return {
-            content: [
-              {
-                type: 'text' as const,
-                text: JSON.stringify({ status: 'error', error: (err as Error).message }, null, 2),
-              },
-            ],
-            isError: true,
-          };
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({ status: 'ok', groups }, null, 2),
+                },
+              ],
+            };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({ status: 'error', error: (err as Error).message }, null, 2),
+                },
+              ],
+              isError: true,
+            };
+          }
         }
-      });
+      );
 
     // ── Tool: get_chunk ──────────────────────────────────────────────────────
     if (tools.has('get_chunk'))
-      server.tool(
+      server.registerTool(
         'get_chunk',
-        prompts.tools.get_chunk.description,
         {
-          chunk_id: z.string().describe('Chunk ID from search_code results'),
-          radius_lines: z.coerce
-            .number()
-            .min(0)
-            .max(200)
-            .default(0)
-            .describe('Lines of surrounding context to include (0-200)'),
+          title: prompts.tools.get_chunk.title,
+          description: prompts.tools.get_chunk.description,
+          inputSchema: {
+            chunk_id: z.string().describe('Chunk ID from search_code results'),
+            radius_lines: z.coerce
+              .number()
+              .min(0)
+              .max(200)
+              .default(0)
+              .describe('Lines of surrounding context to include (0-200)'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ chunk_id, radius_lines }) => {
           const fetchStart = performance.now();
@@ -1174,17 +1248,21 @@ export class McpHandler {
 
     // ── Tool: get_chunk_meta ────────────────────────────────────────────────
     if (tools.has('get_chunk_meta'))
-      server.tool(
+      server.registerTool(
         'get_chunk_meta',
-        prompts.tools.get_chunk_meta.description,
         {
-          chunk_id: z.string().describe('Chunk ID from search_code results'),
-          commit_limit: z.coerce
-            .number()
-            .min(1)
-            .max(50)
-            .default(10)
-            .describe('Max number of recent commits to return'),
+          title: prompts.tools.get_chunk_meta.title,
+          description: prompts.tools.get_chunk_meta.description,
+          inputSchema: {
+            chunk_id: z.string().describe('Chunk ID from search_code results'),
+            commit_limit: z.coerce
+              .number()
+              .min(1)
+              .max(50)
+              .default(10)
+              .describe('Max number of recent commits to return'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ chunk_id, commit_limit }) => {
           try {
@@ -1279,20 +1357,24 @@ export class McpHandler {
 
     // ── Tool: search_changes ─────────────────────────────────────────────────
     if (tools.has('search_changes'))
-      server.tool(
+      server.registerTool(
         'search_changes',
-        prompts.tools.search_changes.description,
         {
-          query: z.string().describe('Semantic search query'),
-          since: z
-            .string()
-            .optional()
-            .describe(
-              'ISO 8601 date string (e.g. "2024-01-01") — only return chunks modified after this date'
-            ),
-          group: z.string().optional().describe('Specific group or omit for all'),
-          project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.coerce.number().min(1).max(20).default(5).describe('Max results'),
+          title: prompts.tools.search_changes.title,
+          description: prompts.tools.search_changes.description,
+          inputSchema: {
+            query: z.string().describe('Semantic search query'),
+            since: z
+              .string()
+              .optional()
+              .describe(
+                'ISO 8601 date string (e.g. "2024-01-01") — only return chunks modified after this date'
+              ),
+            group: z.string().optional().describe('Specific group or omit for all'),
+            project: z.string().default('all').describe('Project name or "all"'),
+            limit: z.coerce.number().min(1).max(20).default(5).describe('Max results'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ query, since, group, project, limit }) => {
           try {
@@ -1398,12 +1480,16 @@ export class McpHandler {
 
     // ── Tool: delete_project ──────────────────────────────────────────────
     if (tools.has('delete_project'))
-      server.tool(
+      server.registerTool(
         'delete_project',
-        prompts.tools.delete_project.description,
         {
-          group: z.string().describe('Group name (collection) the project belongs to'),
-          project: z.string().describe('Project name to delete'),
+          title: prompts.tools.delete_project.title,
+          description: prompts.tools.delete_project.description,
+          inputSchema: {
+            group: z.string().describe('Group name (collection) the project belongs to'),
+            project: z.string().describe('Project name to delete'),
+          },
+          annotations: DESTRUCTIVE,
         },
         async ({ group, project }) => {
           try {
@@ -1439,28 +1525,37 @@ export class McpHandler {
 
     // ── Tool: find_usages ─────────────────────────────────────────────────
     if (tools.has('find_usages'))
-      server.tool(
+      server.registerTool(
         'find_usages',
-        prompts.tools.find_usages.description,
         {
-          chunk_id: z.string().describe('Chunk ID to find usages of'),
-          direction: z
-            .enum(['incoming', 'outgoing', 'both'])
-            .default('incoming')
-            .describe(
-              'incoming = who calls this chunk, outgoing = what this chunk calls, both = both directions'
-            ),
-          relation_types: z
-            .array(z.enum(['calls', 'called_by', 'references', 'referenced_by']))
-            .optional()
-            .describe('Filter by relation types (default: all)'),
-          limit: z.coerce.number().min(1).max(50).default(20).describe('Max results per direction'),
-          include_hubs: z
-            .boolean()
-            .default(true)
-            .describe(
-              'When true (default) callers/callees whose own degree is above the group p95 are surfaced with a `[hub]` marker so the agent knows the link is noisy. Set false to drop hub neighbours entirely — useful when probing a specific path through the codebase.'
-            ),
+          title: prompts.tools.find_usages.title,
+          description: prompts.tools.find_usages.description,
+          inputSchema: {
+            chunk_id: z.string().describe('Chunk ID to find usages of'),
+            direction: z
+              .enum(['incoming', 'outgoing', 'both'])
+              .default('incoming')
+              .describe(
+                'incoming = who calls this chunk, outgoing = what this chunk calls, both = both directions'
+              ),
+            relation_types: z
+              .array(z.enum(['calls', 'called_by', 'references', 'referenced_by']))
+              .optional()
+              .describe('Filter by relation types (default: all)'),
+            limit: z.coerce
+              .number()
+              .min(1)
+              .max(50)
+              .default(20)
+              .describe('Max results per direction'),
+            include_hubs: z
+              .boolean()
+              .default(true)
+              .describe(
+                'When true (default) callers/callees whose own degree is above the group p95 are surfaced with a `[hub]` marker so the agent knows the link is noisy. Set false to drop hub neighbours entirely — useful when probing a specific path through the codebase.'
+              ),
+          },
+          annotations: READ_ONLY,
         },
         async ({ chunk_id, direction, relation_types, limit, include_hubs }) => {
           try {
@@ -1644,14 +1739,18 @@ export class McpHandler {
 
     // ── Tool: explain_feature ────────────────────────────────────────────────
     if (tools.has('explain_feature'))
-      server.tool(
+      server.registerTool(
         'explain_feature',
-        prompts.tools.explain_feature.description,
         {
-          question: z.string().describe('Natural language question about a feature'),
-          group: z.string().optional().describe('Specific group or omit for all'),
-          project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.coerce.number().min(1).max(10).default(5).describe('Max seed chunks'),
+          title: prompts.tools.explain_feature.title,
+          description: prompts.tools.explain_feature.description,
+          inputSchema: {
+            question: z.string().describe('Natural language question about a feature'),
+            group: z.string().optional().describe('Specific group or omit for all'),
+            project: z.string().default('all').describe('Project name or "all"'),
+            limit: z.coerce.number().min(1).max(10).default(5).describe('Max seed chunks'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ question, group, project, limit }) => {
           try {
@@ -1901,15 +2000,19 @@ export class McpHandler {
 
     // ── Tool: recent_changes ─────────────────────────────────────────────────
     if (tools.has('recent_changes'))
-      server.tool(
+      server.registerTool(
         'recent_changes',
-        prompts.tools.recent_changes.description,
         {
-          question: z.string().describe('Semantic search query'),
-          since: z.string().optional().describe('ISO 8601 date filter (e.g. "2024-01-01")'),
-          group: z.string().optional().describe('Specific group or omit for all'),
-          project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.coerce.number().min(1).max(20).default(10).describe('Max seed chunks'),
+          title: prompts.tools.recent_changes.title,
+          description: prompts.tools.recent_changes.description,
+          inputSchema: {
+            question: z.string().describe('Semantic search query'),
+            since: z.string().optional().describe('ISO 8601 date filter (e.g. "2024-01-01")'),
+            group: z.string().optional().describe('Specific group or omit for all'),
+            project: z.string().default('all').describe('Project name or "all"'),
+            limit: z.coerce.number().min(1).max(20).default(10).describe('Max seed chunks'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ question, since, group, project, limit }) => {
           try {
@@ -2119,20 +2222,24 @@ export class McpHandler {
 
     // ── Tool: impact_analysis ────────────────────────────────────────────────
     if (tools.has('impact_analysis'))
-      server.tool(
+      server.registerTool(
         'impact_analysis',
-        prompts.tools.impact_analysis.description,
         {
-          question: z.string().describe('Natural language query about code to analyze'),
-          group: z.string().optional().describe('Specific group or omit for all'),
-          project: z.string().default('all').describe('Project name or "all"'),
-          limit: z.coerce.number().min(1).max(10).default(5).describe('Max seed chunks'),
-          max_hops: z.coerce
-            .number()
-            .min(1)
-            .max(2)
-            .default(1)
-            .describe('Graph traversal depth (1-2)'),
+          title: prompts.tools.impact_analysis.title,
+          description: prompts.tools.impact_analysis.description,
+          inputSchema: {
+            question: z.string().describe('Natural language query about code to analyze'),
+            group: z.string().optional().describe('Specific group or omit for all'),
+            project: z.string().default('all').describe('Project name or "all"'),
+            limit: z.coerce.number().min(1).max(10).default(5).describe('Max seed chunks'),
+            max_hops: z.coerce
+              .number()
+              .min(1)
+              .max(2)
+              .default(1)
+              .describe('Graph traversal depth (1-2)'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ question, group, project, limit, max_hops }) => {
           try {
@@ -2389,11 +2496,18 @@ export class McpHandler {
 
     // ── Tool: list_projects ────────────────────────────────────────────────
     if (tools.has('list_projects'))
-      server.tool(
+      server.registerTool(
         'list_projects',
-        prompts.tools.list_projects.description,
         {
-          group: z.string().optional().describe('Specific group name, or omit to list all groups'),
+          title: prompts.tools.list_projects.title,
+          description: prompts.tools.list_projects.description,
+          inputSchema: {
+            group: z
+              .string()
+              .optional()
+              .describe('Specific group name, or omit to list all groups'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ group }) => {
           try {
@@ -2471,10 +2585,15 @@ export class McpHandler {
       });
 
       if (tools.has('token_savings_report'))
-        server.tool(
+        server.registerTool(
           'token_savings_report',
-          'Token-savings estimates: naive baseline vs. search-only vs. actually-consumed (uses chunk_fetches correlation).',
-          periodSchema,
+          {
+            title: 'Token Savings Report',
+            description:
+              'Token-savings estimates: naive baseline vs. search-only vs. actually-consumed (uses chunk_fetches correlation).',
+            inputSchema: periodSchema,
+            annotations: READ_ONLY,
+          },
           async ({ since_ms, until_ms, user, group }) => {
             const result = tokenSavingsReport(this.analytics!, {
               since: since_ms,
@@ -2487,10 +2606,15 @@ export class McpHandler {
         );
 
       if (tools.has('top_queries'))
-        server.tool(
+        server.registerTool(
           'top_queries',
-          'Most-frequent queries by query_hash with one example, count, avg latency, avg result count.',
-          { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
+          {
+            title: 'Top Queries',
+            description:
+              'Most-frequent queries by query_hash with one example, count, avg latency, avg result count.',
+            inputSchema: { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
+            annotations: READ_ONLY,
+          },
           async ({ since_ms, until_ms, user, group, limit }) => {
             const rows = topQueries(
               this.analytics!,
@@ -2507,10 +2631,14 @@ export class McpHandler {
         );
 
       if (tools.has('slowest_searches'))
-        server.tool(
+        server.registerTool(
           'slowest_searches',
-          'Slowest individual searches in the period.',
-          { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
+          {
+            title: 'Slowest Searches',
+            description: 'Slowest individual searches in the period.',
+            inputSchema: { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
+            annotations: READ_ONLY,
+          },
           async ({ since_ms, until_ms, user, group, limit }) => {
             const rows = slowestSearches(
               this.analytics!,
@@ -2527,10 +2655,15 @@ export class McpHandler {
         );
 
       if (tools.has('cross_project_share'))
-        server.tool(
+        server.registerTool(
           'cross_project_share',
-          'Per-user-per-anchor-project share of results that came from OTHER projects in the same group. Detects noisy cross-project search.',
-          periodSchema,
+          {
+            title: 'Cross-Project Share',
+            description:
+              'Per-user-per-anchor-project share of results that came from OTHER projects in the same group. Detects noisy cross-project search.',
+            inputSchema: periodSchema,
+            annotations: READ_ONLY,
+          },
           async ({ since_ms, until_ms, user, group }) => {
             const rows = crossProjectShare(this.analytics!, {
               since: since_ms,
@@ -2543,10 +2676,15 @@ export class McpHandler {
         );
 
       if (tools.has('retry_rate'))
-        server.tool(
+        server.registerTool(
           'retry_rate',
-          'Reformulation rate per user: searches followed by another search within a window with no chunk_fetches in between.',
-          periodSchema,
+          {
+            title: 'Retry Rate',
+            description:
+              'Reformulation rate per user: searches followed by another search within a window with no chunk_fetches in between.',
+            inputSchema: periodSchema,
+            annotations: READ_ONLY,
+          },
           async ({ since_ms, until_ms, user, group }) => {
             const rows = retryRate(this.analytics!, {
               since: since_ms,
@@ -2559,10 +2697,15 @@ export class McpHandler {
         );
 
       if (tools.has('failed_chunks'))
-        server.tool(
+        server.registerTool(
           'failed_chunks',
-          'Aggregated chunking errors during indexing (AST failures, regex fallbacks, binary files).',
-          periodSchema,
+          {
+            title: 'Failed Chunks',
+            description:
+              'Aggregated chunking errors during indexing (AST failures, regex fallbacks, binary files).',
+            inputSchema: periodSchema,
+            annotations: READ_ONLY,
+          },
           async ({ since_ms, until_ms, group }) => {
             const rows = failedChunks(this.analytics!, {
               since: since_ms,
@@ -2578,41 +2721,50 @@ export class McpHandler {
     if (tools.has('arch_context') && this.archStore) {
       const archStore = this.archStore;
       const metrics = this.metrics;
-      server.tool(
+      server.registerTool(
         'arch_context',
-        prompts.tools['arch_context']?.description ??
-          'Retrieve architectural memory relevant to a question or set of touched files.',
         {
-          question: z.string().describe('Question, or comma-separated list of files being touched'),
-          group: z
-            .string()
-            .optional()
-            .describe('Specific group, or omit to query all known groups'),
-          min_score: z
-            .number()
-            .min(0)
-            .max(1)
-            .optional()
-            .describe(
-              `Drop hits whose cosine similarity is below this threshold. Default ${DEFAULT_MIN_SCORE}. Lower it (e.g. 0.30) when the arch memory is sparse and you want broader recall; raise it (e.g. 0.60) when you only want high-confidence matches.`
-            ),
-          project: z
-            .string()
-            .min(1)
-            .optional()
-            .describe(
-              'Scope results to a single project inside the group (same value the indexer uses as `payload.project` on code chunks). Components are filtered hard — a component without `project=X` is dropped. Decisions and lessons are filtered soft — cards with `project=X` OR no `project` field pass through, so globally-scoped guidance still surfaces. Omit to query the whole group.'
-            ),
-          limits: z
-            .object({
-              component: z.number().int().min(0).max(50).optional(),
-              decision: z.number().int().min(0).max(50).optional(),
-              lesson: z.number().int().min(0).max(50).optional(),
-            })
-            .optional()
-            .describe(
-              'Per-kind result limits — components, decisions, and lessons each get their own top-N so a verbose decision bucket cannot starve components out of the output. Default is 5 per kind. Set a kind to 0 to suppress it entirely.'
-            ),
+          title:
+            prompts.tools['arch_context']?.title ??
+            'Retrieve architectural memory relevant to a question or set of touched files.',
+          description:
+            prompts.tools['arch_context']?.description ??
+            'Retrieve architectural memory relevant to a question or set of touched files.',
+          inputSchema: {
+            question: z
+              .string()
+              .describe('Question, or comma-separated list of files being touched'),
+            group: z
+              .string()
+              .optional()
+              .describe('Specific group, or omit to query all known groups'),
+            min_score: z
+              .number()
+              .min(0)
+              .max(1)
+              .optional()
+              .describe(
+                `Drop hits whose cosine similarity is below this threshold. Default ${DEFAULT_MIN_SCORE}. Lower it (e.g. 0.30) when the arch memory is sparse and you want broader recall; raise it (e.g. 0.60) when you only want high-confidence matches.`
+              ),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe(
+                'Scope results to a single project inside the group (same value the indexer uses as `payload.project` on code chunks). Components are filtered hard — a component without `project=X` is dropped. Decisions and lessons are filtered soft — cards with `project=X` OR no `project` field pass through, so globally-scoped guidance still surfaces. Omit to query the whole group.'
+              ),
+            limits: z
+              .object({
+                component: z.number().int().min(0).max(50).optional(),
+                decision: z.number().int().min(0).max(50).optional(),
+                lesson: z.number().int().min(0).max(50).optional(),
+              })
+              .optional()
+              .describe(
+                'Per-kind result limits — components, decisions, and lessons each get their own top-N so a verbose decision bucket cannot starve components out of the output. Default is 5 per kind. Set a kind to 0 to suppress it entirely.'
+              ),
+          },
+          annotations: READ_ONLY,
         },
         async ({ question, group, min_score, project, limits }) => {
           const groupNames = group ? [group] : this.getGroupNames();
@@ -2667,50 +2819,57 @@ export class McpHandler {
     if (tools.has('arch_record_component') && this.archStore) {
       const archStore = this.archStore;
       const metrics = this.metrics;
-      server.tool(
+      server.registerTool(
         'arch_record_component',
-        prompts.tools['arch_record_component']?.description ??
-          'Record or update an architectural component.',
         {
-          group: z.string().describe('Target group'),
-          project: z
-            .string()
-            .min(1)
-            .describe(
-              'Required. Project the component belongs to — the same value the indexer writes as `payload.project` on code chunks (typically the repo directory basename). Components in the same group with the same name but different projects coexist independently.'
-            ),
-          name: z
-            .string()
-            .describe(
-              'Component name, unique per (group, project). Stable, refactor-resistant — e.g. "file indexer", not "Indexer (in indexer.ts)".'
-            ),
-          summary: z
-            .string()
-            .describe(
-              'Markdown with four sections, each one or two short lines:\n' +
-                '- **Does:** what it does\n' +
-                '- **Owns:** state / DB tables / external IO it controls\n' +
-                '- **Does not:** one or two things it explicitly does NOT do (boundary)\n' +
-                '- **Touched when:** what kind of change forces editing this component'
-            ),
-          files: z
-            .array(z.string())
-            .default([])
-            .describe(
-              'Repository paths the component spans (e.g. packages/server/src/indexer.ts).'
-            ),
-          neighbours: z
-            .array(z.string())
-            .default([])
-            .describe(
-              'Names of related components (matches `name` of other arch_record_component entries).'
-            ),
-          anchors: z
-            .array(z.string())
-            .default([])
-            .describe(
-              'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code.'
-            ),
+          title:
+            prompts.tools['arch_record_component']?.title ??
+            'Record or update an architectural component.',
+          description:
+            prompts.tools['arch_record_component']?.description ??
+            'Record or update an architectural component.',
+          inputSchema: {
+            group: z.string().describe('Target group'),
+            project: z
+              .string()
+              .min(1)
+              .describe(
+                'Required. Project the component belongs to — the same value the indexer writes as `payload.project` on code chunks (typically the repo directory basename). Components in the same group with the same name but different projects coexist independently.'
+              ),
+            name: z
+              .string()
+              .describe(
+                'Component name, unique per (group, project). Stable, refactor-resistant — e.g. "file indexer", not "Indexer (in indexer.ts)".'
+              ),
+            summary: z
+              .string()
+              .describe(
+                'Markdown with four sections, each one or two short lines:\n' +
+                  '- **Does:** what it does\n' +
+                  '- **Owns:** state / DB tables / external IO it controls\n' +
+                  '- **Does not:** one or two things it explicitly does NOT do (boundary)\n' +
+                  '- **Touched when:** what kind of change forces editing this component'
+              ),
+            files: z
+              .array(z.string())
+              .default([])
+              .describe(
+                'Repository paths the component spans (e.g. packages/server/src/indexer.ts).'
+              ),
+            neighbours: z
+              .array(z.string())
+              .default([])
+              .describe(
+                'Names of related components (matches `name` of other arch_record_component entries).'
+              ),
+            anchors: z
+              .array(z.string())
+              .default([])
+              .describe(
+                'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code.'
+              ),
+          },
+          annotations: ADDITIVE_WRITE,
         },
         async ({ group, project, name, summary, files, neighbours, anchors }) => {
           const result = await archStore.upsertComponent(group, {
@@ -2739,47 +2898,54 @@ export class McpHandler {
     if (tools.has('arch_record_decision') && this.archStore) {
       const archStore = this.archStore;
       const metrics = this.metrics;
-      server.tool(
+      server.registerTool(
         'arch_record_decision',
-        prompts.tools['arch_record_decision']?.description ?? 'Record an architectural decision.',
         {
-          group: z.string().describe('Target group'),
-          project: z
-            .string()
-            .min(1)
-            .optional()
-            .describe(
-              'Optional. Project this decision is scoped to (same value the indexer uses in `payload.project`). Omit for decisions that apply across all projects in the group.'
-            ),
-          title: z
-            .string()
-            .describe(
-              'Short imperative title — e.g. "Use qwen3-embedding-0.6b for arch-layer text embeddings".'
-            ),
-          context: z.string().describe('One sentence: the problem that forced the decision.'),
-          decision: z.string().describe('One sentence: what was chosen.'),
-          alternatives_rejected: z
-            .string()
-            .default('')
-            .describe(
-              'Markdown bullet list, one per rejected alternative:\n' +
-                '- **<option name>:** why rejected (one sentence)\n' +
-                '- **<option name>:** why rejected (one sentence)\n' +
-                'Use an empty string only if no real alternatives were considered.'
-            ),
-          consequences: z
-            .string()
-            .describe(
-              'Markdown bullet list, 2-5 items. Each item is one sentence: a consequence, a trade-off, or a required follow-up.'
-            ),
-          scope: z.enum(['global', 'component', 'file']).default('global'),
-          supersedes: z
-            .string()
-            .nullable()
-            .optional()
-            .describe(
-              'Id of a previous decision this one replaces. Bypasses the duplicate gate — pass only when you are deliberately replacing a known prior decision.'
-            ),
+          title:
+            prompts.tools['arch_record_decision']?.title ?? 'Record an architectural decision.',
+          description:
+            prompts.tools['arch_record_decision']?.description ??
+            'Record an architectural decision.',
+          inputSchema: {
+            group: z.string().describe('Target group'),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe(
+                'Optional. Project this decision is scoped to (same value the indexer uses in `payload.project`). Omit for decisions that apply across all projects in the group.'
+              ),
+            title: z
+              .string()
+              .describe(
+                'Short imperative title — e.g. "Use qwen3-embedding-0.6b for arch-layer text embeddings".'
+              ),
+            context: z.string().describe('One sentence: the problem that forced the decision.'),
+            decision: z.string().describe('One sentence: what was chosen.'),
+            alternatives_rejected: z
+              .string()
+              .default('')
+              .describe(
+                'Markdown bullet list, one per rejected alternative:\n' +
+                  '- **<option name>:** why rejected (one sentence)\n' +
+                  '- **<option name>:** why rejected (one sentence)\n' +
+                  'Use an empty string only if no real alternatives were considered.'
+              ),
+            consequences: z
+              .string()
+              .describe(
+                'Markdown bullet list, 2-5 items. Each item is one sentence: a consequence, a trade-off, or a required follow-up.'
+              ),
+            scope: z.enum(['global', 'component', 'file']).default('global'),
+            supersedes: z
+              .string()
+              .nullable()
+              .optional()
+              .describe(
+                'Id of a previous decision this one replaces. Bypasses the duplicate gate — pass only when you are deliberately replacing a known prior decision.'
+              ),
+          },
+          annotations: NON_IDEMPOTENT_WRITE,
         },
         async ({
           group,
@@ -2816,40 +2982,44 @@ export class McpHandler {
     if (tools.has('arch_record_lesson') && this.archStore) {
       const archStore = this.archStore;
       const metrics = this.metrics;
-      server.tool(
+      server.registerTool(
         'arch_record_lesson',
-        prompts.tools['arch_record_lesson']?.description ?? 'Record a lesson.',
         {
-          group: z.string().describe('Target group'),
-          project: z
-            .string()
-            .min(1)
-            .optional()
-            .describe(
-              'Optional. Project this lesson is scoped to (same value the indexer uses in `payload.project`). Omit for lessons that apply across all projects in the group.'
-            ),
-          rule: z
-            .string()
-            .describe(
-              'One imperative sentence — the rule itself. E.g. "Always preserve createdAt on re-upsert."'
-            ),
-          why: z
-            .string()
-            .describe(
-              '1-3 sentences. The incident or reason. Quote the user verbatim if they corrected you.'
-            ),
-          when: z
-            .string()
-            .describe(
-              'One sentence describing the situation in which this rule applies. Future-you must be able to recognise it.'
-            ),
-          scope: z.enum(['global', 'component', 'file']).default('global'),
-          severity: z.enum(['info', 'warning', 'critical']).default('info'),
-          evidence: z
-            .string()
-            .nullable()
-            .optional()
-            .describe('Optional commit hash, PR link, or short quote backing the lesson.'),
+          title: prompts.tools['arch_record_lesson']?.title ?? 'Record a lesson.',
+          description: prompts.tools['arch_record_lesson']?.description ?? 'Record a lesson.',
+          inputSchema: {
+            group: z.string().describe('Target group'),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe(
+                'Optional. Project this lesson is scoped to (same value the indexer uses in `payload.project`). Omit for lessons that apply across all projects in the group.'
+              ),
+            rule: z
+              .string()
+              .describe(
+                'One imperative sentence — the rule itself. E.g. "Always preserve createdAt on re-upsert."'
+              ),
+            why: z
+              .string()
+              .describe(
+                '1-3 sentences. The incident or reason. Quote the user verbatim if they corrected you.'
+              ),
+            when: z
+              .string()
+              .describe(
+                'One sentence describing the situation in which this rule applies. Future-you must be able to recognise it.'
+              ),
+            scope: z.enum(['global', 'component', 'file']).default('global'),
+            severity: z.enum(['info', 'warning', 'critical']).default('info'),
+            evidence: z
+              .string()
+              .nullable()
+              .optional()
+              .describe('Optional commit hash, PR link, or short quote backing the lesson.'),
+          },
+          annotations: ADDITIVE_WRITE,
         },
         async ({ group, project, rule, why, when, scope, severity, evidence }) => {
           const result = await archStore.upsertLesson(group, {
@@ -2872,39 +3042,43 @@ export class McpHandler {
     // ── Tool: arch_list ─────────────────────────────────────────────────────
     if (tools.has('arch_list') && this.archStore) {
       const archStore = this.archStore;
-      server.tool(
+      server.registerTool(
         'arch_list',
-        prompts.tools['arch_list']?.description ?? 'List all arch cards in a group.',
         {
-          group: z.string().min(1).describe('Group to list cards from.'),
-          project: z
-            .string()
-            .min(1)
-            .optional()
-            .describe(
-              'Optional. Restrict to one project. Components must match this project (hard filter); decisions and lessons match this project OR have no project field (soft filter, so group-wide guidance still surfaces).'
-            ),
-          kinds: z
-            .array(z.enum(['component', 'decision', 'lesson']))
-            .optional()
-            .describe('Optional. Restrict to a subset of card kinds.'),
-          include_history: z
-            .boolean()
-            .optional()
-            .describe('Optional. Include superseded/deprecated cards. Default false.'),
-          limit: z
-            .number()
-            .int()
-            .min(1)
-            .max(200)
-            .optional()
-            .describe('Optional. Page size, default 50, max 200.'),
-          offset: z
-            .union([z.string(), z.number()])
-            .optional()
-            .describe(
-              'Optional. Resume cursor from a previous call (`next_offset`). Pass the value verbatim — strings that look like JSON (start with `{` or `[`) are parsed back to the structured form Qdrant emits. Omit for the first page.'
-            ),
+          title: prompts.tools['arch_list']?.title ?? 'List all arch cards in a group.',
+          description: prompts.tools['arch_list']?.description ?? 'List all arch cards in a group.',
+          inputSchema: {
+            group: z.string().min(1).describe('Group to list cards from.'),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe(
+                'Optional. Restrict to one project. Components must match this project (hard filter); decisions and lessons match this project OR have no project field (soft filter, so group-wide guidance still surfaces).'
+              ),
+            kinds: z
+              .array(z.enum(['component', 'decision', 'lesson']))
+              .optional()
+              .describe('Optional. Restrict to a subset of card kinds.'),
+            include_history: z
+              .boolean()
+              .optional()
+              .describe('Optional. Include superseded/deprecated cards. Default false.'),
+            limit: z
+              .number()
+              .int()
+              .min(1)
+              .max(200)
+              .optional()
+              .describe('Optional. Page size, default 50, max 200.'),
+            offset: z
+              .union([z.string(), z.number()])
+              .optional()
+              .describe(
+                'Optional. Resume cursor from a previous call (`next_offset`). Pass the value verbatim — strings that look like JSON (start with `{` or `[`) are parsed back to the structured form Qdrant emits. Omit for the first page.'
+              ),
+          },
+          annotations: READ_ONLY,
         },
         async ({ group, project, kinds, include_history, limit, offset }) => {
           // Tool-surface cursors are always strings or numbers. Internally
@@ -2969,24 +3143,31 @@ export class McpHandler {
     // ── Tool: arch_suggest_components ───────────────────────────────────────
     if (tools.has('arch_suggest_components') && this.archStore) {
       const archStore = this.archStore;
-      server.tool(
+      server.registerTool(
         'arch_suggest_components',
-        prompts.tools['arch_suggest_components']?.description ??
-          'Suggest candidate components to record based on symbol-graph centrality.',
         {
-          group: z.string().min(1).describe('Group to analyse.'),
-          project: z
-            .string()
-            .min(1)
-            .optional()
-            .describe('Optional. Restrict suggestions to one project in the group.'),
-          limit: z
-            .number()
-            .int()
-            .min(1)
-            .max(50)
-            .optional()
-            .describe('Optional. Max suggestions to return. Default 10.'),
+          title:
+            prompts.tools['arch_suggest_components']?.title ??
+            'Suggest candidate components to record based on symbol-graph centrality.',
+          description:
+            prompts.tools['arch_suggest_components']?.description ??
+            'Suggest candidate components to record based on symbol-graph centrality.',
+          inputSchema: {
+            group: z.string().min(1).describe('Group to analyse.'),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe('Optional. Restrict suggestions to one project in the group.'),
+            limit: z
+              .number()
+              .int()
+              .min(1)
+              .max(50)
+              .optional()
+              .describe('Optional. Max suggestions to return. Default 10.'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ group, project, limit }) => {
           if (!this.metadataStore) {
@@ -3103,17 +3284,21 @@ export class McpHandler {
     // ── Tool: arch_delete ───────────────────────────────────────────────────
     if (tools.has('arch_delete') && this.archStore) {
       const archStore = this.archStore;
-      server.tool(
+      server.registerTool(
         'arch_delete',
-        prompts.tools['arch_delete']?.description ?? 'Hard-delete arch cards by id.',
         {
-          group: z.string().min(1).describe('Group the cards live in.'),
-          ids: z
-            .array(z.string().min(1))
-            .min(1)
-            .describe(
-              'Card ids to delete. Idempotent: ids that no longer exist are reported in `notFound` but do not fail the call.'
-            ),
+          title: prompts.tools['arch_delete']?.title ?? 'Hard-delete arch cards by id.',
+          description: prompts.tools['arch_delete']?.description ?? 'Hard-delete arch cards by id.',
+          inputSchema: {
+            group: z.string().min(1).describe('Group the cards live in.'),
+            ids: z
+              .array(z.string().min(1))
+              .min(1)
+              .describe(
+                'Card ids to delete. Idempotent: ids that no longer exist are reported in `notFound` but do not fail the call.'
+              ),
+          },
+          annotations: DESTRUCTIVE,
         },
         async ({ group, ids }) => {
           const { deleted, notFound } = await archStore.deletePoints(group, ids);
@@ -3129,53 +3314,60 @@ export class McpHandler {
     // ── Tool: search_docs ────────────────────────────────────────────────────
     if (tools.has('search_docs') && this.docsStore) {
       const docsStore = this.docsStore;
-      server.tool(
+      server.registerTool(
         'search_docs',
-        prompts.tools['search_docs']?.description ??
-          'Hybrid (semantic + keyword) search over indexed markdown documentation. Returns doc-merged passages with title, heading path, and source link.',
         {
-          query: z.string().min(1).describe('Natural-language documentation query.'),
-          project: z
-            .string()
-            .optional()
-            .describe('Restrict to a single project (directory basename), or omit for all.'),
-          group: z
-            .string()
-            .optional()
-            .describe('Specific group, or omit to search all known groups.'),
-          audience: z
-            .array(z.string())
-            .optional()
-            .describe(
-              'Restrict to these visibility labels (e.g. ["internal"], ["client","public"]). ' +
-                'Omit to search every audience this endpoint is allowed to see. Un-labelled docs ' +
-                'count as "internal". If the server enforces an audience ceiling, this can only ' +
-                'narrow within it, never widen past it.'
-            ),
-          limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
-          min_score: z
-            .number()
-            .min(0)
-            .max(1)
-            .optional()
-            .describe(
-              'Relevance floor as a semantic cosine (default 0.45). Hits below it are dropped, ' +
-                'so a question the docs do not cover returns nothing instead of the closest ' +
-                'unrelated page. Raise toward 0.6 to demand near-exact matches; pass 0 to disable. ' +
-                'Applies to long-form prose docs; markdown that ships inside code repositories ' +
-                'uses min_score_code instead.'
-            ),
-          min_score_code: z
-            .number()
-            .min(0)
-            .max(1)
-            .optional()
-            .describe(
-              'Relevance floor for markdown that lives in code repositories (README, CLAUDE.md, ' +
-                'design notes), default 0.6. Higher than min_score because such files are written ' +
-                'as overviews and score deceptively well against questions they do not answer. ' +
-                'Pass 0 to disable for this kind only.'
-            ),
+          title:
+            prompts.tools['search_docs']?.title ??
+            'Hybrid (semantic + keyword) search over indexed markdown documentation. Returns doc-merged passages with title, heading path, and source link.',
+          description:
+            prompts.tools['search_docs']?.description ??
+            'Hybrid (semantic + keyword) search over indexed markdown documentation. Returns doc-merged passages with title, heading path, and source link.',
+          inputSchema: {
+            query: z.string().min(1).describe('Natural-language documentation query.'),
+            project: z
+              .string()
+              .optional()
+              .describe('Restrict to a single project (directory basename), or omit for all.'),
+            group: z
+              .string()
+              .optional()
+              .describe('Specific group, or omit to search all known groups.'),
+            audience: z
+              .array(z.string())
+              .optional()
+              .describe(
+                'Restrict to these visibility labels (e.g. ["internal"], ["client","public"]). ' +
+                  'Omit to search every audience this endpoint is allowed to see. Un-labelled docs ' +
+                  'count as "internal". If the server enforces an audience ceiling, this can only ' +
+                  'narrow within it, never widen past it.'
+              ),
+            limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
+            min_score: z
+              .number()
+              .min(0)
+              .max(1)
+              .optional()
+              .describe(
+                'Relevance floor as a semantic cosine (default 0.45). Hits below it are dropped, ' +
+                  'so a question the docs do not cover returns nothing instead of the closest ' +
+                  'unrelated page. Raise toward 0.6 to demand near-exact matches; pass 0 to disable. ' +
+                  'Applies to long-form prose docs; markdown that ships inside code repositories ' +
+                  'uses min_score_code instead.'
+              ),
+            min_score_code: z
+              .number()
+              .min(0)
+              .max(1)
+              .optional()
+              .describe(
+                'Relevance floor for markdown that lives in code repositories (README, CLAUDE.md, ' +
+                  'design notes), default 0.6. Higher than min_score because such files are written ' +
+                  'as overviews and score deceptively well against questions they do not answer. ' +
+                  'Pass 0 to disable for this kind only.'
+              ),
+          },
+          annotations: READ_ONLY,
         },
         async ({ query, project, group, audience, limit, min_score, min_score_code }) => {
           // Intersect the caller's audience with the server-enforced ceiling
@@ -3275,15 +3467,22 @@ export class McpHandler {
     // ── Tool: term_search ────────────────────────────────────────────────────
     if (tools.has('term_search') && this.terminologyStore) {
       const termStore = this.terminologyStore;
-      server.tool(
+      server.registerTool(
         'term_search',
-        prompts.tools['term_search']?.description ??
-          'Search the company glossary for a term, abbreviation, or domain concept.',
         {
-          query: z.string().min(1).describe('Term, abbreviation, or concept to look up.'),
-          project: z.string().optional().describe('Restrict to a project, or omit for all.'),
-          group: z.string().optional().describe('Specific group, or omit for all groups.'),
-          limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
+          title:
+            prompts.tools['term_search']?.title ??
+            'Search the company glossary for a term, abbreviation, or domain concept.',
+          description:
+            prompts.tools['term_search']?.description ??
+            'Search the company glossary for a term, abbreviation, or domain concept.',
+          inputSchema: {
+            query: z.string().min(1).describe('Term, abbreviation, or concept to look up.'),
+            project: z.string().optional().describe('Restrict to a project, or omit for all.'),
+            group: z.string().optional().describe('Specific group, or omit for all groups.'),
+            limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ query, project, group, limit }) => {
           const groupNames = group ? [group] : this.getGroupNames();
@@ -3325,13 +3524,17 @@ export class McpHandler {
     // ── Tool: term_list ──────────────────────────────────────────────────────
     if (tools.has('term_list') && this.terminologyStore) {
       const termStore = this.terminologyStore;
-      server.tool(
+      server.registerTool(
         'term_list',
-        prompts.tools['term_list']?.description ?? 'List glossary terms in a group.',
         {
-          group: z.string().optional().describe('Specific group, or omit for all groups.'),
-          project: z.string().optional().describe('Restrict to a project, or omit for all.'),
-          limit: z.number().int().min(1).max(500).optional().describe('Max terms. Default 200.'),
+          title: prompts.tools['term_list']?.title ?? 'List glossary terms in a group.',
+          description: prompts.tools['term_list']?.description ?? 'List glossary terms in a group.',
+          inputSchema: {
+            group: z.string().optional().describe('Specific group, or omit for all groups.'),
+            project: z.string().optional().describe('Restrict to a project, or omit for all.'),
+            limit: z.number().int().min(1).max(500).optional().describe('Max terms. Default 200.'),
+          },
+          annotations: READ_ONLY,
         },
         async ({ group, project, limit }) => {
           const groupNames = group ? [group] : this.getGroupNames();
@@ -3360,16 +3563,26 @@ export class McpHandler {
     // ── Tool: term_record ────────────────────────────────────────────────────
     if (tools.has('term_record') && this.terminologyStore) {
       const termStore = this.terminologyStore;
-      server.tool(
+      server.registerTool(
         'term_record',
-        prompts.tools['term_record']?.description ??
-          'Record a glossary term. Goes through a duplicate/similar gate — reconcile with the matched term if one is returned.',
         {
-          group: z.string().min(1).describe('Group the term belongs to.'),
-          term: z.string().min(1).describe('The canonical term, e.g. "feed-poster".'),
-          definition: z.string().min(1).describe('Plain-language definition.'),
-          aliases: z.array(z.string()).optional().describe('Alternate spellings / abbreviations.'),
-          project: z.string().optional().describe('Project scope, or omit for group-wide.'),
+          title:
+            prompts.tools['term_record']?.title ??
+            'Record a glossary term. Goes through a duplicate/similar gate — reconcile with the matched term if one is returned.',
+          description:
+            prompts.tools['term_record']?.description ??
+            'Record a glossary term. Goes through a duplicate/similar gate — reconcile with the matched term if one is returned.',
+          inputSchema: {
+            group: z.string().min(1).describe('Group the term belongs to.'),
+            term: z.string().min(1).describe('The canonical term, e.g. "feed-poster".'),
+            definition: z.string().min(1).describe('Plain-language definition.'),
+            aliases: z
+              .array(z.string())
+              .optional()
+              .describe('Alternate spellings / abbreviations.'),
+            project: z.string().optional().describe('Project scope, or omit for group-wide.'),
+          },
+          annotations: ADDITIVE_WRITE,
         },
         async ({ group, term, definition, aliases, project }) => {
           const res = await termStore.recordTerm(group, {
@@ -3393,12 +3606,16 @@ export class McpHandler {
     // ── Tool: term_delete ────────────────────────────────────────────────────
     if (tools.has('term_delete') && this.terminologyStore) {
       const termStore = this.terminologyStore;
-      server.tool(
+      server.registerTool(
         'term_delete',
-        prompts.tools['term_delete']?.description ?? 'Delete a glossary term by id.',
         {
-          group: z.string().min(1).describe('Group the term lives in.'),
-          id: z.string().min(1).describe('Term id to delete.'),
+          title: prompts.tools['term_delete']?.title ?? 'Delete a glossary term by id.',
+          description: prompts.tools['term_delete']?.description ?? 'Delete a glossary term by id.',
+          inputSchema: {
+            group: z.string().min(1).describe('Group the term lives in.'),
+            id: z.string().min(1).describe('Term id to delete.'),
+          },
+          annotations: DESTRUCTIVE,
         },
         async ({ group, id }) => {
           const ok = await termStore.deleteTerm(group, id);

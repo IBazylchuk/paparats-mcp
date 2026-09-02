@@ -1331,3 +1331,195 @@ describe('describeExcerpt', () => {
     expect(out).toContain('`b.md`');
   });
 });
+
+describe('tool annotations', () => {
+  interface ListedTool {
+    name: string;
+    title?: string;
+    annotations?: {
+      readOnlyHint?: boolean;
+      destructiveHint?: boolean;
+      idempotentHint?: boolean;
+      openWorldHint?: boolean;
+    };
+  }
+
+  /**
+   * Drive a real `tools/list` over HTTP and return the tools as the wire carries them.
+   *
+   * The arch, glossary, docs and analytics tools only register when their store is
+   * wired up, so all four are stubbed — `tools/list` never calls into them, it only
+   * needs them present for registration to happen.
+   */
+  async function listTools(path: '/mcp' | '/support/mcp'): Promise<ListedTool[]> {
+    const projects = new Map<string, ProjectConfig[]>([['test-group', [createProjectConfig()]]]);
+    const handler = new McpHandler({
+      searcher: createMockSearcher(),
+      indexer: createMockIndexer(),
+      getProjects: () => projects,
+      getGroupNames: () => Array.from(projects.keys()),
+      metadataStore: createMockMetadataStore(),
+      archStore: {} as never,
+      docsStore: {} as never,
+      terminologyStore: {} as never,
+      analytics: {} as never,
+    });
+
+    const app = express();
+    app.use(express.json());
+    handler.mount(app);
+    const server = app.listen(0);
+    const { port } = server.address() as { port: number };
+    const headers = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+    };
+
+    try {
+      const initRes = await fetch(`http://127.0.0.1:${port}${path}`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '1.0.0' },
+          },
+        }),
+      });
+      const sessionId = initRes.headers.get('mcp-session-id');
+      expect(sessionId).toBeTruthy();
+
+      const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+        method: 'POST',
+        headers: { ...headers, 'mcp-session-id': sessionId! },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
+      });
+      const body = (await parseMcpResponse(res)) as { result?: { tools?: ListedTool[] } };
+      return body.result?.tools ?? [];
+    } finally {
+      server.close();
+      handler.destroy();
+    }
+  }
+
+  const READ_ONLY_TOOLS = [
+    'search_code',
+    'search_docs',
+    'get_chunk',
+    'find_usages',
+    'list_projects',
+    'health_check',
+    'term_search',
+    'term_list',
+    'arch_context',
+    'arch_list',
+    'arch_suggest_components',
+  ];
+
+  it('annotates every tool and gives it a title', async () => {
+    // A tool registered without annotations inherits the spec's pessimistic
+    // defaults silently, so absence is the failure worth guarding.
+    for (const path of ['/mcp', '/support/mcp'] as const) {
+      const tools = await listTools(path);
+      expect(tools.length, `${path} should expose tools`).toBeGreaterThan(0);
+
+      const unannotated = tools.filter((t) => typeof t.annotations?.readOnlyHint !== 'boolean');
+      expect(
+        unannotated.map((t) => t.name),
+        `${path}: missing annotations`
+      ).toEqual([]);
+
+      const untitled = tools.filter((t) => !t.title);
+      expect(
+        untitled.map((t) => t.name),
+        `${path}: missing title`
+      ).toEqual([]);
+    }
+  });
+
+  it('marks queries read-only in a closed domain', async () => {
+    const tools = await listTools('/mcp');
+
+    for (const name of READ_ONLY_TOOLS) {
+      const tool = tools.find((t) => t.name === name);
+      expect(tool, `${name} should be registered`).toBeDefined();
+      expect(tool?.annotations?.readOnlyHint, `${name} should be read-only`).toBe(true);
+      expect(tool?.annotations?.openWorldHint, `${name} is a closed domain`).toBe(false);
+    }
+  });
+
+  it('omits destructiveHint and idempotentHint on read-only tools', async () => {
+    // The spec: both are "meaningful only when readOnlyHint == false".
+    const tools = await listTools('/mcp');
+
+    for (const name of READ_ONLY_TOOLS) {
+      const annotations = tools.find((t) => t.name === name)?.annotations;
+      expect(annotations, `${name} should be registered`).toBeDefined();
+      expect(annotations, `${name} should not carry destructiveHint`).not.toHaveProperty(
+        'destructiveHint'
+      );
+      expect(annotations, `${name} should not carry idempotentHint`).not.toHaveProperty(
+        'idempotentHint'
+      );
+    }
+  });
+
+  it('marks name-keyed writes additive and idempotent', async () => {
+    // Overwrite-in-place by name: a repeat call leaves the store in the same state.
+    const tools = await listTools('/mcp');
+
+    for (const name of ['arch_record_component', 'arch_record_lesson', 'term_record']) {
+      const annotations = tools.find((t) => t.name === name)?.annotations;
+      expect(annotations, `${name} should be registered`).toBeDefined();
+      expect(annotations?.readOnlyHint, `${name} writes`).toBe(false);
+      expect(annotations?.destructiveHint, `${name} is additive`).toBe(false);
+      expect(annotations?.idempotentHint, `${name} overwrites by name`).toBe(true);
+    }
+  });
+
+  it('does not claim idempotency for arch_record_decision', async () => {
+    // It mints a fresh id per call; the duplicate guard is a similarity
+    // threshold, not a guarantee. Absent means the spec default `false`.
+    const annotations = (await listTools('/mcp')).find(
+      (t) => t.name === 'arch_record_decision'
+    )?.annotations;
+
+    expect(annotations, 'arch_record_decision should be registered').toBeDefined();
+    expect(annotations?.readOnlyHint).toBe(false);
+    expect(annotations?.destructiveHint).toBe(false);
+    expect(annotations).not.toHaveProperty('idempotentHint');
+  });
+
+  it('marks deletions non-read-only and idempotent, leaving destructiveHint default', async () => {
+    const tools = await listTools('/mcp');
+
+    for (const name of ['delete_project', 'arch_delete', 'term_delete']) {
+      const annotations = tools.find((t) => t.name === name)?.annotations;
+      expect(annotations, `${name} should be registered`).toBeDefined();
+      expect(annotations?.readOnlyHint, `${name} is not read-only`).toBe(false);
+      expect(annotations?.idempotentHint, `${name} deleting twice is a no-op`).toBe(true);
+      // `destructiveHint: true` is already the spec default — asserting it is noise.
+      expect(annotations, `${name} should leave destructiveHint default`).not.toHaveProperty(
+        'destructiveHint'
+      );
+    }
+  });
+
+  it('annotates support-mode tools too', async () => {
+    const tools = await listTools('/support/mcp');
+
+    for (const name of ['explain_feature', 'impact_analysis', 'token_savings_report']) {
+      const annotations = tools.find((t) => t.name === name)?.annotations;
+      expect(annotations, `${name} should be registered in support mode`).toBeDefined();
+      expect(annotations?.readOnlyHint, `${name} is read-only`).toBe(true);
+      expect(annotations?.openWorldHint, `${name} is a closed domain`).toBe(false);
+    }
+
+    // Support mode deliberately exposes no arch tools and no delete_project.
+    expect(tools.find((t) => t.name === 'delete_project')).toBeUndefined();
+  });
+});
