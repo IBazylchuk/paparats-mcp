@@ -76,7 +76,7 @@
     "chokidar": "^5.0.0",
     "commander": "^15.0.0",
     "glob": "^13.0.6",
-    "js-yaml": "^5.2.1",
+    "js-yaml": "^5.4.1",
     "minimatch": "^10.2.5",
     "ora": "^9.4.1",
     "p-limit": "^7.3.0"
