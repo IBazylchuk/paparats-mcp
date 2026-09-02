@@ -4,6 +4,45 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.6.1] - 2026-09-02
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 95449c2: Clear all 20 open Dependabot security advisories and refresh dependencies.
+
+  Seven transitive packages carried advisories, all reachable only through
+  dependencies we do not call directly. Bumped past each advisory's fix boundary
+  via the root `resolutions` block: `fast-uri` 3.1.2→3.1.7 (three host-confusion
+  bypasses), `hono` 4.12.28→4.13.5 (CORS ReDoS, `memo()` cross-user SSR leak,
+  language-middleware DoS, proxy header leak), `ip-address` 10.2.0→10.7.0 (three
+  SSRF / trust-boundary bypasses), `postcss` 8.5.15→8.5.26 (sourceMappingURL path
+  traversal plus its incomplete fix), `undici` 6.27.0→6.28.0 (response
+  desync, CRLF injection, cookie attribute injection), and `nanoid` 3.3.12→3.3.18
+  (two infinite-loop DoS paths), newly pinned since it enters only under `postcss`.
+
+  `js-yaml` needed three separate pins because three majors coexist in the tree:
+  3.15.2 and 4.3.2 via resolutions for the transitive copies under
+  `read-yaml-file` and `@changesets/parse`, and a direct bump to ^5.4.1 in
+  `server`, `cli` and `indexer` for the flow-collection parsing DoS. We parse
+  untrusted-ish YAML in `.paparats.yml` and `projects.yml`, so this one is on a
+  path we actually execute.
+
+  Also refreshed in-range direct dependencies (`@types/node`, `vitest`, `eslint`,
+  `prettier`, `typescript-eslint`, `vite`, `zod`, `@modelcontextprotocol/sdk`,
+  `@inquirer/prompts`, the OpenTelemetry set and others). `yarn npm audit` now
+  reports zero advisories; the two remaining notices are deprecations, not
+  vulnerabilities.
+
+  `@qdrant/js-client-rest` is now pinned to an exact `1.18.0`. 1.19.0 removes the
+  `search()` method in a minor release, which fails typecheck at six call sites in
+  `searcher.ts`, `arch/store.ts` and `terminology/store.ts`; migrating to `query()`
+  also changes the return shape from a bare array to `{ points: [...] }`. The exact
+  pin stops a caret range from pulling that breaking release in unnoticed. No
+  advisory affects 1.18.0, so this is deferred rather than urgent — the `query()`
+  migration wants its own change.
+
 ## [2.6.0] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -234,7 +273,7 @@
   surfaces the failure.
   - @paparats/shared@2.4.3
 
-## [2.4.2] - 2026-08-03
+## [2.4.2] - 2026-09-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -265,7 +304,7 @@
 
   Works in the `defaults` block as well as per repo.
 
-## [2.4.0] - 2026-08-03
+## [2.4.0] - 2026-09-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -463,7 +502,7 @@
 
 - @paparats/shared@2.0.3
 
-## [2.0.2] - 2026-08-03
+## [2.0.2] - 2026-09-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -644,7 +683,7 @@
 
 - @paparats/shared@1.7.2
 
-## [1.7.1] - 2026-08-03
+## [1.7.1] - 2026-09-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -743,7 +782,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [1.4.0] - 2026-08-03
+## [1.4.0] - 2026-09-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1157,7 +1196,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [0.7.0] - 2026-08-03
+## [0.7.0] - 2026-09-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1204,7 +1243,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-08-03
+## [0.5.0] - 2026-09-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1297,7 +1336,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-08-03
+## [0.3.0] - 2026-09-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
