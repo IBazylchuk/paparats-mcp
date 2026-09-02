@@ -7,72 +7,95 @@
   },
   "tools": {
     "search_code": {
+      "title": "Search Code",
       "description": "REQUIRED — call this FIRST for ANY code question.\n\nSemantic code search across all indexed projects. Returns relevant code chunks ranked by confidence score with symbol definitions and usages.\n\nTriggers (call this when the user asks about): code location, implementation, \"how X works\", \"how many X\", \"what versions of X\", \"count X\", \"list X\", patterns, flows, error handling, auth, API usage, or ANY reference to project code.\n\nWHY: Returns only relevant chunks (50-90% fewer tokens vs full files). Searches by meaning, not just keywords.\n\nWORKFLOW: Search first → evaluate scores → get_chunk for details → find_usages for dependencies.\n\nProject names are directory basenames, not org/repo format. Example: \"billing\" not \"org/billing\"."
     },
     "health_check": {
+      "title": "Health Check",
       "description": "Check indexing status: number of indexed chunks per group.\n\nUse to verify projects are indexed before searching or debugging empty results."
     },
     "delete_project": {
+      "title": "Delete Project",
       "description": "Delete all indexed data for a specific project: chunks from Qdrant, metadata from SQLite, and query cache. The project will be re-indexed on the next indexer cycle if configured. Use when a project's index is corrupted or stale."
     },
     "get_chunk": {
+      "title": "Get Chunk",
       "description": "Get a code chunk by ID with optional surrounding context. Returns code with symbol definitions and usage info. Use to expand on search results."
     },
     "get_chunk_meta": {
+      "title": "Chunk Metadata",
       "description": "Get git history and ticket references for a code chunk. Returns commits, authors, dates, and linked Jira/GitHub tickets extracted from commit messages. Use this to find which ticket (bug report, RCA, feature request) is associated with a piece of code. No code — use get_chunk for code."
     },
     "search_changes": {
+      "title": "Search Changes",
       "description": "Search code modified after a date. Same as search_code but filtered by last commit time. Each result shows when it was last changed. The since parameter accepts ISO 8601 date (e.g. '2026-01-01') or relative strings like '7 days ago', '1 month ago'."
     },
     "find_usages": {
+      "title": "Find Usages",
       "description": "Find symbol relationships: what calls this code, and what this code calls. Supports incoming (callers), outgoing (dependencies), or both directions. Use after search_code or get_chunk when the user asks 'where is this used?', 'what calls this?', or 'what does this depend on?'. Pass chunk_id from search results."
     },
     "explain_feature": {
+      "title": "Explain Feature",
       "description": "Comprehensive feature analysis in one call. Returns code locations, recent changes, and related modules for a question — no code content. Use as the first tool when the user asks 'how does X work?'. Use get_chunk to drill into specific chunks afterward."
     },
     "recent_changes": {
+      "title": "Recent Changes",
       "description": "Timeline of recent changes matching a query. Returns commits grouped by date with affected files and tickets — no code content. Supports date filtering via since parameter (ISO 8601 or relative like '7 days ago'). Use as the first tool when the user asks 'when was X changed?' or 'who changed X?'."
     },
     "impact_analysis": {
+      "title": "Impact Analysis",
       "description": "Shows what other services and modules depend on a given feature. Use when the user asks 'what else could be affected?', 'which teams own related code?', or 'what breaks if I change X?'. Returns dependency graph grouped by service — no code content."
     },
     "list_projects": {
+      "title": "List Projects",
       "description": "List all indexed projects with metadata: chunk count and languages per project, grouped by collection. Use when the user asks 'what projects are indexed?', 'which repos are available?', or 'show me all projects'. Optionally filter by group name."
     },
     "arch_context": {
+      "title": "Architecture Context",
       "description": "Retrieve architectural memory relevant to a question or set of touched files. Returns three card kinds, each with an updated-at age stamp:\n- **Components**: what parts the system is made of.\n- **Decisions**: why they were built that way.\n- **Lessons**: rules that survived previous mistakes — each rule comes with `why` (incident context) and `when` (when to apply) continuation bullets.\nSuperseded and deprecated cards are hidden by default. Cards older than 90 days are prefixed with `⚠ stale` — verify them against the current code before acting. Call this BEFORE any non-trivial change. Returns an init hint when the arch layer is empty.\n\nEach kind has its own independent top-N budget — a verbose decision bucket can't starve components. Pass `limits: { component, decision, lesson }` to override the per-kind cap (default 5 each, max 50; 0 suppresses the kind). When you pass `project`, cards whose payload matches that project also get a small additive rank boost (~one calibrated tier) so short global cards don't drown out longer project-scoped ones on raw cosine — globals stay visible but no longer dominate. When you suspect ranking issues, prefer `arch_list` for ground-truth enumeration."
     },
     "arch_record_component": {
+      "title": "Record Component",
       "description": "Record (or update by name — idempotent) an architectural component. Use when you discover a logical unit not already in arch_context, or when an existing component's boundary changes. The `summary` field is structured markdown with four sections (Does / Owns / Does not / Touched when); `anchors` are stable exported symbol names that survive a refactor. Returns status `created` or `updated`."
     },
     "arch_record_decision": {
+      "title": "Record Decision",
       "description": "Record an architectural decision. Use when you pick a library, pattern, or boundary that wasn't obvious. The server runs a similarity gate against existing decisions in the group; possible outcomes:\n- `created`: a new decision was written.\n- `duplicate`: a nearly identical decision already exists — nothing is written. Ask the user why arch_context did not surface it earlier.\n- `similar`: a related decision exists — nothing is written. To explicitly replace it, re-call with `supersedes` set to its id; otherwise sharpen the wording.\nPassing `supersedes` bypasses the gate and marks the named prior decision as superseded."
     },
     "arch_record_lesson": {
+      "title": "Record Lesson",
       "description": "Record a lesson — a rule the agent should follow next time. Use when the user corrects a non-obvious mistake of yours, OR when you accept an unusual approach that would surprise a future reader. Skip typos, parser errors, and facts trivially visible in code.\n\n**Belongs here (arch) vs. agent-side memory (auto-memory / CLAUDE.md / AGENTS.md):**\n- **arch (this tool)** — rules about the *code*: contracts, boundaries, patterns, API shape, type invariants, framework gotchas, schema/migration constraints, security rules tied to the codebase. Examples: \"GraphQL admin mutations require a non-null ID and a corresponding picker query\", \"Always preserve createdAt on re-upsert\", \"Run integration tests against a real database, not mocks\".\n- **agent-side memory (not here)** — rules about *the user's workflow or how to collaborate with them*: preferred commit style, branch naming, when to ask vs act, formatting preferences. Those live in auto-memory or a CLAUDE.md / AGENTS.md file — not in arch.\n- Heuristic: if a new engineer joining the codebase would need it → write it here. If only this specific user needs it → it's agent-side memory.\n\nThree fields, each markdown:\n- `rule`: one imperative sentence (the rule).\n- `why`: 1-3 sentences with the incident — quote the user verbatim when possible.\n- `when`: one sentence describing the situation in which the rule applies.\nThe server runs a similarity gate; possible outcomes:\n- `created`: a new lesson was written.\n- `updated`: a near-duplicate already existed — its updatedAt was bumped (confirmation signal). Refine the existing card if your wording was better.\n- `similar`: a related lesson exists — nothing is written. Decide whether to refine the existing or write a clearly distinct one."
     },
     "arch_list": {
+      "title": "List Architecture Cards",
       "description": "Enumerate arch cards in a group — no vector search, no ranking, no similarity threshold. Use this when you need every card (audit, dedupe, migration) rather than the top-N most similar to a query. `arch_context` is for relevance-ranked retrieval; `arch_list` is for ground truth.\n\nOptional filters:\n- `project`: components must match this project (hard filter); decisions/lessons match this project OR have no project field (soft filter — group-wide guidance still surfaces).\n- `kinds`: subset of `['component', 'decision', 'lesson']`.\n- `include_history`: include superseded/deprecated cards (default false).\n- `limit` (default 50, max 200), `offset`: pagination — pass `next_offset` from the previous response to resume.\n\nReturns each card with id, kind, project (or 'global'), status, and a short label (name/title/rule). Use the ids with `arch_delete` or as input to follow-up `arch_record_*` calls (e.g. `supersedes` on `arch_record_decision`)."
     },
     "arch_suggest_components": {
+      "title": "Suggest Components",
       "description": "Suggest candidate components to record. Reads the symbol-graph in-degree (how often a chunk is called from the rest of the indexed code) and surfaces the most-called files that are **not yet covered by an existing component card**. Ranked by in-degree.\n\nUse this when initialising the arch layer for a group (instead of guessing where the boundaries are) or after a large refactor to spot newly important modules. The tool only reads — it does not write component cards. Read each suggestion, decide whether it represents a meaningful architectural boundary (some high-degree files are utilities, not components), and call `arch_record_component` for the ones that do.\n\nOptional `project` restricts suggestions to one project in the group. Optional `limit` (default 10, max 50) caps how many uncovered files to return."
     },
     "arch_delete": {
+      "title": "Delete Architecture Cards",
       "description": "Hard-delete one or more arch cards by id. **No undo, no audit trail** — the cards are gone from Qdrant. Use for: cleaning up obsolete cards left over from a refactor, dropping cards for a removed feature, migrating away from old payload schemas. Idempotent: ids that no longer exist are reported in `notFound` but do not fail the call. **Always re-fetch ids via `arch_context` immediately before calling** — ids from earlier in the conversation may point to cards that have since been re-upserted (a re-upsert allocates a fresh UUID), so deleting by a stale id will silently miss the intended card and could wipe a now-current one if the id was reassigned. Prefer `supersedes` on `arch_record_decision` when you have a replacement decision; use `arch_delete` only when there is no replacement."
     },
     "search_docs": {
+      "title": "Search Documentation",
       "description": "Hybrid (dense semantic + BM25 keyword) search over indexed markdown documentation, fused with RRF. Returns EXCERPTS, not whole documents: each hit is the best-matching passage plus its neighbouring sections, carrying the document title, heading breadcrumb, project, file, and source link when available. When a hit covers only part of its document an `Excerpt:` line says which sections you got and how many exist — read the named file directly when you need the rest, because the passage may not be the document's full answer. The top hit is usually right but not always; scan the alternatives before concluding. Use for questions answered by prose docs (runbooks, RFCs, onboarding, business docs), not code. For code use search_code. Optional `audience` restricts results to visibility labels (e.g. [\"internal\"], [\"client\",\"public\"]); omit to search every audience the endpoint is allowed to see. Some deployments enforce an audience ceiling — there, `audience` can only narrow within it, never widen past it. Results are filtered by a semantic-similarity floor, so a question the corpus does not cover returns nothing rather than the nearest unrelated page; treat an empty result as \"not documented\". Two floors apply: `min_score` (default 0.45) for long-form prose, and `min_score_code` (default 0.6) for markdown that ships inside code repositories (README, CLAUDE.md, design notes) — those are written as overviews and score deceptively well against questions they do not answer, so they are held to a stricter bar. A `Last updated ... ago` line marks a document untouched for over a year: docs checked in beside code go stale quietly, so prefer a recent source when they disagree, and verify against the code before relying on it. Absence of that line means recent OR unknown age, not verified-current. The reported score is a fusion rank, not a similarity — use it to order hits, not to judge how good a match is."
     },
     "term_search": {
+      "title": "Search Glossary",
       "description": "Look up a term, abbreviation, or domain concept in the company glossary (e.g. 'CLIC', 'feed-poster'). Use this FIRST when a query contains an unfamiliar acronym or product name — the definition and aliases sharpen a follow-up search_code / search_docs. Returns the term, its definition, and known aliases."
     },
     "term_list": {
+      "title": "List Glossary Terms",
       "description": "List recorded glossary terms in a group (optionally scoped to a project). Use to audit coverage or review what terminology has been captured."
     },
     "term_record": {
+      "title": "Record Glossary Term",
       "description": "Record a glossary term (canonical name, definition, aliases, optional project scope). Goes through a duplicate/similar gate like arch_record_decision: if a near-identical term already exists it is returned instead of writing a duplicate — reconcile by updating that term. Authored by the agent as it learns domain vocabulary, or in bulk via the extract-terminology skill."
     },
     "term_delete": {
+      "title": "Delete Glossary Term",
       "description": "Hard-delete a glossary term by id. No undo. Use to remove obsolete or wrong terms."
     }
   },
