@@ -7,16 +7,35 @@ import {
   topQueries,
   slowestSearches,
   failedChunks,
+  toolUsage,
+  toolUsageByDay,
   type TopQueryRow,
   type TokenSavingsRow,
   type SlowestSearchRow,
   type FailedChunkRow,
+  type ToolUsageRow,
+  type ToolUsageByDayRow,
 } from './telemetry/queries.js';
+import { toolTitle } from './mcp-handler.js';
+import type { DocsStore } from './docs/store.js';
+import type { TerminologyStore } from './terminology/store.js';
+import type { ArchStore } from './arch/store.js';
 import { buildDemoAnalytics, isDemoRequested } from './analytics-demo.js';
 
 export interface BuildAnalyticsRouterOptions {
   indexer: Indexer;
   analytics?: AnalyticsStore;
+  /** Docs layer, for per-group document and chunk counts. Omitted → not reported. */
+  docsStore?: DocsStore;
+  /** Terminology layer, for glossary term counts. */
+  terminologyStore?: TerminologyStore;
+  /** Architecture memory, for card counts by kind. */
+  archStore?: ArchStore;
+  /**
+   * Registered projects per group. Gives an authoritative project count;
+   * without it the count falls back to the indexer's repo list.
+   */
+  getProjects?: () => Map<string, unknown[]>;
   /** Defaults to env PAPARATS_INDEXER_URL or http://localhost:9877 */
   indexerHealthUrl?: string;
   /** Override for tests */
@@ -128,9 +147,64 @@ interface IndexerSection {
   error?: string;
 }
 
+/**
+ * What is actually in the index, per group. Independent of the event tables, so
+ * these figures are populated from the first page load rather than accumulating
+ * as people work.
+ */
+interface CorpusSection {
+  code: { chunks: number; groups: Record<string, number> };
+  docs: { chunks: number; documents: number; exact: boolean; groups: Record<string, number> };
+  terms: { total: number; groups: Record<string, number> };
+  arch: {
+    total: number;
+    byKind: { component: number; decision: number; lesson: number };
+    groups: Record<string, number>;
+  };
+}
+
+/** A tool's usage row plus the display name `tools/list` advertises for it. */
+type ToolUsageRowWithTitle = ToolUsageRow & { title: string };
+
+/**
+ * The plain-language summary at the top of the dashboard: reach, contents and
+ * uptake, in units that need no knowledge of how indexing works. Chunk counts
+ * and per-group tables deliberately stay out of it — they answer an operator's
+ * question, not "is this being used and is it worth keeping".
+ */
+interface HeadlineSection {
+  /** Projects searchable right now. */
+  projects: number;
+  /** Documents searchable right now. */
+  documents: number;
+  /** Glossary definitions available. */
+  definitions: number;
+  /** Recorded architecture notes. */
+  architectureNotes: number;
+  /** Questions asked in the period (tool calls, or searches when unavailable). */
+  questionsAnswered: number;
+  /** Distinct people who asked something in the period. */
+  people: number;
+  /** Share of questions answered from documentation rather than code. */
+  documentationShare: number | null;
+  /** Median answer time in ms, or null with nothing to measure. */
+  medianAnswerMs: number | null;
+}
+
+interface ToolsSection {
+  /** Per-tool totals for the period, busiest first. */
+  rows: ToolUsageRowWithTitle[];
+  /** Total calls across all tools. */
+  totalCalls: number;
+  /** Daily per-tool counts, for the trend. */
+  byDay: ToolUsageByDayRow[];
+}
+
 interface AnalyticsResponse {
   period: { label: PeriodLabel; since: number; until: number };
   analyticsEnabled: boolean;
+  /** Plain-language summary; see {@link HeadlineSection}. */
+  headline: HeadlineSection;
   overview: OverviewSection;
   tokenSavings: TokenSavingsRow | null;
   slowestSearches: SlowestSearchRow[];
@@ -153,6 +227,10 @@ interface AnalyticsResponse {
   failedSearches: FailedSearchRow[];
   embedding: EmbeddingHealthSection;
   indexer: IndexerSection;
+  /** Per-tool usage — which tools people actually reach for. */
+  tools: ToolsSection;
+  /** Index contents: code, docs, glossary terms, architecture cards. */
+  corpus: CorpusSection;
 }
 
 function parsePeriod(raw: unknown): PeriodLabel {
@@ -563,6 +641,110 @@ function countFetches(store: AnalyticsStore, since: number, until: number): numb
   return row?.n ?? 0;
 }
 
+/** Tools whose answers come from prose rather than source code. */
+const DOCUMENTATION_TOOLS = new Set(['search_docs', 'term_search', 'term_list']);
+
+/**
+ * Median tool-call duration. SQLite has no percentile aggregate, so this takes
+ * the middle row by OFFSET — the same approach as the embedding percentiles.
+ */
+function medianToolDuration(store: AnalyticsStore, since: number, until: number): number | null {
+  const count = (
+    store.database
+      .prepare('SELECT COUNT(*) AS n FROM tool_calls WHERE ts BETWEEN @since AND @until')
+      .get({ since, until }) as { n: number }
+  ).n;
+  if (count === 0) return null;
+  const row = store.database
+    .prepare(
+      `SELECT duration_ms AS v FROM tool_calls
+        WHERE ts BETWEEN @since AND @until
+        ORDER BY duration_ms LIMIT 1 OFFSET @off`
+    )
+    .get({ since, until, off: Math.floor(count / 2) }) as { v: number } | undefined;
+  return row?.v ?? null;
+}
+
+/** Distinct people who called a tool or ran a search in the period. */
+function countPeople(store: AnalyticsStore, since: number, until: number): number {
+  const row = store.database
+    .prepare(
+      `SELECT COUNT(DISTINCT user) AS n FROM (
+         SELECT user FROM tool_calls    WHERE ts BETWEEN @since AND @until
+         UNION
+         SELECT user FROM search_events WHERE ts BETWEEN @since AND @until
+       )`
+    )
+    .get({ since, until }) as { n: number } | undefined;
+  return row?.n ?? 0;
+}
+
+/**
+ * Collect index contents across every group.
+ *
+ * Group names come from the code collections; the docs/terms/arch sidecars are
+ * per-group companions of those. Each store call is individually guarded — a
+ * group with no docs collection yet is normal, not an error, and one missing
+ * sidecar must not blank the whole section.
+ */
+async function collectCorpus(
+  groupNames: string[],
+  codeGroups: Record<string, number>,
+  stores: { docs?: DocsStore; terms?: TerminologyStore; arch?: ArchStore }
+): Promise<CorpusSection> {
+  const out: CorpusSection = {
+    code: { chunks: Object.values(codeGroups).reduce((a, b) => a + b, 0), groups: codeGroups },
+    docs: { chunks: 0, documents: 0, exact: true, groups: {} },
+    terms: { total: 0, groups: {} },
+    arch: { total: 0, byKind: { component: 0, decision: 0, lesson: 0 }, groups: {} },
+  };
+
+  await Promise.all(
+    groupNames.map(async (group) => {
+      if (stores.docs) {
+        try {
+          const st = await stores.docs.stats(group);
+          if (st.chunks > 0 || st.documents > 0) {
+            out.docs.chunks += st.chunks;
+            out.docs.documents += st.documents;
+            out.docs.groups[group] = st.documents;
+            if (!st.documentsExact) out.docs.exact = false;
+          }
+        } catch {
+          out.docs.exact = false;
+        }
+      }
+      if (stores.terms) {
+        try {
+          const st = await stores.terms.stats(group);
+          if (st.terms > 0) {
+            out.terms.total += st.terms;
+            out.terms.groups[group] = st.terms;
+          }
+        } catch {
+          // no terms collection for this group
+        }
+      }
+      if (stores.arch) {
+        try {
+          const st = await stores.arch.stats(group);
+          if (st.total > 0) {
+            out.arch.total += st.total;
+            out.arch.groups[group] = st.total;
+            out.arch.byKind.component += st.byKind.component;
+            out.arch.byKind.decision += st.byKind.decision;
+            out.arch.byKind.lesson += st.byKind.lesson;
+          }
+        } catch {
+          // no arch collection for this group
+        }
+      }
+    })
+  );
+
+  return out;
+}
+
 export function buildAnalyticsRouter(options: BuildAnalyticsRouterOptions): Router {
   const router = Router();
   const indexerUrl =
@@ -643,7 +825,21 @@ export function buildAnalyticsRouter(options: BuildAnalyticsRouterOptions): Rout
         timeouts: 0,
       };
 
+      let tools: ToolsSection = { rows: [], totalCalls: 0, byDay: [] };
+
       if (store) {
+        // Resolve the display name here rather than in the browser: the titles
+        // live with the tool registrations, and the UI should not carry a
+        // second copy that can fall out of step.
+        const toolRows = toolUsage(store, { since, until }).map((r) => ({
+          ...r,
+          title: toolTitle(r.tool),
+        }));
+        tools = {
+          rows: toolRows,
+          totalCalls: toolRows.reduce((a, r) => a + r.calls, 0),
+          byDay: toolUsageByDay(store, { since, until }),
+        };
         tokenSavings = tokenSavingsReport(store, { since, until });
         slow = slowestSearches(store, { since, until }, 10);
         const baseTop = topQueries(store, { since, until }, 10);
@@ -669,9 +865,41 @@ export function buildAnalyticsRouter(options: BuildAnalyticsRouterOptions): Rout
       const anyOffAnchor = crossAnchors.some((a) => a.off_anchor_share > 0);
       const scopeLikelyAnchored = anchoredSearches > 0 && !anyOffAnchor;
 
+      // Prefer the registered project map; the indexer's repo list is a proxy
+      // that counts repos, not projects, and misses bind-mounted ones.
+      const projectMap = options.getProjects?.();
+      const projectTotal = projectMap
+        ? Array.from(projectMap.values()).reduce((a, list) => a + list.length, 0)
+        : projectsCount;
+
+      const corpus = await collectCorpus(Object.keys(qdrantGroups), qdrantGroups, {
+        ...(options.docsStore ? { docs: options.docsStore } : {}),
+        ...(options.terminologyStore ? { terms: options.terminologyStore } : {}),
+        ...(options.archStore ? { arch: options.archStore } : {}),
+      });
+
+      const docCalls = tools.rows
+        .filter((r) => DOCUMENTATION_TOOLS.has(r.tool))
+        .reduce((a, r) => a + r.calls, 0);
+      // Tool calls cover every tool, including the ones that never search;
+      // searches are the fallback when call telemetry has nothing yet.
+      const questions = tools.totalCalls > 0 ? tools.totalCalls : searches;
+
+      const headline: HeadlineSection = {
+        projects: projectTotal,
+        documents: corpus.docs.documents,
+        definitions: corpus.terms.total,
+        architectureNotes: corpus.arch.total,
+        questionsAnswered: questions,
+        people: store ? countPeople(store, since, until) : 0,
+        documentationShare: tools.totalCalls > 0 ? docCalls / tools.totalCalls : null,
+        medianAnswerMs: store ? medianToolDuration(store, since, until) : null,
+      };
+
       const response: AnalyticsResponse = {
         period: { label, since, until },
         analyticsEnabled: enabled,
+        headline,
         overview,
         tokenSavings,
         slowestSearches: slow,
@@ -683,6 +911,8 @@ export function buildAnalyticsRouter(options: BuildAnalyticsRouterOptions): Rout
         failedSearches: failed,
         embedding,
         indexer: indexerHealth,
+        tools,
+        corpus,
       };
 
       res.json(response);

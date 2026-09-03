@@ -29,6 +29,10 @@ export interface TokenSavingsRow {
   actually_consumed: number;
   savings_vs_naive: number | null;
   savings_realized: number | null;
+  /** Result rows whose file size is known, so the baseline is measured. */
+  measured_results: number;
+  /** All result rows in the period, measured or not. */
+  total_results: number;
 }
 
 export function tokenSavingsReport(store: AnalyticsStore, filter: PeriodFilter): TokenSavingsRow {
@@ -39,15 +43,21 @@ export function tokenSavingsReport(store: AnalyticsStore, filter: PeriodFilter):
     WITH per_search AS (
       SELECT
         se.id,
-        SUM(sr.chunk_lines * COALESCE(tpl.tokens_per_line,
-          (SELECT tokens_per_line FROM tokens_per_language WHERE language = 'generic'))) AS tokens_search_only,
-        SUM(COALESCE(sr.file_total_lines, sr.chunk_lines * 5)
-          * COALESCE(tpl.tokens_per_line,
-            (SELECT tokens_per_line FROM tokens_per_language WHERE language = 'generic'))) AS tokens_whole_file,
-        SUM(CASE WHEN cf.id IS NOT NULL
+        SUM(CASE WHEN sr.file_total_lines IS NOT NULL
           THEN sr.chunk_lines * COALESCE(tpl.tokens_per_line,
             (SELECT tokens_per_line FROM tokens_per_language WHERE language = 'generic'))
-          ELSE 0 END) AS tokens_actually_consumed
+          ELSE 0 END) AS tokens_search_only,
+        SUM(CASE WHEN sr.file_total_lines IS NOT NULL
+          THEN sr.file_total_lines
+            * COALESCE(tpl.tokens_per_line,
+              (SELECT tokens_per_line FROM tokens_per_language WHERE language = 'generic'))
+          ELSE 0 END) AS tokens_whole_file,
+        SUM(CASE WHEN cf.id IS NOT NULL AND sr.file_total_lines IS NOT NULL
+          THEN sr.chunk_lines * COALESCE(tpl.tokens_per_line,
+            (SELECT tokens_per_line FROM tokens_per_language WHERE language = 'generic'))
+          ELSE 0 END) AS tokens_actually_consumed,
+        SUM(CASE WHEN sr.file_total_lines IS NOT NULL THEN 1 ELSE 0 END) AS measured_results,
+        COUNT(*) AS total_results
       FROM search_events se
       JOIN search_results sr ON sr.search_id = se.id
       LEFT JOIN tokens_per_language tpl ON tpl.language = sr.language
@@ -67,7 +77,9 @@ export function tokenSavingsReport(store: AnalyticsStore, filter: PeriodFilter):
         ELSE NULL END AS savings_vs_naive,
       CASE WHEN SUM(tokens_whole_file) > 0
         THEN 1.0 - 1.0 * SUM(tokens_actually_consumed) / SUM(tokens_whole_file)
-        ELSE NULL END AS savings_realized
+        ELSE NULL END AS savings_realized,
+      COALESCE(SUM(measured_results), 0) AS measured_results,
+      COALESCE(SUM(total_results), 0) AS total_results
     FROM per_search;
   `;
   const row = store.database
@@ -81,6 +93,8 @@ export function tokenSavingsReport(store: AnalyticsStore, filter: PeriodFilter):
       actually_consumed: 0,
       savings_vs_naive: null,
       savings_realized: null,
+      measured_results: 0,
+      total_results: 0,
     }
   );
 }
@@ -276,4 +290,89 @@ export function failedChunks(store: AnalyticsStore, filter: PeriodFilter): Faile
     ORDER BY count DESC;
   `;
   return store.database.prepare(sql).all({ since, until, group: filter.group }) as FailedChunkRow[];
+}
+
+export interface ToolUsageRow {
+  tool: string;
+  calls: number;
+  /** Calls that threw. */
+  errors: number;
+  avg_duration_ms: number;
+  p95_duration_ms: number;
+  distinct_users: number;
+  last_used_ts: number;
+}
+
+/**
+ * Per-tool call counts over a period, from `tool_calls`.
+ *
+ * This is the only table that records the MCP tool name as the client asked for
+ * it. `search_events.tool` cannot answer the same question: several MCP tools
+ * share one Searcher method, and the tools that never search (`health_check`,
+ * the `arch_*`/`term_*` readers, docs search) write no search event at all.
+ *
+ * p95 is taken with an OFFSET into the ordered rows, since SQLite has no
+ * percentile aggregate.
+ */
+export function toolUsage(store: AnalyticsStore, filter: PeriodFilter): ToolUsageRow[] {
+  const { since, until } = resolvePeriod(filter);
+  const userClause = filter.user ? 'AND user = @user' : '';
+  const rows = store.database
+    .prepare(
+      `SELECT
+         tool,
+         COUNT(*)                                  AS calls,
+         SUM(CASE WHEN ok = 0 THEN 1 ELSE 0 END)   AS errors,
+         AVG(duration_ms)                          AS avg_duration_ms,
+         COUNT(DISTINCT user)                      AS distinct_users,
+         MAX(ts)                                   AS last_used_ts
+       FROM tool_calls
+       WHERE ts BETWEEN @since AND @until
+         ${userClause}
+       GROUP BY tool
+       ORDER BY calls DESC`
+    )
+    .all({ since, until, user: filter.user }) as Array<Omit<ToolUsageRow, 'p95_duration_ms'>>;
+
+  const p95stmt = store.database.prepare(
+    `SELECT duration_ms AS v
+       FROM tool_calls
+      WHERE tool = @tool AND ts BETWEEN @since AND @until
+      ORDER BY duration_ms
+      LIMIT 1 OFFSET @off`
+  );
+
+  return rows.map((r) => {
+    const off = Math.max(0, Math.floor(r.calls * 0.95) - 1);
+    const hit = p95stmt.get({ tool: r.tool, since, until, off }) as { v: number } | undefined;
+    return {
+      ...r,
+      avg_duration_ms: Math.round(r.avg_duration_ms),
+      p95_duration_ms: hit?.v ?? 0,
+    };
+  });
+}
+
+export interface ToolUsageByDayRow {
+  /** Bucket start (unix ms, UTC midnight). */
+  day: number;
+  tool: string;
+  calls: number;
+}
+
+/** Daily per-tool call counts, for a stacked trend of what people reach for. */
+export function toolUsageByDay(store: AnalyticsStore, filter: PeriodFilter): ToolUsageByDayRow[] {
+  const { since, until } = resolvePeriod(filter);
+  const day = 24 * 60 * 60 * 1000;
+  return store.database
+    .prepare(
+      `SELECT (ts / CAST(@day AS INTEGER)) * CAST(@day AS INTEGER) AS day,
+              tool,
+              COUNT(*) AS calls
+         FROM tool_calls
+        WHERE ts BETWEEN @since AND @until
+        GROUP BY day, tool
+        ORDER BY day ASC, calls DESC`
+    )
+    .all({ since, until, day }) as ToolUsageByDayRow[];
 }

@@ -690,7 +690,18 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
   const uiHandlers: RequestHandler[] = uiAuth ? [uiAuth] : [];
   app.use('/ui', ...uiHandlers, express.static(uiDir, { extensions: ['html'] }));
-  app.use('/api/analytics', ...uiHandlers, buildAnalyticsRouter({ indexer, analytics }));
+  app.use(
+    '/api/analytics',
+    ...uiHandlers,
+    buildAnalyticsRouter({
+      indexer,
+      analytics,
+      getProjects: () => projectsByGroup,
+      ...(docsStore ? { docsStore } : {}),
+      ...(terminologyStore ? { terminologyStore } : {}),
+      ...(archStore ? { archStore } : {}),
+    })
+  );
 
   // ── MCP transports ─────────────────────────────────────────────────────────
 

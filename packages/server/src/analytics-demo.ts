@@ -55,6 +55,16 @@ interface DemoResponse {
   period: { label: DemoPeriodLabel; since: number; until: number };
   analyticsEnabled: true;
   demo: true;
+  headline: {
+    projects: number;
+    documents: number;
+    definitions: number;
+    architectureNotes: number;
+    questionsAnswered: number;
+    people: number;
+    documentationShare: number;
+    medianAnswerMs: number;
+  };
   overview: {
     uptimeSec: number;
     memPct: number;
@@ -73,6 +83,8 @@ interface DemoResponse {
     actually_consumed: number;
     savings_vs_naive: number;
     savings_realized: number;
+    measured_results: number;
+    total_results: number;
   };
   slowestSearches: Array<{
     id: string;
@@ -157,6 +169,30 @@ interface DemoResponse {
       lastRun: string;
       chunksIndexed: number;
     }>;
+  };
+  tools: {
+    rows: Array<{
+      tool: string;
+      title: string;
+      calls: number;
+      errors: number;
+      avg_duration_ms: number;
+      p95_duration_ms: number;
+      distinct_users: number;
+      last_used_ts: number;
+    }>;
+    totalCalls: number;
+    byDay: Array<{ day: number; tool: string; calls: number }>;
+  };
+  corpus: {
+    code: { chunks: number; groups: Record<string, number> };
+    docs: { chunks: number; documents: number; exact: boolean; groups: Record<string, number> };
+    terms: { total: number; groups: Record<string, number> };
+    arch: {
+      total: number;
+      byKind: { component: number; decision: number; lesson: number };
+      groups: Record<string, number>;
+    };
   };
 }
 
@@ -296,6 +332,16 @@ export function buildDemoAnalytics(
       fetchesInPeriod: totalFetches,
       fetchRate,
     },
+    headline: {
+      projects: FAKE_PROJECTS.length,
+      documents: 529,
+      definitions: 142,
+      architectureNotes: 87,
+      questionsAnswered: Math.round(totalSearches * 1.9),
+      people: FAKE_USERS.length,
+      documentationShare: 0.31,
+      medianAnswerMs: 165,
+    },
     tokenSavings: {
       searches: totalSearches,
       naive_baseline: totalNaive,
@@ -304,6 +350,8 @@ export function buildDemoAnalytics(
       actually_consumed: totalActual,
       savings_vs_naive: 1 - 0.11,
       savings_realized: 1 - totalActual / totalNaive,
+      measured_results: totalSearches * 4,
+      total_results: totalSearches * 5,
     },
     slowestSearches,
     topQueries,
@@ -334,7 +382,68 @@ export function buildDemoAnalytics(
         chunksIndexed: [62140, 48910, 41230, 32040][i]!,
       })),
     },
+    tools: {
+      rows: DEMO_TOOL_MIX.map(([tool, share, title], i) => ({
+        tool,
+        title,
+        calls: Math.max(1, Math.round(totalSearches * share)),
+        errors: i === 2 ? 3 : 0,
+        avg_duration_ms: [180, 220, 95, 340, 60, 410, 120, 75][i] ?? 150,
+        p95_duration_ms: [520, 610, 240, 880, 130, 1020, 300, 190][i] ?? 400,
+        distinct_users: Math.max(1, FAKE_USERS.length - i),
+        last_used_ts: until - (i + 1) * 4 * 60 * 1000,
+      })),
+      totalCalls: Math.round(totalSearches * 1.9),
+      byDay: DEMO_TOOL_MIX.flatMap(([tool, share]) =>
+        Array.from({ length: 7 }, (_, d) => ({
+          day: dayStart(until - (6 - d) * 24 * 60 * 60 * 1000),
+          tool,
+          calls: Math.max(1, Math.round(((totalSearches * share) / 7) * (0.7 + (d % 3) * 0.2))),
+        }))
+      ),
+    },
+    corpus: {
+      code: {
+        chunks: 184320,
+        groups: Object.fromEntries(
+          FAKE_PROJECTS.map((p, i) => [p, [62140, 48910, 41230, 32040][i]!])
+        ),
+      },
+      docs: {
+        chunks: 8460,
+        documents: 529,
+        exact: true,
+        groups: { 'main-stand': 431, handbook: 98 },
+      },
+      terms: { total: 142, groups: { 'main-stand': 118, handbook: 24 } },
+      arch: {
+        total: 87,
+        byKind: { component: 41, decision: 29, lesson: 17 },
+        groups: { 'main-stand': 63, handbook: 24 },
+      },
+    },
   };
+}
+
+/**
+ * Tool mix for the demo: id, share of search volume, and the display title the
+ * real endpoint resolves from the tool registrations. Ordered busiest first.
+ */
+const DEMO_TOOL_MIX: Array<[string, number, string]> = [
+  ['search_code', 1.0, 'Search Code'],
+  ['search_docs', 0.42, 'Search Documentation'],
+  ['get_chunk', 0.31, 'Get Chunk'],
+  ['explain_feature', 0.18, 'Explain Feature'],
+  ['term_search', 0.14, 'Search Glossary'],
+  ['impact_analysis', 0.09, 'Impact Analysis'],
+  ['arch_context', 0.07, 'Architecture Context'],
+  ['health_check', 0.04, 'Health Check'],
+];
+
+/** UTC midnight of the day containing `ms`. */
+function dayStart(ms: number): number {
+  const day = 24 * 60 * 60 * 1000;
+  return Math.floor(ms / day) * day;
 }
 
 export function isDemoRequested(req: { query: Record<string, unknown> }): boolean {

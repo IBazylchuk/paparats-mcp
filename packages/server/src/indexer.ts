@@ -18,6 +18,7 @@ import { buildSymbolEdges } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
 import type { DocsStore } from './docs/store.js';
 import { NotMarkdownError } from './docs/chunker.js';
+import { parseFrontmatter } from './docs/frontmatter.js';
 import type { DocsKind } from './docs/types.js';
 import type { ChunkResult, ProjectConfig, IndexerStats } from './types.js';
 import type { Telemetry } from './telemetry/facade.js';
@@ -1185,13 +1186,21 @@ export class Indexer {
         console.warn(`  [docs] Could not read ${rel}: ${(err as Error).message}`);
         continue;
       }
+      // Mirrored docs carry their provenance in YAML frontmatter. Parsing it
+      // yields the canonical link and the page title, and strips the block from
+      // the prose so it is not chunked and embedded as content.
+      const fm = parseFrontmatter(content);
       try {
         const n = await this.docsStore.indexDocument(groupName, {
           project: cleanName,
           file: rel,
-          content,
+          content: fm.content,
           kind,
-          lastModifiedAt: modifiedTimes.get(rel) ?? null,
+          // The document's own timestamp wins over the file's: in a mirror the
+          // file date is when the mirror last wrote it, not when the page changed.
+          lastModifiedAt: fm.lastModifiedAt ?? modifiedTimes.get(rel) ?? null,
+          ...(fm.sourceUrl !== null ? { sourceUrl: fm.sourceUrl } : {}),
+          ...(fm.title !== null ? { docTitle: fm.title } : {}),
         });
         totalChunks += n;
       } catch (err) {

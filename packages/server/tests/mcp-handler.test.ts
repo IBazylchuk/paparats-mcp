@@ -445,6 +445,9 @@ describe('McpHandler', () => {
       expect(searcher.expandedSearch).toHaveBeenCalledWith('g1', 'authentication', {
         project: 'all',
         limit: 10,
+        // Labels the search event so search_code is distinguishable from the
+        // other tools that reach expandedSearch.
+        tool: 'search_code',
       });
     } finally {
       server.close();
@@ -1521,5 +1524,98 @@ describe('tool annotations', () => {
 
     // Support mode deliberately exposes no arch tools and no delete_project.
     expect(tools.find((t) => t.name === 'delete_project')).toBeUndefined();
+  });
+});
+
+describe('tool call telemetry', () => {
+  /**
+   * Guards the wiring between tool registration and `recordToolCall`. The
+   * instrumentation is installed by patching the registration method, so it is
+   * silently lost if registration moves to a method that is not patched — the
+   * handlers keep working and only the telemetry disappears. Asserting on a
+   * real tools/call over HTTP is what makes that visible.
+   */
+  async function callTool(
+    name: string,
+    args: Record<string, unknown>,
+    telemetry: { recordToolCall: ReturnType<typeof vi.fn> }
+  ): Promise<void> {
+    const app = express();
+    app.use(express.json());
+    const handler = new McpHandler({
+      searcher: createMockSearcher(),
+      indexer: createMockIndexer(),
+      getProjects: () => new Map([['g1', [createProjectConfig()]]]),
+      getGroupNames: () => ['g1'],
+      telemetry: telemetry as never,
+    });
+    handler.mount(app);
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+    try {
+      const initRes = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '1.0.0' },
+          },
+        }),
+      });
+      const sessionId = initRes.headers.get('mcp-session-id');
+      await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'mcp-session-id': sessionId!,
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name, arguments: args },
+        }),
+      });
+    } finally {
+      server.close();
+      handler.destroy();
+    }
+  }
+
+  it('records a tool call under its real MCP tool name', async () => {
+    const telemetry = { recordToolCall: vi.fn() };
+    await callTool('search_code', { query: 'authentication', limit: 5 }, telemetry);
+
+    expect(telemetry.recordToolCall).toHaveBeenCalledTimes(1);
+    const event = telemetry.recordToolCall.mock.calls[0]?.[0] as {
+      tool: string;
+      ok: boolean;
+      durationMs: number;
+      error: string | null;
+    };
+    // The MCP tool name, not the Searcher method that served it.
+    expect(event.tool).toBe('search_code');
+    expect(event.ok).toBe(true);
+    expect(event.error).toBeNull();
+    expect(event.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('records health_check, which no search telemetry would cover', async () => {
+    // search_events only ever sees tools that run a search; tool_calls is the
+    // only place a non-search tool shows up at all.
+    const telemetry = { recordToolCall: vi.fn() };
+    await callTool('health_check', {}, telemetry);
+
+    expect(telemetry.recordToolCall).toHaveBeenCalledTimes(1);
+    expect(telemetry.recordToolCall.mock.calls[0]?.[0]?.tool).toBe('health_check');
   });
 });

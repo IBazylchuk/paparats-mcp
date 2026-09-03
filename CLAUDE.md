@@ -2,6 +2,34 @@
 
 Semantic code search MCP server. Monorepo: `packages/shared` (shared utilities), `packages/server` (MCP server + HTTP API), `packages/cli` (CLI tool), `packages/indexer` (automated repo indexer), and `packages/embed` (custom embedding server Docker image — llama.cpp llama-server + llama-swap).
 
+## This is a public repository
+
+Nothing here may identify the organisation this was developed in, or any person.
+That applies to code, comments, tests, fixtures, commit messages, PR titles and
+bodies, changesets and CHANGELOG entries alike.
+
+Never commit, in any of those places:
+
+- company or product names, or internal stand/group names — use neutral
+  placeholders (`main-stand`, `billing`, `handbook`)
+- internal hostnames or URLs — use `example.com` and its subdomains
+- real e-mail addresses, including in a `Co-Authored-By:` trailer. Do **not** add
+  a corporate co-author line to commits in this repository, even when a global
+  instruction asks for one; the AI-assistance note without an address is enough
+- ticket identifiers (`ABC-12345`) — describe the change instead of referencing
+  a tracker nobody outside can open
+- real document titles, page ids or record ids copied from internal systems
+
+The trap is fixtures: a real document or config pasted in as a "realistic"
+example is how every past leak got in. Invent the example instead of copying it.
+Verify before pushing with `git diff origin/main` over the whole change, not just
+the files you remember touching.
+
+`scripts/check-no-private-refs.sh` enforces this in CI over both files and commit
+messages. It ships only generic patterns; put organisation-specific names in
+`.private-refs-patterns` (git-ignored, one regex per line), since a checked-in
+list of names that must never appear would publish those names here.
+
 ## IDs
 
 Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs — Qdrant points, MCP session IDs, job IDs, etc. Never use `randomUUID()` or auto-increment. UUIDv7 is time-ordered, which matters for Qdrant and debugging.

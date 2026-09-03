@@ -448,6 +448,29 @@ export class TerminologyStore {
       }
     }
   }
+
+  /**
+   * Number of glossary terms in one group.
+   *
+   * Read from `points_count` less the meta sentinel: one point per term, so no
+   * scroll is needed. Unlike `list()`, this is not capped by a page limit.
+   * Returns 0 for a group with no terms collection yet.
+   */
+  async stats(group: string): Promise<TermsStats> {
+    try {
+      const info = await this.qdrant.getCollection(toTermsCollectionName(group));
+      const raw = info.points_count ?? 0;
+      return { group, terms: Math.max(0, raw - 1) };
+    } catch {
+      return { group, terms: 0 };
+    }
+  }
+}
+
+/** Per-group total for the terminology layer, surfaced by the dashboard. */
+export interface TermsStats {
+  group: string;
+  terms: number;
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

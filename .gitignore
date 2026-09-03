@@ -143,3 +143,6 @@ vite.config.ts.timestamp-*
 
 # Local working notes — never commit
 *.local.md
+
+# Local screen list for scripts/check-no-private-refs.sh — never published.
+.private-refs-patterns
