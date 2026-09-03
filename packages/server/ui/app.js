@@ -197,6 +197,17 @@
       );
       return;
     }
+    // The baseline needs the size of the file each chunk came from, which the
+    // indexer records. With none of it recorded there is no ratio to show —
+    // say so rather than print a figure derived from a placeholder.
+    if (!ts.naive_baseline) {
+      emptyRoi(
+        'no file sizes recorded',
+        `${fmtInt.format(ts.total_results ?? 0)} result(s) in window, none with a known file size. ` +
+          'The indexer populates this; check that it runs with telemetry enabled and shares the analytics DB.'
+      );
+      return;
+    }
 
     const naive = ts.naive_baseline || 0;
     const search = ts.search_only || 0;
@@ -212,7 +223,8 @@
     setText('roiSavedTokens', abbrevTokens(tokensSaved));
     setText(
       'roiSearchesLine',
-      `across ${fmtInt.format(ts.searches)} search${ts.searches === 1 ? '' : 'es'} in ${d.period?.label ?? '—'} · ${abbrevTokens(naive)} → ${abbrevTokens(search)} tokens`
+      `across ${fmtInt.format(ts.searches)} search${ts.searches === 1 ? '' : 'es'} in ${d.period?.label ?? '—'} · ${abbrevTokens(naive)} → ${abbrevTokens(search)} tokens` +
+        coverageNote(ts)
     );
 
     // Right panel: realised savings (after fetch behaviour). This number is
@@ -231,6 +243,18 @@
       while (legendEl.firstChild) legendEl.removeChild(legendEl.firstChild);
       for (const node of legend) legendEl.append(node);
     }
+  }
+
+  /**
+   * Flags a partially-measured window. Results whose file size is unknown are
+   * excluded from the ratio, so the reader needs to know the ratio describes a
+   * subset rather than every search.
+   */
+  function coverageNote(ts) {
+    const measured = ts.measured_results ?? 0;
+    const total = ts.total_results ?? 0;
+    if (total === 0 || measured === total) return '';
+    return ` · measured on ${fmtInt.format(measured)} of ${fmtInt.format(total)} results`;
   }
 
   function legendForRoi({ ts, fetches, fetchRate }) {
@@ -278,6 +302,212 @@
       )
     );
     return nodes;
+  }
+
+  // ── Headline summary ─────────────────────────────────────────────────────
+
+  // Deliberately free of internal vocabulary: no chunks, no collections, no
+  // group names. Someone who has never seen the indexer should be able to read
+  // this tile and say whether the thing is being used and worth keeping.
+  function renderHeadline(d) {
+    const h = d.headline;
+    if (!h) {
+      setText($('#headlineChip'), 'unavailable');
+      setText($('[data-bind="headlineLede"]'), 'Summary unavailable.');
+      return;
+    }
+
+    const period = d.period?.label ?? '—';
+    setText($('#headlineChip'), `last ${period}`);
+
+    setText($('[data-bind="hlQuestions"]'), fmtInt.format(h.questionsAnswered));
+    setText(
+      $('[data-bind="hlQuestionsSub"]'),
+      h.questionsAnswered > 0 ? `in the last ${period}` : 'nothing asked yet'
+    );
+    setText($('[data-bind="hlPeople"]'), h.people > 0 ? fmtInt.format(h.people) : '—');
+    setText(
+      $('[data-bind="hlPeopleSub"]'),
+      h.people > 0 && h.questionsAnswered > 0
+        ? `~${Math.round(h.questionsAnswered / h.people)} questions each`
+        : 'no activity in period'
+    );
+    setText($('[data-bind="hlAnswerTime"]'), fmtDuration(h.medianAnswerMs));
+    setText(
+      $('[data-bind="hlDocShare"]'),
+      h.documentationShare === null ? '—' : fmtPct(h.documentationShare)
+    );
+
+    setText($('[data-bind="hlProjects"]'), fmtInt.format(h.projects));
+    setText($('[data-bind="hlDocuments"]'), fmtInt.format(h.documents));
+    setText($('[data-bind="hlDefinitions"]'), fmtInt.format(h.definitions));
+    setText($('[data-bind="hlArch"]'), fmtInt.format(h.architectureNotes));
+
+    setText($('[data-bind="headlineLede"]'), headlineLede(h, period));
+  }
+
+  /** One sentence stating what happened, so the tile reads without the numbers. */
+  function headlineLede(h, period) {
+    if (h.questionsAnswered === 0) {
+      return (
+        `${fmtInt.format(h.projects)} project(s) and ${fmtInt.format(h.documents)} document(s) ` +
+        `are searchable, but nobody asked anything in the last ${period}.`
+      );
+    }
+    const who = h.people > 0 ? `${fmtInt.format(h.people)} person(s)` : 'the team';
+    const docPart =
+      h.documentationShare === null
+        ? ''
+        : ` ${fmtPct(h.documentationShare)} of answers came from written documentation rather than code.`;
+    return (
+      `${who} asked ${fmtInt.format(h.questionsAnswered)} question(s) in the last ${period}, ` +
+      `answered in ${fmtDuration(h.medianAnswerMs)} typically, across ` +
+      `${fmtInt.format(h.projects)} project(s) and ${fmtInt.format(h.documents)} document(s).` +
+      docPart
+    );
+  }
+
+  /** Sub-second durations read better as milliseconds; longer ones as seconds. */
+  function fmtDuration(ms) {
+    if (ms === null || ms === undefined) return '—';
+    if (ms < 1000) return `${Math.round(ms)} ms`;
+    return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
+  }
+
+  // ── Index internals (operator detail, collapsed by default) ──────────────
+
+  // Rows are capped: an install with hundreds of projects should not render a
+  // list nobody scrolls. The largest groups are the ones worth seeing.
+  const CORPUS_ROW_LIMIT = 12;
+
+  function renderCorpus(d) {
+    const c = d.corpus;
+    const body = $('#corpusBody');
+    if (!c) {
+      setText($('#corpusChip'), 'unavailable');
+      replaceTbody(body, [makeEmptyRow(5, 'collection sizes unavailable')]);
+      return;
+    }
+
+    setText($('[data-bind="corpusCode"]'), fmtInt.format(c.code.chunks));
+    setText($('[data-bind="corpusDocChunks"]'), fmtInt.format(c.docs.chunks));
+    setText(
+      $('[data-bind="corpusDocsSub"]'),
+      `${fmtInt.format(c.docs.documents)} document(s)${c.docs.exact ? '' : ' · partial count'}`
+    );
+    setText($('[data-bind="corpusTerms"]'), fmtInt.format(c.terms.total));
+    setText($('[data-bind="corpusArch"]'), fmtInt.format(c.arch.total));
+    setText(
+      $('[data-bind="corpusArchSub"]'),
+      c.arch.total > 0
+        ? `${c.arch.byKind.component} component · ${c.arch.byKind.decision} decision · ${c.arch.byKind.lesson} lesson`
+        : 'none recorded'
+    );
+
+    const groups = Array.from(
+      new Set([
+        ...Object.keys(c.code.groups || {}),
+        ...Object.keys(c.docs.groups || {}),
+        ...Object.keys(c.terms.groups || {}),
+        ...Object.keys(c.arch.groups || {}),
+      ])
+    ).sort((a, b) => (c.code.groups[b] || 0) - (c.code.groups[a] || 0));
+
+    setText($('#corpusChip'), `${groups.length} group(s)`);
+
+    if (groups.length === 0) {
+      setText($('[data-bind="corpusNote"]'), '');
+      replaceTbody(body, [makeEmptyRow(5, 'nothing indexed yet')]);
+      return;
+    }
+
+    const shown = groups.slice(0, CORPUS_ROW_LIMIT);
+    setText(
+      $('[data-bind="corpusNote"]'),
+      groups.length > shown.length
+        ? `Showing the ${shown.length} largest of ${groups.length} groups.`
+        : ''
+    );
+
+    const dash = (n) => (n ? fmtInt.format(n) : '—');
+    replaceTbody(
+      body,
+      shown.map((g) =>
+        makeRow(
+          makeCell(g, { className: 'cell-query', title: g }),
+          makeCell(dash(c.code.groups[g]), { className: 'col-num' }),
+          makeCell(dash(c.docs.groups[g]), { className: 'col-num' }),
+          makeCell(dash(c.terms.groups[g]), { className: 'col-num' }),
+          makeCell(dash(c.arch.groups[g]), { className: 'col-num' })
+        )
+      )
+    );
+  }
+
+  // ── Tool usage ───────────────────────────────────────────────────────────
+
+  function renderTools(d) {
+    const body = $('#toolsBody');
+    const hint = $('#toolsHint');
+    const t = d.tools;
+
+    if (!d.analyticsEnabled) {
+      setText($('#toolsChip'), 'analytics disabled');
+      setText(hint, '');
+      replaceTbody(body, [makeEmptyRow(8, 'analytics disabled')]);
+      return;
+    }
+    const rows = (t && t.rows) || [];
+    if (rows.length === 0) {
+      setText($('#toolsChip'), '0 calls');
+      // Distinguish "nobody called anything" from "the counters are not wired",
+      // which is what an empty tool_calls table looked like before.
+      setText(hint, 'No tool calls recorded in this window.');
+      replaceTbody(body, [makeEmptyRow(8, 'no tool calls in window')]);
+      return;
+    }
+
+    const total = rows.reduce((a, r) => a + r.calls, 0);
+    setText($('#toolsChip'), `${fmtInt.format(total)} calls · ${rows.length} tools`);
+
+    const searchCode = rows.find((r) => r.tool === 'search_code');
+    const searchDocs = rows.find((r) => r.tool === 'search_docs');
+    if (searchCode || searchDocs) {
+      setText(
+        hint,
+        `${searchCode ? searchCode.title || 'Search Code' : 'Search Code'} ` +
+          `${fmtInt.format(searchCode ? searchCode.calls : 0)} · ` +
+          `${searchDocs ? searchDocs.title || 'Search Docs' : 'Search Docs'} ` +
+          `${fmtInt.format(searchDocs ? searchDocs.calls : 0)} calls in window.`
+      );
+    } else {
+      setText(hint, '');
+    }
+
+    replaceTbody(
+      body,
+      rows.map((r) => {
+        const errCls = r.errors > 0 ? 'col-num cell-bad' : 'col-num cell-mute';
+        const p95Cls =
+          r.p95_duration_ms > 5000
+            ? 'col-num cell-bad'
+            : r.p95_duration_ms > 1000
+              ? 'col-num cell-warn'
+              : 'col-num cell-mute';
+        return makeRow(
+          // Display name from tools/list; the raw id stays as the tooltip so a
+          // tile row can still be matched back to a tool call in the logs.
+          makeCell(r.title || r.tool, { className: 'cell-query', title: r.tool }),
+          makeCell(fmtInt.format(r.calls), { className: 'col-num' }),
+          makeShareCell(total > 0 ? r.calls / total : 0),
+          makeCell(fmtInt.format(r.avg_duration_ms), { className: 'col-num cell-mute' }),
+          makeCell(fmtInt.format(r.p95_duration_ms), { className: p95Cls }),
+          makeCell(fmtInt.format(r.distinct_users), { className: 'col-num cell-mute' }),
+          makeCell(r.errors > 0 ? fmtInt.format(r.errors) : '—', { className: errCls }),
+          makeCell(fmtRelative(new Date(r.last_used_ts).toISOString()), { className: 'cell-mute' })
+        );
+      })
+    );
   }
 
   function renderSlow(d) {
@@ -760,6 +990,8 @@
       }
       renderOverview(data);
       renderSparkline(data);
+      renderHeadline(data);
+      renderTools(data);
       renderRoi(data);
       renderSlow(data);
       renderTop(data);
@@ -769,6 +1001,7 @@
       renderErrors(data);
       renderFailedSearches(data);
       renderEmbedding(data);
+      renderCorpus(data);
       setText($('#lastRefresh'), new Date().toLocaleTimeString());
     } catch (err) {
       setConn('bad');

@@ -88,11 +88,94 @@
         </article>
       </section>
 
+      <section class="row row--headline">
+        <article class="tile tile--headline" data-tile="headline">
+          <header class="tile__head">
+            <span class="tile__eyebrow">005 / summary</span>
+            <h2 class="tile__title">What the team is getting</h2>
+            <span class="tile__chip" id="headlineChip">—</span>
+          </header>
+          <p class="headline__lede" data-bind="headlineLede">—</p>
+          <div class="headline-grid">
+            <div class="headline-cell">
+              <span class="headline-cell__value" data-bind="hlQuestions">—</span>
+              <span class="headline-cell__label">questions answered</span>
+              <span class="headline-cell__sub" data-bind="hlQuestionsSub">—</span>
+            </div>
+            <div class="headline-cell">
+              <span class="headline-cell__value" data-bind="hlPeople">—</span>
+              <span class="headline-cell__label">people asking</span>
+              <span class="headline-cell__sub" data-bind="hlPeopleSub">—</span>
+            </div>
+            <div class="headline-cell">
+              <span class="headline-cell__value" data-bind="hlAnswerTime">—</span>
+              <span class="headline-cell__label">typical answer time</span>
+              <span class="headline-cell__sub">median across all requests</span>
+            </div>
+            <div class="headline-cell">
+              <span class="headline-cell__value" data-bind="hlDocShare">—</span>
+              <span class="headline-cell__label">answered from documentation</span>
+              <span class="headline-cell__sub">rest came from the code itself</span>
+            </div>
+          </div>
+          <div class="headline-grid headline-grid--coverage">
+            <div class="headline-cell headline-cell--sm">
+              <span class="headline-cell__value" data-bind="hlProjects">—</span>
+              <span class="headline-cell__label">projects searchable</span>
+            </div>
+            <div class="headline-cell headline-cell--sm">
+              <span class="headline-cell__value" data-bind="hlDocuments">—</span>
+              <span class="headline-cell__label">documents searchable</span>
+            </div>
+            <div class="headline-cell headline-cell--sm">
+              <span class="headline-cell__value" data-bind="hlDefinitions">—</span>
+              <span class="headline-cell__label">terms defined</span>
+            </div>
+            <div class="headline-cell headline-cell--sm">
+              <span class="headline-cell__value" data-bind="hlArch">—</span>
+              <span class="headline-cell__label">architecture notes</span>
+            </div>
+          </div>
+        </article>
+      </section>
+
+      <section class="row row--tools">
+        <article class="tile tile--table" data-tile="tools">
+          <header class="tile__head">
+            <span class="tile__eyebrow">006 / tool usage</span>
+            <h2 class="tile__title">Which tools get used</h2>
+            <span class="tile__chip" id="toolsChip">—</span>
+          </header>
+          <div class="cross-hint" id="toolsHint"></div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>tool</th>
+                  <th class="col-num">calls</th>
+                  <th class="col-num">share</th>
+                  <th class="col-num">avg ms</th>
+                  <th class="col-num">p95 ms</th>
+                  <th class="col-num">users</th>
+                  <th class="col-num">errors</th>
+                  <th>last used</th>
+                </tr>
+              </thead>
+              <tbody id="toolsBody">
+                <tr class="data-table__empty">
+                  <td colspan="8">—</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+      </section>
+
       <section class="row row--roi">
         <article class="tile tile--roi" data-tile="roi">
           <div class="roi" id="roi">
             <div class="roi__hero">
-              <span class="roi__hero-eyebrow">005 / token economics</span>
+              <span class="roi__hero-eyebrow">007 / token economics</span>
               <div class="roi__hero-stack">
                 <span class="roi__hero-value" data-bind="roiPct">—</span>
                 <span class="roi__hero-label" data-bind="roiHeadline"
@@ -152,7 +235,7 @@
       <section class="row row--quality">
         <article class="tile tile--table" data-tile="slow">
           <header class="tile__head">
-            <span class="tile__eyebrow">006 / latency</span>
+            <span class="tile__eyebrow">008 / latency</span>
             <h2 class="tile__title">Slowest searches</h2>
           </header>
           <div class="table-wrap">
@@ -176,7 +259,7 @@
 
         <article class="tile tile--table" data-tile="top">
           <header class="tile__head">
-            <span class="tile__eyebrow">007 / demand</span>
+            <span class="tile__eyebrow">009 / demand</span>
             <h2 class="tile__title">Top queries</h2>
           </header>
           <div class="table-wrap">
@@ -202,7 +285,7 @@
       <section class="row row--knowledge">
         <article class="tile tile--table" data-tile="cross">
           <header class="tile__head">
-            <span class="tile__eyebrow">008 / knowledge graph</span>
+            <span class="tile__eyebrow">010 / knowledge graph</span>
             <h2 class="tile__title">Cross-project usage</h2>
             <span class="tile__chip" id="crossChip">—</span>
           </header>
@@ -254,7 +337,7 @@
 
         <article class="tile tile--table" data-tile="users">
           <header class="tile__head">
-            <span class="tile__eyebrow">009 / who's using it</span>
+            <span class="tile__eyebrow">011 / who's using it</span>
             <h2 class="tile__title">Users in period</h2>
             <span class="tile__chip" id="usersChip">—</span>
           </header>
@@ -283,7 +366,7 @@
       <section class="row row--indexer">
         <article class="tile tile--table" data-tile="indexer">
           <header class="tile__head">
-            <span class="tile__eyebrow">010 / indexer</span>
+            <span class="tile__eyebrow">012 / indexer</span>
             <h2 class="tile__title">Repository status</h2>
             <span class="tile__chip" id="indexerChip">offline</span>
           </header>
@@ -309,7 +392,7 @@
 
         <article class="tile tile--table" data-tile="errors">
           <header class="tile__head">
-            <span class="tile__eyebrow">011 / chunking</span>
+            <span class="tile__eyebrow">013 / chunking</span>
             <h2 class="tile__title">Recent failures</h2>
           </header>
           <div class="table-wrap">
@@ -335,7 +418,7 @@
       <section class="row row--health">
         <article class="tile tile--table" data-tile="failed">
           <header class="tile__head">
-            <span class="tile__eyebrow">012 / search errors</span>
+            <span class="tile__eyebrow">014 / search errors</span>
             <h2 class="tile__title">Failed searches</h2>
             <span class="tile__chip" id="failedChip">—</span>
           </header>
@@ -360,7 +443,7 @@
 
         <article class="tile" data-tile="embedding">
           <header class="tile__head">
-            <span class="tile__eyebrow">013 / embedding</span>
+            <span class="tile__eyebrow">015 / embedding</span>
             <h2 class="tile__title">Embedding provider health</h2>
             <span class="tile__chip" id="embeddingChip">—</span>
           </header>
@@ -398,6 +481,57 @@
               <span class="embed-cell__sub" data-bind="embTimeouts">— timeouts</span>
             </div>
           </div>
+        </article>
+      </section>
+
+      <section class="row row--corpus">
+        <article class="tile tile--corpus" data-tile="corpus">
+          <details class="corpus-details">
+            <summary class="corpus-summary">
+              <span class="tile__eyebrow">016 / index internals</span>
+              <span class="corpus-summary__title">Collection sizes by group</span>
+              <span class="tile__chip" id="corpusChip">—</span>
+            </summary>
+            <div class="corpus-grid">
+              <div class="corpus-cell">
+                <span class="corpus-cell__label">code chunks</span>
+                <span class="corpus-cell__value" data-bind="corpusCode">—</span>
+              </div>
+              <div class="corpus-cell">
+                <span class="corpus-cell__label">doc chunks</span>
+                <span class="corpus-cell__value" data-bind="corpusDocChunks">—</span>
+                <span class="corpus-cell__sub" data-bind="corpusDocsSub">—</span>
+              </div>
+              <div class="corpus-cell">
+                <span class="corpus-cell__label">glossary terms</span>
+                <span class="corpus-cell__value" data-bind="corpusTerms">—</span>
+              </div>
+              <div class="corpus-cell">
+                <span class="corpus-cell__label">architecture cards</span>
+                <span class="corpus-cell__value" data-bind="corpusArch">—</span>
+                <span class="corpus-cell__sub" data-bind="corpusArchSub">—</span>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th>group</th>
+                    <th class="col-num">code chunks</th>
+                    <th class="col-num">documents</th>
+                    <th class="col-num">terms</th>
+                    <th class="col-num">arch cards</th>
+                  </tr>
+                </thead>
+                <tbody id="corpusBody">
+                  <tr class="data-table__empty">
+                    <td colspan="5">—</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="corpus-note" data-bind="corpusNote"></p>
+          </details>
         </article>
       </section>
     </main>

@@ -93,7 +93,14 @@ export {
   normalizeAudience,
   applyAudienceScope,
 } from './docs/store.js';
-export type { DocsStoreConfig, IndexDocumentInput, DocsSearchOpts } from './docs/store.js';
+export type {
+  DocsStoreConfig,
+  IndexDocumentInput,
+  DocsSearchOpts,
+  DocsStats,
+} from './docs/store.js';
+export { parseFrontmatter } from './docs/frontmatter.js';
+export type { ParsedFrontmatter } from './docs/frontmatter.js';
 export type { DocsKind } from './docs/types.js';
 export { DocsIdfStore } from './docs/idf-store.js';
 export { chunkMarkdown, detectMarkdown, NotMarkdownError } from './docs/chunker.js';
@@ -112,6 +119,7 @@ export type {
   TerminologyStoreConfig,
   RecordTermInput,
   TermSearchOpts,
+  TermsStats,
 } from './terminology/store.js';
 export {
   toTermsCollectionName,

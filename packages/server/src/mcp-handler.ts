@@ -578,6 +578,34 @@ export function renderArchContextSection(group: string, ctx: ArchContextResult):
  * obviously reversible from a support seat, whereas an additive write past the
  * similarity gate is.
  */
+/**
+ * Display titles for the six analytics tools, which describe themselves inline
+ * rather than from `prompts.json`. Exported so {@link toolTitle} — and through
+ * it the analytics dashboard — resolves every tool to the same name the MCP
+ * client shows.
+ */
+export const ANALYTICS_TOOL_TITLES: Record<string, string> = {
+  token_savings_report: 'Token Savings Report',
+  top_queries: 'Top Queries',
+  slowest_searches: 'Slowest Searches',
+  cross_project_share: 'Cross-Project Share',
+  retry_rate: 'Retry Rate',
+  failed_chunks: 'Failed Chunks',
+};
+
+/**
+ * Human-readable name for a tool, as advertised in `tools/list`.
+ *
+ * Resolution order matches the MCP spec's own fallback for a display name:
+ * the registered title, then the raw tool name. Titles live in two places —
+ * `prompts.json` for the 23 documented tools, {@link ANALYTICS_TOOL_TITLES}
+ * for the analytics six — so this is the single place that knows about both.
+ */
+export function toolTitle(name: string): string {
+  const fromPrompts = (prompts.tools as Record<string, { title?: string } | undefined>)[name];
+  return fromPrompts?.title ?? ANALYTICS_TOOL_TITLES[name] ?? name;
+}
+
 export const CODING_TOOLS = new Set([
   'search_code',
   'get_chunk',
@@ -841,19 +869,30 @@ export class McpHandler {
 
     const server = new McpServer({ name: 'paparats-mcp', version: PKG_VERSION }, { instructions });
 
-    // Monkey-patch server.tool so every registered handler is wrapped in telemetry.
+    // Wrap every registered handler in telemetry. Both registration methods are
+    // patched: `registerTool` is what this file uses, `tool` is the deprecated
+    // form the SDK still accepts. Patching only one silently empties tool_calls.
     if (this.telemetry) {
-      const originalTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
       const instrument = this.instrumentTool.bind(this);
-      server.tool = ((...args: unknown[]) => {
+      const wrapHandler = (args: unknown[]): unknown[] => {
         const last = args.length - 1;
         const handler = args[last];
         const name = typeof args[0] === 'string' ? args[0] : 'unknown';
         if (typeof handler === 'function') {
           args[last] = instrument(name, handler as (...rest: unknown[]) => Promise<unknown>);
         }
-        return originalTool(...args);
-      }) as typeof server.tool;
+        return args;
+      };
+
+      const originalRegisterTool = server.registerTool.bind(server) as (
+        ...args: unknown[]
+      ) => unknown;
+      server.registerTool = ((...args: unknown[]) =>
+        originalRegisterTool(...wrapHandler(args))) as typeof server.registerTool;
+
+      const originalTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
+      server.tool = ((...args: unknown[]) =>
+        originalTool(...wrapHandler(args))) as typeof server.tool;
     }
 
     // ── Resource: project overview ──────────────────────────────────────────
@@ -1031,6 +1070,7 @@ export class McpHandler {
               const response = await this.searcher.expandedSearch(g, query, {
                 project,
                 limit: limit * 2,
+                tool: 'search_code',
               });
               allResults.push(...response.results);
             }
@@ -1420,6 +1460,7 @@ export class McpHandler {
               const response = await this.searcher.searchWithFilter(g, query, additionalFilter, {
                 project,
                 limit: limit * 2,
+                tool: 'search_changes',
               });
               allResults.push(...response.results);
             }
@@ -1783,6 +1824,7 @@ export class McpHandler {
               const response = await this.searcher.expandedSearch(g, question, {
                 project,
                 limit: limit * 2,
+                tool: 'explain_feature',
               });
               for (const r of response.results) {
                 allResults.push({
@@ -2054,6 +2096,7 @@ export class McpHandler {
               const response = await this.searcher.searchWithFilter(g, question, additionalFilter, {
                 project,
                 limit: limit * 2,
+                tool: 'recent_changes',
               });
               for (const r of response.results) {
                 allResults.push({
@@ -2272,6 +2315,7 @@ export class McpHandler {
               const response = await this.searcher.expandedSearch(g, question, {
                 project,
                 limit: limit * 2,
+                tool: 'impact_analysis',
               });
               for (const r of response.results) {
                 allResults.push({
@@ -2588,7 +2632,7 @@ export class McpHandler {
         server.registerTool(
           'token_savings_report',
           {
-            title: 'Token Savings Report',
+            title: ANALYTICS_TOOL_TITLES['token_savings_report']!,
             description:
               'Token-savings estimates: naive baseline vs. search-only vs. actually-consumed (uses chunk_fetches correlation).',
             inputSchema: periodSchema,
@@ -2609,7 +2653,7 @@ export class McpHandler {
         server.registerTool(
           'top_queries',
           {
-            title: 'Top Queries',
+            title: ANALYTICS_TOOL_TITLES['top_queries']!,
             description:
               'Most-frequent queries by query_hash with one example, count, avg latency, avg result count.',
             inputSchema: { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
@@ -2634,7 +2678,7 @@ export class McpHandler {
         server.registerTool(
           'slowest_searches',
           {
-            title: 'Slowest Searches',
+            title: ANALYTICS_TOOL_TITLES['slowest_searches']!,
             description: 'Slowest individual searches in the period.',
             inputSchema: { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
             annotations: READ_ONLY,
@@ -2658,7 +2702,7 @@ export class McpHandler {
         server.registerTool(
           'cross_project_share',
           {
-            title: 'Cross-Project Share',
+            title: ANALYTICS_TOOL_TITLES['cross_project_share']!,
             description:
               'Per-user-per-anchor-project share of results that came from OTHER projects in the same group. Detects noisy cross-project search.',
             inputSchema: periodSchema,
@@ -2679,7 +2723,7 @@ export class McpHandler {
         server.registerTool(
           'retry_rate',
           {
-            title: 'Retry Rate',
+            title: ANALYTICS_TOOL_TITLES['retry_rate']!,
             description:
               'Reformulation rate per user: searches followed by another search within a window with no chunk_fetches in between.',
             inputSchema: periodSchema,
@@ -2700,7 +2744,7 @@ export class McpHandler {
         server.registerTool(
           'failed_chunks',
           {
-            title: 'Failed Chunks',
+            title: ANALYTICS_TOOL_TITLES['failed_chunks']!,
             description:
               'Aggregated chunking errors during indexing (AST failures, regex fallbacks, binary files).',
             inputSchema: periodSchema,

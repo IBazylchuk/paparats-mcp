@@ -46,6 +46,22 @@ export interface SearcherConfig {
 
 const QDRANT_TIMEOUT_MS = 30_000;
 
+/**
+ * Options accepted by every public search method.
+ *
+ * `tool` is the MCP tool the call came from, recorded as `search_events.tool`.
+ * Without it the column holds the Searcher method name, so `search_code`,
+ * `explain_feature` and `impact_analysis` — which all reach `expandedSearch` —
+ * collapse into one bucket. Callers that omit it fall back to the method name.
+ * `QueryCache.buildKey` reads only `project`/`limit`, so labelling a call never
+ * splits the cache.
+ */
+export interface SearchOptions {
+  project?: string;
+  limit?: number;
+  tool?: string;
+}
+
 /** Expected payload shape from Qdrant chunks */
 interface QdrantPayload {
   project: string;
@@ -101,11 +117,7 @@ export class Searcher {
   }
 
   /** Search within a group collection, optionally filtering by project */
-  async search(
-    groupName: string,
-    query: string,
-    options?: { project?: string; limit?: number }
-  ): Promise<SearchResponse> {
+  async search(groupName: string, query: string, options?: SearchOptions): Promise<SearchResponse> {
     const startTime = performance.now();
 
     // Check cache
@@ -122,7 +134,7 @@ export class Searcher {
           (performance.now() - startTime) / 1000
         );
         this.emitSearchTelemetry({
-          tool: 'search',
+          tool: options?.tool ?? 'search',
           groupName,
           query,
           options,
@@ -141,7 +153,7 @@ export class Searcher {
     } catch (err) {
       const empty: SearchResponse = { results: [], total: 0, metrics: this.computeMetrics([]) };
       this.emitSearchTelemetry({
-        tool: 'search',
+        tool: options?.tool ?? 'search',
         groupName,
         query,
         options,
@@ -170,7 +182,7 @@ export class Searcher {
     );
 
     this.emitSearchTelemetry({
-      tool: 'search',
+      tool: options?.tool ?? 'search',
       groupName,
       query,
       options,
@@ -187,7 +199,7 @@ export class Searcher {
   async expandedSearch(
     groupName: string,
     query: string,
-    options?: { project?: string; limit?: number }
+    options?: SearchOptions
   ): Promise<SearchResponse> {
     const startTime = performance.now();
 
@@ -205,7 +217,7 @@ export class Searcher {
           (performance.now() - startTime) / 1000
         );
         this.emitSearchTelemetry({
-          tool: 'expandedSearch',
+          tool: options?.tool ?? 'expandedSearch',
           groupName,
           query,
           options,
@@ -297,7 +309,7 @@ export class Searcher {
     );
 
     this.emitSearchTelemetry({
-      tool: 'expandedSearch',
+      tool: options?.tool ?? 'expandedSearch',
       groupName,
       query,
       options,
@@ -315,7 +327,7 @@ export class Searcher {
     groupName: string,
     query: string,
     additionalFilter: { must: Array<Record<string, unknown>> },
-    options?: { project?: string; limit?: number }
+    options?: SearchOptions
   ): Promise<SearchResponse> {
     if (!groupName?.trim()) {
       throw new Error('Group name is required');
@@ -340,7 +352,7 @@ export class Searcher {
           (performance.now() - startTime) / 1000
         );
         this.emitSearchTelemetry({
-          tool: 'searchWithFilter',
+          tool: options?.tool ?? 'searchWithFilter',
           groupName,
           query,
           options,
@@ -426,7 +438,7 @@ export class Searcher {
     );
 
     this.emitSearchTelemetry({
-      tool: 'searchWithFilter',
+      tool: options?.tool ?? 'searchWithFilter',
       groupName,
       query,
       options,
@@ -443,7 +455,7 @@ export class Searcher {
   private async _searchInternal(
     groupName: string,
     query: string,
-    options?: { project?: string; limit?: number }
+    options?: SearchOptions
   ): Promise<SearchResponse> {
     // Input validation
     if (!groupName?.trim()) {
@@ -510,7 +522,7 @@ export class Searcher {
     tool: string;
     groupName: string;
     query: string;
-    options: { project?: string; limit?: number } | undefined;
+    options: SearchOptions | undefined;
     response: SearchResponse;
     durationMs: number;
     cacheHit: boolean;

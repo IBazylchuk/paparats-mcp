@@ -215,6 +215,104 @@ describe('analytics queries', () => {
     expect(r.savings_realized).not.toBeNull();
   });
 
+  it('reports no savings ratio when file sizes are unknown', () => {
+    // The baseline is the size of the whole file a chunk came from. With no
+    // `files` row there is no size, and the old query substituted
+    // `chunk_lines * 5`, which made the ratio a constant 1 - 1/5 = 80%
+    // regardless of the data. Absent input must read as absent, not as a
+    // plausible-looking number.
+    tctx.run(newContext({ user: 'alice', session: 's' }), () => {
+      store.recordSearch({
+        ts: Date.now(),
+        tool: 'search_code',
+        groupName: 'g',
+        anchorProject: null,
+        queryText: 'unmeasured',
+        queryHash: hashQuery('unmeasured'),
+        queryTokens: tokenizeQuery('unmeasured'),
+        limit: 5,
+        durationMs: 20,
+        resultCount: 1,
+        cacheHit: false,
+        error: null,
+        results: [
+          {
+            rank: 0,
+            project: 'p',
+            file: 'unknown-size.ts',
+            language: 'ts',
+            score: 0.9,
+            startLine: 0,
+            endLine: 20,
+            chunkLines: 21,
+            fileTotalLines: null,
+            chunkId: 'C-unmeasured',
+          },
+        ],
+      });
+    });
+
+    const r = tokenSavingsReport(store, {});
+    expect(r.naive_baseline).toBe(0);
+    expect(r.savings_vs_naive).toBeNull();
+    expect(r.savings_realized).toBeNull();
+    // The row is still counted, so the dashboard can say how much of the
+    // period is measured rather than implying full coverage.
+    expect(r.total_results).toBe(1);
+    expect(r.measured_results).toBe(0);
+  });
+
+  it('measures only the results whose file size is known', () => {
+    tctx.run(newContext({ user: 'alice', session: 's' }), () => {
+      store.recordSearch({
+        ts: Date.now(),
+        tool: 'search_code',
+        groupName: 'g',
+        anchorProject: null,
+        queryText: 'mixed',
+        queryHash: hashQuery('mixed'),
+        queryTokens: tokenizeQuery('mixed'),
+        limit: 5,
+        durationMs: 20,
+        resultCount: 2,
+        cacheHit: false,
+        error: null,
+        results: [
+          {
+            rank: 0,
+            project: 'p',
+            file: 'known.ts',
+            language: 'ts',
+            score: 0.9,
+            startLine: 0,
+            endLine: 9,
+            chunkLines: 10,
+            fileTotalLines: 100,
+            chunkId: 'C-known',
+          },
+          {
+            rank: 1,
+            project: 'p',
+            file: 'unknown.ts',
+            language: 'ts',
+            score: 0.8,
+            startLine: 0,
+            endLine: 9,
+            chunkLines: 10,
+            fileTotalLines: null,
+            chunkId: 'C-unknown',
+          },
+        ],
+      });
+    });
+
+    const r = tokenSavingsReport(store, {});
+    expect(r.measured_results).toBe(1);
+    expect(r.total_results).toBe(2);
+    // 10 of 100 lines: 90% saved, and the unmeasured row must not dilute it.
+    expect(r.savings_vs_naive).toBeCloseTo(0.9, 5);
+  });
+
   it('cross_project_share counts off-anchor results correctly', () => {
     const ctx = newContext({ user: 'alice', session: 's', anchorProject: 'service-a' });
     tctx.run(ctx, () => {

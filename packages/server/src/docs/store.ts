@@ -719,6 +719,50 @@ export class DocsStore {
       }
     }
   }
+
+  /**
+   * Chunk and document counts for one group's docs collection.
+   *
+   * `chunks` is `points_count` minus the meta sentinel. `documents` comes from a
+   * `facet` on the indexed `doc_id` key rather than a full scroll: a docs
+   * collection holds one point per chunk, so scrolling it to count distinct
+   * documents would read the entire corpus on every dashboard poll.
+   *
+   * `facet` returns at most `limit` distinct values, so `documents` saturates
+   * there; `documentsExact` reports whether the count is complete. Returns all
+   * zeros when the collection does not exist yet — an unindexed group is not an
+   * error for a stats read.
+   */
+  async stats(group: string): Promise<DocsStats> {
+    const name = toDocsCollectionName(group);
+    const out: DocsStats = { group, chunks: 0, documents: 0, documentsExact: true };
+    try {
+      const info = await this.qdrant.getCollection(name);
+      const raw = info.points_count ?? 0;
+      out.chunks = Math.max(0, raw - 1); // less the meta sentinel
+    } catch {
+      return out; // collection missing — group has no docs
+    }
+    try {
+      const limit = 10_000;
+      const res = await this.qdrant.facet(name, { key: 'doc_id', limit, exact: true });
+      out.documents = res.hits.length;
+      out.documentsExact = res.hits.length < limit;
+    } catch {
+      // Counting documents is supplementary — keep the chunk count.
+      out.documentsExact = false;
+    }
+    return out;
+  }
+}
+
+/** Per-group totals for the docs layer, surfaced by the analytics dashboard. */
+export interface DocsStats {
+  group: string;
+  chunks: number;
+  documents: number;
+  /** False when `documents` hit the facet limit, or the facet call failed. */
+  documentsExact: boolean;
 }
 
 // ── Audience helpers ─────────────────────────────────────────────────────────

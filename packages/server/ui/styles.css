@@ -263,6 +263,149 @@ code {
 .row--health {
   grid-template-columns: 1.35fr 1fr;
 }
+.row--corpus,
+.row--tools,
+.row--headline {
+  grid-template-columns: 1fr;
+}
+
+/* Headline summary: the plain-language tile at the top. */
+.headline__lede {
+  margin: 0;
+  padding: 16px 20px 4px;
+  font-family: var(--font-display);
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--ink);
+  max-width: 92ch;
+}
+.headline-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border-top: 1px solid var(--line);
+}
+.headline-cell {
+  background: var(--bg-tile);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.headline-cell__value {
+  font-family: var(--font-display);
+  font-size: 38px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.headline-cell--sm .headline-cell__value {
+  font-size: 24px;
+  color: var(--ink);
+}
+.headline-cell__label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  color: var(--ink);
+}
+.headline-cell__sub {
+  font-family: var(--font-display);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+.headline-grid--coverage {
+  border-bottom: 1px solid var(--line);
+}
+
+/* Index internals: collapsed by default — operator detail, not a headline. */
+.corpus-details {
+  border: 0;
+}
+.corpus-summary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  cursor: pointer;
+  list-style: none;
+}
+.corpus-summary::-webkit-details-marker {
+  display: none;
+}
+.corpus-summary::after {
+  content: '+';
+  margin-left: auto;
+  font-family: var(--font-display);
+  color: var(--ink-soft);
+}
+.corpus-details[open] .corpus-summary::after {
+  content: '−';
+}
+.corpus-summary__title {
+  font-family: var(--font-display);
+  font-size: 15px;
+  color: var(--ink);
+}
+.corpus-note {
+  margin: 0;
+  padding: 10px 20px 16px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+@media (max-width: 900px) {
+  .headline-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Knowledge-base tile: four headline counts over a per-group breakdown. */
+.corpus-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.corpus-cell {
+  background: var(--bg-tile);
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.corpus-cell__label {
+  font-family: var(--font-display);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  color: var(--ink-soft);
+}
+.corpus-cell__value {
+  font-family: var(--font-display);
+  font-size: 30px;
+  line-height: 1;
+  font-weight: 500;
+  letter-spacing: -0.03em;
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.corpus-cell__sub {
+  font-family: var(--font-display);
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+@media (max-width: 900px) {
+  .corpus-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
 
 /* Sparkline inside KPI tile */
 .sparkline {

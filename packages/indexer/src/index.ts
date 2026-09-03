@@ -17,6 +17,9 @@ import {
   DocsIdfStore,
   createArchEmbeddingProvider,
   resolveArchEmbeddingConfig,
+  buildTelemetry,
+  systemContext,
+  tctx,
 } from '@paparats/server';
 import type { TreeSitterManager, ProjectConfig, PaparatsConfig } from '@paparats/server';
 import { DEFAULT_GROUP, normalizeExcludePatterns } from '@paparats/shared';
@@ -135,6 +138,13 @@ if (INDEX_DOCS) {
   });
 }
 
+// The indexer writes the `files` table (one row per indexed file, with its line
+// count). The server reads it to price a search result against the whole file it
+// came from. Both containers mount the same paparats_data volume, so they share
+// one analytics.db. Without telemetry here that table stays empty and every
+// token-savings figure falls back to a constant.
+const { telemetry } = await buildTelemetry();
+
 const indexer = new Indexer({
   qdrantUrl: QDRANT_URL,
   embeddingProvider,
@@ -143,6 +153,7 @@ const indexer = new Indexer({
   treeSitter,
   qdrantClient,
   metrics,
+  telemetry,
   projectSuffix: PAPARATS_PROJECT_SUFFIX,
   ...(docsStore ? { docsStore } : {}),
 });
@@ -256,7 +267,18 @@ interface IndexRepoResult {
   project?: ProjectConfig;
 }
 
+/**
+ * Index one repo inside a telemetry context, so rows this cycle writes are
+ * attributed to `system:indexer` rather than the anonymous fallback.
+ */
 async function indexRepo(repo: RepoConfig, opts?: { force?: boolean }): Promise<IndexRepoResult> {
+  return tctx.run(systemContext('indexer'), () => indexRepoInner(repo, opts));
+}
+
+async function indexRepoInner(
+  repo: RepoConfig,
+  opts?: { force?: boolean }
+): Promise<IndexRepoResult> {
   const localPath = repoPath(repo, REPOS_DIR);
   const status = repoStatuses.get(repo.fullName)!;
   status.status = 'running';
