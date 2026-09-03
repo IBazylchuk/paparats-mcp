@@ -17,6 +17,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Full history: the private-reference check reads the commit messages
+          # this branch adds, which a shallow clone does not contain.
+          fetch-depth: 0
+
+      # First, and before any build step: a leak is cheaper to catch than to
+      # rewrite out of a public history.
+      - name: Check for private references
+        run: |
+          git fetch --quiet origin "${{ github.event.repository.default_branch }}" || true
+          BASE_REF="origin/${{ github.event.repository.default_branch }}" \
+            scripts/check-no-private-refs.sh
 
       - name: Setup Node.js ${{ matrix.node-version }}
         uses: actions/setup-node@v4
