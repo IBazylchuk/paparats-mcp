@@ -12,6 +12,7 @@ import {
   writeProjectsFile,
   readInstallState,
   regenerateCompose,
+  regenerateOptsFromState,
   renderExcludeHintComment,
   resolveEntryGroup,
   resolveProjectName,
@@ -46,8 +47,10 @@ export interface AddDeps {
   isDirectory?: (p: string) => boolean;
 }
 
-const REPO_URL_RE = /^(git@|https?:\/\/).+\.git$/;
+const REPO_URL_RE = /^(git@|ssh:\/\/|https?:\/\/)/;
 const REPO_SHORTHAND_RE = /^[^/]+\/[^/]+$/;
+const GITHUB_HOSTS = new Set(['github.com', 'www.github.com']);
+const GITHUB_NAME_RE = /^[A-Za-z0-9_.-]+$/;
 
 export function detectKind(input: string): 'local' | 'remote' {
   if (REPO_URL_RE.test(input)) return 'remote';
@@ -55,14 +58,51 @@ export function detectKind(input: string): 'local' | 'remote' {
   return 'local';
 }
 
-function shorthandFromUrl(url: string): string {
-  // Convert "git@github.com:org/repo.git" or "https://github.com/org/repo.git" -> "org/repo".
-  const noGit = url.replace(/\.git$/, '');
-  const matchSsh = noGit.match(/^git@[^:]+:(.+)$/);
-  if (matchSsh) return matchSsh[1]!;
-  const matchHttps = noGit.match(/^https?:\/\/[^/]+\/(.+)$/);
-  if (matchHttps) return matchHttps[1]!;
-  return noGit;
+/**
+ * Normalize a remote argument (`owner/repo`, `git@github.com:owner/repo.git`,
+ * `https://github.com/owner/repo[.git]`) to the `owner/repo` the indexer
+ * expects. The indexer clones every remote entry from github.com, so another
+ * host is rejected instead of being silently cloned from the wrong place, and
+ * so is a nested path (e.g. a subgroup), which the indexer cannot parse.
+ */
+export function parseGithubRepo(input: string): string {
+  let host: string | undefined;
+  let repoPath = input;
+  const scp = input.match(/^git@([^:/]+):(.+)$/);
+  if (scp) {
+    host = scp[1]!;
+    repoPath = scp[2]!;
+  } else if (/^(ssh|https?):\/\//.test(input)) {
+    let url: URL;
+    try {
+      url = new URL(input);
+    } catch {
+      throw new Error(`Invalid repository URL: ${input}`);
+    }
+    host = url.hostname;
+    repoPath = url.pathname;
+  }
+  if (host !== undefined && !GITHUB_HOSTS.has(host.toLowerCase())) {
+    throw new Error(
+      `Only GitHub repositories can be added by URL (got host "${host}"): the indexer clones ` +
+        'remote projects from github.com. Clone the repository locally and add its absolute path instead.'
+    );
+  }
+  const parts = repoPath
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '')
+    .replace(/\.git$/, '')
+    .split('/');
+  const [owner, repo] = parts;
+  const valid = (part: string | undefined): part is string =>
+    !!part && part !== '.' && part !== '..' && GITHUB_NAME_RE.test(part);
+  if (parts.length !== 2 || !valid(owner) || !valid(repo)) {
+    throw new Error(
+      `Expected a GitHub repository as owner/repo, got "${input}". ` +
+        'Nested paths such as subgroups are not supported.'
+    );
+  }
+  return `${owner}/${repo}`;
 }
 
 export async function runAdd(
@@ -90,8 +130,7 @@ export async function runAdd(
     }
     entry = { path: argument };
   } else {
-    const url = REPO_URL_RE.test(argument) ? shorthandFromUrl(argument) : argument;
-    entry = { url };
+    entry = { url: parseGithubRepo(argument) };
   }
 
   if (opts.name) entry.name = opts.name;
@@ -145,18 +184,9 @@ export async function runAdd(
         )
       );
     } else {
-      const result = regenerateCompose({
-        embedMode: state.embedMode,
-        ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
-        ...(state.embeddingProvider !== undefined
-          ? { embeddingProvider: state.embeddingProvider }
-          : {}),
-        ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
-        ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
-        ...(state.cron !== undefined ? { cron: state.cron } : {}),
-        paparatsHome: home,
-      });
+      const result = regenerateCompose(regenerateOptsFromState(state, home));
       composeChanged = result.changed;
+      reportComposeBackup(result.backupPath);
     }
   }
 
@@ -214,6 +244,16 @@ export async function defaultTriggerReindex(
     if (res.status !== 404) break;
   }
   throw new Error(`Indexer ${INDEXER_BASE} returned ${lastStatus}`);
+}
+
+function reportComposeBackup(backupPath: string | undefined): void {
+  if (backupPath) {
+    console.log(
+      chalk.dim(
+        `  Previous compose backed up to ${backupPath} (hand-edits, if any, are preserved there).`
+      )
+    );
+  }
 }
 
 async function defaultRestart(): Promise<void> {
@@ -408,18 +448,9 @@ export async function runRemove(
   if (kind === 'local') {
     const state = readInstallState(home);
     if (state) {
-      const result = regenerateCompose({
-        embedMode: state.embedMode,
-        ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
-        ...(state.embeddingProvider !== undefined
-          ? { embeddingProvider: state.embeddingProvider }
-          : {}),
-        ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
-        ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
-        ...(state.cron !== undefined ? { cron: state.cron } : {}),
-        paparatsHome: home,
-      });
+      const result = regenerateCompose(regenerateOptsFromState(state, home));
       composeChanged = result.changed;
+      reportComposeBackup(result.backupPath);
     }
   }
 
@@ -442,10 +473,10 @@ async function defaultDeleteServerData(group: string, name: string): Promise<voi
 // ── Commands ────────────────────────────────────────────────────────────────
 
 export const addCommand = new Command('add')
-  .description('Add a project (local path or git URL/shorthand) to the index')
+  .description('Add a project (local path or GitHub repo) to the index')
   .argument(
     '<path-or-repo>',
-    'Absolute local path, or git URL (git@.../foo.git, https://.../foo.git, owner/repo)'
+    'Absolute local path, or a GitHub repo (owner/repo, git@github.com:owner/repo.git, https://github.com/owner/repo)'
   )
   .option('--name <name>', 'Project name override')
   .option(

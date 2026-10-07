@@ -1,12 +1,12 @@
-import express, { type Express, type RequestHandler } from 'express';
+import express, { type Express, type RequestHandler, type Response } from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { detectLanguageByPath } from '@paparats/shared';
-import { buildProjectConfigFromContent } from './config.js';
+import { buildProjectConfigFromContent, validateGroupName } from './config.js';
 import { Indexer, parseChunkId } from './indexer.js';
 import { Searcher } from './searcher.js';
-import { McpHandler } from './mcp-handler.js';
+import { McpHandler, createProjectScopeGuard } from './mcp-handler.js';
 import { WatcherManager } from './watcher.js';
 import type { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
@@ -76,9 +76,19 @@ export async function refreshGaugeMetrics(
  * Build a basic-auth middleware from an env var "user:pass". Returns undefined
  * when unset so the caller can mount routes without the guard. Applied only to
  * /ui and /api/analytics — never the rest of the API.
+ *
+ * A value that is set but malformed throws: the operator asked for a protected
+ * dashboard, and silently serving it unprotected is the one wrong outcome.
  */
 function buildUiBasicAuth(credential: string | undefined): RequestHandler | undefined {
-  if (!credential || !credential.includes(':')) return undefined;
+  if (credential === undefined || credential === '') return undefined;
+  const sep = credential.indexOf(':');
+  if (sep <= 0 || sep === credential.length - 1) {
+    throw new Error(
+      'PAPARATS_UI_BASIC_AUTH must be "user:pass" with a non-empty user and password. ' +
+        'Refusing to start with the dashboard unprotected — fix or unset it.'
+    );
+  }
   const expected = 'Basic ' + Buffer.from(credential).toString('base64');
   return (req, res, next) => {
     if (req.headers.authorization === expected) {
@@ -88,6 +98,94 @@ function buildUiBasicAuth(credential: string | undefined): RequestHandler | unde
     res.set('WWW-Authenticate', 'Basic realm="paparats analytics"');
     res.status(401).send('Authentication required');
   };
+}
+
+/**
+ * Parse `PAPARATS_CORS_ORIGINS`: comma-separated exact origins
+ * (`https://app.example.com`) that browsers may call this server from. Entries
+ * are normalised through URL so a trailing slash or upper-case host still
+ * matches the browser's Origin header. Anything that is not a bare http(s)
+ * origin throws, wildcards included — a typo must not pass for an allowlist.
+ */
+export function parseCorsOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const origins: string[] = [];
+  for (const entry of raw.split(',').map((s) => s.trim())) {
+    if (entry === '') continue;
+    let url: URL | null = null;
+    try {
+      url = new URL(entry);
+    } catch {
+      // reported below
+    }
+    if (
+      !url ||
+      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.pathname !== '/' ||
+      url.search !== '' ||
+      url.hash !== ''
+    ) {
+      throw new Error(
+        `PAPARATS_CORS_ORIGINS: "${entry}" is not an origin. Use exact origins such as ` +
+          `https://app.example.com (scheme, host and optional port; no path, no wildcards).`
+      );
+    }
+    origins.push(url.origin);
+  }
+  return origins;
+}
+
+/** True when a browser Origin names the same host (and port) the request was sent to. */
+function isSameOrigin(origin: string, host: string | undefined): boolean {
+  if (!host) return false;
+  try {
+    const o = new URL(origin);
+    // Resolve Host with the origin's scheme so default ports compare equal.
+    return o.host === new URL(`${o.protocol}//${host}`).host;
+  } catch {
+    return false; // `null` or malformed origin
+  }
+}
+
+/**
+ * Refuse cross-site browser requests on every route. Browsers attach `Origin`
+ * to cross-origin requests, including the "simple" POSTs CORS never preflights,
+ * so without this any page the user visits could call the API and the MCP
+ * tools. Requests without `Origin` — MCP clients, curl, server-to-server — and
+ * same-origin requests (the dashboard) pass untouched; other origins must be
+ * listed in `PAPARATS_CORS_ORIGINS`.
+ *
+ * The check trusts the Host header, so it does not stop DNS rebinding.
+ */
+export function originGuard(allowedOrigins: ReadonlySet<string>): RequestHandler {
+  return (req, res, next) => {
+    const origin = req.headers.origin;
+    if (
+      origin === undefined ||
+      allowedOrigins.has(origin) ||
+      isSameOrigin(origin, req.headers.host)
+    ) {
+      next();
+      return;
+    }
+    res.status(403).json({ error: 'Cross-origin request refused' });
+  };
+}
+
+/**
+ * Answer 400 and return true when a write route must refuse `group` (see
+ * `validateGroupName`); return false to let the route continue.
+ */
+function rejectInvalidGroup(group: unknown, res: Response): boolean {
+  try {
+    validateGroupName(String(group));
+    return false;
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+    return true;
+  }
 }
 
 /** Sanitize user-supplied string for safe logging (prevents log injection) */
@@ -160,6 +258,11 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     docsAudienceScope,
     terminologyStore,
   } = options;
+
+  // Parsed before anything starts, so a malformed value fails startup cleanly.
+  const uiAuth = buildUiBasicAuth(process.env['PAPARATS_UI_BASIC_AUTH']);
+  const corsOrigins = parseCorsOrigins(process.env['PAPARATS_CORS_ORIGINS']);
+  const scope = createProjectScopeGuard(searcher, indexer);
 
   // ── Group discovery from Qdrant ───────────────────────────────────────────
 
@@ -271,7 +374,11 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   const getShuttingDown = (): boolean => shuttingDown;
 
   const app = express();
-  app.use(cors());
+  app.use(originGuard(new Set(corsOrigins)));
+  // CORS headers only for explicitly allowed origins; none by default.
+  if (corsOrigins.length > 0) {
+    app.use(cors({ origin: corsOrigins, exposedHeaders: ['Mcp-Session-Id'] }));
+  }
   app.use(express.json({ limit: '50mb' }));
   app.use(identityMiddleware());
 
@@ -320,26 +427,47 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     try {
       const { group, project: projectName, config: apiConfig, files, force } = req.body;
 
-      if (!group || !projectName || !Array.isArray(files)) {
+      if (
+        typeof group !== 'string' ||
+        typeof projectName !== 'string' ||
+        !group ||
+        !projectName ||
+        !Array.isArray(files)
+      ) {
         res.status(400).json({ error: 'group, project, and files (array) are required' });
         return;
       }
 
-      const project = buildProjectConfigFromContent(projectName, group, apiConfig);
+      // Group name and indexing config come straight from the request body.
+      let project: ProjectConfig;
+      try {
+        project = buildProjectConfigFromContent(projectName, group, apiConfig);
+      } catch (err) {
+        res.status(400).json({ error: (err as Error).message });
+        return;
+      }
       registerProject(project);
 
-      if (force) {
-        await indexer.deleteProjectChunks(group, projectName);
-      }
+      let chunks: number;
+      try {
+        // Throws on a Qdrant failure — indexing on top of the old chunks would
+        // silently leave stale ones behind.
+        if (force) {
+          await indexer.deleteProjectChunks(group, projectName);
+        }
 
-      console.log(
-        `[api] Indexing ${sanitizeForLog(project.group)}/${sanitizeForLog(project.name)} (${files.length} files)...`
-      );
-      const chunks = await withTimeout(
-        indexer.indexFilesContent(project, files),
-        INDEX_TIMEOUT_MS,
-        'Index timeout'
-      );
+        console.log(
+          `[api] Indexing ${sanitizeForLog(project.group)}/${sanitizeForLog(project.name)} (${files.length} files)...`
+        );
+        chunks = await withTimeout(
+          indexer.indexFilesContent(project, files),
+          INDEX_TIMEOUT_MS,
+          'Index timeout'
+        );
+      } finally {
+        // Even a failed run may have written or deleted chunks.
+        searcher.invalidateGroupCache(group);
+      }
 
       res.json({
         status: 'ok',
@@ -371,6 +499,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         res.status(400).json({ error: 'group is required' });
         return;
       }
+      if (rejectInvalidGroup(group, res)) return;
       if (!archStore) {
         res.status(501).json({ error: 'arch store not configured on this server' });
         return;
@@ -402,6 +531,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         res.status(400).json({ error: 'group, project, path, and content are required' });
         return;
       }
+      if (rejectInvalidGroup(group, res)) return;
 
       const projects = projectsByGroup.get(group);
       const project = projects?.find((p) => p.name === projectName);
@@ -413,11 +543,15 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
       const lang =
         language ?? detectLanguageByPath(filePath, content) ?? project.languages[0] ?? 'generic';
-      await withTimeout(
-        indexer.updateFileContent(group, projectName, filePath, content, lang, project),
-        FILE_CHANGED_TIMEOUT_MS,
-        'File-changed timeout'
-      );
+      try {
+        await withTimeout(
+          indexer.updateFileContent(group, projectName, filePath, content, lang, project),
+          FILE_CHANGED_TIMEOUT_MS,
+          'File-changed timeout'
+        );
+      } finally {
+        searcher.invalidateGroupCache(group);
+      }
 
       res.json({ status: 'ok', message: 'File reindexed' });
     } catch (err) {
@@ -440,6 +574,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         res.status(400).json({ error: 'group, project, and path are required' });
         return;
       }
+      if (rejectInvalidGroup(group, res)) return;
 
       const projects = projectsByGroup.get(group);
       const project = projects?.find((p) => p.name === projectName);
@@ -449,11 +584,15 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         return;
       }
 
-      await withTimeout(
-        indexer.deleteFileByPath(group, projectName, filePath),
-        FILE_CHANGED_TIMEOUT_MS,
-        'File-deleted timeout'
-      );
+      try {
+        await withTimeout(
+          indexer.deleteFileByPath(group, projectName, filePath),
+          FILE_CHANGED_TIMEOUT_MS,
+          'File-deleted timeout'
+        );
+      } finally {
+        searcher.invalidateGroupCache(group);
+      }
 
       res.json({ status: 'ok', message: 'File removed from index' });
     } catch (err) {
@@ -488,7 +627,8 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         return;
       }
 
-      const payload = await indexer.getChunkById(chunkId);
+      // Out of the project scope reads exactly like a missing chunk.
+      const payload = scope.allowsChunk(chunkId) ? await indexer.getChunkById(chunkId) : null;
       if (!payload) {
         res.status(404).json({ error: 'Chunk not found' });
         return;
@@ -542,7 +682,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         Math.max(1, parseInt(String(req.query.commit_limit ?? '10'), 10) || 10)
       );
 
-      const payload = await indexer.getChunkById(chunkId);
+      const payload = scope.allowsChunk(chunkId) ? await indexer.getChunkById(chunkId) : null;
       if (!payload) {
         res.status(404).json({ error: 'Chunk not found' });
         return;
@@ -574,17 +714,20 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         res.status(400).json({ error: 'group and name are required' });
         return;
       }
+      if (rejectInvalidGroup(group, res)) return;
+      if (!scope.allowsProject(projectName)) {
+        res.status(403).json({ error: "Project is outside this server's project scope" });
+        return;
+      }
 
-      // Delete chunks from Qdrant
-      await indexer.deleteProjectChunks(group, projectName);
-
-      // Delete metadata from SQLite. Rows are keyed by chunk_id, which embeds
-      // the *stored* (suffixed) project name — map through the indexer so the
-      // delete pattern matches. (deleteProjectChunks suffixes Qdrant-side.)
-      metadataStore?.deleteByProject(group, indexer.storedProjectName(projectName));
-
-      // Invalidate query cache for the group
-      searcher.invalidateGroupCache(group);
+      // Code chunks, git metadata, symbol edges and docs. Throws on a Qdrant
+      // failure, which surfaces as a 500 instead of a false success.
+      try {
+        await indexer.purgeProject(group, projectName);
+      } finally {
+        // A failed purge may still have removed some of the project.
+        searcher.invalidateGroupCache(group);
+      }
 
       // Remove from in-memory project registry
       unregisterProject(group, projectName);
@@ -685,7 +828,6 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   // behind optional basic-auth so the rest of the API and MCP routes stay
   // open for clients that don't speak HTTP auth.
 
-  const uiAuth = buildUiBasicAuth(process.env['PAPARATS_UI_BASIC_AUTH']);
   const uiDir = path.resolve(fileURLToPath(import.meta.url), '..', '..', 'ui');
 
   const uiHandlers: RequestHandler[] = uiAuth ? [uiAuth] : [];

@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
+import { v7 as uuidv7 } from 'uuid';
 import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
 import {
   McpHandler,
+  EXPLAIN_FEATURE_EDGES_PER_SEED,
+  type McpHandlerConfig,
   describeExcerpt,
   describeGlossary,
   describeStaleness,
@@ -61,7 +64,10 @@ function createMockIndexer(suffix = ''): Indexer {
     listGroups: vi.fn().mockResolvedValue({}),
     getGroupStats: vi.fn().mockResolvedValue({ points: 0, status: 'not_indexed' }),
     deleteProjectChunks: vi.fn().mockResolvedValue(undefined),
+    purgeProject: vi.fn().mockResolvedValue(undefined),
     getChunkById: vi.fn().mockResolvedValue(null),
+    getAdjacentChunks: vi.fn().mockResolvedValue([]),
+    listProjectsInGroup: vi.fn().mockResolvedValue([]),
     storedProjectName: vi.fn((name: string) => (suffix ? `${name}${suffix}` : name)),
   } as unknown as Indexer;
 }
@@ -274,7 +280,8 @@ describe('McpHandler', () => {
         headers: {
           'Content-Type': 'application/json',
           Accept: 'application/json, text/event-stream',
-          'mcp-session-id': 'non-existent-session-id',
+          // Well-formed (UUID) id the server no longer knows, e.g. after a restart.
+          'mcp-session-id': uuidv7(),
         },
         body: JSON.stringify({
           jsonrpc: '2.0',
@@ -596,7 +603,7 @@ describe('McpHandler', () => {
       const text = callBody.result?.content?.[0]?.text;
       expect(text).toContain('Deleted project');
       expect(text).toContain('test-project');
-      expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'test-project');
+      expect(indexer.purgeProject).toHaveBeenCalledWith('g1', 'test-project');
       expect(removeProject).toHaveBeenCalledWith('g1', 'test-project');
     } finally {
       server.close();
@@ -604,23 +611,23 @@ describe('McpHandler', () => {
     }
   });
 
-  // ── delete_project suffix behavior (PAPARATS_PROJECT_SUFFIX) ───────────────
+  // ── delete_project ──────────────────────────────────────────────────────
 
-  /** Spin up a handler + server, call delete_project, return metadataStore. */
+  /** Spin up a handler + server, call delete_project, return the tool result. */
   async function runDeleteProject(
     indexer: Indexer,
-    metadataStore: MetadataStore,
-    args: { group: string; project: string }
-  ): Promise<{ text: string }> {
+    args: { group: string; project: string },
+    searcher: Searcher = createMockSearcher()
+  ): Promise<{ text: string; isError: boolean }> {
     const app = express();
     app.use(express.json());
 
     const handler2 = new McpHandler({
-      searcher: createMockSearcher(),
+      searcher,
       indexer,
       getProjects: () => new Map([[args.group, [createProjectConfig()]]]),
       getGroupNames: () => [args.group],
-      metadataStore,
+      metadataStore: createMockMetadataStore(),
     });
     handler2.mount(app);
 
@@ -628,56 +635,70 @@ describe('McpHandler', () => {
     const port = (server.address() as { port: number }).port;
 
     try {
-      const { text } = await callTool(port, 'delete_project', args);
-      return { text };
+      const { text, isError } = await callTool(port, 'delete_project', args);
+      return { text, isError };
     } finally {
       server.close();
       handler2.destroy();
     }
   }
 
-  it('delete_project passes the SUFFIXED name to metadataStore.deleteByProject when a suffix is set', async () => {
+  it('delete_project purges every layer through indexer.purgeProject with the clean name', async () => {
+    // purgeProject owns the stored-name mapping for metadata and the docs
+    // removal; the tool hands it the name the user typed.
     const indexer = createMockIndexer('-v3');
-    const metadataStore = createMockMetadataStore();
+    const { text, isError } = await runDeleteProject(indexer, { group: 'g1', project: 'billing' });
 
-    const { text } = await runDeleteProject(indexer, metadataStore, {
-      group: 'g1',
+    expect(isError).toBe(false);
+    expect(indexer.purgeProject).toHaveBeenCalledWith('g1', 'billing');
+    expect(text).toContain('Deleted project "billing"');
+    expect(text).toContain('indexed docs');
+  });
+
+  it('delete_project reports a failed purge as an error, not as success', async () => {
+    const indexer = createMockIndexer();
+    vi.mocked(indexer.purgeProject).mockRejectedValueOnce(new Error('Qdrant unreachable'));
+    const searcher = createMockSearcher();
+
+    const { text, isError } = await runDeleteProject(
+      indexer,
+      { group: 'g1', project: 'billing' },
+      searcher
+    );
+
+    expect(isError).toBe(true);
+    expect(text).toContain('Qdrant unreachable');
+    expect(text).not.toContain('Deleted project');
+    // A partial purge may already have removed chunks — the cache must not keep them.
+    expect(searcher.invalidateGroupCache).toHaveBeenCalledWith('g1');
+  });
+
+  it('delete_project refuses a project outside the server scope', async () => {
+    const indexer = createMockIndexer();
+    const searcher = createMockSearcher();
+    vi.mocked(searcher.getProjectScope).mockReturnValue(['billing']);
+
+    const { text, isError } = await runDeleteProject(
+      indexer,
+      { group: 'g1', project: 'handbook' },
+      searcher
+    );
+
+    expect(isError).toBe(true);
+    expect(text).toContain('outside');
+    expect(indexer.purgeProject).not.toHaveBeenCalled();
+  });
+
+  it('delete_project refuses a group name that would address a sidecar collection', async () => {
+    const indexer = createMockIndexer();
+    const { text, isError } = await runDeleteProject(indexer, {
+      group: 'billing_arch',
       project: 'billing',
     });
 
-    // Clean name surfaces at the MCP boundary + user-facing text.
-    expect(text).toContain('Deleted project');
-    expect(text).toContain('billing');
-    // Qdrant side gets the CLEAN name — deleteProjectChunks suffixes internally.
-    expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'billing');
-    // Metadata side must get the STORED (suffixed) name — chunk_id embeds it.
-    expect(indexer.storedProjectName).toHaveBeenCalledWith('billing');
-    expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', 'billing-v3');
-  });
-
-  it('delete_project passes the clean name unchanged when no suffix is set', async () => {
-    const indexer = createMockIndexer(''); // empty suffix = identity
-    const metadataStore = createMockMetadataStore();
-
-    await runDeleteProject(indexer, metadataStore, { group: 'g1', project: 'billing' });
-
-    expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'billing');
-    expect(indexer.storedProjectName).toHaveBeenCalledWith('billing');
-    // No suffix → metadata gets the clean name.
-    expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', 'billing');
-  });
-
-  it('delete_project routes metadata deletion through storedProjectName (single source of truth)', async () => {
-    const indexer = createMockIndexer('-v3');
-    const metadataStore = createMockMetadataStore();
-
-    await runDeleteProject(indexer, metadataStore, { group: 'g1', project: 'billing' });
-
-    // The handler never constructs the stored name itself — the name handed to
-    // deleteByProject is exactly what storedProjectName returned.
-    const returned = vi.mocked(indexer.storedProjectName).mock.results[0]?.value;
-    expect(returned).toBe('billing-v3');
-    expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', returned);
+    expect(isError).toBe(true);
+    expect(text).toContain('reserved');
+    expect(indexer.purgeProject).not.toHaveBeenCalled();
   });
 
   // ── Orchestration tools ──────────────────────────────────────────────────
@@ -688,7 +709,7 @@ describe('McpHandler', () => {
     toolName: string,
     args: Record<string, unknown>,
     basePath = '/mcp'
-  ): Promise<{ text: string; status: number }> {
+  ): Promise<{ text: string; status: number; isError: boolean }> {
     const initRes = await fetch(`http://127.0.0.1:${port}${basePath}`, {
       method: 'POST',
       headers: {
@@ -725,11 +746,12 @@ describe('McpHandler', () => {
     });
 
     const callBody = (await parseMcpResponse(callRes)) as {
-      result?: { content?: { text?: string }[] };
+      result?: { content?: { text?: string }[]; isError?: boolean };
     };
     return {
       text: callBody.result?.content?.[0]?.text ?? '',
       status: callRes.status,
+      isError: callBody.result?.isError === true,
     };
   }
 
@@ -1214,6 +1236,480 @@ describe('McpHandler', () => {
       server.close();
       handler2.destroy();
     }
+  });
+
+  // ── Shared harness for the tests below ───────────────────────────────────
+
+  /** Mount a handler on a throwaway server, run `fn`, always tear both down. */
+  async function withHandler<T>(
+    config: Partial<McpHandlerConfig>,
+    fn: (port: number, handler: McpHandler) => Promise<T>
+  ): Promise<T> {
+    const projects = new Map([['g1', [createProjectConfig()]]]);
+    const h = new McpHandler({
+      searcher: createMockSearcher(),
+      indexer: createMockIndexer(),
+      getProjects: () => projects,
+      getGroupNames: () => ['g1'],
+      ...config,
+    });
+    const app = express();
+    app.use(express.json());
+    h.mount(app);
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+    try {
+      return await fn(port, h);
+    } finally {
+      server.close();
+      h.destroy();
+    }
+  }
+
+  /** Open a Streamable HTTP session and return its id. */
+  async function initSession(port: number): Promise<string> {
+    const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2024-11-05',
+          capabilities: {},
+          clientInfo: { name: 'test', version: '1.0.0' },
+        },
+      }),
+    });
+    await res.text();
+    return res.headers.get('mcp-session-id')!;
+  }
+
+  /** The handler's private session table — the tests steer idle times through it. */
+  function sessionsOf(h: McpHandler): Record<string, { lastActivity: number }> {
+    return (h as unknown as { transports: Record<string, { lastActivity: number }> }).transports;
+  }
+
+  // ── Session lifecycle ─────────────────────────────────────────────────────
+
+  it('answers a malformed unknown session id with 404 instead of building a server for it', async () => {
+    await withHandler({}, async (port, h) => {
+      const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+          'mcp-session-id': 'made-up-session',
+        },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'health_check', arguments: {} },
+        }),
+      });
+      expect(res.status).toBe(404);
+      expect(h.sessionCount).toBe(0);
+    });
+  });
+
+  it('closes the least recently active session once the session limit is reached', async () => {
+    await withHandler({ maxSessions: 2 }, async (port, h) => {
+      const first = await initSession(port);
+      const second = await initSession(port);
+      sessionsOf(h)[second]!.lastActivity = 0; // idle the longest
+
+      const third = await initSession(port);
+
+      expect(h.sessionCount).toBe(2);
+      expect(Object.keys(sessionsOf(h)).sort()).toEqual([first, third].sort());
+    });
+  });
+
+  it('caps sessions recreated from client-supplied ids too', async () => {
+    await withHandler({ maxSessions: 2 }, async (port, h) => {
+      for (let i = 0; i < 5; i++) {
+        const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json, text/event-stream',
+            'mcp-session-id': uuidv7(),
+          },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'tools/call',
+            params: { name: 'health_check', arguments: {} },
+          }),
+        });
+        expect(res.status).toBe(200);
+        await res.text();
+      }
+      expect(h.sessionCount).toBe(2);
+    });
+  });
+
+  it('ends an expired SSE stream instead of leaving the client hanging', async () => {
+    await withHandler({}, async (port, h) => {
+      const res = await fetch(`http://127.0.0.1:${port}/sse`);
+      const reader = res.body!.getReader();
+      await reader.read(); // the `endpoint` event: the session is live
+      expect(h.sessionCount).toBe(1);
+
+      for (const entry of Object.values(sessionsOf(h))) entry.lastActivity = 0;
+      (h as unknown as { cleanupExpiredSessions(): void }).cleanupExpiredSessions();
+
+      const drained = (async () => {
+        for (;;) {
+          const { done } = await reader.read();
+          if (done) return true;
+        }
+      })();
+      const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 2000));
+      expect(await Promise.race([drained, timeout])).toBe(true);
+      expect(h.sessionCount).toBe(0);
+    });
+  });
+
+  // ── Project scope (PAPARATS_PROJECTS) outside the Searcher ────────────────
+
+  const IN_SCOPE_CHUNK = 'g1//billing-v3//src/invoice.ts//0-10//h1';
+  const OUT_OF_SCOPE_CHUNK = 'g1//handbook-v3//src/page.ts//0-10//h2';
+
+  /** Searcher scoped to `billing`, indexer storing names with a `-v3` suffix. */
+  function scopedMocks(): { searcher: Searcher; indexer: Indexer } {
+    const searcher = createMockSearcher();
+    vi.mocked(searcher.getProjectScope).mockReturnValue(['billing']);
+    const indexer = createMockIndexer('-v3');
+    vi.mocked(indexer.getChunkById).mockImplementation(async (id: string) => {
+      const project = id.split('//')[1]!.replace(/-v3$/, '');
+      return {
+        chunk_id: id,
+        project,
+        file: id.split('//')[2],
+        language: 'typescript',
+        startLine: 0,
+        endLine: 10,
+        content: `// ${project}`,
+        defines_symbols: ['charge'],
+      };
+    });
+    return { searcher, indexer };
+  }
+
+  it('get_chunk treats an out-of-scope chunk exactly like a missing one', async () => {
+    const { searcher, indexer } = scopedMocks();
+    await withHandler({ searcher, indexer }, async (port) => {
+      const hidden = await callTool(port, 'get_chunk', { chunk_id: OUT_OF_SCOPE_CHUNK });
+      expect(hidden.text).toContain('Chunk not found');
+      expect(indexer.getChunkById).not.toHaveBeenCalled();
+
+      const visible = await callTool(port, 'get_chunk', { chunk_id: IN_SCOPE_CHUNK });
+      expect(visible.text).toContain('src/invoice.ts');
+    });
+  });
+
+  it('get_chunk_meta refuses an out-of-scope chunk', async () => {
+    const { searcher, indexer } = scopedMocks();
+    const metadataStore = createMockMetadataStore();
+    await withHandler({ searcher, indexer, metadataStore }, async (port) => {
+      const { text } = await callTool(
+        port,
+        'get_chunk_meta',
+        { chunk_id: OUT_OF_SCOPE_CHUNK },
+        '/support/mcp'
+      );
+      expect(text).toContain('Chunk not found');
+      expect(metadataStore.getCommits).not.toHaveBeenCalled();
+    });
+  });
+
+  it('find_usages refuses an out-of-scope seed and hides out-of-scope neighbours', async () => {
+    const { searcher, indexer } = scopedMocks();
+    const metadataStore = createMockMetadataStore();
+    const otherCaller = 'g1//billing-v3//src/checkout.ts//5-9//h3';
+    vi.mocked(metadataStore.getEdgesTo).mockReturnValue([
+      {
+        from_chunk_id: otherCaller,
+        to_chunk_id: IN_SCOPE_CHUNK,
+        relation_type: 'calls',
+        symbol_name: 'charge',
+      },
+      {
+        from_chunk_id: OUT_OF_SCOPE_CHUNK,
+        to_chunk_id: IN_SCOPE_CHUNK,
+        relation_type: 'calls',
+        symbol_name: 'charge',
+      },
+    ] as never);
+    (metadataStore as unknown as { getGroupDegreeSnapshot: unknown }).getGroupDegreeSnapshot = vi
+      .fn()
+      .mockReturnValue({ hubChunkIds: new Set() });
+
+    await withHandler({ searcher, indexer, metadataStore }, async (port) => {
+      const seedHidden = await callTool(port, 'find_usages', { chunk_id: OUT_OF_SCOPE_CHUNK });
+      expect(seedHidden.text).toContain('Chunk not found');
+
+      const { text } = await callTool(port, 'find_usages', { chunk_id: IN_SCOPE_CHUNK });
+      expect(text).toContain('src/checkout.ts');
+      expect(text).not.toContain('handbook');
+      expect(text).toContain('Incoming (1)');
+    });
+  });
+
+  it('list_projects lists only in-scope projects', async () => {
+    const { searcher, indexer } = scopedMocks();
+    vi.mocked(indexer.listProjectsInGroup).mockResolvedValue([
+      { name: 'billing', chunks: 12, languages: ['typescript'] },
+      { name: 'handbook', chunks: 40, languages: ['generic'] },
+    ]);
+    await withHandler({ searcher, indexer }, async (port) => {
+      const { text } = await callTool(port, 'list_projects', {});
+      expect(text).toContain('billing');
+      expect(text).not.toContain('handbook');
+      expect(text).toContain('(12 total chunks)');
+    });
+  });
+
+  it('search_docs restricts docs to the scope and hides glossary terms of hidden projects', async () => {
+    const { searcher, indexer } = scopedMocks();
+    const docsStore = { search: vi.fn().mockResolvedValue([]) };
+    const term = (name: string, project?: string) => ({
+      id: name,
+      term: name,
+      definition: `${name} definition`,
+      aliases: [],
+      ...(project ? { project } : {}),
+      createdAt: 0,
+      updatedAt: 0,
+      score: 0.9,
+    });
+    const terminologyStore = {
+      search: vi
+        .fn()
+        .mockResolvedValue([
+          term('ledger'),
+          term('invoice run', 'billing'),
+          term('style guide', 'handbook'),
+        ]),
+    };
+    await withHandler(
+      {
+        searcher,
+        indexer,
+        docsStore: docsStore as never,
+        terminologyStore: terminologyStore as never,
+      },
+      async (port) => {
+        const { text } = await callTool(port, 'search_docs', { query: 'how are invoices run' });
+        expect(docsStore.search).toHaveBeenCalledWith(
+          'g1',
+          'how are invoices run',
+          expect.objectContaining({ projects: ['billing'] })
+        );
+        expect(text).toContain('ledger');
+        expect(text).toContain('invoice run');
+        expect(text).not.toContain('style guide');
+      }
+    );
+  });
+
+  it('search_docs on an unscoped server passes no project restriction', async () => {
+    const docsStore = { search: vi.fn().mockResolvedValue([]) };
+    await withHandler({ docsStore: docsStore as never }, async (port) => {
+      await callTool(port, 'search_docs', { query: 'anything' });
+      const opts = docsStore.search.mock.calls[0]?.[2] as Record<string, unknown>;
+      expect(opts).not.toHaveProperty('projects');
+    });
+  });
+
+  it('term_search and term_list keep group-wide terms but hide other projects', async () => {
+    const { searcher, indexer } = scopedMocks();
+    const terms = [
+      {
+        id: '1',
+        term: 'ledger',
+        definition: 'd',
+        aliases: [],
+        createdAt: 0,
+        updatedAt: 0,
+        score: 1,
+      },
+      {
+        id: '2',
+        term: 'invoice run',
+        definition: 'd',
+        aliases: [],
+        project: 'billing',
+        createdAt: 0,
+        updatedAt: 0,
+        score: 1,
+      },
+      {
+        id: '3',
+        term: 'style guide',
+        definition: 'd',
+        aliases: [],
+        project: 'handbook',
+        createdAt: 0,
+        updatedAt: 0,
+        score: 1,
+      },
+    ];
+    const terminologyStore = {
+      search: vi.fn().mockResolvedValue(terms),
+      list: vi.fn().mockResolvedValue(terms),
+    };
+    await withHandler(
+      { searcher, indexer, terminologyStore: terminologyStore as never },
+      async (port) => {
+        for (const [tool, args] of [
+          ['term_search', { query: 'guide' }],
+          ['term_list', {}],
+        ] as const) {
+          const { text } = await callTool(port, tool, args);
+          expect(text).toContain('ledger');
+          expect(text).toContain('invoice run');
+          expect(text).not.toContain('style guide');
+        }
+      }
+    );
+  });
+
+  it('arch_suggest_components drops candidates from out-of-scope projects', async () => {
+    const { searcher, indexer } = scopedMocks();
+    const metadataStore = createMockMetadataStore();
+    (metadataStore as unknown as { getTopByInDegree: unknown }).getTopByInDegree = vi
+      .fn()
+      .mockReturnValue([
+        { chunkId: OUT_OF_SCOPE_CHUNK, degree: 50 },
+        { chunkId: IN_SCOPE_CHUNK, degree: 10 },
+      ]);
+    const archStore = { listPoints: vi.fn().mockResolvedValue({ points: [], nextOffset: null }) };
+    await withHandler(
+      { searcher, indexer, metadataStore, archStore: archStore as never },
+      async (port) => {
+        const { text } = await callTool(port, 'arch_suggest_components', { group: 'g1' });
+        expect(text).toContain('src/invoice.ts');
+        expect(text).not.toContain('src/page.ts');
+        expect(indexer.getChunkById).not.toHaveBeenCalledWith(OUT_OF_SCOPE_CHUNK);
+      }
+    );
+  });
+
+  it('arch_suggest_components filters by the stored project name when a suffix is set', async () => {
+    const indexer = createMockIndexer('-v3');
+    const metadataStore = createMockMetadataStore();
+    const getTopByInDegree = vi.fn().mockReturnValue([]);
+    (metadataStore as unknown as { getTopByInDegree: unknown }).getTopByInDegree = getTopByInDegree;
+    const archStore = { listPoints: vi.fn() };
+    await withHandler({ indexer, metadataStore, archStore: archStore as never }, async (port) => {
+      await callTool(port, 'arch_suggest_components', { group: 'g1', project: 'billing' });
+      // Chunk ids embed the stored name, so the prefix filter must use it.
+      expect(getTopByInDegree).toHaveBeenCalledWith('g1', 50, 'billing-v3');
+    });
+  });
+
+  // ── explain_feature fan-out ───────────────────────────────────────────────
+
+  it('explain_feature caps edges per seed and says the list was truncated', async () => {
+    const searcher = createMockSearcher();
+    vi.mocked(searcher.expandedSearch).mockResolvedValue({
+      results: [makeSearchResult()],
+      total: 1,
+      metrics: { tokensReturned: 0, estimatedFullFileTokens: 0, tokensSaved: 0, savingsPercent: 0 },
+    });
+    const seed = 'g1//p1//src/auth.ts//10-20//h1';
+    const edge = (from: string, to: string) => ({
+      from_chunk_id: from,
+      to_chunk_id: to,
+      relation_type: 'calls',
+      symbol_name: 'authenticate',
+    });
+    const metadataStore = createMockMetadataStore();
+    vi.mocked(metadataStore.getEdgesTo).mockReturnValue(
+      Array.from({ length: 30 }, (_, i) => edge(`g1//p1//src/in${i}.ts//0-1//x${i}`, seed)) as never
+    );
+    vi.mocked(metadataStore.getEdgesFrom).mockReturnValue(
+      Array.from({ length: 25 }, (_, i) =>
+        edge(seed, `g1//p1//src/out${i}.ts//0-1//y${i}`)
+      ) as never
+    );
+    const indexer = createMockIndexer();
+
+    await withHandler({ searcher, indexer, metadataStore }, async (port) => {
+      const { text } = await callTool(
+        port,
+        'explain_feature',
+        { question: 'How does authentication work?' },
+        '/support/mcp'
+      );
+      expect(indexer.getChunkById).toHaveBeenCalledTimes(2 * EXPLAIN_FEATURE_EDGES_PER_SEED);
+      expect(text).toContain('Truncated');
+      expect(text).toContain('15 more edges');
+    });
+  });
+
+  it('explain_feature does not mention truncation when nothing was cut', async () => {
+    const searcher = createMockSearcher();
+    vi.mocked(searcher.expandedSearch).mockResolvedValue({
+      results: [makeSearchResult()],
+      total: 1,
+      metrics: { tokensReturned: 0, estimatedFullFileTokens: 0, tokensSaved: 0, savingsPercent: 0 },
+    });
+    const metadataStore = createMockMetadataStore();
+    vi.mocked(metadataStore.getEdgesTo).mockReturnValue([
+      {
+        from_chunk_id: 'g1//p1//src/a.ts//0-1//a',
+        to_chunk_id: 'g1//p1//src/auth.ts//10-20//h1',
+        relation_type: 'calls',
+        symbol_name: 'authenticate',
+      },
+    ] as never);
+    await withHandler({ searcher, metadataStore }, async (port) => {
+      const { text } = await callTool(
+        port,
+        'explain_feature',
+        { question: 'How does authentication work?' },
+        '/support/mcp'
+      );
+      expect(text).toContain('## Related Modules');
+      expect(text).not.toContain('Truncated');
+    });
+  });
+
+  // ── Reserved group names on write tools ───────────────────────────────────
+
+  it('write tools refuse a group name reserved for sidecar collections', async () => {
+    const archStore = { upsertComponent: vi.fn() };
+    const terminologyStore = { recordTerm: vi.fn() };
+    await withHandler(
+      { archStore: archStore as never, terminologyStore: terminologyStore as never },
+      async (port) => {
+        const component = await callTool(port, 'arch_record_component', {
+          group: 'billing_docs',
+          project: 'billing',
+          name: 'invoice engine',
+          summary: 'Does: builds invoices',
+        });
+        expect(component.isError).toBe(true);
+        expect(component.text).toContain('reserved');
+        expect(archStore.upsertComponent).not.toHaveBeenCalled();
+
+        const term = await callTool(port, 'term_record', {
+          group: 'billing_terms',
+          term: 'ledger',
+          definition: 'The book of record.',
+        });
+        expect(term.isError).toBe(true);
+        expect(terminologyStore.recordTerm).not.toHaveBeenCalled();
+      }
+    );
   });
 });
 

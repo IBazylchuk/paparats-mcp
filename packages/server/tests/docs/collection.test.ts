@@ -17,6 +17,8 @@ describe('docs collection naming', () => {
 
   it('rejects non-docs collection names', () => {
     expect(fromDocsCollectionName('paparats_my-app')).toBeNull();
+    // The code collection of a group named `docs`, not a sidecar of ''.
+    expect(fromDocsCollectionName('paparats_docs')).toBeNull();
     expect(fromDocsCollectionName('paparats_my-app_arch')).toBeNull();
     expect(isDocsCollection('paparats_my-app_docs')).toBe(true);
     expect(isDocsCollection('paparats_my-app_arch')).toBe(false);

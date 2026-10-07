@@ -62,6 +62,7 @@ export class MetadataStore {
   private deleteProjectCommitsStmt: Database.Statement;
   private deleteProjectTicketsStmt: Database.Statement;
   private deleteProjectEdgesStmt: Database.Statement;
+  private hasProjectEdgesStmt: Database.Statement;
   private getGitFileCacheStmt: Database.Statement;
   private setGitFileCacheStmt: Database.Statement;
   private deleteProjectGitCacheStmt: Database.Statement;
@@ -261,6 +262,9 @@ export class MetadataStore {
     this.deleteProjectEdgesStmt = this.db.prepare(
       "DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? ESCAPE '\\' OR to_chunk_id LIKE ? ESCAPE '\\'"
     );
+    this.hasProjectEdgesStmt = this.db.prepare(
+      "SELECT 1 FROM symbol_edges WHERE from_chunk_id LIKE ? ESCAPE '\\' LIMIT 1"
+    );
 
     this.getGitFileCacheStmt = this.db.prepare(
       'SELECT data FROM git_file_cache WHERE grp = ? AND project = ? AND file_path = ? AND head = ?'
@@ -334,6 +338,8 @@ export class MetadataStore {
       this.deleteProjectGitCacheStmt.run(group, project);
     });
     tx();
+    // The in-degree cache would otherwise keep ranking the deleted chunks.
+    this.invalidateDegreeCache(group);
   }
 
   // ── Git file cache (parsed `git log` output keyed by repo HEAD) ──────────
@@ -426,6 +432,13 @@ export class MetadataStore {
       this.deleteProjectEdgesStmt.run(pattern, pattern);
     });
     tx();
+    this.invalidateDegreeCache(group);
+  }
+
+  /** Whether any symbol edge originates in this project. */
+  hasEdgesForProject(group: string, project: string): boolean {
+    const pattern = `${escapeLike(group)}//${escapeLike(project)}//%`;
+    return this.hasProjectEdgesStmt.get(pattern) !== undefined;
   }
 
   deleteEdgesByProject(group: string, project: string): void {

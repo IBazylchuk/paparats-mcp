@@ -29,7 +29,11 @@ export function fromDocsCollectionName(collection: string): string | null {
   if (!collection.startsWith(CODE_PREFIX) || !collection.endsWith(DOCS_SUFFIX)) {
     return null;
   }
-  return collection.slice(CODE_PREFIX.length, -DOCS_SUFFIX.length);
+  // `paparats_<suffix>` alone is the CODE collection of a group named after the
+  // suffix (e.g. `docs`), not a sidecar of an empty group — reading it as one hid
+  // that group from code search.
+  const group = collection.slice(CODE_PREFIX.length, -DOCS_SUFFIX.length);
+  return group.length > 0 ? group : null;
 }
 
 export function isDocsCollection(collection: string): boolean {

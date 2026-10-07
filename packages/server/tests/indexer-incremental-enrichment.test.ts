@@ -5,6 +5,7 @@ import os from 'os';
 import { execSync } from 'child_process';
 import { Indexer } from '../src/indexer.js';
 import { MetadataStore } from '../src/metadata-db.js';
+import { createTreeSitterManager } from '../src/tree-sitter-parser.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { EmbeddingProvider, ProjectConfig } from '../src/types.js';
 
@@ -212,5 +213,36 @@ describe('indexProject incremental git enrichment', () => {
     const secondIds = setPayloadChunkIds(mockQdrant.client);
     expect(secondIds.some((id) => id.includes('//src/b.ts//'))).toBe(true);
     expect(secondIds.some((id) => id.includes('//src/a.ts//'))).toBe(false);
+  });
+
+  it('rebuilds a lost symbol graph even when no file changed', async () => {
+    fs.writeFileSync(
+      path.join(projectDir, 'src', 'c.ts'),
+      "import { alpha } from './a';\nexport function gamma() {\n  return alpha() + 1;\n}\n"
+    );
+    git(projectDir, 'add .');
+    git(projectDir, 'commit -m "add caller"');
+
+    const treeSitter = await createTreeSitterManager();
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+      metadataStore,
+      treeSitter,
+    });
+    const project = createProjectConfig(projectDir);
+
+    await indexer.indexProject(project);
+    expect(metadataStore.hasEdgesForProject('test-group', 'test-project')).toBe(true);
+
+    // Simulate a rebuild that deleted the edges and then failed to write new ones.
+    metadataStore.deleteEdgesByProject('test-group', 'test-project');
+    expect(metadataStore.hasEdgesForProject('test-group', 'test-project')).toBe(false);
+
+    // Nothing changed on disk, so every file is skipped — the graph must still come back.
+    expect(await indexer.indexProject(project)).toBe(0);
+    expect(metadataStore.hasEdgesForProject('test-group', 'test-project')).toBe(true);
   });
 });

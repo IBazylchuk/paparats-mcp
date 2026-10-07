@@ -2,7 +2,7 @@ import { Command } from 'commander';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { execSync, spawn } from 'child_process';
+import { execFileSync, execSync, spawn } from 'child_process';
 import chalk from 'chalk';
 import ora from 'ora';
 import { confirm, input, select } from '@inquirer/prompts';
@@ -17,6 +17,7 @@ import {
   readProjectsFile,
   writeProjectsFile,
   writeInstallState,
+  writePrivateFile,
   localProjectsFor,
 } from '../projects-yml.js';
 
@@ -43,10 +44,16 @@ const CODE_MODEL_NAME = 'bge-code-v1';
 const CODE_GGUF_URL =
   'https://huggingface.co/taylor-jones/bge-code-v1-Q8_0-GGUF/resolve/main/bge-code-v1-q8_0.gguf';
 const CODE_GGUF_FILE = path.join(MODELS_DIR, 'bge-code-v1-Q8_0.gguf');
+/** Well under the real ~1.5 GB; an error page or a cut-off transfer is far below it. */
+const CODE_GGUF_MIN_BYTES = 1_000_000_000;
 const TEXT_MODEL_NAME = 'qwen3-embedding-0.6b';
 const TEXT_GGUF_URL =
   'https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF/resolve/main/Qwen3-Embedding-0.6B-Q8_0.gguf';
 const TEXT_GGUF_FILE = path.join(MODELS_DIR, 'Qwen3-Embedding-0.6B-Q8_0.gguf');
+/** Well under the real ~610 MB. */
+const TEXT_GGUF_MIN_BYTES = 400_000_000;
+/** Every GGUF file starts with these four bytes. */
+const GGUF_MAGIC = 'GGUF';
 
 export function commandExists(cmd: string): boolean {
   try {
@@ -111,7 +118,9 @@ export async function waitForHealth(
 
 function downloadWithCurl(url: string, dest: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('curl', ['-L', '--progress-bar', '-o', dest, url], {
+    // --fail: an HTTP error must fail the download, not be saved as the model.
+    const args = ['--fail', '--location', '--retry', '3', '--progress-bar', '--output', dest, url];
+    const proc = spawn('curl', args, {
       stdio: ['ignore', 'inherit', 'inherit'],
     });
     proc.on('close', (code) => {
@@ -122,6 +131,27 @@ function downloadWithCurl(url: string, dest: string): Promise<void> {
       reject(new Error(`Failed to spawn curl: ${(err as Error).message}`));
     });
   });
+}
+
+/**
+ * True when `file` looks like a complete GGUF model: the GGUF magic bytes and
+ * at least `minBytes`. Catches an HTML error page saved as the model and a
+ * transfer cut off part-way.
+ */
+export function isPlausibleGguf(file: string, minBytes: number): boolean {
+  try {
+    if (fs.statSync(file).size < minBytes) return false;
+    const fd = fs.openSync(file, 'r');
+    try {
+      const magic = Buffer.alloc(GGUF_MAGIC.length);
+      fs.readSync(fd, magic, 0, magic.length, 0);
+      return magic.toString('latin1') === GGUF_MAGIC;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
 }
 
 async function downloadFile(url: string, dest: string, signal?: AbortSignal): Promise<void> {
@@ -253,6 +283,7 @@ export interface InstallDeps {
   platform?: () => NodeJS.Platform;
   execSync?: (cmd: string, opts?: object) => Buffer | string;
   spawnDetached?: (cmd: string, args: string[]) => void;
+  execFile?: (file: string, args: string[]) => void;
 }
 
 // ── Shared native embed setup (llama.cpp + llama-swap) ──────────────────────
@@ -265,6 +296,10 @@ export interface EmbedSetupDeps {
   writeFileSync: (path: string, data: string) => void;
   existsSync: (path: string) => boolean;
   unlinkSync: (path: string) => void;
+  /** Defaults to fs.renameSync. */
+  renameSync?: (oldPath: string, newPath: string) => void;
+  /** Whether a file is a usable model of at least `minBytes`. Defaults to {@link isPlausibleGguf}. */
+  isUsableModelFile?: (path: string, minBytes: number) => boolean;
   execSync: (cmd: string, opts?: object) => Buffer | string;
   /** Detached fallback launcher (non-macOS). Returns nothing; caller polls health. */
   spawnDetached: (cmd: string, args: string[]) => void;
@@ -413,24 +448,54 @@ groups:
 `;
 }
 
+/**
+ * Download a GGUF unless a usable copy is already in place. The transfer goes
+ * to `<dest>.part` and is renamed into place only after it checks out, so an
+ * interrupted or failed download never leaves something that looks installed;
+ * an existing file that fails the check is downloaded again.
+ */
 async function downloadModelIfNeeded(
   deps: EmbedSetupDeps,
   cleanupTasks: Array<() => void>,
   label: string,
   url: string,
-  dest: string
+  dest: string,
+  minBytes: number
 ): Promise<void> {
+  const isUsable = deps.isUsableModelFile ?? isPlausibleGguf;
   if (deps.existsSync(dest)) {
-    console.log(chalk.dim(`${label} GGUF already downloaded at ${dest}`));
-    return;
+    if (isUsable(dest, minBytes)) {
+      console.log(chalk.dim(`${label} GGUF already downloaded at ${dest}`));
+      return;
+    }
+    console.log(
+      chalk.yellow(`${label} GGUF at ${dest} is incomplete or corrupt, downloading again`)
+    );
+    deps.unlinkSync(dest);
   }
   console.log(chalk.bold(`Downloading ${label}...`));
   deps.mkdirSync(MODELS_DIR);
-  cleanupTasks.push(() => {
-    if (deps.existsSync(dest)) deps.unlinkSync(dest);
-  });
-  await deps.downloadFile(url, dest, deps.signal);
-  cleanupTasks.pop();
+  const partial = `${dest}.part`;
+  const removePartial = () => {
+    if (deps.existsSync(partial)) deps.unlinkSync(partial);
+  };
+  removePartial();
+  cleanupTasks.push(removePartial);
+  try {
+    await deps.downloadFile(url, partial, deps.signal);
+    if (!isUsable(partial, minBytes)) {
+      throw new Error(
+        `Downloaded ${label} is not a valid GGUF model (an error page or an incomplete transfer). ` +
+          `Retry, or download ${url} to ${dest} manually.`
+      );
+    }
+    (deps.renameSync ?? fs.renameSync.bind(fs))(partial, dest);
+  } catch (err) {
+    removePartial();
+    throw err;
+  } finally {
+    cleanupTasks.pop();
+  }
   console.log(chalk.green(`\u2713 ${label} downloaded`));
 }
 
@@ -493,14 +558,16 @@ export async function ensureLocalEmbed(
     cleanupTasks,
     'bge-code-v1 (~1.5 GB)',
     CODE_GGUF_URL,
-    CODE_GGUF_FILE
+    CODE_GGUF_FILE,
+    CODE_GGUF_MIN_BYTES
   );
   await downloadModelIfNeeded(
     deps,
     cleanupTasks,
     'qwen3-embedding-0.6b (~610 MB)',
     TEXT_GGUF_URL,
-    TEXT_GGUF_FILE
+    TEXT_GGUF_FILE,
+    TEXT_GGUF_MIN_BYTES
   );
 
   deps.writeFileSync(EMBED_CONFIG_FILE, renderLlamaSwapConfig());
@@ -576,6 +643,7 @@ export async function setupNativeEmbed(): Promise<void> {
     writeFileSync: fs.writeFileSync.bind(fs),
     existsSync: fs.existsSync.bind(fs),
     unlinkSync: fs.unlinkSync.bind(fs),
+    renameSync: fs.renameSync.bind(fs),
     execSync: execSync as unknown as EmbedSetupDeps['execSync'],
     spawnDetached: (cmd, args) => {
       spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
@@ -705,6 +773,8 @@ export interface ResolvedDeps {
   platform: () => NodeJS.Platform;
   execSync: (cmd: string, opts?: object) => Buffer | string;
   spawnDetached: (cmd: string, args: string[]) => void;
+  /** Run a binary without a shell. Defaults to child_process.execFileSync. */
+  execFile?: (file: string, args: string[]) => void;
   signal?: AbortSignal;
 }
 
@@ -1045,6 +1115,7 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
 
   // 8. .env file — merge our keys into any existing file so user-added entries
   //    (HTTP_PROXY, custom compose substitutions, …) survive re-runs of install.
+  //    It holds API keys, so it is written owner-only.
   const updates: Record<string, string> = {};
   if (opts.qdrantApiKey) updates['QDRANT_API_KEY'] = opts.qdrantApiKey;
   if (embeddingDecision.apiKey && embeddingDecision.provider !== 'llama') {
@@ -1053,7 +1124,7 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
   if (Object.keys(updates).length > 0) {
     const existing = deps.existsSync(envPath) ? deps.readFileSync(envPath, 'utf8') : '';
     const merged = mergeDotenv(existing, updates);
-    deps.writeFileSync(envPath, merged);
+    writePrivateFile(envPath, merged);
   }
 
   // 9. Bring up the stack
@@ -1102,7 +1173,13 @@ async function runSupportInstall(
   opts: InstallOptions,
   deps: Pick<
     ResolvedDeps,
-    'waitForHealth' | 'existsSync' | 'readFileSync' | 'writeFileSync' | 'mkdirSync'
+    | 'waitForHealth'
+    | 'existsSync'
+    | 'readFileSync'
+    | 'writeFileSync'
+    | 'mkdirSync'
+    | 'commandExists'
+    | 'execFile'
   >
 ): Promise<void> {
   const serverUrl = opts.server ?? 'http://localhost:9876';
@@ -1117,30 +1194,9 @@ async function runSupportInstall(
 
   const mcpUrl = `${serverUrl}/support/mcp`;
 
-  // Configure Cursor MCP (support endpoint)
+  // Wire MCP clients to the support endpoint
   configureCursorMcp(mcpUrl, deps, 'paparats-support');
-
-  // Configure Claude Code MCP
-  const claudeConfigDir = path.join(os.homedir(), '.claude');
-  if (deps.existsSync(claudeConfigDir)) {
-    const claudeMcpPath = path.join(claudeConfigDir, 'mcp.json');
-    const result = upsertMcpServer(
-      claudeMcpPath,
-      'paparats-support',
-      { type: 'http', url: mcpUrl },
-      {
-        readFileSync: deps.readFileSync,
-        writeFileSync: deps.writeFileSync,
-        existsSync: deps.existsSync,
-        mkdirSync: deps.mkdirSync,
-      }
-    );
-    if (result === 'unchanged') {
-      console.log(chalk.green('\u2713 Claude Code MCP already configured'));
-    } else {
-      console.log(chalk.green('\u2713 Claude Code MCP configured'));
-    }
-  }
+  configureClaudeCodeMcp('paparats-support', mcpUrl, deps);
 
   console.log(chalk.bold.green('\n\u2713 Support setup complete!\n'));
   console.log('Configured endpoint:');
@@ -1189,6 +1245,49 @@ export function mergeDotenv(existing: string, updates: Record<string, string>): 
     out.push(`${key}=${value}`);
   }
   return out.join('\n') + '\n';
+}
+
+/**
+ * Register an HTTP MCP server with Claude Code at user scope. Claude Code keeps
+ * user-scope servers in ~/.claude.json, which this CLI must not edit directly,
+ * so it goes through `claude mcp add`; without the `claude` binary on PATH the
+ * exact command is printed instead. An existing entry of the same name is
+ * replaced. Returns whether Claude Code was configured.
+ */
+export function configureClaudeCodeMcp(
+  serverName: string,
+  mcpUrl: string,
+  deps: Pick<ResolvedDeps, 'commandExists' | 'execFile'>
+): boolean {
+  const addArgs = ['mcp', 'add', '--scope', 'user', '--transport', 'http', serverName, mcpUrl];
+  const manual = `claude ${addArgs.join(' ')}`;
+  if (!deps.commandExists('claude')) {
+    console.log(chalk.dim('Claude Code CLI not found. To connect Claude Code, run:'));
+    console.log(chalk.dim(`  ${manual}`));
+    return false;
+  }
+  const run = deps.execFile ?? defaultExecFile;
+  try {
+    try {
+      run('claude', addArgs);
+    } catch {
+      // Most likely the name is taken by an earlier install: replace it.
+      run('claude', ['mcp', 'remove', '--scope', 'user', serverName]);
+      run('claude', addArgs);
+    }
+    console.log(chalk.green(`\u2713 Claude Code MCP configured (${serverName}, user scope)`));
+    return true;
+  } catch (err) {
+    console.log(
+      chalk.yellow(`Could not configure Claude Code automatically: ${(err as Error).message}`)
+    );
+    console.log(chalk.dim(`  Run: ${manual}`));
+    return false;
+  }
+}
+
+function defaultExecFile(file: string, args: string[]): void {
+  execFileSync(file, args, { stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 });
 }
 
 function configureCursorMcp(
@@ -1248,6 +1347,7 @@ export async function runInstall(
         spawn(cmd, args, { stdio: 'ignore', detached: true }).unref();
       }),
     ...(deps?.signal !== undefined ? { signal: deps.signal } : {}),
+    ...(deps?.execFile !== undefined ? { execFile: deps.execFile } : {}),
     ...(deps?.promptUseExternalQdrant !== undefined
       ? { promptUseExternalQdrant: deps.promptUseExternalQdrant }
       : {}),

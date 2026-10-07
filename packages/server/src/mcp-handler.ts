@@ -46,6 +46,7 @@ import {
 } from './arch/context.js';
 import type { ArchContextResult, ArchWriteResult } from './arch/types.js';
 import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
+import { validateGroupName } from './config.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -147,6 +148,85 @@ function resolveChunkLocation(payload: Record<string, unknown>): ChunkLocation {
       typeof payload['bounded_context'] === 'string' ? payload['bounded_context'] : null,
   };
 }
+
+/**
+ * `PAPARATS_PROJECTS` enforcement for everything that does not go through the
+ * Searcher: chunk-id lookups, symbol-graph edges, docs, glossary, project
+ * listings and deletes. Searches are already filtered inside the Searcher.
+ *
+ * Every check passes when the server is unscoped, so an unscoped server behaves
+ * exactly as before.
+ */
+export interface ProjectScopeGuard {
+  /** Clean project names this server is limited to, or null when unscoped. */
+  readonly projects: string[] | null;
+  /** Whether a clean project name is visible on this server. */
+  allowsProject(project: string): boolean;
+  /**
+   * Whether a chunk belongs to a visible project. Chunk ids embed the STORED
+   * (suffixed) project name, so the scope is mapped to stored names before
+   * comparing. A malformed id is out of scope on a scoped server.
+   */
+  allowsChunk(chunkId: string): boolean;
+}
+
+export function createProjectScopeGuard(
+  searcher: Pick<Searcher, 'getProjectScope'>,
+  indexer: Pick<Indexer, 'storedProjectName'>
+): ProjectScopeGuard {
+  const projects = searcher.getProjectScope();
+  if (!projects) {
+    return { projects: null, allowsProject: () => true, allowsChunk: () => true };
+  }
+  const allowed = new Set(projects);
+  const allowedStored = new Set(projects.map((p) => indexer.storedProjectName(p)));
+  return {
+    projects,
+    allowsProject: (project) => allowed.has(project),
+    allowsChunk: (chunkId) => {
+      const parsed = parseChunkId(chunkId);
+      return parsed !== null && allowedStored.has(parsed.project);
+    },
+  };
+}
+
+/**
+ * Error result for a group name a write tool must refuse (see `validateGroupName`),
+ * or null when the name is fine.
+ */
+function invalidGroupResult(
+  group: string
+): { content: Array<{ type: 'text'; text: string }>; isError: true } | null {
+  try {
+    validateGroupName(group);
+    return null;
+  } catch (err) {
+    return { content: [{ type: 'text' as const, text: (err as Error).message }], isError: true };
+  }
+}
+
+/** Same text as a genuinely missing chunk, so an out-of-scope id is indistinguishable from one. */
+function chunkNotFoundText(chunkId: string): string {
+  return `Chunk not found: ${chunkId}\n\nThe chunk may have been removed during reindexing. Try searching again.`;
+}
+
+/**
+ * Edges `explain_feature` follows per seed chunk and per direction. A seed that
+ * is a hub can have thousands of edges, and each one is resolved with its own
+ * Qdrant lookup, so the fan-out must be bounded. Matches `find_usages`' default
+ * per-direction limit.
+ */
+export const EXPLAIN_FEATURE_EDGES_PER_SEED = 20;
+
+/** Default ceiling on concurrently live MCP sessions; see `McpHandlerConfig.maxSessions`. */
+export const DEFAULT_MAX_SESSIONS = 1000;
+
+/**
+ * Session ids this server mints are UUIDs (v7). Only an id of that shape is
+ * recreated after a restart; anything else is answered with "session not found"
+ * instead of costing a fresh MCP server per made-up id.
+ */
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Cards older than this are flagged with a visible "stale" marker in
@@ -428,6 +508,13 @@ export interface McpHandlerConfig {
   terminologyStore?: TerminologyStore;
   /** Optional metrics registry. NoOp by default — see metrics.ts. */
   metrics?: MetricsRegistry;
+  /**
+   * Ceiling on concurrently live MCP sessions (default {@link DEFAULT_MAX_SESSIONS}).
+   * Each session holds its own MCP server; at the ceiling the least recently
+   * active session is closed to make room. A closed Streamable HTTP client that
+   * comes back is transparently recreated, so eviction costs it nothing.
+   */
+  maxSessions?: number;
 }
 
 type TransportEntry = {
@@ -704,6 +791,7 @@ export class McpHandler {
   private sessionCreationLocks = new Set<string>();
 
   private readonly SESSION_TIMEOUT_MS = 1000 * 60 * 60 * 4; // 4 hours idle timeout
+  private readonly maxSessions: number;
   private cleanupInterval: ReturnType<typeof setInterval>;
 
   constructor(config: McpHandlerConfig) {
@@ -724,6 +812,7 @@ export class McpHandler {
         : null;
     this.terminologyStore = config.terminologyStore ?? null;
     this.metrics = config.metrics ?? new NoOpMetrics();
+    this.maxSessions = Math.max(1, config.maxSessions ?? DEFAULT_MAX_SESSIONS);
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000);
     this.cleanupInterval.unref(); // Don't hold event loop open
@@ -757,12 +846,17 @@ export class McpHandler {
     app.all('/support/mcp', (req, res) => this.handleStreamableHTTP(req, res, 'support'));
   }
 
-  /** Graceful shutdown: stop cleanup interval and remove all sessions */
+  /** Graceful shutdown: stop cleanup interval and close all sessions */
   destroy(): void {
     clearInterval(this.cleanupInterval);
     for (const sessionId of Object.keys(this.transports)) {
-      this.cleanupSession(sessionId);
+      this.closeSession(sessionId);
     }
+  }
+
+  /** Number of live sessions (exposed for tests and diagnostics). */
+  get sessionCount(): number {
+    return Object.keys(this.transports).length;
   }
 
   private getMcpServer(sessionId: string, mode: McpMode): McpServer {
@@ -794,11 +888,53 @@ export class McpHandler {
     });
   }
 
+  /**
+   * Forget a session's bookkeeping. Wired to the transports' own close hooks, so
+   * it must not close anything itself — see {@link closeSession} for that.
+   */
   private cleanupSession(sessionId: string): void {
     delete this.transports[sessionId];
     this.servers.delete(sessionId);
     this.sessionModes.delete(sessionId);
     this.sessionIdentity.delete(sessionId);
+  }
+
+  /**
+   * End a session from the server side (idle expiry, eviction, shutdown). Only
+   * forgetting it would leave an SSE stream open with nothing behind it, so the
+   * client would wait forever instead of reconnecting. Closing the MCP server
+   * closes its transport, which ends the stream.
+   */
+  private closeSession(sessionId: string): void {
+    const entry = this.transports[sessionId];
+    const server = this.servers.get(sessionId);
+    // Forget first: closing fires the transport's onclose, which calls back into
+    // cleanupSession and must find nothing left to do.
+    this.cleanupSession(sessionId);
+    const closing = server ? server.close() : entry?.transport.close();
+    closing?.catch((err: unknown) => {
+      console.warn(`[mcp] Failed to close session ${sessionId}: ${(err as Error).message}`);
+    });
+  }
+
+  /** Close least recently active sessions until one more fits under the ceiling. */
+  private makeRoomForSession(): void {
+    let ids = Object.keys(this.transports);
+    while (ids.length >= this.maxSessions) {
+      let oldestId: string | undefined;
+      let oldest = Infinity;
+      for (const id of ids) {
+        const lastActivity = this.transports[id]?.lastActivity ?? 0;
+        if (lastActivity < oldest) {
+          oldest = lastActivity;
+          oldestId = id;
+        }
+      }
+      if (oldestId === undefined) return;
+      console.log(`[mcp] Session limit (${this.maxSessions}) reached — closing ${oldestId}`);
+      this.closeSession(oldestId);
+      ids = Object.keys(this.transports);
+    }
   }
 
   /**
@@ -842,7 +978,7 @@ export class McpHandler {
 
     for (const [sessionId, entry] of Object.entries(this.transports)) {
       if (now - entry.lastActivity > this.SESSION_TIMEOUT_MS) {
-        this.cleanupSession(sessionId);
+        this.closeSession(sessionId);
         cleaned++;
       }
     }
@@ -862,9 +998,9 @@ export class McpHandler {
     let instructions = mode === 'coding' ? prompts.codingInstructions : prompts.supportInstructions;
     const tools = mode === 'coding' ? CODING_TOOLS : SUPPORT_TOOLS;
 
-    const scope = this.searcher.getProjectScope();
-    if (scope) {
-      instructions += `\n\nThis server is scoped to projects: ${scope.join(', ')}. All searches are automatically filtered.`;
+    const scope = createProjectScopeGuard(this.searcher, this.indexer);
+    if (scope.projects) {
+      instructions += `\n\nThis server is scoped to projects: ${scope.projects.join(', ')}. All searches are automatically filtered.`;
     }
 
     const server = new McpServer({ name: 'paparats-mcp', version: PKG_VERSION }, { instructions });
@@ -901,7 +1037,9 @@ export class McpHandler {
         const groupMap = this.getProjects();
         const sections: string[] = ['# Indexed Projects', ''];
 
-        for (const [group, projects] of groupMap) {
+        for (const [group, allProjects] of groupMap) {
+          const projects = allProjects.filter((p) => scope.allowsProject(p.name));
+          if (scope.projects && projects.length === 0) continue;
           const stats = await this.indexer.getGroupStats(group);
           sections.push(
             `## Group: ${group} (${stats.points} chunks)`,
@@ -1198,16 +1336,13 @@ export class McpHandler {
           const fetchStart = performance.now();
           let fetchFound = false;
           try {
-            const payload = await this.indexer.getChunkById(chunk_id);
+            const payload = scope.allowsChunk(chunk_id)
+              ? await this.indexer.getChunkById(chunk_id)
+              : null;
 
             if (!payload) {
               return {
-                content: [
-                  {
-                    type: 'text' as const,
-                    text: `Chunk not found: ${chunk_id}\n\nThe chunk may have been removed during reindexing. Try searching again.`,
-                  },
-                ],
+                content: [{ type: 'text' as const, text: chunkNotFoundText(chunk_id) }],
               };
             }
             fetchFound = true;
@@ -1306,16 +1441,13 @@ export class McpHandler {
         },
         async ({ chunk_id, commit_limit }) => {
           try {
-            const payload = await this.indexer.getChunkById(chunk_id);
+            const payload = scope.allowsChunk(chunk_id)
+              ? await this.indexer.getChunkById(chunk_id)
+              : null;
 
             if (!payload) {
               return {
-                content: [
-                  {
-                    type: 'text' as const,
-                    text: `Chunk not found: ${chunk_id}\n\nThe chunk may have been removed during reindexing. Try searching again.`,
-                  },
-                ],
+                content: [{ type: 'text' as const, text: chunkNotFoundText(chunk_id) }],
               };
             }
 
@@ -1534,19 +1666,37 @@ export class McpHandler {
         },
         async ({ group, project }) => {
           try {
-            await this.indexer.deleteProjectChunks(group, project);
-            // Metadata rows are keyed by chunk_id, which embeds the *stored*
-            // (suffixed) project name — map through the indexer so the delete
-            // pattern matches. Qdrant side is suffixed inside deleteProjectChunks.
-            this.metadataStore?.deleteByProject(group, this.indexer.storedProjectName(project));
-            this.searcher.invalidateGroupCache(group);
+            validateGroupName(group);
+            if (!scope.allowsProject(project)) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Project "${project}" is outside this server's project scope and cannot be deleted here.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+            // Throws on a Qdrant failure, so a failed delete is reported as one
+            // rather than as success with the data still in place.
+            try {
+              await this.indexer.purgeProject(group, project);
+            } finally {
+              // A failed purge may still have removed some of the project.
+              this.searcher.invalidateGroupCache(group);
+            }
             this.removeProject?.(group, project);
 
             return {
               content: [
                 {
                   type: 'text' as const,
-                  text: `Deleted project "${project}" from group "${group}". All chunks, metadata, and cache entries removed. The project will be re-indexed on the next indexer cycle if configured.`,
+                  text:
+                    `Deleted project "${project}" from group "${group}": removed its code ` +
+                    `chunks, git metadata (commits, tickets), symbol edges and indexed docs, ` +
+                    `and cleared the search cache. Architecture cards and glossary terms are ` +
+                    `kept. The project will be re-indexed on the next indexer cycle if configured.`,
                 },
               ],
             };
@@ -1611,15 +1761,12 @@ export class McpHandler {
               };
             }
 
-            const payload = await this.indexer.getChunkById(chunk_id);
+            const payload = scope.allowsChunk(chunk_id)
+              ? await this.indexer.getChunkById(chunk_id)
+              : null;
             if (!payload) {
               return {
-                content: [
-                  {
-                    type: 'text' as const,
-                    text: `Chunk not found: ${chunk_id}\n\nThe chunk may have been removed during reindexing. Try searching again.`,
-                  },
-                ],
+                content: [{ type: 'text' as const, text: chunkNotFoundText(chunk_id) }],
               };
             }
 
@@ -1630,8 +1777,18 @@ export class McpHandler {
             const wantIncoming = direction === 'incoming' || direction === 'both';
             const wantOutgoing = direction === 'outgoing' || direction === 'both';
 
-            let edgesTo = wantIncoming ? this.metadataStore.getEdgesTo(chunk_id) : [];
-            let edgesFrom = wantOutgoing ? this.metadataStore.getEdgesFrom(chunk_id) : [];
+            // Edges cross project boundaries within a group; neighbours in a
+            // project outside the scope are dropped like any other hidden chunk.
+            let edgesTo = wantIncoming
+              ? this.metadataStore
+                  .getEdgesTo(chunk_id)
+                  .filter((e) => scope.allowsChunk(e.from_chunk_id))
+              : [];
+            let edgesFrom = wantOutgoing
+              ? this.metadataStore
+                  .getEdgesFrom(chunk_id)
+                  .filter((e) => scope.allowsChunk(e.to_chunk_id))
+              : [];
 
             if (relation_types && relation_types.length > 0) {
               const allowed = new Set(relation_types);
@@ -1879,13 +2036,33 @@ export class McpHandler {
             if (this.metadataStore) {
               const chunkIds = top.map((r) => r.chunk_id).filter((id): id is string => id != null);
 
-              // Parallel fetch: commits, tickets, incoming edges, outgoing edges per chunk
-              const [allCommits, allTickets, allEdgesTo, allEdgesFrom] = await Promise.all([
+              // Parallel fetch: commits, tickets per chunk
+              const [allCommits, allTickets] = await Promise.all([
                 Promise.all(chunkIds.map((id) => this.metadataStore!.getCommits(id, 5))),
                 Promise.all(chunkIds.map((id) => this.metadataStore!.getTickets(id))),
-                Promise.all(chunkIds.map((id) => this.metadataStore!.getEdgesTo(id))),
-                Promise.all(chunkIds.map((id) => this.metadataStore!.getEdgesFrom(id))),
               ]);
+
+              // Incoming / outgoing edges per chunk. Every edge kept here costs a
+              // Qdrant lookup below, so each seed contributes at most
+              // EXPLAIN_FEATURE_EDGES_PER_SEED per direction. Neighbours outside
+              // the project scope are dropped before the cap.
+              let omittedEdges = 0;
+              const capEdges = <T>(edges: T[]): T[] => {
+                if (edges.length <= EXPLAIN_FEATURE_EDGES_PER_SEED) return edges;
+                omittedEdges += edges.length - EXPLAIN_FEATURE_EDGES_PER_SEED;
+                return edges.slice(0, EXPLAIN_FEATURE_EDGES_PER_SEED);
+              };
+              const metadataStore = this.metadataStore;
+              const allEdgesTo = chunkIds.map((id) =>
+                capEdges(
+                  metadataStore.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id))
+                )
+              );
+              const allEdgesFrom = chunkIds.map((id) =>
+                capEdges(
+                  metadataStore.getEdgesFrom(id).filter((e) => scope.allowsChunk(e.to_chunk_id))
+                )
+              );
 
               // ── Recent Changes ──
               // Deduplicate commits by commit_hash, associate chunk locations
@@ -1959,6 +2136,13 @@ export class McpHandler {
                 }
 
                 text += `\n## Related Modules\n`;
+                if (omittedEdges > 0) {
+                  text +=
+                    `\n_Truncated: showing at most ${EXPLAIN_FEATURE_EDGES_PER_SEED} callers and ` +
+                    `${EXPLAIN_FEATURE_EDGES_PER_SEED} dependencies per code location; ` +
+                    `${omittedEdges} more edges were left out. Use find_usages on a chunk ` +
+                    `to see more of them._\n`;
+                }
 
                 if (allIncoming.length > 0) {
                   // Group by symbol
@@ -2384,11 +2568,18 @@ export class McpHandler {
             }> = [];
             const discoveredByHop = new Map<string, number>(); // chunkId -> hop level
 
+            // Edges cross project boundaries within a group; a neighbour outside
+            // the project scope is never followed or shown.
+            const edgesTo = (id: string) =>
+              this.metadataStore!.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id));
+            const edgesFrom = (id: string) =>
+              this.metadataStore!.getEdgesFrom(id).filter((e) => scope.allowsChunk(e.to_chunk_id));
+
             // ── Hop 1 ──
             const seedIdArr = Array.from(seedIds);
             const [hop1EdgesTo, hop1EdgesFrom] = await Promise.all([
-              Promise.all(seedIdArr.map((id) => this.metadataStore!.getEdgesTo(id))),
-              Promise.all(seedIdArr.map((id) => this.metadataStore!.getEdgesFrom(id))),
+              Promise.all(seedIdArr.map(edgesTo)),
+              Promise.all(seedIdArr.map(edgesFrom)),
             ]);
 
             for (const edges of hop1EdgesTo.flat()) {
@@ -2420,8 +2611,8 @@ export class McpHandler {
             // ── Hop 2 (if requested) ──
             if (max_hops >= 2 && hop1Ids.length > 0) {
               const [hop2EdgesTo, hop2EdgesFrom] = await Promise.all([
-                Promise.all(hop1Ids.map((id) => this.metadataStore!.getEdgesTo(id))),
-                Promise.all(hop1Ids.map((id) => this.metadataStore!.getEdgesFrom(id))),
+                Promise.all(hop1Ids.map(edgesTo)),
+                Promise.all(hop1Ids.map(edgesFrom)),
               ]);
 
               let hop2Count = 0;
@@ -2571,10 +2762,16 @@ export class McpHandler {
             const sections: string[] = [];
 
             for (const g of groupNames) {
-              const projects = await this.indexer.listProjectsInGroup(g);
-              const stats = await this.indexer.getGroupStats(g);
+              const projects = (await this.indexer.listProjectsInGroup(g)).filter((p) =>
+                scope.allowsProject(p.name)
+              );
+              // On a scoped server the group total would count hidden projects
+              // too, so report only what is listed.
+              const totalChunks = scope.projects
+                ? projects.reduce((sum, p) => sum + p.chunks, 0)
+                : (await this.indexer.getGroupStats(g)).points;
 
-              sections.push(`## Group: ${g} (${stats.points} total chunks)\n`);
+              sections.push(`## Group: ${g} (${totalChunks} total chunks)\n`);
 
               if (projects.length === 0) {
                 sections.push('_No projects found in this group._\n');
@@ -2916,6 +3113,8 @@ export class McpHandler {
           annotations: ADDITIVE_WRITE,
         },
         async ({ group, project, name, summary, files, neighbours, anchors }) => {
+          const invalid = invalidGroupResult(group);
+          if (invalid) return invalid;
           const result = await archStore.upsertComponent(group, {
             project,
             name,
@@ -3002,6 +3201,8 @@ export class McpHandler {
           scope,
           supersedes,
         }) => {
+          const invalid = invalidGroupResult(group);
+          if (invalid) return invalid;
           const result = await archStore.upsertDecision(group, {
             ...(project !== undefined ? { project } : {}),
             title,
@@ -3066,6 +3267,8 @@ export class McpHandler {
           annotations: ADDITIVE_WRITE,
         },
         async ({ group, project, rule, why, when, scope, severity, evidence }) => {
+          const invalid = invalidGroupResult(group);
+          if (invalid) return invalid;
           const result = await archStore.upsertLesson(group, {
             ...(project !== undefined ? { project } : {}),
             rule,
@@ -3228,7 +3431,17 @@ export class McpHandler {
           // Overfetch: many top-degree chunks will already be covered by an
           // existing component card, so we need a buffer before we hit `max`
           // suggestions. 5x is plenty for normal projects.
-          const candidates = this.metadataStore.getTopByInDegree(group, max * 5, project);
+          // Chunk ids carry the STORED project name, so the filter must too.
+          const storedProject =
+            project !== undefined ? this.indexer.storedProjectName(project) : undefined;
+          // On a scoped server, drop hidden projects before taking the buffer —
+          // otherwise they could crowd every visible candidate out of it.
+          const candidates = scope.projects
+            ? this.metadataStore
+                .getTopByInDegree(group, Number.MAX_SAFE_INTEGER, storedProject)
+                .filter((c) => scope.allowsChunk(c.chunkId))
+                .slice(0, max * 5)
+            : this.metadataStore.getTopByInDegree(group, max * 5, storedProject);
           if (candidates.length === 0) {
             return {
               content: [
@@ -3452,6 +3665,7 @@ export class McpHandler {
                   minScore: GLOSSARY_MIN_SCORE,
                 });
                 for (const t of terms) {
+                  if (t.project !== undefined && !scope.allowsProject(t.project)) continue;
                   if (seenTerms.has(t.term)) continue;
                   seenTerms.add(t.term);
                   glossary.push({ term: t.term, definition: t.definition, aliases: t.aliases });
@@ -3463,6 +3677,8 @@ export class McpHandler {
             }
             const hits = await docsStore.search(g, query, {
               ...(project !== undefined ? { project } : {}),
+              // Docs are stored under the clean project name, same as the scope.
+              ...(scope.projects ? { projects: scope.projects } : {}),
               ...(effectiveAudience !== null ? { audience: effectiveAudience } : {}),
               ...(limit !== undefined ? { limit } : {}),
               ...(min_score !== undefined ? { minCosine: min_score } : {}),
@@ -3537,7 +3753,10 @@ export class McpHandler {
               ...(project !== undefined ? { project } : {}),
               ...(limit !== undefined ? { limit } : {}),
             });
-            all.push(...hits);
+            // Group-wide terms stay visible; project terms follow the project scope.
+            all.push(
+              ...hits.filter((t) => t.project === undefined || scope.allowsProject(t.project))
+            );
           }
           all.sort((a, b) => b.score - a.score);
           const top = all.slice(0, limit ?? 8);
@@ -3588,7 +3807,9 @@ export class McpHandler {
               ...(project !== undefined ? { project } : {}),
               ...(limit !== undefined ? { limit } : {}),
             });
-            all.push(...terms);
+            all.push(
+              ...terms.filter((t) => t.project === undefined || scope.allowsProject(t.project))
+            );
           }
           if (all.length === 0) {
             return {
@@ -3629,6 +3850,8 @@ export class McpHandler {
           annotations: ADDITIVE_WRITE,
         },
         async ({ group, term, definition, aliases, project }) => {
+          const invalid = invalidGroupResult(group);
+          if (invalid) return invalid;
           const res = await termStore.recordTerm(group, {
             term,
             definition,
@@ -3718,6 +3941,7 @@ export class McpHandler {
       const transport = new SSEServerTransport(messagesPath, res);
       const sessionId = transport.sessionId;
 
+      this.makeRoomForSession();
       const now = Date.now();
       this.transports[sessionId] = { transport, created: now, lastActivity: now };
       this.sessionModes.set(sessionId, mode);
@@ -3840,6 +4064,7 @@ export class McpHandler {
             sessionIdGenerator: () => uuidv7(),
             onsessioninitialized: (sid) => {
               resolvedSessionId = sid;
+              this.makeRoomForSession();
               const now = Date.now();
               this.transports[sid] = { transport, created: now, lastActivity: now };
               this.servers.set(sid, server);
@@ -3868,7 +4093,11 @@ export class McpHandler {
         return;
       }
 
-      if (sessionId && (req.method === 'POST' || req.method === 'GET')) {
+      if (
+        sessionId &&
+        SESSION_ID_PATTERN.test(sessionId) &&
+        (req.method === 'POST' || req.method === 'GET')
+      ) {
         const knownMode = this.sessionModes.get(sessionId);
         if (knownMode && knownMode !== mode) {
           this.sendModeMismatchError(res, knownMode, mode);
@@ -3877,6 +4106,8 @@ export class McpHandler {
         // Session ID was provided but not found — expired or server restarted.
         // Instead of returning 404, transparently recreate the session with the same ID.
         // This allows clients to survive server restarts without re-initializing.
+        // Only well-formed ids get here, and makeRoomForSession bounds how many
+        // recreated sessions can pile up.
         console.log(`[mcp] Recreating lost session ${sessionId}`);
 
         // Refresh group list for the recreated session
@@ -3895,6 +4126,7 @@ export class McpHandler {
           inner.sessionId = sessionId;
           inner._initialized = true;
 
+          this.makeRoomForSession();
           const now = Date.now();
           this.transports[sessionId] = { transport, created: now, lastActivity: now };
           this.servers.set(sessionId, server);

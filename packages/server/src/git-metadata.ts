@@ -185,7 +185,13 @@ async function getFileDiffHunks(
         const start = parseInt(hunkMatch[1]!, 10);
         const count = hunkMatch[2] !== undefined ? parseInt(hunkMatch[2], 10) : 1;
         const end = count === 0 ? start : start + count - 1;
-        hunks.push({ commitHash: currentCommit, startLine: start, endLine: end });
+        // Git numbers lines from 1; chunks are 0-indexed. Comparing them unconverted
+        // attributed an edit to a chunk's last line to the chunk after it.
+        hunks.push({
+          commitHash: currentCommit,
+          startLine: Math.max(0, start - 1),
+          endLine: Math.max(0, end - 1),
+        });
       }
     }
 

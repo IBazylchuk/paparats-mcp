@@ -167,6 +167,76 @@ describe('Indexer.indexDocsProject', () => {
     expect(docsStore.indexDocument).toHaveBeenCalledTimes(2);
   });
 
+  it('does not walk into markdown reached through a symlink into .git or out of the project', async () => {
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, '.git', 'config'),
+      '# not docs\n\nurl = https://token@git.example.com\n'
+    );
+    fs.writeFileSync(path.join(dir, 'guide.md'), '# Guide\n\nbody');
+    fs.symlinkSync(path.join(dir, '.git', 'config'), path.join(dir, 'notes.md'));
+    const docsStore = fakeDocsStore();
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider: provider,
+      dimensions: 4,
+      qdrantClient: {} as never,
+      docsStore: docsStore as unknown as DocsStore,
+    });
+    await indexer.indexDocsProject(project(dir));
+    const files = docsStore.indexDocument.mock.calls.map((c) => (c[1] as { file: string }).file);
+    expect(files).toEqual(['guide.md']);
+    // And the link is outside the kept set, so anything indexed through it before is pruned.
+    expect(keptFiles(docsStore)).toEqual(['guide.md']);
+  });
+
+  describe('classifying docs as prose or code', () => {
+    function indexerWith(docsStore: unknown): Indexer {
+      return new Indexer({
+        qdrantUrl: 'http://localhost:6333',
+        embeddingProvider: provider,
+        dimensions: 4,
+        qdrantClient: {} as never,
+        docsStore: docsStore as DocsStore,
+      });
+    }
+    const kinds = (store: ReturnType<typeof fakeDocsStore>): string[] =>
+      store.indexDocument.mock.calls.map((c) => (c[1] as { kind: string }).kind);
+
+    it('treats a markdown-only repository with no detected language as prose', async () => {
+      fs.writeFileSync(path.join(dir, 'page-one.md'), '# One\n\nbody');
+      fs.writeFileSync(path.join(dir, 'page-two.md'), '# Two\n\nbody');
+      fs.writeFileSync(path.join(dir, 'diagram.png'), 'not really a png');
+      const store = fakeDocsStore();
+      await indexerWith(store).indexDocsProject(project(dir, { languages: ['generic'] }));
+      expect(kinds(store)).toEqual(['prose', 'prose']);
+    });
+
+    it('keeps code for a repository in a language without a profile', async () => {
+      fs.writeFileSync(path.join(dir, 'README.md'), '# Service\n\nbody');
+      for (const name of ['a.ex', 'b.ex', 'c.ex']) {
+        fs.writeFileSync(path.join(dir, name), 'defmodule A do\nend\n');
+      }
+      const store = fakeDocsStore();
+      await indexerWith(store).indexDocsProject(project(dir, { languages: ['generic'] }));
+      expect(kinds(store)).toEqual(['code']);
+    });
+
+    it('treats a detected language as code', async () => {
+      fs.writeFileSync(path.join(dir, 'guide.md'), '# Guide\n\nbody');
+      const store = fakeDocsStore();
+      await indexerWith(store).indexDocsProject(project(dir));
+      expect(kinds(store)).toEqual(['code']);
+    });
+
+    it('lets docs.kind override the detection', async () => {
+      fs.writeFileSync(path.join(dir, 'guide.md'), '# Guide\n\nbody');
+      const store = fakeDocsStore();
+      await indexerWith(store).indexDocsProject(project(dir, { docs: { kind: 'prose' } }));
+      expect(kinds(store)).toEqual(['prose']);
+    });
+  });
+
   describe('removing documents that are gone', () => {
     function indexerWith(docsStore: unknown): Indexer {
       return new Indexer({

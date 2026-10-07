@@ -301,3 +301,22 @@ describe('TerminologyStore.healAllTermsModels', () => {
     expect(qdrant.upsert).toHaveBeenCalled();
   });
 });
+
+describe('TerminologyStore.reindexTerms', () => {
+  it('keeps the collection when embedding fails, so the glossary is not lost', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValue({
+      points: [{ id: 'a', payload: { term: 'TLA', definition: 'Three-letter acronym.' } }],
+      next_page_offset: null,
+    });
+    // A stored dimension that differs from the provider's forces a drop + recreate.
+    qdrant.getCollection.mockResolvedValue({ config: { params: { vectors: { size: 512 } } } });
+    const provider = fakeProvider();
+    (provider.embed as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('embed server down'));
+    const store = new TerminologyStore({ qdrant: qdrant as unknown as QdrantClient, provider });
+
+    await expect(store.reindexTerms('g')).rejects.toThrow('embed server down');
+    expect(qdrant.deleteCollection).not.toHaveBeenCalled();
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+});

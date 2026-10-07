@@ -1,4 +1,7 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import {
   detectLegacyInstall,
   decideEmbedMode,
@@ -6,6 +9,8 @@ import {
   mergeDotenv,
   upsertMcpServer,
   ensureLocalEmbed,
+  isPlausibleGguf,
+  configureClaudeCodeMcp,
   type InstallOptions,
   type EmbedSetupDeps,
 } from '../src/commands/install.js';
@@ -339,7 +344,9 @@ function makeEmbedDeps(overrides: Partial<EmbedSetupDeps> = {}): EmbedSetupDeps 
     writeFileSync: vi.fn(),
     // GGUFs already downloaded → no network
     existsSync: vi.fn().mockReturnValue(true),
+    isUsableModelFile: vi.fn().mockReturnValue(true),
     unlinkSync: vi.fn(),
+    renameSync: vi.fn(),
     execSync: vi.fn().mockReturnValue('/opt/homebrew/bin/llama-swap\n'),
     spawnDetached: vi.fn(),
     platform: vi.fn().mockReturnValue('darwin' as NodeJS.Platform),
@@ -475,5 +482,164 @@ describe('ensureLocalEmbed launcher', () => {
       existsSync: vi.fn((p: string) => p.endsWith('.gguf')),
     });
     await expect(ensureLocalEmbed(deps, [])).rejects.toThrow(/binary not found on PATH/);
+  });
+});
+
+// ── GGUF download ────────────────────────────────────────────────────────────
+
+describe('GGUF download', () => {
+  const isGguf = (p: string) => p.endsWith('.gguf');
+
+  it('downloads to <dest>.part and renames into place once it checks out', async () => {
+    const deps = makeEmbedDeps({
+      existsSync: vi.fn(() => false),
+      isUsableModelFile: vi.fn((p: string) => p.endsWith('.part')),
+    });
+    await ensureLocalEmbed(deps, []);
+
+    const downloads = (deps.downloadFile as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+      String(c[1])
+    );
+    expect(downloads).toHaveLength(2);
+    expect(downloads.every((d) => d.endsWith('.gguf.part'))).toBe(true);
+    const renames = (deps.renameSync as ReturnType<typeof vi.fn>).mock.calls;
+    expect(renames.map(([from, to]) => [String(from), String(to)])).toEqual(
+      downloads.map((d) => [d, d.replace(/\.part$/, '')])
+    );
+  });
+
+  it('re-downloads an existing model that fails the check', async () => {
+    const deps = makeEmbedDeps({
+      existsSync: vi.fn((p: string) => isGguf(p)),
+      isUsableModelFile: vi.fn((p: string) => p.endsWith('.part')),
+    });
+    await ensureLocalEmbed(deps, []);
+
+    const unlinked = (deps.unlinkSync as ReturnType<typeof vi.fn>).mock.calls.map((c) =>
+      String(c[0])
+    );
+    expect(unlinked.filter(isGguf)).toHaveLength(2);
+    expect(deps.downloadFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('rejects a download that is not a model and leaves nothing behind', async () => {
+    const present = new Set<string>();
+    const deps = makeEmbedDeps({
+      existsSync: vi.fn((p: string) => present.has(p)),
+      downloadFile: vi.fn(async (_url: string, dest: string) => {
+        present.add(dest);
+      }),
+      unlinkSync: vi.fn((p: string) => {
+        present.delete(p);
+      }),
+      isUsableModelFile: vi.fn().mockReturnValue(false),
+    });
+    const cleanupTasks: Array<() => void> = [];
+    await expect(ensureLocalEmbed(deps, cleanupTasks)).rejects.toThrow(/not a valid GGUF model/);
+    expect(present.size).toBe(0);
+    expect(deps.renameSync).not.toHaveBeenCalled();
+    expect(cleanupTasks).toHaveLength(0);
+  });
+});
+
+describe('isPlausibleGguf', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paparats-gguf-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('accepts a file with the GGUF magic and enough bytes', () => {
+    const f = path.join(dir, 'm.gguf');
+    fs.writeFileSync(f, Buffer.concat([Buffer.from('GGUF'), Buffer.alloc(60)]));
+    expect(isPlausibleGguf(f, 64)).toBe(true);
+  });
+
+  it('rejects an error page saved as the model', () => {
+    const f = path.join(dir, 'm.gguf');
+    fs.writeFileSync(f, '<!DOCTYPE html><html><body>Not Found</body></html>'.padEnd(128));
+    expect(isPlausibleGguf(f, 64)).toBe(false);
+  });
+
+  it('rejects a truncated file and a missing one', () => {
+    const f = path.join(dir, 'm.gguf');
+    fs.writeFileSync(f, Buffer.concat([Buffer.from('GGUF'), Buffer.alloc(10)]));
+    expect(isPlausibleGguf(f, 64)).toBe(false);
+    expect(isPlausibleGguf(path.join(dir, 'missing.gguf'), 1)).toBe(false);
+  });
+});
+
+// ── Claude Code wiring (support mode) ────────────────────────────────────────
+
+describe('configureClaudeCodeMcp', () => {
+  const url = 'http://localhost:9876/support/mcp';
+  const addArgs = ['mcp', 'add', '--scope', 'user', '--transport', 'http', 'paparats-support', url];
+
+  beforeEach(() => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('registers the server at user scope through the claude CLI', () => {
+    const execFile = vi.fn();
+    const ok = configureClaudeCodeMcp('paparats-support', url, {
+      commandExists: () => true,
+      execFile,
+    });
+    expect(ok).toBe(true);
+    expect(execFile.mock.calls).toEqual([['claude', addArgs]]);
+  });
+
+  it('replaces an existing entry of the same name', () => {
+    const execFile = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('already exists');
+      })
+      .mockImplementation(() => undefined);
+    const ok = configureClaudeCodeMcp('paparats-support', url, {
+      commandExists: () => true,
+      execFile,
+    });
+    expect(ok).toBe(true);
+    expect(execFile.mock.calls).toEqual([
+      ['claude', addArgs],
+      ['claude', ['mcp', 'remove', '--scope', 'user', 'paparats-support']],
+      ['claude', addArgs],
+    ]);
+  });
+
+  it('prints the command instead when claude is not installed', () => {
+    const execFile = vi.fn();
+    const ok = configureClaudeCodeMcp('paparats-support', url, {
+      commandExists: () => false,
+      execFile,
+    });
+    expect(ok).toBe(false);
+    expect(execFile).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining(`claude ${addArgs.join(' ')}`)
+    );
+  });
+
+  it('prints the command when the claude CLI fails', () => {
+    const execFile = vi.fn(() => {
+      throw new Error('boom');
+    });
+    const ok = configureClaudeCodeMcp('paparats-support', url, {
+      commandExists: () => true,
+      execFile,
+    });
+    expect(ok).toBe(false);
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining(`claude ${addArgs.join(' ')}`)
+    );
   });
 });

@@ -115,9 +115,9 @@ export const LANGUAGE_EXCLUDE_DEFAULTS: Record<string, string[]> = {
   scala: ['target', '.bsp', '.metals', '.bloop', 'project/target', 'project/project'],
   kotlin: ['build', '.gradle', '.idea', '*.iml', 'out', 'bin'],
   swift: ['.build', '.swiftpm', 'DerivedData', '*.xcodeproj', '*.xcworkspace', 'Pods'],
-  // Secrets/state must be excluded at ANY depth. normalizeExcludePatterns leaves
-  // patterns containing a glob unchanged, so file patterns carry an explicit `**/`
-  // prefix (a bare `*.tfvars` would only match at the scan root).
+  // Secrets/state must be excluded at ANY depth. normalizeExcludePatterns already
+  // matches slash-free patterns at any depth; the explicit `**/` prefix keeps that
+  // guarantee obvious and independent of normalization.
   terraform: [
     '.terraform',
     '**/*.tfstate',

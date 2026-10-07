@@ -9,6 +9,10 @@ import {
   PROJECTS_YML,
   resolveProjectsFilePath,
   readProjectsFile,
+  readInstallState,
+  regenerateCompose,
+  regenerateOptsFromState,
+  deriveRegenerateOptsFromCompose,
   type ProjectsFile,
 } from '../projects-yml.js';
 
@@ -103,43 +107,36 @@ export async function runEdit(target: EditTarget, deps: EditDeps = {}): Promise<
   return { edited: true, validated: true, composeChanged, reindexed };
 }
 
-async function defaultRegenerateAndRestart(
-  paparatsHome: string = PAPARATS_HOME
-): Promise<{ composeChanged: boolean }> {
-  // Lazy import to avoid pulling install.ts (and its deps) in non-edit code paths.
-  const { regenerateCompose, readInstallState, deriveRegenerateOptsFromCompose } =
-    await import('../projects-yml.js');
+/**
+ * Regenerate docker-compose.yml from the edited project list. A compose that
+ * changes is backed up to docker-compose.yml.bak first, so hand-edits survive.
+ * Returns whether the compose changed; false when there is no compose yet.
+ */
+export function regenerateComposeAfterEdit(paparatsHome: string = PAPARATS_HOME): boolean {
   const composePath = path.join(paparatsHome, COMPOSE_YML);
-  if (!fs.existsSync(composePath)) {
-    return { composeChanged: false };
-  }
+  if (!fs.existsSync(composePath)) return false;
 
   // Prefer install.json — it's the source of truth for embedding provider, embed mode, etc.
   // Fall back to parsing the existing compose for installs that predate install.json.
   const state = readInstallState(paparatsHome);
-  let regenerateOpts: Parameters<typeof regenerateCompose>[0];
-  if (state) {
-    regenerateOpts = {
-      embedMode: state.embedMode,
-      ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
-      ...(state.embeddingProvider !== undefined
-        ? { embeddingProvider: state.embeddingProvider }
-        : {}),
-      ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
-      ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
-      ...(state.cron !== undefined ? { cron: state.cron } : {}),
-      paparatsHome,
-    };
-  } else {
-    regenerateOpts = deriveRegenerateOptsFromCompose(
-      fs.readFileSync(composePath, 'utf8'),
-      paparatsHome
-    );
+  const regenerateOpts = state
+    ? regenerateOptsFromState(state, paparatsHome)
+    : {
+        ...deriveRegenerateOptsFromCompose(fs.readFileSync(composePath, 'utf8'), paparatsHome),
+        backupOnChange: true,
+      };
+
+  const { changed, backupPath } = regenerateCompose(regenerateOpts);
+  if (backupPath) {
+    console.log(chalk.dim(`Previous compose backed up to ${backupPath}`));
   }
+  return changed;
+}
 
-  const { changed } = regenerateCompose(regenerateOpts);
-  if (!changed) return { composeChanged: false };
-
+async function defaultRegenerateAndRestart(
+  paparatsHome: string = PAPARATS_HOME
+): Promise<{ composeChanged: boolean }> {
+  if (!regenerateComposeAfterEdit(paparatsHome)) return { composeChanged: false };
   const { runRestart } = await import('./lifecycle.js');
   await runRestart({});
   return { composeChanged: true };

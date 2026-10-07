@@ -146,6 +146,21 @@ interface OpenAIStyleEmbeddingResponse {
   data: Array<{ embedding: number[]; index: number }>;
 }
 
+/**
+ * llama-server refused an input longer than its physical batch (`--ubatch-size`,
+ * `LLAMA_BATCH` in the embed image): an embedding is pooled over the whole input,
+ * so it must fit in one batch. The token count is what matters, and dense text
+ * (numeric tables, hex, SVG paths) runs close to one token per character — a
+ * chunk well under the character caps can still overflow. Deterministic, so it is
+ * never retried as-is.
+ */
+export class EmbedInputTooLargeError extends Error {}
+
+const INPUT_TOO_LARGE = /too large to process/i;
+
+/** Halving an oversized input stops here; below it there is too little left to embed. */
+const MIN_SHRUNK_INPUT_CHARS = 256;
+
 export class LlamaServerProvider implements EmbeddingProvider {
   private url: string;
   readonly model: string;
@@ -164,7 +179,34 @@ export class LlamaServerProvider implements EmbeddingProvider {
     if (text.length > 8192) {
       console.warn(`[paparats] Text truncated from ${text.length} to 8192 chars for embedding`);
     }
+    return this.embedFitting(truncated);
+  }
 
+  /**
+   * Embed one input, halving it (keeping the start, where any instruction prefix
+   * sits) while the server reports it too large for its batch. An embedding of the
+   * first part of an outsized chunk beats failing every chunk batched with it.
+   */
+  private async embedFitting(input: string): Promise<number[]> {
+    let current = input;
+    for (;;) {
+      try {
+        return await this.requestOne(current);
+      } catch (err) {
+        if (!(err instanceof EmbedInputTooLargeError) || current.length <= MIN_SHRUNK_INPUT_CHARS) {
+          throw err;
+        }
+        const shorter = current.slice(0, Math.floor(current.length / 2));
+        console.warn(
+          `[paparats] Input of ${current.length} chars exceeds the embed server's batch; ` +
+            `embedding its first ${shorter.length} chars`
+        );
+        current = shorter;
+      }
+    }
+  }
+
+  private async requestOne(truncated: string): Promise<number[]> {
     let lastError: Error | null = null;
     for (let attempt = 0; attempt < EMBED_MAX_RETRIES; attempt++) {
       try {
@@ -185,6 +227,9 @@ export class LlamaServerProvider implements EmbeddingProvider {
 
         if (!res.ok) {
           const errorText = await res.text();
+          if (INPUT_TOO_LARGE.test(errorText)) {
+            throw new EmbedInputTooLargeError(`llama-server error ${res.status}: ${errorText}`);
+          }
           throw new Error(`llama-server error ${res.status}: ${errorText}`);
         }
 
@@ -203,6 +248,7 @@ export class LlamaServerProvider implements EmbeddingProvider {
 
         return embedding;
       } catch (err) {
+        if (err instanceof EmbedInputTooLargeError) throw err;
         lastError = err as Error;
         if (err instanceof Error && err.name === 'AbortError') {
           lastError = new Error('llama-server request timeout after 120s');
@@ -256,6 +302,21 @@ export class LlamaServerProvider implements EmbeddingProvider {
       return trimmed.slice(0, 8192);
     });
 
+    try {
+      return await this.requestBatch(inputs);
+    } catch (err) {
+      if (!(err instanceof EmbedInputTooLargeError)) throw err;
+      // One input is too large for the server's batch. Halve the batch to find it
+      // — the rest still embed normally — and shrink that input alone.
+      if (inputs.length === 1) return [await this.embedFitting(inputs[0]!)];
+      const mid = Math.ceil(texts.length / 2);
+      const left = await this.embedBatch(texts.slice(0, mid));
+      const right = await this.embedBatch(texts.slice(mid));
+      return [...left, ...right];
+    }
+  }
+
+  private async requestBatch(inputs: string[]): Promise<number[][]> {
     let lastError: Error | null = null;
     for (let attempt = 0; attempt < EMBED_MAX_RETRIES; attempt++) {
       try {
@@ -276,13 +337,16 @@ export class LlamaServerProvider implements EmbeddingProvider {
 
         if (!res.ok) {
           const errorText = await res.text();
+          if (INPUT_TOO_LARGE.test(errorText)) {
+            throw new EmbedInputTooLargeError(`llama-server error ${res.status}: ${errorText}`);
+          }
           throw new Error(`llama-server error ${res.status}: ${errorText}`);
         }
 
         const data = (await res.json()) as OpenAIStyleEmbeddingResponse;
-        if (!data.data || data.data.length !== texts.length) {
+        if (!data.data || data.data.length !== inputs.length) {
           throw new Error(
-            `llama-server returned ${data.data?.length ?? 0} embeddings, expected ${texts.length}`
+            `llama-server returned ${data.data?.length ?? 0} embeddings, expected ${inputs.length}`
           );
         }
 
@@ -303,6 +367,7 @@ export class LlamaServerProvider implements EmbeddingProvider {
 
         return embeddings;
       } catch (err) {
+        if (err instanceof EmbedInputTooLargeError) throw err;
         lastError = err as Error;
         if (err instanceof Error && err.name === 'AbortError') {
           lastError = new Error('llama-server batch request timeout after 240s');
@@ -510,21 +575,37 @@ export class VoyageProvider implements EmbeddingProvider {
     this.currentInputType = type;
   }
 
-  private buildBody(input: string | string[]): Record<string, unknown> {
+  private buildBody(
+    input: string | string[],
+    inputType: 'query' | 'document' = this.currentInputType
+  ): Record<string, unknown> {
     const body: Record<string, unknown> = {
       model: this.model,
       input,
-      input_type: this.currentInputType,
+      input_type: inputType,
     };
     if (this.dimensions !== 1024) body['output_dimension'] = this.dimensions;
     return body;
   }
 
   async embed(text: string): Promise<number[]> {
+    return this.embedAs(text, this.currentInputType);
+  }
+
+  /**
+   * Embed a search query tagged `input_type: query`. Called per request rather
+   * than through {@link setInputType}, which is shared state: nothing ever set it,
+   * so every query went out tagged as a document.
+   */
+  async embedQuery(text: string): Promise<number[]> {
+    return this.embedAs(text, 'query');
+  }
+
+  private async embedAs(text: string, inputType: 'query' | 'document'): Promise<number[]> {
     const data = await cloudEmbeddingCall<VoyageEmbeddingResponse>({
       url: this.url,
       apiKey: this.apiKey,
-      body: this.buildBody(text),
+      body: this.buildBody(text, inputType),
       timeoutMs: VOYAGE_TIMEOUT_MS,
       maxRetries: VOYAGE_MAX_RETRIES,
       providerLabel: 'Voyage',
@@ -644,7 +725,32 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     };
   }
 
+  /**
+   * Cache lookup that rejects a vector of the wrong length. Entries are keyed by
+   * text and model name only, and some providers let the output dimension change
+   * under the same name (OpenAI `dimensions`, Voyage `output_dimension`) — serving
+   * those stale vectors failed every Qdrant upsert. A mismatch is a miss, and the
+   * fresh vector overwrites the entry.
+   */
+  private cachedVector(hash: string, model: string): number[] | null {
+    const cached = this.cache.get(hash, model);
+    return cached && cached.length === this.dimensions ? cached : null;
+  }
+
   async embed(text: string): Promise<number[]> {
+    return this.embedCached(text, this.model, (t) => this.provider.embed(t));
+  }
+
+  /**
+   * One cached embedding call. `cacheModel` namespaces the entry: a provider that
+   * embeds queries differently from documents (see {@link embedQuery}) must not
+   * share entries between the two for the same text.
+   */
+  private async embedCached(
+    text: string,
+    cacheModel: string,
+    call: (text: string) => Promise<number[]>
+  ): Promise<number[]> {
     this.embedCalls++;
     const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
     const start = performance.now();
@@ -653,16 +759,16 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     let error: string | null = null;
 
     try {
-      const cached = this.cache.get(hash, this.model);
+      const cached = this.cachedVector(hash, cacheModel);
       if (cached) {
         cacheHits = 1;
         return cached;
       }
       cacheMiss = 1;
       const providerStart = performance.now();
-      const vector = await this.provider.embed(text);
+      const vector = await call(text);
       this.metrics?.observeEmbeddingDuration((performance.now() - providerStart) / 1000);
-      this.cache.set(hash, this.model, vector);
+      this.cache.set(hash, cacheModel, vector);
       return vector;
     } catch (err) {
       error = (err as Error).message.slice(0, 256);
@@ -693,7 +799,7 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
     try {
       const model = this.model;
       const hashes = texts.map((t) => createHash('sha256').update(t).digest('hex').slice(0, 32));
-      const results: (number[] | null)[] = hashes.map((h) => this.cache.get(h, model));
+      const results: (number[] | null)[] = hashes.map((h) => this.cachedVector(h, model));
 
       const uncachedIndices: number[] = [];
       const uncachedTexts: string[] = [];
@@ -754,6 +860,9 @@ export class CachedEmbeddingProvider implements EmbeddingProvider {
 
   /** Embed a search query with the model family's instruction prefix (if enabled) */
   async embedQuery(text: string): Promise<number[]> {
+    // Providers that tag queries natively (Voyage `input_type`) get the raw query.
+    const native = this.provider.embedQuery?.bind(this.provider);
+    if (native) return this.embedCached(text, `${this.model}#query`, native);
     const input = this.taskPrefixConfig.enabled
       ? prefixQuery(text, this.taskPrefixConfig.family)
       : text;
@@ -828,8 +937,8 @@ export function createEmbeddingProvider(config: {
 
   // Auto-enable instruction prefixes for instruction-tuned llama-server models
   // (bge-code-v1, Qwen3-Embedding). OpenAI and Voyage handle task
-  // differentiation natively; for Voyage we toggle via setInputType() inside the
-  // searcher hot path. `modelFamily` returns 'none' for unknown models → no
+  // differentiation natively; Voyage implements `embedQuery` (input_type: query),
+  // which CachedEmbeddingProvider.embedQuery prefers over prefixing. `modelFamily` returns 'none' for unknown models → no
   // prefix, so this is a no-op for anything we don't recognize.
   const family = modelFamily(config.model);
   const taskPrefixes = config.taskPrefixes ?? {

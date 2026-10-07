@@ -71,7 +71,7 @@ describe('extractGitMetadata', () => {
 
     // Simulate indexed chunks for the file
     const chunksByFile = new Map([
-      ['src/auth.ts', [{ chunk_id: 'g//p//src/auth.ts//1-2//h1', startLine: 1, endLine: 2 }]],
+      ['src/auth.ts', [{ chunk_id: 'g//p//src/auth.ts//1-2//h1', startLine: 0, endLine: 1 }]],
     ]);
 
     const result = await extractGitMetadata({
@@ -92,7 +92,7 @@ describe('extractGitMetadata', () => {
     const commits = store.getCommits('g//p//src/auth.ts//1-2//h1');
     expect(commits.length).toBeGreaterThanOrEqual(1);
 
-    // Both commits should affect the chunk (lines 1-2)
+    // Both commits should affect the chunk (the file's two lines, 0-indexed 0-1)
     const commitHashes = commits.map((c) => c.commit_hash);
     expect(commitHashes).toContain(hash2);
     // hash1 may or may not appear depending on hunk overlap — initial add has no hunks, so it's included conservatively
@@ -154,7 +154,7 @@ describe('extractGitMetadata', () => {
     };
 
     const chunksByFile = new Map([
-      ['src/foo.ts', [{ chunk_id: 'g//p//src/foo.ts//1-1//h1', startLine: 1, endLine: 1 }]],
+      ['src/foo.ts', [{ chunk_id: 'g//p//src/foo.ts//1-1//h1', startLine: 0, endLine: 0 }]],
     ]);
 
     const result = await extractGitMetadata({
@@ -191,13 +191,13 @@ describe('extractGitMetadata', () => {
       setPayload: vi.fn().mockResolvedValue(undefined),
     };
 
-    // Two chunks: lines 1-1 and lines 3-3
+    // Two chunks over the first and third line (0-indexed, like the indexer)
     const chunksByFile = new Map([
       [
         'src/big.ts',
         [
-          { chunk_id: 'g//p//src/big.ts//1-1//h1', startLine: 1, endLine: 1 },
-          { chunk_id: 'g//p//src/big.ts//3-3//h2', startLine: 3, endLine: 3 },
+          { chunk_id: 'g//p//src/big.ts//1-1//h1', startLine: 0, endLine: 0 },
+          { chunk_id: 'g//p//src/big.ts//3-3//h2', startLine: 2, endLine: 2 },
         ],
       ],
     ]);
@@ -225,6 +225,41 @@ describe('extractGitMetadata', () => {
     expect(chunk1Hashes).not.toContain(hash2);
   });
 
+  it('attributes an edit to the last line of a chunk to that chunk, not the next one', async () => {
+    gitInit(tmpDir);
+    gitAdd(tmpDir, 'src/edge.ts', 'line1\nline2\nline3');
+    gitCommit(tmpDir, 'initial commit');
+    gitAdd(tmpDir, 'src/edge.ts', 'line1\nline2_modified\nline3');
+    const hash2 = gitCommit(tmpDir, 'fix: modify line 2');
+
+    // 0-indexed: the first chunk covers lines 1-2 of the file, the second line 3.
+    const chunksByFile = new Map([
+      [
+        'src/edge.ts',
+        [
+          { chunk_id: 'g//p//src/edge.ts//0-1//h1', startLine: 0, endLine: 1 },
+          { chunk_id: 'g//p//src/edge.ts//2-2//h2', startLine: 2, endLine: 2 },
+        ],
+      ],
+    ]);
+
+    await extractGitMetadata({
+      projectPath: tmpDir,
+      group: 'g',
+      project: 'p',
+      maxCommitsPerFile: 50,
+      ticketPatterns: [],
+      metadataStore: store,
+      qdrantClient: { setPayload: vi.fn().mockResolvedValue(undefined) } as never,
+      chunksByFile,
+    });
+
+    const first = store.getCommits('g//p//src/edge.ts//0-1//h1').map((c) => c.commit_hash);
+    const second = store.getCommits('g//p//src/edge.ts//2-2//h2').map((c) => c.commit_hash);
+    expect(first).toContain(hash2);
+    expect(second).not.toContain(hash2);
+  });
+
   it('gracefully handles Qdrant setPayload failure', async () => {
     gitInit(tmpDir);
     gitAdd(tmpDir, 'src/bar.ts', 'const y = 2;');
@@ -236,7 +271,7 @@ describe('extractGitMetadata', () => {
     };
 
     const chunksByFile = new Map([
-      ['src/bar.ts', [{ chunk_id: 'g//p//src/bar.ts//1-1//h1', startLine: 1, endLine: 1 }]],
+      ['src/bar.ts', [{ chunk_id: 'g//p//src/bar.ts//1-1//h1', startLine: 0, endLine: 0 }]],
     ]);
 
     // Should not throw — Qdrant error is caught

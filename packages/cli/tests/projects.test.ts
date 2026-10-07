@@ -5,6 +5,7 @@ import path from 'path';
 import * as yaml from 'js-yaml';
 import {
   detectKind,
+  parseGithubRepo,
   runAdd,
   runList,
   runRemove,
@@ -38,6 +39,7 @@ describe('detectKind', () => {
     ['/Users/alice/code/billing', 'local'],
     ['git@github.com:org/repo.git', 'remote'],
     ['https://github.com/org/repo.git', 'remote'],
+    ['https://github.com/org/repo', 'remote'],
     ['org/repo', 'remote'],
     // Disambiguate locals: anything that LOOKS like owner/repo we treat as remote.
     // The user must pass an absolute path for local projects.
@@ -47,7 +49,56 @@ describe('detectKind', () => {
   });
 });
 
+describe('parseGithubRepo', () => {
+  it.each([
+    ['org/repo', 'org/repo'],
+    ['git@github.com:org/repo.git', 'org/repo'],
+    ['https://github.com/org/repo.git', 'org/repo'],
+    ['https://github.com/org/repo', 'org/repo'],
+    ['https://github.com/org/repo/', 'org/repo'],
+    ['ssh://git@github.com/org/my.repo.git', 'org/my.repo'],
+  ])('normalizes %s to %s', (input, expected) => {
+    expect(parseGithubRepo(input)).toBe(expected);
+  });
+
+  it.each([
+    'https://gitlab.example.com/team/repo.git',
+    'git@git.example.com:team/repo.git',
+    'ssh://git@bitbucket.example.com/team/repo.git',
+  ])('rejects a non-GitHub host: %s', (input) => {
+    expect(() => parseGithubRepo(input)).toThrow(/Only GitHub repositories/);
+  });
+
+  it.each(['https://github.com/group/subgroup/repo.git', 'org/repo/extra', './repo', 'org/..'])(
+    'rejects anything but owner/repo: %s',
+    (input) => {
+      expect(() => parseGithubRepo(input)).toThrow(/owner\/repo/);
+    }
+  );
+});
+
 describe('runAdd', () => {
+  it('rejects a non-GitHub URL without touching projects.yml', async () => {
+    await expect(
+      runAdd('https://gitlab.example.com/group/sub/repo.git', { paparatsHome: tmpHome })
+    ).rejects.toThrow(/Only GitHub repositories/);
+    expect(fs.existsSync(path.join(tmpHome, 'projects.yml'))).toBe(false);
+  });
+
+  it('backs up a hand-edited compose when a local add regenerates it', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sample-'));
+    const composePath = path.join(tmpHome, 'docker-compose.yml');
+    fs.writeFileSync(composePath, '# hand-edited\n');
+    await runAdd(
+      dir,
+      { paparatsHome: tmpHome },
+      { restartStack: vi.fn(), triggerReindex: vi.fn().mockResolvedValue(undefined) }
+    );
+    expect(fs.readFileSync(`${composePath}.bak`, 'utf8')).toBe('# hand-edited\n');
+    expect(fs.readFileSync(composePath, 'utf8')).toContain(dir);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it('adds a local-path entry, restarts and triggers reindex', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sample-'));
     const restart = vi.fn().mockResolvedValue(undefined);
@@ -387,6 +438,21 @@ describe('runRemove', () => {
       { deleteServerData: del, restartStack: restart }
     );
     expect(restart).toHaveBeenCalledTimes(1);
+  });
+
+  it('backs up a hand-edited compose when a local removal regenerates it', async () => {
+    fs.writeFileSync(
+      path.join(tmpHome, 'projects.yml'),
+      'repos:\n  - path: /Users/x/foo\n    group: dev\n'
+    );
+    const composePath = path.join(tmpHome, 'docker-compose.yml');
+    fs.writeFileSync(composePath, '# hand-edited\n');
+    await runRemove(
+      'foo',
+      { paparatsHome: tmpHome, yes: true },
+      { deleteServerData: vi.fn().mockResolvedValue(undefined), restartStack: vi.fn() }
+    );
+    expect(fs.readFileSync(`${composePath}.bak`, 'utf8')).toBe('# hand-edited\n');
   });
 
   it('promptConfirm=false → no changes', async () => {

@@ -1,10 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { MtimeDetector, GitDetector, parseLsRemoteHead } from '../src/change-detector.js';
 import type { ProjectConfig } from '@paparats/server';
 import type { RepoConfig } from '../src/types.js';
+
+const listRemote = vi.hoisted(() => vi.fn());
+vi.mock('simple-git', () => ({ simpleGit: () => ({ listRemote }) }));
 
 function makeProject(root: string, overrides: Partial<ProjectConfig> = {}): ProjectConfig {
   return {
@@ -146,6 +149,54 @@ describe('MtimeDetector', () => {
     const project = makeProject(path.join(dir, 'missing'));
     await expect(detector.fingerprint(path.join(dir, 'missing'), project)).rejects.toThrow();
   });
+
+  it('ignores symlinks that resolve outside the project', async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'paparats-mtime-out-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'a.ts'), 'const a = 1;');
+      fs.writeFileSync(path.join(outside, 'secret.ts'), 'one');
+      fs.symlinkSync(path.join(outside, 'secret.ts'), path.join(dir, 'leak.ts'));
+      const project = makeProject(dir);
+      const fp1 = await detector.fingerprint(dir, project);
+
+      fs.writeFileSync(path.join(outside, 'secret.ts'), 'a different size');
+      const fp2 = await detector.fingerprint(dir, project);
+      expect(fp1.value).toBe(fp2.value);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  describe('with includeDocs', () => {
+    it('changes fingerprint on a docs-only edit', async () => {
+      const docsDetector = new MtimeDetector({ includeDocs: true });
+      fs.writeFileSync(path.join(dir, 'a.ts'), 'const a = 1;');
+      fs.mkdirSync(path.join(dir, 'docs'));
+      fs.writeFileSync(path.join(dir, 'docs', 'guide.md'), '# Guide');
+      const project = makeProject(dir);
+      const fp1 = await docsDetector.fingerprint(dir, project);
+
+      fs.writeFileSync(path.join(dir, 'docs', 'guide.md'), '# Guide\n\nMore words.');
+      const fp2 = await docsDetector.fingerprint(dir, project);
+      expect(fp1.value).not.toBe(fp2.value);
+
+      fs.writeFileSync(path.join(dir, 'notes.markdown'), 'new');
+      const fp3 = await docsDetector.fingerprint(dir, project);
+      expect(fp3.value).not.toBe(fp2.value);
+    });
+
+    it('still honours exclude patterns for markdown', async () => {
+      const docsDetector = new MtimeDetector({ includeDocs: true });
+      fs.mkdirSync(path.join(dir, 'node_modules'));
+      fs.writeFileSync(path.join(dir, 'a.ts'), 'const a = 1;');
+      const project = makeProject(dir);
+      const fp1 = await docsDetector.fingerprint(dir, project);
+
+      fs.writeFileSync(path.join(dir, 'node_modules', 'README.md'), '# dep');
+      const fp2 = await docsDetector.fingerprint(dir, project);
+      expect(fp1.value).toBe(fp2.value);
+    });
+  });
 });
 
 describe('GitDetector', () => {
@@ -153,5 +204,17 @@ describe('GitDetector', () => {
     const detector = new GitDetector();
     const repo: RepoConfig = { url: '', owner: 'foo', name: 'bar', fullName: 'foo/bar' };
     await expect(detector.fingerprint(repo)).rejects.toThrow(/remote url/);
+  });
+
+  it('keeps the token out of ls-remote errors', async () => {
+    const detector = new GitDetector();
+    const url = 'https://ghp_secret@github.com/foo/bar.git';
+    const repo: RepoConfig = { url, owner: 'foo', name: 'bar', fullName: 'foo/bar' };
+    // Older git versions echo the URL, credentials included, in the error.
+    listRemote.mockRejectedValueOnce(new Error(`fatal: unable to access '${url}/'`));
+    const err = await detector.fingerprint(repo).catch((e: Error) => e);
+    expect((err as Error).message).toBe(
+      "ls-remote failed: fatal: unable to access 'https://***@github.com/foo/bar.git/'"
+    );
   });
 });

@@ -37,6 +37,7 @@ export {
   applyProjectSuffix,
   stripProjectSuffix,
   toCollectionName,
+  validateGroupName,
   fromCollectionName,
   createQdrantClient,
 } from './indexer.js';
@@ -204,6 +205,7 @@ export type {
   EmbeddingProvider,
   LanguageProfile,
   IndexerStats,
+  IndexProjectReport,
   IndexingConfig,
   WatcherConfig,
   EmbeddingsConfig,

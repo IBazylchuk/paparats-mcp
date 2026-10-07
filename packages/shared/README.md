@@ -13,11 +13,15 @@ npm install @paparats/shared
 ### Path Validation
 
 ```ts
-import { validateIndexingPaths } from '@paparats/shared';
+import { validateIndexingPaths, filterFilesWithinRoot } from '@paparats/shared';
 
-// Rejects absolute paths and path traversal in indexing config
-const errors = validateIndexingPaths(['src', '../etc/passwd']);
-// errors: ['Path traversal not allowed: ../etc/passwd']
+// Throws on absolute paths, path traversal, glob syntax that could expand to a
+// traversal ({..,src}, [.][.]), and symlinked directories leading outside the project
+validateIndexingPaths(['src', '../etc/passwd'], '/path/to/repo');
+// Error: Path must be inside project directory: ../etc/passwd
+
+// Drop globbed files whose real path is outside the root, inside .git, or a dangling link
+const safe = filterFilesWithinRoot(allFiles, '/path/to/repo');
 ```
 
 ### Gitignore Filtering
@@ -46,8 +50,11 @@ import {
   DEFAULT_EXCLUDE_BARE,
 } from '@paparats/shared';
 
-// Bare dir names become glob patterns: 'node_modules' -> '**/node_modules/**'
-const patterns = normalizeExcludePatterns(['node_modules', 'dist']);
+// .gitignore-style: bare names match at any depth, paths with '/' are root-relative,
+// and both cover everything beneath a matching directory:
+// 'node_modules' -> '**/node_modules', '**/node_modules/**'
+// 'spec/fixtures' -> 'spec/fixtures', 'spec/fixtures/**'
+const patterns = normalizeExcludePatterns(['node_modules', 'spec/fixtures']);
 
 // Get default excludes for specific languages
 const excludes = getDefaultExcludeForLanguages(['typescript', 'python']);

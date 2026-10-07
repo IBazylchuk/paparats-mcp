@@ -715,6 +715,39 @@ describe('Searcher', () => {
     expect(response.results[0]!.score).toBe(0.95);
   });
 
+  it('expandedSearch keeps identical code found in two different files', async () => {
+    const copy = (id: string, file: string) => ({
+      id,
+      score: 0.9,
+      payload: {
+        project: 'p',
+        file,
+        language: 'ts',
+        startLine: 1,
+        endLine: 10,
+        content: 'vendored helper',
+        hash: 'same-content-hash',
+      },
+    });
+    mockQdrant.client.query
+      .mockResolvedValueOnce({ points: [copy('1', 'vendor/a/util.ts')] })
+      .mockResolvedValueOnce({ points: [copy('2', 'vendor/b/util.ts')] })
+      .mockResolvedValue({ points: [] });
+
+    const searcher = new Searcher({
+      qdrantUrl: 'http://127.0.0.1:6333',
+      embeddingProvider,
+      qdrantClient: mockQdrant.client as never,
+    });
+
+    const response = await searcher.expandedSearch('test-group', 'auth middleware', { limit: 5 });
+
+    expect(response.results.map((r) => r.file).sort()).toEqual([
+      'vendor/a/util.ts',
+      'vendor/b/util.ts',
+    ]);
+  });
+
   it('expandedSearch falls through to single search when no expansions generated', async () => {
     mockQdrant.client.query.mockResolvedValue({
       points: [

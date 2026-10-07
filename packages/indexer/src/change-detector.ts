@@ -3,8 +3,9 @@ import path from 'path';
 import crypto from 'crypto';
 import { simpleGit } from 'simple-git';
 import { glob } from 'glob';
-import { filterFilesByGitignore } from '@paparats/shared';
+import { filterFilesByGitignore, filterFilesWithinRoot } from '@paparats/shared';
 import type { ProjectConfig } from '@paparats/server';
+import { redactCredentials } from './repo-manager.js';
 import type { RepoConfig } from './types.js';
 
 export interface Fingerprint {
@@ -26,7 +27,15 @@ export class GitDetector {
       throw new Error(`GitDetector requires a remote url; got empty for ${repo.fullName}`);
     }
     const git = simpleGit();
-    const result = await git.listRemote(['--symref', repo.url, 'HEAD']);
+    let result: string;
+    try {
+      result = await git.listRemote(['--symref', repo.url, 'HEAD']);
+    } catch (err) {
+      // git echoes the URL, which carries the token for private repos.
+      throw new Error(`ls-remote failed: ${redactCredentials((err as Error).message)}`, {
+        cause: err,
+      });
+    }
     const sha = parseLsRemoteHead(result);
     if (!sha) {
       throw new Error(`Could not parse HEAD sha from ls-remote output for ${repo.fullName}`);
@@ -35,20 +44,39 @@ export class GitDetector {
   }
 }
 
+/** Globs the docs pass walks (see Indexer.indexDocsProject). */
+const DOCS_PATTERNS = ['**/*.md', '**/*.markdown'];
+
+export interface MtimeDetectorOptions {
+  /**
+   * Also hash the markdown files the docs pass indexes. Set when docs indexing
+   * is on, so an edit that only touches documentation still triggers a reindex.
+   */
+  includeDocs?: boolean;
+}
+
 /**
  * Local-path detector. Hashes (relPath, mtime_ms, size) across the same set
- * of files indexProject() would walk. Catches uncommitted edits, additions,
- * and removals. False positives (touch without content change) are safe —
- * indexProject's per-file hash check will skip unchanged chunks anyway.
+ * of files indexProject() would walk — plus the docs pass's markdown when
+ * `includeDocs` is set. Catches uncommitted edits, additions, and removals.
+ * False positives (touch without content change) are safe — indexProject's
+ * per-file hash check will skip unchanged chunks anyway.
  */
 export class MtimeDetector {
+  private readonly includeDocs: boolean;
+
+  constructor(opts: MtimeDetectorOptions = {}) {
+    this.includeDocs = opts.includeDocs === true;
+  }
+
   async fingerprint(localPath: string, project: ProjectConfig): Promise<Fingerprint> {
     if (!fs.existsSync(localPath)) {
       throw new Error(`Project path not found: ${localPath}`);
     }
 
+    const patterns = this.includeDocs ? [...project.patterns, ...DOCS_PATTERNS] : project.patterns;
     const fileSet = new Set<string>();
-    for (const pattern of project.patterns) {
+    for (const pattern of patterns) {
       const found = await glob(pattern, {
         cwd: localPath,
         absolute: true,
@@ -57,7 +85,7 @@ export class MtimeDetector {
       });
       found.forEach((f) => fileSet.add(f));
     }
-    let files = Array.from(fileSet);
+    let files = filterFilesWithinRoot(Array.from(fileSet), localPath);
     if (project.indexing.respectGitignore) {
       files = filterFilesByGitignore(files, localPath);
     }

@@ -284,9 +284,99 @@ describe('DocsStore.pruneDocuments', () => {
   });
 
   it('deletes nothing when the collection does not exist', async () => {
-    qdrant.scroll.mockRejectedValue(new Error('Not found: Collection'));
+    qdrant.scroll.mockRejectedValue(Object.assign(new Error('Not found'), { status: 404 }));
     expect(await store.pruneDocuments('g', 'p', new Set())).toEqual([]);
     expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+
+  it('throws when Qdrant fails, rather than reporting nothing to prune', async () => {
+    qdrant.scroll.mockRejectedValue(new Error('connect ECONNREFUSED'));
+    await expect(store.pruneDocuments('g', 'p', new Set())).rejects.toThrow('ECONNREFUSED');
+    expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+});
+
+describe('DocsStore.deleteProject', () => {
+  it('deletes every document of the project and reverses their IDF', async () => {
+    const qdrant = fakeQdrant();
+    const idf = mkIdf();
+    const store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf,
+    });
+    idf.addDocument('g', new Set(['alpha']), 1);
+    idf.addDocument('g', new Set(['beta']), 1);
+    qdrant.scroll.mockImplementation(
+      async (
+        _c: string,
+        arg: { filter: { must: Array<{ key: string; match: { value: string } }> } }
+      ) => {
+        const file = arg.filter.must.find((c) => c.key === 'file')?.match.value;
+        const all = [
+          { id: 1, payload: { file: 'a.md', content: 'alpha' } },
+          { id: 2, payload: { file: 'b.md', content: 'beta' } },
+        ];
+        return {
+          points: all.filter((p) => !file || p.payload.file === file),
+          next_page_offset: null,
+        };
+      }
+    );
+    await store.deleteProject('g', 'p');
+    expect(qdrant.delete).toHaveBeenCalledTimes(2);
+    expect(idf.getCorpusStats('g').docCount).toBe(0);
+  });
+});
+
+describe('DocsStore — replacing a document safely', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let idf: DocsIdfStore;
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    idf = mkIdf();
+  });
+
+  it('leaves the indexed version in place when embedding fails', async () => {
+    const provider = fakeProvider();
+    (provider.embed as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('embed timeout'));
+    const store = new DocsStore({ qdrant: qdrant as unknown as QdrantClient, provider, idf });
+    await expect(
+      store.indexDocument('g', { project: 'p', file: 'x.md', content: MD })
+    ).rejects.toThrow('embed timeout');
+    expect(qdrant.delete).not.toHaveBeenCalled();
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+    expect(idf.getCorpusStats('g').docCount).toBe(0);
+  });
+
+  it('adds no IDF when the upsert fails', async () => {
+    qdrant.upsert.mockRejectedValueOnce(new Error('upsert failed'));
+    const store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf,
+    });
+    await expect(
+      store.indexDocument('g', { project: 'p', file: 'x.md', content: MD })
+    ).rejects.toThrow('upsert failed');
+    expect(idf.getCorpusStats('g').docCount).toBe(0);
+  });
+
+  it('keeps IDF when the delete fails, so a retry does not subtract twice', async () => {
+    idf.addDocument('g', new Set(['old']), 1);
+    qdrant.scroll.mockResolvedValue({
+      points: [{ id: 1, payload: { file: 'x.md', content: 'old' } }],
+      next_page_offset: null,
+    });
+    qdrant.delete.mockRejectedValueOnce(new Error('delete failed'));
+    const store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf,
+    });
+    await expect(store.deleteDocument('g', 'p', 'x.md')).rejects.toThrow('delete failed');
+    expect(idf.getCorpusStats('g').docCount).toBe(1);
   });
 });
 
@@ -454,6 +544,44 @@ describe('DocsStore.search', () => {
     expect(hits[0]!.content).toContain('last chunk');
     expect(hits[0]!.startLine).toBe(3);
     expect(hits[0]!.endLine).toBe(8);
+  });
+});
+
+describe('DocsStore.search — project scope', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let store: DocsStore;
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf: mkIdf(),
+    });
+  });
+
+  const prefetchFilter = () =>
+    (qdrant.query.mock.calls[0]![1] as { prefetch: Array<{ filter?: { must: unknown[] } }> })
+      .prefetch[0]!.filter;
+
+  it('limits an unscoped query to the allowed projects', async () => {
+    await store.search('g', 'deploy', { projects: ['a', 'b'] });
+    expect(prefetchFilter()!.must).toContainEqual({ key: 'project', match: { any: ['a', 'b'] } });
+  });
+
+  it('returns nothing for a project outside the allowed set, without querying', async () => {
+    expect(await store.search('g', 'deploy', { project: 'c', projects: ['a'] })).toEqual([]);
+    expect(qdrant.query).not.toHaveBeenCalled();
+  });
+
+  it('narrows to a requested project inside the allowed set', async () => {
+    await store.search('g', 'deploy', { project: 'a', projects: ['a', 'b'] });
+    expect(prefetchFilter()!.must).toEqual([{ key: 'project', match: { value: 'a' } }]);
+  });
+
+  it('matches nothing for an empty allowed set', async () => {
+    expect(await store.search('g', 'deploy', { projects: [] })).toEqual([]);
+    expect(qdrant.query).not.toHaveBeenCalled();
   });
 });
 
@@ -933,5 +1061,29 @@ describe('DocsStore.rebuildIdfIfEmpty', () => {
     const n = await store.rebuildIdfIfEmpty('g');
     // Partial stats beat none: search stays hybrid, just less precisely weighted.
     expect(n).toBe(1);
+  });
+});
+
+describe('DocsStore.reindexDocs', () => {
+  it('keeps the collection when embedding fails', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValue({
+      points: [{ id: 1, payload: { file: 'a.md', content: 'deploy steps' } }],
+      next_page_offset: null,
+    });
+    qdrant.getCollection.mockResolvedValue({
+      config: { params: { vectors: { [DOCS_DENSE_VECTOR]: { size: 512 } } } },
+    });
+    const provider = fakeProvider();
+    (provider.embed as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('embed server down'));
+    const store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider,
+      idf: mkIdf(),
+    });
+
+    await expect(store.reindexDocs('g')).rejects.toThrow('embed server down');
+    expect(qdrant.deleteCollection).not.toHaveBeenCalled();
+    expect(qdrant.upsert).not.toHaveBeenCalled();
   });
 });

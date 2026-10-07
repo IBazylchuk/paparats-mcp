@@ -81,10 +81,21 @@ export function readInstallState(home: string = PAPARATS_HOME): InstallState | n
   return { ...parsed, embedMode: mode } as InstallState;
 }
 
+/** install.json can hold `qdrantApiKey`, so it is written owner-only. */
 export function writeInstallState(state: InstallState, home: string = PAPARATS_HOME): void {
-  const file = path.join(home, INSTALL_STATE);
-  fs.mkdirSync(home, { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(state, null, 2) + '\n');
+  writePrivateFile(path.join(home, INSTALL_STATE), JSON.stringify(state, null, 2) + '\n');
+}
+
+/**
+ * Write a file that holds secrets (API keys): owner read/write only (0600),
+ * creating a missing parent directory owner-only (0700). The `mode` option
+ * only applies when a file is created, so an existing file — e.g. one written
+ * world-readable by an older version — is tightened first.
+ */
+export function writePrivateFile(file: string, data: string): void {
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  if (fs.existsSync(file)) fs.chmodSync(file, 0o600);
+  fs.writeFileSync(file, data, { mode: 0o600 });
 }
 
 export interface ProjectEntry {
@@ -314,8 +325,9 @@ export interface RegenerateOptions {
   paparatsHome?: string;
   /**
    * When true, the existing compose is copied to docker-compose.yml.bak before
-   * being overwritten — but only if its contents actually change. Used by
-   * `paparats update` so hand-edits aren't silently lost across CLI upgrades.
+   * being overwritten — but only if its contents actually change. Every CLI
+   * caller sets it (`update`, `add`, `remove`, `edit projects`) so hand-edits
+   * are never silently lost.
    */
   backupOnChange?: boolean;
 }
@@ -357,6 +369,28 @@ export function regenerateCompose(opts: RegenerateOptions): RegenerateResult {
   }
   fs.writeFileSync(composePath, composeYaml);
   return backupPath ? { changed: true, composeYaml, backupPath } : { changed: true, composeYaml };
+}
+
+/**
+ * Build {@link RegenerateOptions} from the recorded install state, with the
+ * backup of a changed compose turned on.
+ */
+export function regenerateOptsFromState(
+  state: InstallState,
+  paparatsHome: string
+): RegenerateOptions {
+  return {
+    embedMode: state.embedMode,
+    ...(state.embedUrl !== undefined ? { embedUrl: state.embedUrl } : {}),
+    ...(state.embeddingProvider !== undefined
+      ? { embeddingProvider: state.embeddingProvider }
+      : {}),
+    ...(state.qdrantUrl !== undefined ? { qdrantUrl: state.qdrantUrl } : {}),
+    ...(state.qdrantApiKey !== undefined ? { qdrantApiKey: state.qdrantApiKey } : {}),
+    ...(state.cron !== undefined ? { cron: state.cron } : {}),
+    paparatsHome,
+    backupOnChange: true,
+  };
 }
 
 /**
