@@ -34,8 +34,8 @@ class MockEmbeddingProvider implements EmbeddingProvider {
 }
 
 function createMockQdrant() {
-  const search = vi.fn();
-  return { client: { search } };
+  const query = vi.fn();
+  return { client: { query } };
 }
 
 describe('Searcher', () => {
@@ -57,7 +57,7 @@ describe('Searcher', () => {
   });
 
   it('creates Searcher with config', async () => {
-    mockQdrant.client.search.mockResolvedValue([]);
+    mockQdrant.client.query.mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -72,21 +72,23 @@ describe('Searcher', () => {
   });
 
   it('search returns results and maps payload correctly', async () => {
-    mockQdrant.client.search.mockResolvedValue([
-      {
-        id: '1',
-        score: 0.95,
-        payload: {
-          project: 'my-project',
-          file: 'src/foo.ts',
-          language: 'typescript',
-          startLine: 10,
-          endLine: 25,
-          content: 'const x = 1;',
-          hash: 'abc123',
+    mockQdrant.client.query.mockResolvedValue({
+      points: [
+        {
+          id: '1',
+          score: 0.95,
+          payload: {
+            project: 'my-project',
+            file: 'src/foo.ts',
+            language: 'typescript',
+            startLine: 10,
+            endLine: 25,
+            content: 'const x = 1;',
+            hash: 'abc123',
+          },
         },
-      },
-    ]);
+      ],
+    });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -120,8 +122,8 @@ describe('Searcher', () => {
     expect(response.metrics.tokensReturned).toBeGreaterThan(0);
     expect(response.metrics.tokensSaved).toBeGreaterThanOrEqual(0);
 
-    expect(mockQdrant.client.search).toHaveBeenCalledWith(toCollectionName('test-group'), {
-      vector: expect.any(Array),
+    expect(mockQdrant.client.query).toHaveBeenCalledWith(toCollectionName('test-group'), {
+      query: expect.any(Array),
       limit: 5,
       with_payload: true,
       filter: { must_not: META_NOT },
@@ -129,7 +131,7 @@ describe('Searcher', () => {
   });
 
   it('search uses project filter when project is specified', async () => {
-    mockQdrant.client.search.mockResolvedValue([]);
+    mockQdrant.client.query.mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -139,7 +141,7 @@ describe('Searcher', () => {
 
     await searcher.search('test-group', 'query', { project: 'my-project' });
 
-    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+    expect(mockQdrant.client.query).toHaveBeenCalledWith(
       toCollectionName('test-group'),
       expect.objectContaining({
         filter: {
@@ -151,7 +153,7 @@ describe('Searcher', () => {
   });
 
   it('with projectSuffix, search by clean name filters on the suffixed name', async () => {
-    mockQdrant.client.search.mockResolvedValue([]);
+    mockQdrant.client.query.mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -164,7 +166,7 @@ describe('Searcher', () => {
     // (suffixed) name so it matches chunks the suffixed indexer wrote.
     await searcher.search('test-group', 'query', { project: 'my-project' });
 
-    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+    expect(mockQdrant.client.query).toHaveBeenCalledWith(
       toCollectionName('test-group'),
       expect.objectContaining({
         filter: {
@@ -176,22 +178,24 @@ describe('Searcher', () => {
   });
 
   it('with projectSuffix, results strip the suffix so clients see the clean name', async () => {
-    mockQdrant.client.search.mockResolvedValue([
-      {
-        id: '1',
-        score: 0.9,
-        payload: {
-          project: 'my-project-v3', // stored (suffixed) name in Qdrant
-          file: 'src/foo.ts',
-          language: 'typescript',
-          startLine: 1,
-          endLine: 5,
-          content: 'const x = 1;',
-          hash: 'abc',
-          chunk_id: 'test-group//my-project-v3//src/foo.ts//1-5//abc',
+    mockQdrant.client.query.mockResolvedValue({
+      points: [
+        {
+          id: '1',
+          score: 0.9,
+          payload: {
+            project: 'my-project-v3', // stored (suffixed) name in Qdrant
+            file: 'src/foo.ts',
+            language: 'typescript',
+            startLine: 1,
+            endLine: 5,
+            content: 'const x = 1;',
+            hash: 'abc',
+            chunk_id: 'test-group//my-project-v3//src/foo.ts//1-5//abc',
+          },
         },
-      },
-    ]);
+      ],
+    });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -209,7 +213,7 @@ describe('Searcher', () => {
   });
 
   it('with projectSuffix + allowedProjects, the "all" scope suffixes every project in the any-filter', async () => {
-    mockQdrant.client.search.mockResolvedValue([]);
+    mockQdrant.client.query.mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -223,7 +227,7 @@ describe('Searcher', () => {
     // and each entry must be suffixed to match stored chunks.
     await searcher.search('test-group', 'query', { project: 'all' });
 
-    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+    expect(mockQdrant.client.query).toHaveBeenCalledWith(
       toCollectionName('test-group'),
       expect.objectContaining({
         filter: {
@@ -238,21 +242,23 @@ describe('Searcher', () => {
     // On the shared Qdrant a v3 search can still hit a stale chunk the OLD
     // stand wrote (project "my-project", no suffix). stripProjectSuffix must
     // leave it untouched — never mangle a name that lacks the suffix.
-    mockQdrant.client.search.mockResolvedValue([
-      {
-        id: '1',
-        score: 0.8,
-        payload: {
-          project: 'my-project', // no suffix (written by the old stand)
-          file: 'src/legacy.ts',
-          language: 'typescript',
-          startLine: 1,
-          endLine: 3,
-          content: 'const y = 2;',
-          hash: 'leg',
+    mockQdrant.client.query.mockResolvedValue({
+      points: [
+        {
+          id: '1',
+          score: 0.8,
+          payload: {
+            project: 'my-project', // no suffix (written by the old stand)
+            file: 'src/legacy.ts',
+            language: 'typescript',
+            startLine: 1,
+            endLine: 3,
+            content: 'const y = 2;',
+            hash: 'leg',
+          },
         },
-      },
-    ]);
+      ],
+    });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -266,7 +272,7 @@ describe('Searcher', () => {
   });
 
   it('with an empty projectSuffix, the project filter is the clean name (default guard)', async () => {
-    mockQdrant.client.search.mockResolvedValue([]);
+    mockQdrant.client.query.mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -277,7 +283,7 @@ describe('Searcher', () => {
 
     await searcher.search('test-group', 'query', { project: 'my-project' });
 
-    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+    expect(mockQdrant.client.query).toHaveBeenCalledWith(
       toCollectionName('test-group'),
       expect.objectContaining({
         filter: {
@@ -289,7 +295,7 @@ describe('Searcher', () => {
   });
 
   it('search uses limit option', async () => {
-    mockQdrant.client.search.mockResolvedValue([]);
+    mockQdrant.client.query.mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -299,7 +305,7 @@ describe('Searcher', () => {
 
     await searcher.search('test-group', 'query', { limit: 10 });
 
-    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+    expect(mockQdrant.client.query).toHaveBeenCalledWith(
       toCollectionName('test-group'),
       expect.objectContaining({
         limit: 10,
@@ -308,7 +314,7 @@ describe('Searcher', () => {
   });
 
   it('search returns empty results when collection does not exist', async () => {
-    mockQdrant.client.search.mockRejectedValue(new Error('Collection not found'));
+    mockQdrant.client.query.mockRejectedValue(new Error('Collection not found'));
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -324,7 +330,7 @@ describe('Searcher', () => {
   });
 
   it('search returns empty results when collection does not exist ("does not exist" wording)', async () => {
-    mockQdrant.client.search.mockRejectedValue(new Error('Collection my-group does not exist'));
+    mockQdrant.client.query.mockRejectedValue(new Error('Collection my-group does not exist'));
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -339,7 +345,7 @@ describe('Searcher', () => {
   });
 
   it('search throws on network error (not collection not found)', async () => {
-    mockQdrant.client.search.mockRejectedValue(new Error('Connection refused'));
+    mockQdrant.client.query.mockRejectedValue(new Error('Connection refused'));
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -353,23 +359,25 @@ describe('Searcher', () => {
   });
 
   it('search retries on transient error and succeeds on second attempt', async () => {
-    mockQdrant.client.search
+    mockQdrant.client.query
       .mockRejectedValueOnce(new Error('Connection timeout'))
-      .mockResolvedValueOnce([
-        {
-          id: '1',
-          score: 0.9,
-          payload: {
-            project: 'p',
-            file: 'f.ts',
-            language: 'ts',
-            startLine: 1,
-            endLine: 10,
-            content: 'result',
-            hash: 'h',
+      .mockResolvedValueOnce({
+        points: [
+          {
+            id: '1',
+            score: 0.9,
+            payload: {
+              project: 'p',
+              file: 'f.ts',
+              language: 'ts',
+              startLine: 1,
+              endLine: 10,
+              content: 'result',
+              hash: 'h',
+            },
           },
-        },
-      ]);
+        ],
+      });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -381,7 +389,7 @@ describe('Searcher', () => {
 
     expect(response.results).toHaveLength(1);
     expect(response.results[0].content).toBe('result');
-    expect(mockQdrant.client.search).toHaveBeenCalledTimes(2);
+    expect(mockQdrant.client.query).toHaveBeenCalledTimes(2);
   });
 
   it('search validates input: empty groupName', async () => {
@@ -407,7 +415,7 @@ describe('Searcher', () => {
   });
 
   it('search clamps limit to 1-100', async () => {
-    mockQdrant.client.search.mockResolvedValue([]);
+    mockQdrant.client.query.mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -416,39 +424,41 @@ describe('Searcher', () => {
     });
 
     await searcher.search('test-group', 'query', { limit: 0 });
-    expect(mockQdrant.client.search).toHaveBeenLastCalledWith(
+    expect(mockQdrant.client.query).toHaveBeenLastCalledWith(
       toCollectionName('test-group'),
       expect.objectContaining({ limit: 1 })
     );
 
     await searcher.search('test-group', 'query', { limit: 500 });
-    expect(mockQdrant.client.search).toHaveBeenLastCalledWith(
+    expect(mockQdrant.client.query).toHaveBeenLastCalledWith(
       toCollectionName('test-group'),
       expect.objectContaining({ limit: 100 })
     );
   });
 
   it('search filters invalid payloads', async () => {
-    mockQdrant.client.search.mockResolvedValue([
-      {
-        id: '1',
-        score: 0.9,
-        payload: {
-          project: 'p',
-          file: 'f.ts',
-          language: 'ts',
-          startLine: 1,
-          endLine: 10,
-          content: 'x',
-          hash: 'h',
+    mockQdrant.client.query.mockResolvedValue({
+      points: [
+        {
+          id: '1',
+          score: 0.9,
+          payload: {
+            project: 'p',
+            file: 'f.ts',
+            language: 'ts',
+            startLine: 1,
+            endLine: 10,
+            content: 'x',
+            hash: 'h',
+          },
         },
-      },
-      {
-        id: '2',
-        score: 0.8,
-        payload: { invalid: 'payload' }, // Missing required fields
-      },
-    ]);
+        {
+          id: '2',
+          score: 0.8,
+          payload: { invalid: 'payload' }, // Missing required fields
+        },
+      ],
+    });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -463,21 +473,23 @@ describe('Searcher', () => {
   });
 
   it('search filters payloads with wrong types (e.g. startLine as string)', async () => {
-    mockQdrant.client.search.mockResolvedValue([
-      {
-        id: '1',
-        score: 0.9,
-        payload: {
-          project: 'p',
-          file: 'f.ts',
-          language: 'ts',
-          startLine: '10', // wrong type
-          endLine: 20,
-          content: 'x',
-          hash: 'h',
+    mockQdrant.client.query.mockResolvedValue({
+      points: [
+        {
+          id: '1',
+          score: 0.9,
+          payload: {
+            project: 'p',
+            file: 'f.ts',
+            language: 'ts',
+            startLine: '10', // wrong type
+            endLine: 20,
+            content: 'x',
+            hash: 'h',
+          },
         },
-      },
-    ]);
+      ],
+    });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -493,34 +505,36 @@ describe('Searcher', () => {
   it('computeMetrics uses max endLine per file for token estimation', async () => {
     // Two chunks from same file: lines 1-20 and 50-100. Max endLine = 100.
     // estimatedFullFileTokens = ceil(100 * 50 / 4) = 1250
-    mockQdrant.client.search.mockResolvedValue([
-      {
-        id: '1',
-        score: 0.95,
-        payload: {
-          project: 'p',
-          file: 'src/utils.ts',
-          language: 'ts',
-          startLine: 1,
-          endLine: 20,
-          content: 'a'.repeat(80), // ~20 tokens
-          hash: 'h1',
+    mockQdrant.client.query.mockResolvedValue({
+      points: [
+        {
+          id: '1',
+          score: 0.95,
+          payload: {
+            project: 'p',
+            file: 'src/utils.ts',
+            language: 'ts',
+            startLine: 1,
+            endLine: 20,
+            content: 'a'.repeat(80), // ~20 tokens
+            hash: 'h1',
+          },
         },
-      },
-      {
-        id: '2',
-        score: 0.9,
-        payload: {
-          project: 'p',
-          file: 'src/utils.ts',
-          language: 'ts',
-          startLine: 50,
-          endLine: 100,
-          content: 'b'.repeat(200), // ~50 tokens
-          hash: 'h2',
+        {
+          id: '2',
+          score: 0.9,
+          payload: {
+            project: 'p',
+            file: 'src/utils.ts',
+            language: 'ts',
+            startLine: 50,
+            endLine: 100,
+            content: 'b'.repeat(200), // ~50 tokens
+            hash: 'h2',
+          },
         },
-      },
-    ]);
+      ],
+    });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -539,21 +553,23 @@ describe('Searcher', () => {
   });
 
   it('getUsageStats returns search count and token savings', async () => {
-    mockQdrant.client.search.mockResolvedValue([
-      {
-        id: '1',
-        score: 0.9,
-        payload: {
-          project: 'p',
-          file: 'f.ts',
-          language: 'ts',
-          startLine: 1,
-          endLine: 10,
-          content: 'x'.repeat(100),
-          hash: 'h',
+    mockQdrant.client.query.mockResolvedValue({
+      points: [
+        {
+          id: '1',
+          score: 0.9,
+          payload: {
+            project: 'p',
+            file: 'f.ts',
+            language: 'ts',
+            startLine: 1,
+            endLine: 10,
+            content: 'x'.repeat(100),
+            hash: 'h',
+          },
         },
-      },
-    ]);
+      ],
+    });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -593,38 +609,42 @@ describe('Searcher', () => {
   it('expandedSearch returns merged results from multiple query variations', async () => {
     // "auth middleware" expands to ["auth middleware", "authentication middleware", ...]
     // Each call returns different results
-    mockQdrant.client.search
-      .mockResolvedValueOnce([
-        {
-          id: '1',
-          score: 0.9,
-          payload: {
-            project: 'p',
-            file: 'src/auth.ts',
-            language: 'ts',
-            startLine: 1,
-            endLine: 10,
-            content: 'auth check',
-            hash: 'h1',
+    mockQdrant.client.query
+      .mockResolvedValueOnce({
+        points: [
+          {
+            id: '1',
+            score: 0.9,
+            payload: {
+              project: 'p',
+              file: 'src/auth.ts',
+              language: 'ts',
+              startLine: 1,
+              endLine: 10,
+              content: 'auth check',
+              hash: 'h1',
+            },
           },
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: '2',
-          score: 0.85,
-          payload: {
-            project: 'p',
-            file: 'src/middleware.ts',
-            language: 'ts',
-            startLine: 5,
-            endLine: 15,
-            content: 'authentication middleware',
-            hash: 'h2',
+        ],
+      })
+      .mockResolvedValueOnce({
+        points: [
+          {
+            id: '2',
+            score: 0.85,
+            payload: {
+              project: 'p',
+              file: 'src/middleware.ts',
+              language: 'ts',
+              startLine: 5,
+              endLine: 15,
+              content: 'authentication middleware',
+              hash: 'h2',
+            },
           },
-        },
-      ])
-      .mockResolvedValue([]);
+        ],
+      })
+      .mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -645,38 +665,42 @@ describe('Searcher', () => {
 
   it('expandedSearch deduplicates by hash, keeping highest score', async () => {
     // Same hash returned by two variations with different scores
-    mockQdrant.client.search
-      .mockResolvedValueOnce([
-        {
-          id: '1',
-          score: 0.7,
-          payload: {
-            project: 'p',
-            file: 'src/auth.ts',
-            language: 'ts',
-            startLine: 1,
-            endLine: 10,
-            content: 'auth',
-            hash: 'shared-hash',
+    mockQdrant.client.query
+      .mockResolvedValueOnce({
+        points: [
+          {
+            id: '1',
+            score: 0.7,
+            payload: {
+              project: 'p',
+              file: 'src/auth.ts',
+              language: 'ts',
+              startLine: 1,
+              endLine: 10,
+              content: 'auth',
+              hash: 'shared-hash',
+            },
           },
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: '2',
-          score: 0.95,
-          payload: {
-            project: 'p',
-            file: 'src/auth.ts',
-            language: 'ts',
-            startLine: 1,
-            endLine: 10,
-            content: 'auth',
-            hash: 'shared-hash',
+        ],
+      })
+      .mockResolvedValueOnce({
+        points: [
+          {
+            id: '2',
+            score: 0.95,
+            payload: {
+              project: 'p',
+              file: 'src/auth.ts',
+              language: 'ts',
+              startLine: 1,
+              endLine: 10,
+              content: 'auth',
+              hash: 'shared-hash',
+            },
           },
-        },
-      ])
-      .mockResolvedValue([]);
+        ],
+      })
+      .mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -692,21 +716,23 @@ describe('Searcher', () => {
   });
 
   it('expandedSearch falls through to single search when no expansions generated', async () => {
-    mockQdrant.client.search.mockResolvedValue([
-      {
-        id: '1',
-        score: 0.9,
-        payload: {
-          project: 'p',
-          file: 'f.ts',
-          language: 'ts',
-          startLine: 1,
-          endLine: 10,
-          content: 'result',
-          hash: 'h',
+    mockQdrant.client.query.mockResolvedValue({
+      points: [
+        {
+          id: '1',
+          score: 0.9,
+          payload: {
+            project: 'p',
+            file: 'f.ts',
+            language: 'ts',
+            startLine: 1,
+            endLine: 10,
+            content: 'result',
+            hash: 'h',
+          },
         },
-      },
-    ]);
+      ],
+    });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -720,44 +746,48 @@ describe('Searcher', () => {
     expect(response.results).toHaveLength(1);
     expect(response.results[0]!.content).toBe('result');
     // Single search: only 1 call to qdrant
-    expect(mockQdrant.client.search).toHaveBeenCalledTimes(1);
+    expect(mockQdrant.client.query).toHaveBeenCalledTimes(1);
   });
 
   it('expandedSearch logs which variations contributed results', async () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    mockQdrant.client.search
-      .mockResolvedValueOnce([
-        {
-          id: '1',
-          score: 0.9,
-          payload: {
-            project: 'p',
-            file: 'src/auth.ts',
-            language: 'ts',
-            startLine: 1,
-            endLine: 10,
-            content: 'auth',
-            hash: 'h1',
+    mockQdrant.client.query
+      .mockResolvedValueOnce({
+        points: [
+          {
+            id: '1',
+            score: 0.9,
+            payload: {
+              project: 'p',
+              file: 'src/auth.ts',
+              language: 'ts',
+              startLine: 1,
+              endLine: 10,
+              content: 'auth',
+              hash: 'h1',
+            },
           },
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: '2',
-          score: 0.85,
-          payload: {
-            project: 'p',
-            file: 'src/auth2.ts',
-            language: 'ts',
-            startLine: 1,
-            endLine: 10,
-            content: 'authentication',
-            hash: 'h2',
+        ],
+      })
+      .mockResolvedValueOnce({
+        points: [
+          {
+            id: '2',
+            score: 0.85,
+            payload: {
+              project: 'p',
+              file: 'src/auth2.ts',
+              language: 'ts',
+              startLine: 1,
+              endLine: 10,
+              content: 'authentication',
+              hash: 'h2',
+            },
           },
-        },
-      ])
-      .mockResolvedValue([]);
+        ],
+      })
+      .mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -794,14 +824,12 @@ describe('Searcher', () => {
       },
     });
 
-    mockQdrant.client.search
-      .mockResolvedValueOnce([
-        makeHit('1', 0.9, 'h1'),
-        makeHit('2', 0.8, 'h2'),
-        makeHit('3', 0.7, 'h3'),
-      ])
-      .mockResolvedValueOnce([makeHit('4', 0.85, 'h4'), makeHit('5', 0.75, 'h5')])
-      .mockResolvedValue([]);
+    mockQdrant.client.query
+      .mockResolvedValueOnce({
+        points: [makeHit('1', 0.9, 'h1'), makeHit('2', 0.8, 'h2'), makeHit('3', 0.7, 'h3')],
+      })
+      .mockResolvedValueOnce({ points: [makeHit('4', 0.85, 'h4'), makeHit('5', 0.75, 'h5')] })
+      .mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -819,21 +847,23 @@ describe('Searcher', () => {
   });
 
   it('searchWithFilter applies additional filter conditions', async () => {
-    mockQdrant.client.search.mockResolvedValue([
-      {
-        id: '1',
-        score: 0.9,
-        payload: {
-          project: 'p',
-          file: 'src/auth.ts',
-          language: 'typescript',
-          startLine: 1,
-          endLine: 10,
-          content: 'const x = 1;',
-          hash: 'h1',
+    mockQdrant.client.query.mockResolvedValue({
+      points: [
+        {
+          id: '1',
+          score: 0.9,
+          payload: {
+            project: 'p',
+            file: 'src/auth.ts',
+            language: 'typescript',
+            startLine: 1,
+            endLine: 10,
+            content: 'const x = 1;',
+            hash: 'h1',
+          },
         },
-      },
-    ]);
+      ],
+    });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -859,7 +889,7 @@ describe('Searcher', () => {
     expect(response.results[0]!.file).toBe('src/auth.ts');
 
     // Verify filter includes the additional condition
-    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+    expect(mockQdrant.client.query).toHaveBeenCalledWith(
       toCollectionName('test-group'),
       expect.objectContaining({
         filter: {
@@ -876,7 +906,7 @@ describe('Searcher', () => {
   });
 
   it('searchWithFilter merges project filter with additional filter', async () => {
-    mockQdrant.client.search.mockResolvedValue([]);
+    mockQdrant.client.query.mockResolvedValue({ points: [] });
 
     const searcher = new Searcher({
       qdrantUrl: 'http://127.0.0.1:6333',
@@ -891,7 +921,7 @@ describe('Searcher', () => {
       { project: 'my-project', limit: 3 }
     );
 
-    expect(mockQdrant.client.search).toHaveBeenCalledWith(
+    expect(mockQdrant.client.query).toHaveBeenCalledWith(
       toCollectionName('test-group'),
       expect.objectContaining({
         limit: 3,
@@ -976,7 +1006,7 @@ describe('Searcher', () => {
 
   describe('allowedProjects', () => {
     it('no allowedProjects: no project filter applied (existing behavior)', async () => {
-      mockQdrant.client.search.mockResolvedValue([]);
+      mockQdrant.client.query.mockResolvedValue({ points: [] });
 
       const searcher = new Searcher({
         qdrantUrl: 'http://127.0.0.1:6333',
@@ -986,7 +1016,7 @@ describe('Searcher', () => {
 
       await searcher.search('test-group', 'query');
 
-      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      expect(mockQdrant.client.query).toHaveBeenCalledWith(
         toCollectionName('test-group'),
         expect.objectContaining({
           filter: { must_not: META_NOT },
@@ -995,7 +1025,7 @@ describe('Searcher', () => {
     });
 
     it('single allowedProject: filters via match.value', async () => {
-      mockQdrant.client.search.mockResolvedValue([]);
+      mockQdrant.client.query.mockResolvedValue({ points: [] });
 
       const searcher = new Searcher({
         qdrantUrl: 'http://127.0.0.1:6333',
@@ -1006,7 +1036,7 @@ describe('Searcher', () => {
 
       await searcher.search('test-group', 'query');
 
-      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      expect(mockQdrant.client.query).toHaveBeenCalledWith(
         toCollectionName('test-group'),
         expect.objectContaining({
           filter: {
@@ -1018,7 +1048,7 @@ describe('Searcher', () => {
     });
 
     it('multiple allowedProjects: filters via match.any', async () => {
-      mockQdrant.client.search.mockResolvedValue([]);
+      mockQdrant.client.query.mockResolvedValue({ points: [] });
 
       const searcher = new Searcher({
         qdrantUrl: 'http://127.0.0.1:6333',
@@ -1029,7 +1059,7 @@ describe('Searcher', () => {
 
       await searcher.search('test-group', 'query');
 
-      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      expect(mockQdrant.client.query).toHaveBeenCalledWith(
         toCollectionName('test-group'),
         expect.objectContaining({
           filter: {
@@ -1041,7 +1071,7 @@ describe('Searcher', () => {
     });
 
     it('explicit project within allowed set: narrows to that single project', async () => {
-      mockQdrant.client.search.mockResolvedValue([]);
+      mockQdrant.client.query.mockResolvedValue({ points: [] });
 
       const searcher = new Searcher({
         qdrantUrl: 'http://127.0.0.1:6333',
@@ -1052,7 +1082,7 @@ describe('Searcher', () => {
 
       await searcher.search('test-group', 'query', { project: 'org/tracking' });
 
-      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      expect(mockQdrant.client.query).toHaveBeenCalledWith(
         toCollectionName('test-group'),
         expect.objectContaining({
           filter: {
@@ -1077,7 +1107,7 @@ describe('Searcher', () => {
 
       expect(response.results).toEqual([]);
       expect(response.total).toBe(0);
-      expect(mockQdrant.client.search).not.toHaveBeenCalled();
+      expect(mockQdrant.client.query).not.toHaveBeenCalled();
     });
 
     it('getProjectScope returns scope when set', () => {
@@ -1129,11 +1159,11 @@ describe('Searcher', () => {
 
       expect(response.results).toEqual([]);
       expect(response.total).toBe(0);
-      expect(mockQdrant.client.search).not.toHaveBeenCalled();
+      expect(mockQdrant.client.query).not.toHaveBeenCalled();
     });
 
     it('searchWithFilter: allowedProjects merged with additional filter', async () => {
-      mockQdrant.client.search.mockResolvedValue([]);
+      mockQdrant.client.query.mockResolvedValue({ points: [] });
 
       const searcher = new Searcher({
         qdrantUrl: 'http://127.0.0.1:6333',
@@ -1149,7 +1179,7 @@ describe('Searcher', () => {
         { limit: 5 }
       );
 
-      expect(mockQdrant.client.search).toHaveBeenCalledWith(
+      expect(mockQdrant.client.query).toHaveBeenCalledWith(
         toCollectionName('test-group'),
         expect.objectContaining({
           filter: {

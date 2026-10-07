@@ -395,9 +395,9 @@ export class Searcher {
 
     let results: SearchResult[];
     try {
-      const hits = await this.retryQdrant(() =>
-        this.qdrant.search(toCollectionName(groupName), {
-          vector: queryVector,
+      const { points: hits } = await this.retryQdrant(() =>
+        this.qdrant.query(toCollectionName(groupName), {
+          query: queryVector,
           limit,
           with_payload: true,
           filter: { must, must_not: [this.metaExclusion()] },
@@ -483,9 +483,9 @@ export class Searcher {
 
     let results: SearchResult[];
     try {
-      const hits = await this.retryQdrant(() =>
-        this.qdrant.search(toCollectionName(groupName), {
-          vector: queryVector,
+      const { points: hits } = await this.retryQdrant(() =>
+        this.qdrant.query(toCollectionName(groupName), {
+          query: queryVector,
           limit,
           with_payload: true,
           filter,

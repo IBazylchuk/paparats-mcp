@@ -186,8 +186,8 @@ export class TerminologyStore {
     const must_not: unknown[] = [{ key: '__meta', match: { value: true } }];
     const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
     try {
-      const hits = await this.qdrant.search(toTermsCollectionName(group), {
-        vector,
+      const { points: hits } = await this.qdrant.query(toTermsCollectionName(group), {
+        query: vector,
         limit: fetchLimit,
         with_payload: true,
         filter: { must_not },
@@ -315,8 +315,8 @@ export class TerminologyStore {
     project: string | undefined
   ): Promise<{ id: string; score: number; label: string } | null> {
     try {
-      const hits = await this.qdrant.search(toTermsCollectionName(group), {
-        vector,
+      const { points: hits } = await this.qdrant.query(toTermsCollectionName(group), {
+        query: vector,
         limit: 10,
         with_payload: true,
         filter: { must_not: [{ key: '__meta', match: { value: true } }] },

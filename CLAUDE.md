@@ -81,7 +81,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 | `query-expansion.ts`      | Abbreviation, case variant, plural, filler word expansion for search queries                                                                                                     |
 | `task-prefixes.ts`        | Jina task prefix detection (nl2code / code2code / techqa) based on query content                                                                                                 |
 | `query-cache.ts`          | In-memory LRU cache with TTL and group-level invalidation for search results                                                                                                     |
-| `metrics.ts`              | Prometheus metrics (`prom-client`) with `NoOpMetrics` fallback. Opt-in via `PAPARATS_METRICS=true`                                                                               |
+| `metrics.ts`              | Prometheus metrics (`@prometheus-io/client`) with `NoOpMetrics` fallback. Opt-in via `PAPARATS_METRICS=true`                                                                     |
 | `metadata.ts`             | Tag resolution (`resolveTags()`) + auto-detection from directory structure                                                                                                       |
 | `metadata-db.ts`          | SQLite store for git commits, tickets, and symbol edges                                                                                                                          |
 | `git-metadata.ts`         | Git history extraction — commit mapping to chunks by diff hunk overlap                                                                                                           |

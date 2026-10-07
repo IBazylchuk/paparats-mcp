@@ -34,7 +34,7 @@ function fakeQdrant() {
     deleteCollection: vi.fn().mockResolvedValue(undefined),
     upsert: vi.fn().mockResolvedValue(undefined),
     scroll: vi.fn().mockResolvedValue({ points: [], next_page_offset: null }),
-    search: vi.fn().mockResolvedValue([]),
+    query: vi.fn().mockResolvedValue({ points: [] }),
     retrieve: vi.fn().mockResolvedValue([]),
     delete: vi.fn().mockResolvedValue(undefined),
     getCollections: vi.fn().mockResolvedValue({ collections: [] }),
@@ -101,9 +101,9 @@ describe('TerminologyStore.recordTerm', () => {
     // No exact-name match (findByTerm), but findNearest scores high enough that the
     // two texts are effectively the same entry.
     qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
-    qdrant.search.mockResolvedValueOnce([
-      { id: 'dup-id', score: 0.97, payload: { term: 'poster', project: undefined } },
-    ]);
+    qdrant.query.mockResolvedValueOnce({
+      points: [{ id: 'dup-id', score: 0.97, payload: { term: 'poster', project: undefined } }],
+    });
     const res = await store.recordTerm('g', { term: 'feed-poster', definition: 'posts feeds' });
     expect(res.status).toBe('duplicate');
     expect(res.id).toBe('dup-id');
@@ -116,7 +116,9 @@ describe('TerminologyStore.recordTerm', () => {
   // than which term it defines — these must all still be admitted.
   it.each([0.724, 0.781, 0.804, 0.889])('admits a distinct term scoring %s', async (score) => {
     qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
-    qdrant.search.mockResolvedValueOnce([{ id: 'other-id', score, payload: { term: 'OTHER' } }]);
+    qdrant.query.mockResolvedValueOnce({
+      points: [{ id: 'other-id', score, payload: { term: 'OTHER' } }],
+    });
     const res = await store.recordTerm('g', {
       term: `TERM-${score}`,
       definition: 'a distinct concept that happens to read like its neighbour',
@@ -139,13 +141,15 @@ describe('TerminologyStore.search', () => {
   });
 
   it('returns hits and excludes the meta sentinel', async () => {
-    qdrant.search.mockResolvedValueOnce([
-      { score: 1, payload: { __meta: true } },
-      {
-        score: 0.8,
-        payload: { id: 't1', term: 'CLIC', definition: 'the platform', aliases: [] },
-      },
-    ]);
+    qdrant.query.mockResolvedValueOnce({
+      points: [
+        { score: 1, payload: { __meta: true } },
+        {
+          score: 0.8,
+          payload: { id: 't1', term: 'CLIC', definition: 'the platform', aliases: [] },
+        },
+      ],
+    });
     const hits = await store.search('g', 'what is CLIC');
     expect(hits).toHaveLength(1);
     expect(hits[0]!.term).toBe('CLIC');
@@ -153,17 +157,19 @@ describe('TerminologyStore.search', () => {
   });
 
   it('soft-filters by project (global terms surface too)', async () => {
-    qdrant.search.mockResolvedValueOnce([
-      {
-        score: 0.9,
-        payload: { id: 'a', term: 'A', definition: 'x', aliases: [], project: 'billing' },
-      },
-      { score: 0.8, payload: { id: 'b', term: 'B', definition: 'y', aliases: [] } },
-      {
-        score: 0.7,
-        payload: { id: 'c', term: 'C', definition: 'z', aliases: [], project: 'other' },
-      },
-    ]);
+    qdrant.query.mockResolvedValueOnce({
+      points: [
+        {
+          score: 0.9,
+          payload: { id: 'a', term: 'A', definition: 'x', aliases: [], project: 'billing' },
+        },
+        { score: 0.8, payload: { id: 'b', term: 'B', definition: 'y', aliases: [] } },
+        {
+          score: 0.7,
+          payload: { id: 'c', term: 'C', definition: 'z', aliases: [], project: 'other' },
+        },
+      ],
+    });
     const hits = await store.search('g', 'q', { project: 'billing' });
     const terms = hits.map((h) => h.term);
     expect(terms).toContain('A'); // project match
@@ -190,7 +196,7 @@ describe('TerminologyStore.search', () => {
       const hits = await store.search('g', 'XYZ');
       expect(hits.map((h) => h.term)).toEqual(['XYZ']);
       expect(hits[0]!.score).toBe(1);
-      expect(qdrant.search).not.toHaveBeenCalled();
+      expect(qdrant.query).not.toHaveBeenCalled();
     });
 
     it.each(['xyz', '  XYZ  ', 'XyZ'])('matches case- and space-insensitively: %s', async (q) => {
@@ -202,7 +208,7 @@ describe('TerminologyStore.search', () => {
       withGlossary([term('t', 'Canonical Name', ['Friendly Alias'])]);
       const hits = await store.search('g', 'friendly alias');
       expect(hits.map((h) => h.term)).toEqual(['Canonical Name']);
-      expect(qdrant.search).not.toHaveBeenCalled();
+      expect(qdrant.query).not.toHaveBeenCalled();
     });
 
     it('prefers a canonical name over another term holding it as an alias', async () => {
@@ -223,11 +229,13 @@ describe('TerminologyStore.search', () => {
 
     it('falls back to the vector when nothing matches by name', async () => {
       withGlossary([term('x', 'XYZ')]);
-      qdrant.search.mockResolvedValueOnce([
-        { id: 'x', score: 0.81, payload: { id: 'x', term: 'XYZ', definition: 'd', aliases: [] } },
-      ]);
+      qdrant.query.mockResolvedValueOnce({
+        points: [
+          { id: 'x', score: 0.81, payload: { id: 'x', term: 'XYZ', definition: 'd', aliases: [] } },
+        ],
+      });
       const hits = await store.search('g', 'a descriptive question about the concept');
-      expect(qdrant.search).toHaveBeenCalled();
+      expect(qdrant.query).toHaveBeenCalled();
       expect(hits[0]!.score).toBe(0.81);
     });
 
@@ -250,19 +258,19 @@ describe('TerminologyStore.search', () => {
     await s.search('g', 'a descriptive question with no exact name match');
     expect(provider.embedQuery).toHaveBeenCalled();
     expect(provider.embed).not.toHaveBeenCalled();
-    const used = qdrant.search.mock.calls.at(-1)![1] as { vector: number[] };
-    expect(used.vector[0]).toBe(0.2);
+    const used = qdrant.query.mock.calls.at(-1)![1] as { query: number[] };
+    expect(used.query[0]).toBe(0.2);
   });
 
   it('returns [] gracefully on a missing collection', async () => {
-    qdrant.search.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }));
+    qdrant.query.mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }));
     expect(await store.search('g', 'q')).toEqual([]);
   });
 
   it('propagates a real failure instead of reporting an empty glossary', async () => {
     // An empty result and an unreachable store are indistinguishable to the
     // caller, so swallowing this silently disables glossary enrichment.
-    qdrant.search.mockRejectedValueOnce(Object.assign(new Error('Unauthorized'), { status: 401 }));
+    qdrant.query.mockRejectedValueOnce(Object.assign(new Error('Unauthorized'), { status: 401 }));
     await expect(store.search('g', 'q')).rejects.toThrow('Unauthorized');
   });
 });

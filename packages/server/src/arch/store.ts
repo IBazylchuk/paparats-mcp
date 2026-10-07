@@ -523,8 +523,8 @@ export class ArchStore {
     project: string | undefined
   ): Promise<{ id: string; score: number; label: string } | null> {
     try {
-      const hits = await this.qdrant.search(toArchCollectionName(group), {
-        vector,
+      const { points: hits } = await this.qdrant.query(toArchCollectionName(group), {
+        query: vector,
         // Overfetch so the post-filter has candidates if the top-1 is in a
         // different project. Arch collections are tiny — 10 is cheap.
         limit: 10,
@@ -599,8 +599,8 @@ export class ArchStore {
     // (low thousands), so 3x is cheap and bounded.
     const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
     try {
-      const hits = await this.qdrant.search(toArchCollectionName(group), {
-        vector,
+      const { points: hits } = await this.qdrant.query(toArchCollectionName(group), {
+        query: vector,
         limit: fetchLimit,
         with_payload: true,
         ...(Object.keys(filter).length > 0 ? { filter } : {}),
