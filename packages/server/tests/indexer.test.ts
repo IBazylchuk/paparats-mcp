@@ -513,26 +513,192 @@ describe('Indexer', () => {
     expect(mockQdrant.client.delete).toHaveBeenCalled();
   });
 
-  it('indexFile proceeds with full index when no existing chunks', async () => {
-    const srcDir = path.join(projectDir, 'src');
-    fs.mkdirSync(srcDir, { recursive: true });
-    const tsPath = path.join(srcDir, 'new.ts');
-    fs.writeFileSync(tsPath, 'export const fresh = true;\n');
-
+  it('refuses to write a group whose collection a sidecar layer would claim', async () => {
     const indexer = new Indexer({
       qdrantUrl: 'http://localhost:6333',
       embeddingProvider,
       dimensions: 4,
       qdrantClient: mockQdrant.client as never,
     });
+    // Set after config resolution, the way an override would — the Indexer must still refuse.
+    const project = { ...createProjectConfig(projectDir), group: 'billing_arch' };
+    await expect(
+      indexer.indexFilesContent(project, [{ path: 'src/a.ts', content: 'export const a = 1;\n' }])
+    ).rejects.toThrow(/reserved/);
+    expect(mockQdrant.client.upsert).not.toHaveBeenCalled();
+  });
 
-    const project = createProjectConfig(projectDir);
+  it('does not index files reached through a symlink into .git or out of the project', async () => {
+    fs.mkdirSync(path.join(projectDir, '.git'), { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, '.git', 'config'),
+      '[remote "origin"]\n  url = https://token@git.example.com/o/r.git\n'
+    );
+    const outside = createTempDir();
+    fs.writeFileSync(path.join(outside, 'secret.ts'), 'export const secret = "outside";\n');
+    const srcDir = path.join(projectDir, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.writeFileSync(path.join(srcDir, 'real.ts'), 'export const real = true;\n');
+    fs.symlinkSync(path.join(projectDir, '.git', 'config'), path.join(srcDir, 'leak.ts'));
+    fs.symlinkSync(path.join(outside, 'secret.ts'), path.join(srcDir, 'escape.ts'));
 
-    const result = await indexer.indexFile('test-group', project, tsPath);
-    expect(result).toBeGreaterThan(0);
-    expect(indexer.stats.skipped).toBe(0);
-    // delete should NOT have been called since there were no existing chunks
-    expect(mockQdrant.client.delete).not.toHaveBeenCalled();
+    try {
+      const indexer = new Indexer({
+        qdrantUrl: 'http://localhost:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+      });
+      await indexer.indexProject(createProjectConfig(projectDir));
+
+      const files = new Set(
+        mockQdrant.upsertedPoints.flatMap((u) =>
+          (u.points as Array<{ payload: { file: string } }>).map((p) => p.payload.file)
+        )
+      );
+      expect(files.has('src/real.ts')).toBe(true);
+      expect(files.has('src/leak.ts')).toBe(false);
+      expect(files.has('src/escape.ts')).toBe(false);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  describe("replacing a file's stored chunks", () => {
+    const COL = 'paparats_test-group';
+    type StoredPoint = { id: string; payload: Record<string, unknown> };
+    const stored = (file: string): StoredPoint[] =>
+      Array.from((mockQdrant.collections.get(COL) ?? new Map()).values()).filter(
+        (p) => (p as StoredPoint).payload['file'] === file
+      ) as StoredPoint[];
+
+    function writeSrc(name: string, content: string | Buffer): string {
+      const srcDir = path.join(projectDir, 'src');
+      fs.mkdirSync(srcDir, { recursive: true });
+      const p = path.join(srcDir, name);
+      fs.writeFileSync(p, content);
+      return p;
+    }
+
+    function makeIndexer(provider: CachedEmbeddingProvider = embeddingProvider): Indexer {
+      return new Indexer({
+        qdrantUrl: 'http://localhost:6333',
+        embeddingProvider: provider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+      });
+    }
+
+    it('always clears the file before writing, so a missed read cannot leave two copies', async () => {
+      const tsPath = writeSrc('new.ts', 'export const fresh = true;\n');
+      const result = await makeIndexer().indexFile(
+        'test-group',
+        createProjectConfig(projectDir),
+        tsPath
+      );
+      expect(result).toBeGreaterThan(0);
+      expect(mockQdrant.client.delete).toHaveBeenCalledTimes(1);
+      const deleteOrder = mockQdrant.client.delete.mock.invocationCallOrder[0]!;
+      const upsertOrder = mockQdrant.client.upsert.mock.invocationCallOrder[0]!;
+      expect(deleteOrder).toBeLessThan(upsertOrder);
+      expect(stored('src/new.ts')).toHaveLength(result);
+    });
+
+    it('keeps the indexed version when embedding the new one fails', async () => {
+      const tsPath = writeSrc('keep.ts', 'export const x = 1;\n');
+      const project = createProjectConfig(projectDir);
+      const n = await makeIndexer().indexFile('test-group', project, tsPath);
+      const before = stored('src/keep.ts').map((p) => p.payload['content']);
+      expect(before).toHaveLength(n);
+
+      const failing = new CachedEmbeddingProvider(
+        {
+          model: 'test-model',
+          dimensions: 4,
+          embed: async () => {
+            throw new Error('embed timeout');
+          },
+          embedBatch: async () => {
+            throw new Error('embed timeout');
+          },
+        },
+        new EmbeddingCache(':memory:')
+      );
+      fs.writeFileSync(tsPath, 'export const x = 2;\nexport const y = 3;\n');
+      await expect(makeIndexer(failing).indexFile('test-group', project, tsPath)).rejects.toThrow(
+        'embed timeout'
+      );
+      expect(stored('src/keep.ts').map((p) => p.payload['content'])).toEqual(before);
+    });
+
+    it('removes the stored chunks once a file is emptied', async () => {
+      const tsPath = writeSrc('gone.ts', 'export const x = 1;\n');
+      const project = createProjectConfig(projectDir);
+      const indexer = makeIndexer();
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBeGreaterThan(0);
+      fs.writeFileSync(tsPath, '   \n');
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBe(0);
+      expect(stored('src/gone.ts')).toHaveLength(0);
+    });
+
+    it('removes the stored chunks once a file turns binary', async () => {
+      const tsPath = writeSrc('blob.ts', 'export const x = 1;\n');
+      const project = createProjectConfig(projectDir);
+      const indexer = makeIndexer();
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBeGreaterThan(0);
+      fs.writeFileSync(tsPath, Buffer.from([0x00, 0x01, 0x02, 0x00]));
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBe(0);
+      expect(stored('src/blob.ts')).toHaveLength(0);
+    });
+
+    it('re-indexes a file whose chunks only moved, so line numbers stay correct', async () => {
+      const body = 'export function a() {\n  return 1;\n}\n';
+      const tsPath = writeSrc('moved.ts', body);
+      const project = createProjectConfig(projectDir);
+      const indexer = makeIndexer();
+      await indexer.indexFile('test-group', project, tsPath);
+      const firstStart = stored('src/moved.ts')[0]!.payload['startLine'];
+
+      fs.writeFileSync(tsPath, '\n\n' + body);
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBeGreaterThan(0);
+      const points = stored('src/moved.ts');
+      expect(points[0]!.payload['startLine']).not.toBe(firstStart);
+    });
+
+    it('heals duplicated points instead of treating them as unchanged', async () => {
+      const tsPath = writeSrc('dup.ts', 'export const x = 1;\n');
+      const project = createProjectConfig(projectDir);
+      const indexer = makeIndexer();
+      const n = await indexer.indexFile('test-group', project, tsPath);
+      const col = mockQdrant.collections.get(COL)!;
+      for (const p of stored('src/dup.ts')) col.set(`${p.id}-copy`, { ...p, id: `${p.id}-copy` });
+      expect(stored('src/dup.ts')).toHaveLength(2 * n);
+
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBe(n);
+      expect(stored('src/dup.ts')).toHaveLength(n);
+    });
+
+    it('applies a changed service to a file whose content did not change', async () => {
+      const tsPath = writeSrc('svc.ts', 'export const x = 1;\n');
+      const indexer = makeIndexer();
+      const project = createProjectConfig(projectDir);
+      await indexer.indexFile('test-group', project, tsPath);
+
+      const renamed = { ...project, metadata: { ...project.metadata, service: 'billing' } };
+      expect(await indexer.indexFile('test-group', renamed, tsPath)).toBeGreaterThan(0);
+      for (const p of stored('src/svc.ts')) expect(p.payload['service']).toBe('billing');
+      // And once applied, the file is unchanged again.
+      expect(await indexer.indexFile('test-group', renamed, tsPath)).toBe(0);
+    });
+
+    it('fails the file, without writing, when its stored state cannot be read', async () => {
+      const tsPath = writeSrc('unreadable.ts', 'export const x = 1;\n');
+      mockQdrant.client.scroll.mockRejectedValue(new Error('connect ECONNREFUSED'));
+      await expect(
+        makeIndexer().indexFile('test-group', createProjectConfig(projectDir), tsPath)
+      ).rejects.toThrow('ECONNREFUSED');
+      expect(mockQdrant.client.upsert).not.toHaveBeenCalled();
+    }, 15_000);
   });
 
   it('indexFilesContent skips unchanged files', async () => {

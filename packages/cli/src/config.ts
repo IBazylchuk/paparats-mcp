@@ -6,6 +6,7 @@ import {
   validateIndexingPaths,
   normalizeExcludePatterns as normalizeExcludeFromShared,
   filterFilesByGitignore,
+  filterFilesWithinRoot,
   DEFAULT_EXCLUDE_BARE,
 } from '@paparats/shared';
 
@@ -331,7 +332,8 @@ export async function collectProjectFiles(
     found.forEach((f) => fileSet.add(f));
   }
 
-  let files = Array.from(fileSet);
+  // Symlinks resolving outside the project (or into .git) are never indexed.
+  let files = filterFilesWithinRoot(Array.from(fileSet), projectDir);
   if (respectGitignore) {
     files = filterFilesByGitignore(files, projectDir);
   }

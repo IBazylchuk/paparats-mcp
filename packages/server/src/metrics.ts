@@ -64,7 +64,7 @@ class NoOpMetrics implements MetricsRegistry {
 // ── Prometheus implementation ───────────────────────────────────────────────
 
 async function createPrometheusMetrics(): Promise<MetricsRegistry> {
-  const prom = await import('prom-client');
+  const prom = await import('@prometheus-io/client');
 
   const registry = new prom.Registry();
   prom.collectDefaultMetrics({ register: registry, prefix: 'paparats_' });

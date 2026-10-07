@@ -260,17 +260,20 @@ embeddings:
   });
 
   describe('normalizeExcludePatterns', () => {
-    it('wraps bare dir names with **/ and /**', () => {
+    it('matches bare names at any depth, as the entry itself and its contents', () => {
       expect(normalizeExcludePatterns(['node_modules', 'dist'])).toEqual([
+        '**/node_modules',
         '**/node_modules/**',
+        '**/dist',
         '**/dist/**',
       ]);
     });
 
-    it('leaves patterns with / or ** unchanged', () => {
+    it('leaves ** patterns unchanged and anchors slash paths, including their contents', () => {
       expect(normalizeExcludePatterns(['**/node_modules/**', 'foo/bar'])).toEqual([
         '**/node_modules/**',
         'foo/bar',
+        'foo/bar/**',
       ]);
     });
   });
@@ -322,6 +325,22 @@ embeddings:
       expect(files.some((f) => f.includes('build'))).toBe(false);
       expect(files.some((f) => f.includes('.next'))).toBe(false);
       expect(files.some((f) => f.includes('src/index.ts'))).toBe(true);
+    });
+
+    it('skips symlinked files that resolve outside the project or into .git', async () => {
+      const outside = createTempDir();
+      fs.mkdirSync(path.join(tmpDir, 'src'), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, '.git'), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, 'src', 'index.ts'), 'export {}');
+      fs.writeFileSync(path.join(tmpDir, '.git', 'config'), '[remote "origin"]');
+      fs.writeFileSync(path.join(outside, 'secret.ts'), 'secret');
+      fs.symlinkSync(path.join(outside, 'secret.ts'), path.join(tmpDir, 'src', 'leak.ts'));
+      fs.symlinkSync(path.join(tmpDir, '.git', 'config'), path.join(tmpDir, 'src', 'git.ts'));
+
+      const config: PaparatsConfig = { group: 'g', language: 'typescript' };
+      const files = await collectProjectFiles(tmpDir, config);
+      expect(files.map((f) => path.basename(f))).toEqual(['index.ts']);
+      fs.rmSync(outside, { recursive: true, force: true });
     });
 
     it('excludes files matching .gitignore when respectGitignore is true', async () => {

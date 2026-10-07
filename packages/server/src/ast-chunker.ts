@@ -32,23 +32,50 @@ function textForRange(contentLines: string[], startLine: number, endLine: number
 /**
  * Fixed-size split for leaf nodes that exceed maxChunkSize.
  * Produces chunks without overlap (AST chunks are self-contained).
+ *
+ * With `cutLongLines`, a single line longer than the limit is also cut by
+ * characters. Off by default: inside {@link splitNode} every piece of a cut line
+ * shares one line range, and the containment dedupe would keep only the first —
+ * so only the final {@link enforceMaxChunkSize} pass, which runs after it, cuts.
  */
 function fixedSplit(
   contentLines: string[],
   startLine: number,
   endLine: number,
-  maxChunkSize: number
+  maxChunkSize: number,
+  cutLongLines = false
 ): ChunkResult[] {
   const chunks: ChunkResult[] = [];
   let currentStart = startLine;
 
   while (currentStart <= endLine) {
+    // A single line longer than the limit cannot be split at a line break — cut it
+    // by characters instead (as the regex chunker does). Left whole, a long line of
+    // dense data could overflow the embed server's batch.
+    const firstLine = contentLines[currentStart] ?? '';
+    if (cutLongLines && firstLine.length > maxChunkSize) {
+      for (let pos = 0; pos < firstLine.length; pos += maxChunkSize) {
+        const piece = firstLine.slice(pos, pos + maxChunkSize);
+        if (!piece.trim()) continue;
+        chunks.push({
+          content: piece,
+          startLine: currentStart,
+          endLine: currentStart,
+          hash: hash(piece),
+        });
+      }
+      currentStart++;
+      continue;
+    }
+
     let size = 0;
     let currentEnd = currentStart;
 
     while (currentEnd <= endLine) {
       const lineLen = (contentLines[currentEnd] ?? '').length + 1;
       if (size + lineLen > maxChunkSize && currentEnd > currentStart) break;
+      // Leave an over-long line to the next iteration, which cuts it by characters.
+      if (cutLongLines && lineLen - 1 > maxChunkSize && currentEnd > currentStart) break;
       size += lineLen;
       currentEnd++;
     }
@@ -172,14 +199,18 @@ export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig
   if (topLevelNodes.length === 0) {
     // No named children — treat entire content as one chunk if non-empty
     if (content.trim()) {
-      return [
-        {
-          content,
-          startLine: 0,
-          endLine: contentLines.length - 1,
-          hash: hash(content),
-        },
-      ];
+      return enforceMaxChunkSize(
+        [
+          {
+            content,
+            startLine: 0,
+            endLine: contentLines.length - 1,
+            hash: hash(content),
+          },
+        ],
+        contentLines,
+        config.maxChunkSize
+      );
     }
     return [];
   }
@@ -218,8 +249,9 @@ export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig
     // Attach leading comments: if previous node(s) are comments and this node is not,
     // they're already accumulated in the group — which is the desired behavior.
 
-    // Check if this node alone exceeds maxChunkSize (needs splitting)
-    if (nodeSize > config.maxChunkSize && !isCommentNode(node)) {
+    // Check if this node alone exceeds maxChunkSize (needs splitting). Comments
+    // included: a huge block comment is still text the embedder truncates.
+    if (nodeSize > config.maxChunkSize) {
       // Flush current group first
       if (groupEndLine >= groupStartLine) {
         // Include any inter-node text before this node in the current group
@@ -260,9 +292,10 @@ export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig
       // If the previous node(s) in the group are all comments and this node is a declaration,
       // keep comments with this node instead of flushing them separately
       const isCurrentComment = isCommentNode(node);
-      if (!isCurrentComment) {
-        // Check if everything in the group so far is just comments/whitespace before this declaration
-        // We do a simple heuristic: flush only if group already has non-comment content
+      // Comments normally stay with the declaration they precede, but a run of
+      // them may not grow past maxChunkSize: with no flush, 400 line comments
+      // became one 28 KB chunk, most of which the embedder never saw.
+      if (!isCurrentComment || groupSize + nodeSize > config.maxChunkSize) {
         flushGroup();
         groupStartLine = groupEndLine + 1;
       }
@@ -281,7 +314,25 @@ export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig
   }
   flushGroup();
 
-  return dedupeContainedChunks(chunks);
+  return enforceMaxChunkSize(dedupeContainedChunks(chunks), contentLines, config.maxChunkSize);
+}
+
+/**
+ * Guarantee no chunk exceeds `maxChunkSize`, whichever path produced it (inter-node
+ * gaps, trailing content and grouped runs are emitted whole). An oversized chunk is
+ * re-split over the same lines by {@link fixedSplit}, which also cuts single lines.
+ */
+function enforceMaxChunkSize(
+  chunks: ChunkResult[],
+  contentLines: string[],
+  maxChunkSize: number
+): ChunkResult[] {
+  if (chunks.every((c) => c.content.length <= maxChunkSize)) return chunks;
+  return chunks.flatMap((c) =>
+    c.content.length <= maxChunkSize
+      ? [c]
+      : fixedSplit(contentLines, c.startLine, c.endLine, maxChunkSize, true)
+  );
 }
 
 /**

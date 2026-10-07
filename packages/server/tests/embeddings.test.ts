@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { createHash } from 'crypto';
 import {
   EmbeddingCache,
   LlamaServerProvider,
@@ -142,6 +143,20 @@ describe('CachedEmbeddingProvider', () => {
     expect(provider.cacheHits).toBe(1);
   });
 
+  it('re-embeds when a cached vector has the wrong dimension for the same model', async () => {
+    // Same model name, different output dimension (e.g. a provider `dimensions` setting changed).
+    const cache = new EmbeddingCache(dbPath, 100);
+    const hash = createHash('sha256').update('hello').digest('hex').slice(0, 32);
+    cache.set(hash, 'test-model', [1, 2]);
+    const fresh = new CachedEmbeddingProvider(mock, cache);
+
+    const single = await fresh.embed('hello');
+    expect(single).toHaveLength(4);
+    const [batched] = await fresh.embedBatch(['hello']);
+    expect(batched).toHaveLength(4);
+    fresh.close();
+  });
+
   it('caches embedBatch results', async () => {
     const texts = ['a', 'b', 'c'];
     const v1 = await provider.embedBatch(texts);
@@ -211,6 +226,69 @@ describe('LlamaServerProvider', () => {
     });
     expect(provider.model).toBe('custom');
     expect(provider.dimensions).toBe(384);
+  });
+
+  describe('input too large for the server batch', () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      vi.restoreAllMocks();
+    });
+
+    // Mimics llama-server: an input over the physical batch is rejected with 500.
+    const LIMIT = 1000;
+    function serverWithLimit() {
+      return vi.fn().mockImplementation((_url: string, opts: { body?: string }) => {
+        const body = JSON.parse(opts?.body ?? '{}');
+        const input: string[] = Array.isArray(body.input) ? body.input : [body.input];
+        if (input.some((t) => t.length > LIMIT)) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            text: () =>
+              Promise.resolve(
+                '{"error":{"message":"input is too large to process. increase the physical batch size"}}'
+              ),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              data: input.map((t, i) => ({ embedding: [t.length, 0, 0, 0], index: i })),
+            }),
+        });
+      });
+    }
+
+    it('shrinks only the oversized input and embeds the rest of the batch normally', async () => {
+      const fetchMock = serverWithLimit();
+      vi.stubGlobal('fetch', fetchMock);
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const provider = new LlamaServerProvider({ url: 'http://localhost:9999', dimensions: 4 });
+
+      const texts = ['short one', 'x'.repeat(3000), 'short two'];
+      const out = await provider.embedBatch(texts);
+
+      expect(out).toHaveLength(3);
+      expect(out[0]![0]).toBe('short one'.length);
+      expect(out[2]![0]).toBe('short two'.length);
+      // The long input was embedded from its first part, within the server's limit.
+      expect(out[1]![0]).toBeGreaterThan(0);
+      expect(out[1]![0]).toBeLessThanOrEqual(LIMIT);
+    });
+
+    it('does not retry a too-large response as if it were transient', async () => {
+      const fetchMock = serverWithLimit();
+      vi.stubGlobal('fetch', fetchMock);
+      vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const provider = new LlamaServerProvider({ url: 'http://localhost:9999', dimensions: 4 });
+
+      const started = Date.now();
+      await provider.embed('y'.repeat(3000));
+      // 3000 → 1500 → 750: three requests, no backoff sleeps between them.
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
   });
 
   it('embedBatch splits large batches', async () => {
@@ -366,6 +444,37 @@ describe('VoyageProvider', () => {
     provider.setInputType('query');
     await provider.embed('a query');
     expect(seen).toEqual(['document', 'query']);
+  });
+
+  it('tags search queries as query through the caching layer', async () => {
+    const seen: Array<{ input: string; input_type: string }> = [];
+    const fetchMock = vi.fn(async (_url, opts) => {
+      const body = JSON.parse((opts as { body: string }).body);
+      seen.push({ input: body.input, input_type: body.input_type });
+      const vec = body.input_type === 'query' ? [9, 9, 9] : [1, 1, 1];
+      return new Response(JSON.stringify({ data: [{ embedding: vec, index: 0 }] }), {
+        status: 200,
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const cached = new CachedEmbeddingProvider(
+      new VoyageProvider({ apiKey: 'pa-test', dimensions: 3 }),
+      new EmbeddingCache(':memory:')
+    );
+
+    const doc = await cached.embedPassage('find the retry loop');
+    const query = await cached.embedQuery('find the retry loop');
+
+    // Same text, different input_type — and the query must not be served the
+    // document's cached vector.
+    expect(seen.map((s) => s.input_type)).toEqual(['document', 'query']);
+    expect(seen[1]!.input).toBe('find the retry loop');
+    expect(doc).toEqual([1, 1, 1]);
+    expect(query).toEqual([9, 9, 9]);
+    // And a repeated query is a cache hit.
+    await cached.embedQuery('find the retry loop');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    cached.close();
   });
 
   it('only sends output_dimension when non-default', async () => {

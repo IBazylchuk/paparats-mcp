@@ -11,8 +11,15 @@ import {
   getSupportedLanguages,
   detectLanguages,
   autoProjectConfig,
+  buildProjectConfigFromContent,
+  validateGroupName,
   CONFIG_FILE,
+  type ContentIndexConfig,
 } from '../src/config.js';
+import { toCollectionName } from '../src/indexer.js';
+import { isArchCollection } from '../src/arch/collection.js';
+import { isDocsCollection } from '../src/docs/collection.js';
+import { isTermsCollection } from '../src/terminology/collection.js';
 
 function createTempDir(): string {
   const tmpDir = path.join(
@@ -663,5 +670,101 @@ metadata:
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
     });
+  });
+});
+
+describe('validateGroupName', () => {
+  it.each(['billing_arch', 'billing_docs', 'billing_terms'])(
+    'rejects %s, whose collection the sidecar layers would claim',
+    (group) => {
+      expect(() => validateGroupName(group)).toThrow(/reserved/);
+    }
+  );
+
+  // The bare names are ordinary groups: `paparats_docs` is the code collection of
+  // group `docs`, since a sidecar always has a non-empty group in front of its suffix.
+  it.each([
+    'billing',
+    'main-stand',
+    'architecture',
+    'billing_archive',
+    'docs_site',
+    'docs',
+    'arch',
+    'terms',
+  ])('accepts %s', (group) => {
+    expect(() => validateGroupName(group)).not.toThrow();
+  });
+
+  it('agrees with the sidecar collection helpers on what is reserved', () => {
+    // A code group is unsafe exactly when its collection would be read as a sidecar.
+    expect(isArchCollection(toCollectionName('billing_arch'))).toBe(true);
+    expect(isDocsCollection(toCollectionName('billing_docs'))).toBe(true);
+    expect(isTermsCollection(toCollectionName('billing_terms'))).toBe(true);
+  });
+
+  it('is enforced when resolving a project config', () => {
+    expect(() =>
+      resolveProject(path.resolve('/some/project'), { group: 'billing_arch', language: 'ruby' })
+    ).toThrow(/reserved/);
+  });
+
+  it('is enforced for auto-detected projects with an explicit group', () => {
+    const tmpDir = createTempDir();
+    try {
+      expect(() => autoProjectConfig(tmpDir, { group: 'billing_docs' })).toThrow(/reserved/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('buildProjectConfigFromContent', () => {
+  it('uses defaults when no config is sent', () => {
+    const cfg = buildProjectConfigFromContent('billing', 'main-stand');
+    expect(cfg.indexing.batchSize).toBe(50);
+    expect(cfg.indexing.concurrency).toBe(2);
+    expect(cfg.languages).toEqual(['generic']);
+  });
+
+  it('accepts valid values', () => {
+    const cfg = buildProjectConfigFromContent('billing', 'main-stand', {
+      batchSize: 100,
+      concurrency: 4,
+      languages: ['typescript'],
+    });
+    expect(cfg.indexing.batchSize).toBe(100);
+    expect(cfg.indexing.concurrency).toBe(4);
+    expect(cfg.languages).toEqual(['typescript']);
+  });
+
+  // Regression: validation used to run only when chunkSize or overlap was present.
+  it.each([
+    [{ batchSize: 0 }, /batchSize/],
+    [{ batchSize: 5000 }, /batchSize/],
+    [{ batchSize: '50' }, /batchSize/],
+    [{ concurrency: 0 }, /concurrency/],
+    [{ concurrency: 100 }, /concurrency/],
+    [{ concurrency: 2.5 }, /concurrency/],
+    [{ languages: 'typescript' }, /languages/],
+    [{ languages: [''] }, /languages/],
+  ])('rejects %j', (config, message) => {
+    expect(() =>
+      buildProjectConfigFromContent('billing', 'main-stand', config as ContentIndexConfig)
+    ).toThrow(message);
+  });
+
+  it('rejects a config that is not an object', () => {
+    expect(() =>
+      buildProjectConfigFromContent(
+        'billing',
+        'main-stand',
+        'fast' as unknown as ContentIndexConfig
+      )
+    ).toThrow(/object/);
+  });
+
+  it('rejects a group name reserved for sidecar collections', () => {
+    expect(() => buildProjectConfigFromContent('billing', 'billing_terms')).toThrow(/reserved/);
   });
 });

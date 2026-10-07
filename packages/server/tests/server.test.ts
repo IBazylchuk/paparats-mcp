@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import type { Server } from 'http';
-import { createApp, withTimeout } from '../src/app.js';
+import { createApp, parseCorsOrigins, withTimeout } from '../src/app.js';
 import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
 import type { WatcherManager } from '../src/watcher.js';
@@ -86,6 +86,9 @@ function createMockIndexer(suffix = ''): Indexer {
     updateFileContent: vi.fn().mockResolvedValue(0),
     deleteFileByPath: vi.fn().mockResolvedValue(undefined),
     deleteProjectChunks: vi.fn().mockResolvedValue(undefined),
+    purgeProject: vi.fn().mockResolvedValue(undefined),
+    getChunkById: vi.fn().mockResolvedValue(null),
+    getAdjacentChunks: vi.fn().mockResolvedValue([]),
     storedProjectName: vi.fn((name: string) => (suffix ? `${name}${suffix}` : name)),
     reindexGroup: vi.fn().mockResolvedValue(0),
     stats: { files: 0, chunks: 0, cached: 0, errors: 0, skipped: 0 },
@@ -275,6 +278,59 @@ describe('Server API', () => {
       expect(projectsByGroup.has('test-group')).toBe(true);
       expect(mockIndexer.indexFilesContent).toHaveBeenCalled();
     });
+
+    function postIndex(body: Record<string, unknown>): Promise<Response> {
+      return fetchApi('/api/index', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group: 'test-group',
+          project: 'test-project',
+          files: [{ path: 'src/foo.ts', content: 'const x = 1;' }],
+          ...body,
+        }),
+      });
+    }
+
+    it.each([
+      ['batchSize of 0', { batchSize: 0 }],
+      ['batchSize above the ceiling', { batchSize: 100_000 }],
+      ['non-numeric batchSize', { batchSize: '50' }],
+      ['concurrency of 0', { concurrency: 0 }],
+      ['fractional concurrency', { concurrency: 1.5 }],
+      ['non-object config', 'fast'],
+      ['non-array languages', { languages: 'typescript' }],
+    ])('returns 400 for %s, even without chunkSize/overlap', async (_label, config) => {
+      const res = await postIndex({ config });
+      expect(res.status).toBe(400);
+      expect(mockIndexer.indexFilesContent).not.toHaveBeenCalled();
+      expect(projectsByGroup.has('test-group')).toBe(false);
+    });
+
+    it('returns 400 for a group name reserved for sidecar collections', async () => {
+      const res = await postIndex({ group: 'billing_arch' });
+      expect(res.status).toBe(400);
+      const body = await res.json();
+      expect(body.error).toContain('reserved');
+      expect(mockIndexer.indexFilesContent).not.toHaveBeenCalled();
+    });
+
+    it('invalidates the group query cache after indexing', async () => {
+      const res = await postIndex({});
+      expect(res.status).toBe(200);
+      expect(mockSearcher.invalidateGroupCache).toHaveBeenCalledWith('test-group');
+    });
+
+    it('returns 500 without indexing when force cannot clear the old chunks', async () => {
+      vi.mocked(mockIndexer.deleteProjectChunks).mockRejectedValueOnce(
+        new Error('Qdrant unreachable')
+      );
+      const res = await postIndex({ force: true });
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.error).toBe('Qdrant unreachable');
+      expect(mockIndexer.indexFilesContent).not.toHaveBeenCalled();
+    });
   });
 
   describe('POST /api/file-changed', () => {
@@ -388,23 +444,115 @@ describe('Server API', () => {
     });
   });
 
-  describe('DELETE /api/project/:group/:name (suffix behavior)', () => {
-    /** Build an app with a metadataStore + suffixed indexer, call the delete
-     * route, return the mocks so tests can assert wiring. */
-    async function runDelete(
-      suffix: string,
-      group: string,
-      name: string
-    ): Promise<{ indexer: Indexer; metadataStore: MetadataStore; status: number }> {
-      const indexer = createMockIndexer(suffix);
-      const metadataStore = createMockMetadataStore();
+  describe('file routes', () => {
+    beforeEach(() => {
+      projectsByGroup.set('test-group', [
+        createProjectConfig({ path: tmpDir, name: 'test-project' }),
+      ]);
+    });
+
+    it('file-changed and file-deleted invalidate the group query cache', async () => {
+      for (const [route, extra] of [
+        ['/api/file-changed', { content: 'const x = 1;' }],
+        ['/api/file-deleted', {}],
+      ] as const) {
+        vi.mocked(mockSearcher.invalidateGroupCache).mockClear();
+        const res = await fetchApi(route, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            group: 'test-group',
+            project: 'test-project',
+            path: 'src/foo.ts',
+            ...extra,
+          }),
+        });
+        expect(res.status).toBe(200);
+        expect(mockSearcher.invalidateGroupCache).toHaveBeenCalledWith('test-group');
+      }
+    });
+
+    it('file-changed refuses a group name reserved for sidecar collections', async () => {
+      const res = await fetchApi('/api/file-changed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          group: 'test-group_docs',
+          project: 'test-project',
+          path: 'src/foo.ts',
+          content: 'x',
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(mockIndexer.updateFileContent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('chunk routes under a project scope', () => {
+    const IN_SCOPE = 'g1//billing-v3//src/invoice.ts//0-10//h1';
+    const OUT_OF_SCOPE = 'g1//handbook-v3//src/page.ts//0-10//h2';
+
+    async function getChunk(path: string): Promise<{ status: number; indexer: Indexer }> {
+      const searcher = createMockSearcher();
+      vi.mocked(searcher.getProjectScope).mockReturnValue(['billing']);
+      const indexer = createMockIndexer('-v3');
+      vi.mocked(indexer.getChunkById).mockResolvedValue({ chunk_id: IN_SCOPE, project: 'billing' });
+      const metadataStore = {
+        ...createMockMetadataStore(),
+        getCommits: vi.fn().mockReturnValue([]),
+        getTickets: vi.fn().mockReturnValue([]),
+        getLatestCommit: vi.fn().mockReturnValue(null),
+      } as unknown as MetadataStore;
       const { app } = createApp({
-        searcher: createMockSearcher(),
+        searcher,
         indexer,
         watcherManager: createMockWatcherManager(),
         embeddingProvider: createMockEmbeddingProvider(),
-        projectsByGroup: new Map(),
+        projectsByGroup: new Map([['g1', [createProjectConfig()]]]),
         metadataStore,
+      });
+      const srv = app.listen(0);
+      const p = (srv.address() as { port: number }).port;
+      try {
+        const res = await fetch(`http://127.0.0.1:${p}${path}`);
+        return { status: res.status, indexer };
+      } finally {
+        await new Promise<void>((resolve) => srv.close(() => resolve()));
+      }
+    }
+
+    it('answers 404 for an out-of-scope chunk without looking it up', async () => {
+      for (const suffix of ['', '/meta']) {
+        const { status, indexer } = await getChunk(
+          `/api/chunk/${encodeURIComponent(OUT_OF_SCOPE)}${suffix}`
+        );
+        expect(status).toBe(404);
+        expect(indexer.getChunkById).not.toHaveBeenCalled();
+      }
+    });
+
+    it('serves an in-scope chunk whose id carries the suffixed name', async () => {
+      for (const suffix of ['', '/meta']) {
+        const { status } = await getChunk(`/api/chunk/${encodeURIComponent(IN_SCOPE)}${suffix}`);
+        expect(status).toBe(200);
+      }
+    });
+  });
+
+  describe('DELETE /api/project/:group/:name', () => {
+    /** Build an app around the given mocks, call the delete route, return status + body. */
+    async function runDelete(
+      group: string,
+      name: string,
+      opts: { indexer?: Indexer; searcher?: Searcher; projects?: Map<string, ProjectConfig[]> } = {}
+    ): Promise<{ status: number; body: Record<string, unknown> }> {
+      const { app } = createApp({
+        searcher: opts.searcher ?? createMockSearcher(),
+        indexer: opts.indexer ?? createMockIndexer(),
+        watcherManager: createMockWatcherManager(),
+        embeddingProvider: createMockEmbeddingProvider(),
+        projectsByGroup: opts.projects ?? new Map(),
+        metadataStore: createMockMetadataStore(),
       });
       const srv = app.listen(0);
       const p = (srv.address() as { port: number }).port;
@@ -412,7 +560,7 @@ describe('Server API', () => {
         const res = await fetch(`http://127.0.0.1:${p}/api/project/${group}/${name}`, {
           method: 'DELETE',
         });
-        return { indexer, metadataStore, status: res.status };
+        return { status: res.status, body: (await res.json()) as Record<string, unknown> };
       } finally {
         await new Promise<void>((resolve, reject) => {
           srv.close((err) => (err ? reject(err) : resolve()));
@@ -420,29 +568,52 @@ describe('Server API', () => {
       }
     }
 
-    it('passes the SUFFIXED name to metadataStore.deleteByProject when a suffix is set', async () => {
-      const { indexer, metadataStore, status } = await runDelete('-v3', 'g1', 'billing');
+    it('purges every layer with the clean name, clears the cache and unregisters', async () => {
+      // purgeProject owns the stored-name mapping (metadata) and the docs removal.
+      const indexer = createMockIndexer('-v3');
+      const searcher = createMockSearcher();
+      const projects = new Map([['g1', [createProjectConfig({ name: 'billing', group: 'g1' })]]]);
+
+      const { status } = await runDelete('g1', 'billing', { indexer, searcher, projects });
+
       expect(status).toBe(200);
-      // Qdrant side gets the CLEAN name — deleteProjectChunks suffixes internally.
-      expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'billing');
-      // Metadata side must get the STORED (suffixed) name — chunk_id embeds it.
-      expect(indexer.storedProjectName).toHaveBeenCalledWith('billing');
-      expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', 'billing-v3');
+      expect(indexer.purgeProject).toHaveBeenCalledWith('g1', 'billing');
+      expect(searcher.invalidateGroupCache).toHaveBeenCalledWith('g1');
+      expect(projects.has('g1')).toBe(false);
     });
 
-    it('passes the clean name unchanged when no suffix is set', async () => {
-      const { indexer, metadataStore, status } = await runDelete('', 'g1', 'billing');
-      expect(status).toBe(200);
-      expect(indexer.deleteProjectChunks).toHaveBeenCalledWith('g1', 'billing');
-      expect(indexer.storedProjectName).toHaveBeenCalledWith('billing');
-      expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', 'billing');
+    it('returns 500 and keeps the registry entry when the purge fails', async () => {
+      const indexer = createMockIndexer();
+      vi.mocked(indexer.purgeProject).mockRejectedValueOnce(new Error('Qdrant unreachable'));
+      const searcher = createMockSearcher();
+      const projects = new Map([['g1', [createProjectConfig({ name: 'billing', group: 'g1' })]]]);
+
+      const { status, body } = await runDelete('g1', 'billing', { indexer, searcher, projects });
+
+      expect(status).toBe(500);
+      expect(body.error).toBe('Qdrant unreachable');
+      expect(projects.has('g1')).toBe(true);
+      // A partial purge may have removed chunks already.
+      expect(searcher.invalidateGroupCache).toHaveBeenCalledWith('g1');
     });
 
-    it('routes metadata deletion through storedProjectName (single source of truth)', async () => {
-      const { indexer, metadataStore } = await runDelete('-v3', 'g1', 'billing');
-      const returned = vi.mocked(indexer.storedProjectName).mock.results[0]?.value;
-      expect(returned).toBe('billing-v3');
-      expect(metadataStore.deleteByProject).toHaveBeenCalledWith('g1', returned);
+    it('refuses a project outside the server scope', async () => {
+      const indexer = createMockIndexer();
+      const searcher = createMockSearcher();
+      vi.mocked(searcher.getProjectScope).mockReturnValue(['billing']);
+
+      const { status } = await runDelete('g1', 'handbook', { indexer, searcher });
+
+      expect(status).toBe(403);
+      expect(indexer.purgeProject).not.toHaveBeenCalled();
+    });
+
+    it('refuses a group name reserved for sidecar collections', async () => {
+      const indexer = createMockIndexer();
+      const { status, body } = await runDelete('billing_arch', 'billing', { indexer });
+      expect(status).toBe(400);
+      expect(String(body.error)).toContain('reserved');
+      expect(indexer.purgeProject).not.toHaveBeenCalled();
     });
   });
 
@@ -508,5 +679,186 @@ describe('Server API', () => {
         srv2.close((err) => (err ? reject(err) : resolve()));
       });
     });
+  });
+});
+
+// ── Cross-origin protection ─────────────────────────────────────────────────
+
+describe('cross-origin requests', () => {
+  const envBefore = process.env['PAPARATS_CORS_ORIGINS'];
+
+  afterEach(() => {
+    if (envBefore === undefined) delete process.env['PAPARATS_CORS_ORIGINS'];
+    else process.env['PAPARATS_CORS_ORIGINS'] = envBefore;
+  });
+
+  /** Start an app (reading PAPARATS_CORS_ORIGINS as set), run `fn`, close it. */
+  async function withApp(fn: (base: string, searcher: Searcher) => Promise<void>): Promise<void> {
+    const searcher = createMockSearcher();
+    const { app, mcpHandler } = createApp({
+      searcher,
+      indexer: createMockIndexer(),
+      watcherManager: createMockWatcherManager(),
+      embeddingProvider: createMockEmbeddingProvider(),
+      projectsByGroup: new Map(),
+    });
+    const srv = app.listen(0);
+    const p = (srv.address() as { port: number }).port;
+    try {
+      await fn(`http://127.0.0.1:${p}`, searcher);
+    } finally {
+      mcpHandler.destroy();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
+  }
+
+  function search(base: string, headers: Record<string, string> = {}): Promise<Response> {
+    return fetch(`${base}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ group: 'g', query: 'foo' }),
+    });
+  }
+
+  it('serves requests without an Origin header and sends no CORS headers', async () => {
+    await withApp(async (base) => {
+      const res = await search(base);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    });
+  });
+
+  it('refuses a request from another site on the API and the MCP endpoints', async () => {
+    await withApp(async (base, searcher) => {
+      const origin = { Origin: 'https://attacker.example.com' };
+      const res = await search(base, origin);
+      expect(res.status).toBe(403);
+      expect(res.headers.get('access-control-allow-origin')).toBeNull();
+      expect(searcher.search).not.toHaveBeenCalled();
+
+      for (const path of ['/mcp', '/support/mcp', '/health', '/api/analytics']) {
+        const r = await fetch(`${base}${path}`, { headers: origin });
+        expect(r.status, path).toBe(403);
+      }
+    });
+  });
+
+  it('refuses an opaque (null) origin', async () => {
+    await withApp(async (base) => {
+      const res = await search(base, { Origin: 'null' });
+      expect(res.status).toBe(403);
+    });
+  });
+
+  it('lets a same-origin page (the dashboard) through', async () => {
+    await withApp(async (base) => {
+      const res = await search(base, { Origin: base });
+      expect(res.status).toBe(200);
+    });
+  });
+
+  it('allows and answers CORS for origins listed in PAPARATS_CORS_ORIGINS', async () => {
+    process.env['PAPARATS_CORS_ORIGINS'] = 'https://app.example.com/, https://tools.example.com';
+    await withApp(async (base) => {
+      const res = await search(base, { Origin: 'https://app.example.com' });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('access-control-allow-origin')).toBe('https://app.example.com');
+
+      const preflight = await fetch(`${base}/mcp`, {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://tools.example.com',
+          'Access-Control-Request-Method': 'POST',
+          'Access-Control-Request-Headers': 'content-type,mcp-session-id',
+        },
+      });
+      expect(preflight.status).toBe(204);
+      expect(preflight.headers.get('access-control-allow-origin')).toBe(
+        'https://tools.example.com'
+      );
+
+      const other = await search(base, { Origin: 'https://attacker.example.com' });
+      expect(other.status).toBe(403);
+    });
+  });
+});
+
+describe('parseCorsOrigins', () => {
+  it('returns an empty list when unset or blank', () => {
+    expect(parseCorsOrigins(undefined)).toEqual([]);
+    expect(parseCorsOrigins('')).toEqual([]);
+    expect(parseCorsOrigins(' , ')).toEqual([]);
+  });
+
+  it('normalises entries to the origin a browser sends', () => {
+    expect(parseCorsOrigins('https://App.Example.com/, http://localhost:3000')).toEqual([
+      'https://app.example.com',
+      'http://localhost:3000',
+    ]);
+  });
+
+  it.each(['*', 'app.example.com', 'https://app.example.com/path', 'ftp://example.com'])(
+    'rejects %s',
+    (entry) => {
+      expect(() => parseCorsOrigins(entry)).toThrow(/PAPARATS_CORS_ORIGINS/);
+    }
+  );
+});
+
+// ── Dashboard basic auth ────────────────────────────────────────────────────
+
+describe('PAPARATS_UI_BASIC_AUTH', () => {
+  const envBefore = process.env['PAPARATS_UI_BASIC_AUTH'];
+
+  afterEach(() => {
+    if (envBefore === undefined) delete process.env['PAPARATS_UI_BASIC_AUTH'];
+    else process.env['PAPARATS_UI_BASIC_AUTH'] = envBefore;
+  });
+
+  function build(): ReturnType<typeof createApp> {
+    return createApp({
+      searcher: createMockSearcher(),
+      indexer: createMockIndexer(),
+      watcherManager: createMockWatcherManager(),
+      embeddingProvider: createMockEmbeddingProvider(),
+      projectsByGroup: new Map(),
+    });
+  }
+
+  it.each(['adminsecret', ':secret', 'admin:'])(
+    'refuses to start with a malformed value (%s) rather than leave the dashboard open',
+    (value) => {
+      process.env['PAPARATS_UI_BASIC_AUTH'] = value;
+      expect(() => build()).toThrow(/PAPARATS_UI_BASIC_AUTH/);
+    }
+  );
+
+  it('treats an empty value as unset', () => {
+    process.env['PAPARATS_UI_BASIC_AUTH'] = '';
+    let created: ReturnType<typeof createApp> | undefined;
+    expect(() => {
+      created = build();
+    }).not.toThrow();
+    created?.mcpHandler.destroy();
+    created?.stopGroupPoll();
+  });
+
+  it('protects the dashboard when well-formed', async () => {
+    process.env['PAPARATS_UI_BASIC_AUTH'] = 'admin:s3cret:with-colon';
+    const { app, mcpHandler } = build();
+    const srv = app.listen(0);
+    const p = (srv.address() as { port: number }).port;
+    try {
+      const denied = await fetch(`http://127.0.0.1:${p}/api/analytics`);
+      expect(denied.status).toBe(401);
+      const auth = 'Basic ' + Buffer.from('admin:s3cret:with-colon').toString('base64');
+      const allowed = await fetch(`http://127.0.0.1:${p}/ui/`, {
+        headers: { Authorization: auth },
+      });
+      expect(allowed.status).not.toBe(401);
+    } finally {
+      mcpHandler.destroy();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
   });
 });

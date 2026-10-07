@@ -149,7 +149,8 @@ support-only — recording belongs to the architectural-review workflow.
 | `TEXT_EMBEDDING_DIMENSIONS` | `1024`                                 | Arch-layer text embedding dimensions                         |
 | `PAPARATS_METRICS`          | `false`                                | Set to `true` to expose `/metrics`                           |
 | `PAPARATS_PROJECTS`         | —                                      | Comma-separated allow-list of project names                  |
-| `PAPARATS_UI_BASIC_AUTH`    | —                                      | `user:pass` for `/ui` and `/api/analytics/...`               |
+| `PAPARATS_UI_BASIC_AUTH`    | —                                      | `user:pass` for `/ui` and `/api/analytics/...`; a malformed value stops startup |
+| `PAPARATS_CORS_ORIGINS`     | —                                      | Comma-separated exact origins (e.g. `https://app.example.com`) browsers may call the server from. Unset = no CORS headers, and any request whose `Origin` is neither this server nor listed gets `403`. Requests without `Origin` (MCP clients, curl) are unaffected |
 | `OTEL_*`                    | —                                      | Standard OpenTelemetry env vars (Tempo / Honeycomb / Datadog / Elastic APM)  |
 
 ## Programmatic use (library)

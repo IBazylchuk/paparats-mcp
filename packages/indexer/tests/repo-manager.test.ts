@@ -2,22 +2,29 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { parseReposEnv, cloneOrPull, repoPath } from '../src/repo-manager.js';
+import { parseReposEnv, cloneOrPull, repoPath, redactCredentials } from '../src/repo-manager.js';
 import type { RepoConfig } from '../src/types.js';
 
-// Spy-able simple-git mock that records pull/clone calls.
-const pullCalls: string[] = [];
+// Spy-able simple-git mock that records every git call as `cwd: args`.
+const gitCalls: string[] = [];
 const cloneCalls: Array<{ url: string; dest: string }> = [];
-let activeRepoPath: string | undefined;
+let failSync = false;
+let failClone = false;
 
 vi.mock('simple-git', () => ({
   simpleGit: (cwd?: string) => {
-    activeRepoPath = cwd;
+    const record = (args: string[]) => {
+      gitCalls.push(`${cwd ?? ''}: ${args.join(' ')}`);
+      if (failSync)
+        throw new Error('fatal: unable to access https://ghp_secret@github.com/org/repo.git');
+    };
     return {
-      pull: vi.fn().mockImplementation(async () => {
-        if (activeRepoPath) pullCalls.push(activeRepoPath);
-      }),
+      remote: vi.fn().mockImplementation(async (args: string[]) => record(['remote', ...args])),
+      fetch: vi.fn().mockImplementation(async (args: string[]) => record(['fetch', ...args])),
+      reset: vi.fn().mockImplementation(async (args: string[]) => record(['reset', ...args])),
+      raw: vi.fn().mockImplementation(async (args: string[]) => record(args)),
       clone: vi.fn().mockImplementation(async (url: string, dest: string) => {
+        if (failClone) throw new Error(`fatal: repository '${url}' not found`);
         cloneCalls.push({ url, dest });
       }),
     };
@@ -72,6 +79,10 @@ describe('parseReposEnv', () => {
     expect(() => parseReposEnv('a/b/c')).toThrow(/Invalid repo format/);
   });
 
+  it('rejects two repos that resolve to the same project name', () => {
+    expect(() => parseReposEnv('org1/api,org2/api')).toThrow(/Duplicate project name "api"/);
+  });
+
   it('skips empty entries from trailing comma', () => {
     const repos = parseReposEnv('org/a,');
     expect(repos).toHaveLength(1);
@@ -104,12 +115,19 @@ describe('repoPath', () => {
 
 describe('cloneOrPull', () => {
   let tmpDir: string;
+  const repo: RepoConfig = {
+    url: 'https://ghp_secret@github.com/org/repo.git',
+    owner: 'org',
+    name: 'repo',
+    fullName: 'org/repo',
+  };
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'paparats-repo-mgr-'));
-    pullCalls.length = 0;
+    gitCalls.length = 0;
     cloneCalls.length = 0;
-    activeRepoPath = undefined;
+    failSync = false;
+    failClone = false;
   });
 
   afterEach(() => {
@@ -117,44 +135,80 @@ describe('cloneOrPull', () => {
   });
 
   it('no-op for local projects (no git operations)', async () => {
-    const repo: RepoConfig = {
+    const local: RepoConfig = {
       url: '',
       owner: '_local',
       name: 'billing',
       fullName: 'billing',
       localPath: '/projects/billing',
     };
-    await cloneOrPull(repo, tmpDir);
-    expect(pullCalls).toHaveLength(0);
+    await cloneOrPull(local, tmpDir);
+    expect(gitCalls).toHaveLength(0);
     expect(cloneCalls).toHaveLength(0);
   });
 
   it('clones remote repo when destination missing', async () => {
-    const repo: RepoConfig = {
-      url: 'https://github.com/org/repo.git',
-      owner: 'org',
-      name: 'repo',
-      fullName: 'org/repo',
-    };
     await cloneOrPull(repo, tmpDir);
-    expect(cloneCalls).toHaveLength(1);
-    expect(cloneCalls[0]!.url).toBe('https://github.com/org/repo.git');
-    expect(cloneCalls[0]!.dest).toBe(path.join(tmpDir, 'org', 'repo'));
-    expect(pullCalls).toHaveLength(0);
+    expect(cloneCalls).toEqual([{ url: repo.url, dest: path.join(tmpDir, 'org', 'repo') }]);
+    expect(gitCalls).toHaveLength(0);
   });
 
-  it('pulls remote repo when .git directory exists', async () => {
-    const repo: RepoConfig = {
-      url: 'https://github.com/org/repo.git',
-      owner: 'org',
-      name: 'repo',
-      fullName: 'org/repo',
-    };
-    const dest = path.join(tmpDir, 'org', 'repo', '.git');
-    fs.mkdirSync(dest, { recursive: true });
+  it('force-syncs an existing clone onto the current origin URL and default branch', async () => {
+    const dest = path.join(tmpDir, 'org', 'repo');
+    fs.mkdirSync(path.join(dest, '.git'), { recursive: true });
     await cloneOrPull(repo, tmpDir);
-    expect(pullCalls).toHaveLength(1);
-    expect(pullCalls[0]).toBe(path.join(tmpDir, 'org', 'repo'));
+    expect(gitCalls).toEqual([
+      `${dest}: remote set-url origin ${repo.url}`,
+      `${dest}: fetch --prune origin`,
+      `${dest}: remote set-head origin --auto`,
+      `${dest}: reset --hard origin/HEAD`,
+      `${dest}: clean --force -d -x`,
+    ]);
     expect(cloneCalls).toHaveLength(0);
+  });
+
+  it('re-clones from scratch when the sync fails, without logging the token', async () => {
+    const dest = path.join(tmpDir, 'org', 'repo');
+    fs.mkdirSync(path.join(dest, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(dest, 'stale.txt'), 'x');
+    failSync = true;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await cloneOrPull(repo, tmpDir);
+      expect(fs.existsSync(path.join(dest, 'stale.txt'))).toBe(false);
+      expect(cloneCalls).toEqual([{ url: repo.url, dest }]);
+      const logged = warn.mock.calls.flat().join(' ');
+      expect(logged).toContain('re-cloning');
+      expect(logged).not.toContain('ghp_secret');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('replaces a leftover directory from an interrupted clone', async () => {
+    const dest = path.join(tmpDir, 'org', 'repo');
+    fs.mkdirSync(dest, { recursive: true });
+    fs.writeFileSync(path.join(dest, 'partial.pack'), 'x');
+    await cloneOrPull(repo, tmpDir);
+    expect(fs.existsSync(path.join(dest, 'partial.pack'))).toBe(false);
+    expect(cloneCalls).toHaveLength(1);
+  });
+
+  it('masks the token in clone errors and removes the partial clone', async () => {
+    failClone = true;
+    const err = await cloneOrPull(repo, tmpDir).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toContain('https://***@github.com/org/repo.git');
+    expect((err as Error).message).not.toContain('ghp_secret');
+    expect(fs.existsSync(path.join(tmpDir, 'org', 'repo'))).toBe(false);
+  });
+});
+
+describe('redactCredentials', () => {
+  it('masks userinfo in URLs and leaves other text alone', () => {
+    expect(redactCredentials("fatal: 'https://tok@github.com/o/r.git' and http://u:p@host/x")).toBe(
+      "fatal: 'https://***@github.com/o/r.git' and http://***@host/x"
+    );
+    expect(redactCredentials('git@github.com:o/r.git')).toBe('git@github.com:o/r.git');
   });
 });

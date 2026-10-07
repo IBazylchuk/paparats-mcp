@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { runEdit, defaultResolveEditor } from '../src/commands/edit.js';
+import { runEdit, defaultResolveEditor, regenerateComposeAfterEdit } from '../src/commands/edit.js';
+import { writeInstallState } from '../src/projects-yml.js';
 
 let tmpHome: string;
 
@@ -117,5 +118,25 @@ describe('runEdit', () => {
         spawnEditor: () => ({ status: 1 }),
       })
     ).rejects.toThrow(/status 1/);
+  });
+});
+
+describe('regenerateComposeAfterEdit', () => {
+  it('backs up a hand-edited compose before overwriting it', () => {
+    writeInstallState({ embedMode: 'docker' }, tmpHome);
+    const composePath = path.join(tmpHome, 'docker-compose.yml');
+    fs.writeFileSync(composePath, '# hand-edited\nservices: {}\n');
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    expect(regenerateComposeAfterEdit(tmpHome)).toBe(true);
+
+    expect(fs.readFileSync(`${composePath}.bak`, 'utf8')).toBe('# hand-edited\nservices: {}\n');
+    expect(fs.readFileSync(composePath, 'utf8')).not.toContain('# hand-edited');
+    vi.restoreAllMocks();
+  });
+
+  it('does nothing without a compose file', () => {
+    expect(regenerateComposeAfterEdit(tmpHome)).toBe(false);
+    expect(fs.existsSync(path.join(tmpHome, 'docker-compose.yml.bak'))).toBe(false);
   });
 });

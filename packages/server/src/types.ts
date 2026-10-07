@@ -213,6 +213,12 @@ export interface EmbeddingProvider {
   embed(text: string): Promise<number[]>;
   /** Optional: batch embedding for better performance. Falls back to sequential embed() if not supported. */
   embedBatch?(texts: string[]): Promise<number[][]>;
+  /**
+   * Optional: embed a search query, for providers whose API tells queries from
+   * documents natively (Voyage `input_type`). Others are prefixed with the model's
+   * query instruction by the caching layer instead.
+   */
+  embedQuery?(text: string): Promise<number[]>;
   readonly dimensions: number;
   readonly model: string;
 }
@@ -233,6 +239,18 @@ export interface IndexerStats {
   cached: number;
   errors: number;
   skipped: number;
+}
+
+/** Outcome of one {@link Indexer.indexProjectWithReport} run. */
+export interface IndexProjectReport {
+  /** Chunks written this run (unchanged files contribute 0). */
+  chunks: number;
+  /**
+   * Files that failed this run, plus 1 when the project path was missing. Non-zero
+   * means the index does not reflect the source, so change detection must not
+   * record this state as indexed.
+   */
+  errors: number;
 }
 
 // ── Git metadata types ──────────────────────────────────────────────────

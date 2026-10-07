@@ -17,7 +17,11 @@ export function fromTermsCollectionName(collection: string): string | null {
   if (!collection.startsWith(CODE_PREFIX) || !collection.endsWith(TERMS_SUFFIX)) {
     return null;
   }
-  return collection.slice(CODE_PREFIX.length, -TERMS_SUFFIX.length);
+  // `paparats_<suffix>` alone is the CODE collection of a group named after the
+  // suffix (e.g. `docs`), not a sidecar of an empty group — reading it as one hid
+  // that group from code search.
+  const group = collection.slice(CODE_PREFIX.length, -TERMS_SUFFIX.length);
+  return group.length > 0 ? group : null;
 }
 
 export function isTermsCollection(collection: string): boolean {

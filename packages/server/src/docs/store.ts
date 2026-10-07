@@ -18,6 +18,7 @@ import {
   type SparseVector,
 } from './bm25.js';
 import type { DocsIdfStore } from './idf-store.js';
+import { isMissingCollection } from '../qdrant-errors.js';
 import { chunkMarkdown, NotMarkdownError } from './chunker.js';
 import type { DocsChunk, DocsKind, DocsSearchHit } from './types.js';
 
@@ -65,6 +66,12 @@ export interface IndexDocumentInput {
 
 export interface DocsSearchOpts {
   project?: string;
+  /**
+   * Restrict results to these projects (match-any) — the server's project scope.
+   * Combined with `project` as an intersection: a `project` outside this list
+   * matches nothing rather than widening the scope. An empty list matches nothing.
+   */
+  projects?: string[];
   limit?: number;
   /** Number of neighbouring chunks to merge around each hit for context. Default 1. */
   mergeNeighbours?: number;
@@ -174,7 +181,11 @@ export class DocsStore {
    * Index (or re-index) one markdown document. Chunks it structurally, embeds
    * each chunk with the dense provider, builds a BM25 sparse vector, and upserts
    * all chunks under a shared `doc_id`. Prior chunks for the same (project, file)
-   * are deleted first so updates don't leave stragglers.
+   * are replaced so updates don't leave stragglers.
+   *
+   * Every chunk is embedded before the stored version is touched, so a failed
+   * embedding leaves the previous version searchable rather than unpublishing it.
+   * IDF stats change only once the new chunks are actually in Qdrant.
    *
    * @throws {NotMarkdownError} — propagated from the chunker; callers (the walk)
    *   log and skip. Non-markdown files must never reach the collection.
@@ -187,14 +198,10 @@ export class DocsStore {
 
     await ensureDocsCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
 
-    // Remove the file's previous chunks (and their IDF contribution) first.
-    await this.deleteDocument(group, input.project, input.file);
-
-    if (chunks.length === 0) return 0;
-
     const docId = uuidv7();
     const stats = this.idf.getCorpusStats(group);
     const points = [];
+    const contributions: Array<{ terms: Set<string>; length: number }> = [];
     for (const chunk of chunks) {
       const dense = await this.provider.embed(chunk.content);
       const sparse = buildDocumentSparseVector(chunk.content, stats);
@@ -207,25 +214,34 @@ export class DocsStore {
         },
         payload: buildPayload(docId, docTitle, input, chunk),
       });
-      // Update corpus stats: df bumps use the DISTINCT term set, but the corpus
-      // length total must be the RAW token count (matches docLength in the BM25
-      // builder — avgDocLength is meaningless if the units differ).
+      // Corpus stats: df bumps use the DISTINCT term set, but the corpus length
+      // total must be the RAW token count (matches docLength in the BM25 builder
+      // — avgDocLength is meaningless if the units differ).
       const tokens = tokenize(chunk.content);
-      const terms = new Set(tokens);
-      this.idf.addDocument(group, terms, tokens.length);
+      contributions.push({ terms: new Set(tokens), length: tokens.length });
     }
 
+    // Replace the previous version (and its IDF contribution) only now that the
+    // new one is ready.
+    await this.deleteDocument(group, input.project, input.file);
+
+    if (points.length === 0) return 0;
+
     await this.qdrant.upsert(toDocsCollectionName(group), { wait: true, points });
+    for (const c of contributions) this.idf.addDocument(group, c.terms, c.length);
     return points.length;
   }
 
   /**
    * Delete every chunk of a (project, file) document and reverse its IDF
    * contribution. Idempotent — a file with no indexed chunks is a no-op.
+   *
+   * IDF is reversed only after the delete succeeds: reversing first and then
+   * failing would subtract the same chunks again on the next attempt.
    */
   async deleteDocument(group: string, project: string, file: string): Promise<void> {
     const collection = toDocsCollectionName(group);
-    // Reverse IDF first: scroll the file's chunks to recover their term sets.
+    // Scroll the file's chunks to recover their term sets.
     let offset: string | number | Record<string, unknown> | undefined | null = undefined;
     const filter = {
       must: [
@@ -233,6 +249,7 @@ export class DocsStore {
         { key: 'file', match: { value: file } },
       ],
     };
+    const contributions: Array<{ terms: Set<string>; length: number }> = [];
     try {
       while (true) {
         const page = await this.qdrant.scroll(collection, {
@@ -246,30 +263,79 @@ export class DocsStore {
           const content = (p.payload as { content?: unknown } | undefined)?.content;
           if (typeof content === 'string') {
             const tokens = tokenize(content);
-            this.idf.removeDocument(group, new Set(tokens), tokens.length);
+            contributions.push({ terms: new Set(tokens), length: tokens.length });
           }
         }
         if (!page.next_page_offset) break;
         offset = page.next_page_offset;
       }
-    } catch {
+    } catch (err) {
       // Collection doesn't exist yet — nothing to delete.
-      return;
+      if (isMissingCollection(err)) return;
+      throw err;
     }
     await this.qdrant.delete(collection, { filter, wait: true });
+    for (const c of contributions) this.idf.removeDocument(group, c.terms, c.length);
   }
 
-  /** Delete all docs for a project (all files). Also clears is left to reindex flows. */
-  async deleteProject(group: string, project: string): Promise<void> {
-    const collection = toDocsCollectionName(group);
-    try {
-      await this.qdrant.delete(collection, {
-        filter: { must: [{ key: 'project', match: { value: project } }] },
-        wait: true,
-      });
-    } catch {
-      // Collection missing — nothing to do.
+  /**
+   * Delete every document of `project` whose file is not in `keep`, reversing each
+   * one's IDF contribution. Re-indexing replaces the files a walk finds, but never
+   * visits a file that is gone — without this a deleted, renamed or newly excluded
+   * document stays searchable indefinitely.
+   *
+   * @returns the repo-relative paths of the documents removed.
+   */
+  async pruneDocuments(
+    group: string,
+    project: string,
+    keep: ReadonlySet<string>
+  ): Promise<string[]> {
+    const indexed = await this.listDocumentFiles(group, project);
+    const stale = Array.from(indexed).filter((file) => !keep.has(file));
+    for (const file of stale) {
+      await this.deleteDocument(group, project, file);
     }
+    return stale;
+  }
+
+  /**
+   * Repo-relative paths of every document indexed for `project`. Empty when the
+   * collection does not exist; any other failure throws, so a caller never mistakes
+   * an unreachable Qdrant for "nothing indexed".
+   */
+  private async listDocumentFiles(group: string, project: string): Promise<Set<string>> {
+    const files = new Set<string>();
+    let offset: string | number | Record<string, unknown> | undefined | null = undefined;
+    try {
+      for (;;) {
+        const page = await this.qdrant.scroll(toDocsCollectionName(group), {
+          limit: 1000,
+          with_payload: { include: ['file'] },
+          with_vector: false,
+          filter: { must: [{ key: 'project', match: { value: project } }] },
+          ...(offset !== undefined && offset !== null ? { offset } : {}),
+        });
+        for (const p of page.points) {
+          const file = (p.payload as { file?: unknown } | undefined)?.file;
+          if (typeof file === 'string') files.add(file);
+        }
+        if (!page.next_page_offset) break;
+        offset = page.next_page_offset;
+      }
+    } catch (err) {
+      // Collection doesn't exist yet — nothing indexed.
+      if (!isMissingCollection(err)) throw err;
+    }
+    return files;
+  }
+
+  /**
+   * Delete every document of a project, reversing each one's IDF contribution so
+   * the group's BM25 stats stay exact. Throws when Qdrant fails.
+   */
+  async deleteProject(group: string, project: string): Promise<void> {
+    await this.pruneDocuments(group, project, new Set());
   }
 
   /**
@@ -296,6 +362,13 @@ export class DocsStore {
     // with no stored `audience` field does NOT match it — so `audience: ['client']`
     // never surfaces un-labelled (internal) docs. Fail-closed by construction.
     const must: Array<Record<string, unknown>> = [];
+    if (opts.projects !== undefined) {
+      if (opts.projects.length === 0) return [];
+      if (opts.project !== undefined && !opts.projects.includes(opts.project)) return [];
+      if (opts.project === undefined) {
+        must.push({ key: 'project', match: { any: opts.projects } });
+      }
+    }
     if (opts.project !== undefined) {
       must.push({ key: 'project', match: { value: opts.project } });
     }
@@ -561,20 +634,9 @@ export class DocsStore {
     }
     const stats = this.idf.getCorpusStats(group);
 
-    let dimensionChanged: boolean;
-    try {
-      const info = await this.qdrant.getCollection(collection);
-      const vectors = info.config?.params?.vectors as Record<string, { size?: number }> | undefined;
-      const size = vectors?.[DOCS_DENSE_VECTOR]?.size;
-      dimensionChanged = typeof size === 'number' && size !== this.provider.dimensions;
-    } catch {
-      dimensionChanged = true;
-    }
-    if (dimensionChanged) {
-      await dropDocsCollection(this.qdrant, group);
-    }
-    await ensureDocsCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
-
+    // Embed every chunk before touching the collection: dropping first and then
+    // failing to embed (embed server not up yet at boot) left the group with no
+    // docs until the next full walk.
     const BATCH = 64;
     const points = [];
     for (const r of rows) {
@@ -590,6 +652,21 @@ export class DocsStore {
         payload: r.payload,
       });
     }
+
+    let dimensionChanged: boolean;
+    try {
+      const info = await this.qdrant.getCollection(collection);
+      const vectors = info.config?.params?.vectors as Record<string, { size?: number }> | undefined;
+      const size = vectors?.[DOCS_DENSE_VECTOR]?.size;
+      dimensionChanged = typeof size === 'number' && size !== this.provider.dimensions;
+    } catch {
+      dimensionChanged = true;
+    }
+    if (dimensionChanged) {
+      await dropDocsCollection(this.qdrant, group);
+    }
+    await ensureDocsCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
+
     for (let i = 0; i < points.length; i += BATCH) {
       await this.qdrant.upsert(collection, { wait: true, points: points.slice(i, i + BATCH) });
     }

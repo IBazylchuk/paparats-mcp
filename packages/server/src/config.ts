@@ -8,6 +8,7 @@ import {
   DEFAULT_GROUP,
 } from '@paparats/shared';
 import { validateTicketPatterns } from './ticket-extractor.js';
+import { validateGroupName } from './indexer.js';
 import type {
   PaparatsConfig,
   ProjectConfig,
@@ -216,6 +217,10 @@ function validateIndexingConfig(config: Partial<ResolvedIndexingConfig>): void {
   }
 }
 
+// validateGroupName lives in indexer.ts (beside toCollectionName) so the Indexer
+// can enforce it on every write without importing config.ts back.
+export { validateGroupName };
+
 // ── Read & resolve ─────────────────────────────────────────────────────────
 
 /**
@@ -263,6 +268,7 @@ export function readConfig(projectDir: string): PaparatsConfig {
  * by merging language profiles, defaults, and user overrides.
  */
 export function resolveProject(projectDir: string, raw: PaparatsConfig): ProjectConfig {
+  validateGroupName(raw.group);
   const languages = Array.isArray(raw.language) ? [...new Set(raw.language)] : [raw.language];
   const projectName = path.basename(projectDir);
 
@@ -476,11 +482,34 @@ export interface ContentIndexConfig {
   languages?: string[];
 }
 
+/**
+ * Validate an indexing config that arrived over the HTTP API. Unlike
+ * `.paparats.yml`, nothing upstream has type-checked it: every field is
+ * validated whenever present, and a non-object config is rejected outright.
+ */
+function validateContentIndexConfig(apiConfig: unknown): void {
+  if (apiConfig === undefined || apiConfig === null) return;
+  if (typeof apiConfig !== 'object' || Array.isArray(apiConfig)) {
+    throw new Error('config must be an object');
+  }
+  const cfg = apiConfig as ContentIndexConfig;
+  validateIndexingConfig(cfg);
+  if (
+    cfg.languages !== undefined &&
+    (!Array.isArray(cfg.languages) ||
+      !cfg.languages.every((l) => typeof l === 'string' && l.length > 0))
+  ) {
+    throw new Error('languages must be an array of language names');
+  }
+}
+
 export function buildProjectConfigFromContent(
   projectName: string,
   group: string,
   apiConfig?: ContentIndexConfig
 ): ProjectConfig {
+  validateGroupName(group);
+  validateContentIndexConfig(apiConfig);
   const cfg = apiConfig ?? {};
   const languages = cfg.languages ?? ['generic'];
   const indexing: ResolvedIndexingConfig = {
@@ -493,9 +522,6 @@ export function buildProjectConfigFromContent(
     concurrency: cfg.concurrency ?? DEFAULT_INDEXING.concurrency,
     batchSize: cfg.batchSize ?? DEFAULT_INDEXING.batchSize,
   };
-  if (apiConfig?.chunkSize !== undefined || apiConfig?.overlap !== undefined) {
-    validateIndexingConfig(apiConfig);
-  }
   return {
     name: projectName,
     path: '',

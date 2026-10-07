@@ -1,6 +1,7 @@
 import type { QdrantClient } from '@qdrant/js-client-rest';
 import { v7 as uuidv7 } from 'uuid';
 import type { CachedEmbeddingProvider } from '../embeddings.js';
+import { isMissingCollection } from '../qdrant-errors.js';
 import {
   dropTermsCollection,
   ensureTermsCollection,
@@ -74,10 +75,6 @@ const DUPLICATE_THRESHOLD = 0.95;
  * agent may then re-populate. Qdrant answers 404 for the missing collection and
  * 401/5xx/network for the rest, so the two are cleanly separable.
  */
-function isMissingCollection(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { status?: unknown }).status === 404;
-}
-
 /**
  * The glossary store. Agent-authored via MCP `term_record`; searched via
  * `term_search`. Records go through a similarity gate (like arch decisions) so
@@ -186,8 +183,8 @@ export class TerminologyStore {
     const must_not: unknown[] = [{ key: '__meta', match: { value: true } }];
     const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
     try {
-      const hits = await this.qdrant.search(toTermsCollectionName(group), {
-        vector,
+      const { points: hits } = await this.qdrant.query(toTermsCollectionName(group), {
+        query: vector,
         limit: fetchLimit,
         with_payload: true,
         filter: { must_not },
@@ -315,8 +312,8 @@ export class TerminologyStore {
     project: string | undefined
   ): Promise<{ id: string; score: number; label: string } | null> {
     try {
-      const hits = await this.qdrant.search(toTermsCollectionName(group), {
-        vector,
+      const { points: hits } = await this.qdrant.query(toTermsCollectionName(group), {
+        query: vector,
         limit: 10,
         with_payload: true,
         filter: { must_not: [{ key: '__meta', match: { value: true } }] },
@@ -376,6 +373,20 @@ export class TerminologyStore {
     }
     if (rows.length === 0) return 0;
 
+    // Embed every term before touching the collection. The glossary is
+    // agent-authored and cannot be rebuilt from source, so dropping first and then
+    // failing to embed (embed server not up yet at boot, a 401/429) lost it for good.
+    const points = [];
+    for (const r of rows) {
+      const text = renderTermForEmbedding({
+        term: typeof r.payload['term'] === 'string' ? r.payload['term'] : '',
+        definition: typeof r.payload['definition'] === 'string' ? r.payload['definition'] : '',
+        aliases: Array.isArray(r.payload['aliases']) ? r.payload['aliases'].map(String) : [],
+      });
+      const vector = await this.provider.embed(text);
+      points.push({ id: r.id, vector, payload: r.payload });
+    }
+
     let dimensionChanged: boolean;
     try {
       const info = await this.qdrant.getCollection(collection);
@@ -389,16 +400,6 @@ export class TerminologyStore {
     }
     await ensureTermsCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
 
-    const points = [];
-    for (const r of rows) {
-      const text = renderTermForEmbedding({
-        term: typeof r.payload['term'] === 'string' ? r.payload['term'] : '',
-        definition: typeof r.payload['definition'] === 'string' ? r.payload['definition'] : '',
-        aliases: Array.isArray(r.payload['aliases']) ? r.payload['aliases'].map(String) : [],
-      });
-      const vector = await this.provider.embed(text);
-      points.push({ id: r.id, vector, payload: r.payload });
-    }
     const BATCH = 128;
     for (let i = 0; i < points.length; i += BATCH) {
       await this.qdrant.upsert(collection, { wait: true, points: points.slice(i, i + BATCH) });

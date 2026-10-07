@@ -22,6 +22,8 @@ describe('arch collection name helpers', () => {
   it('returns null when name is not an arch collection', () => {
     expect(fromArchCollectionName('paparats_my-app')).toBeNull();
     expect(fromArchCollectionName('random')).toBeNull();
+    // The code collection of a group named `arch`, not a sidecar of ''.
+    expect(fromArchCollectionName('paparats_arch')).toBeNull();
   });
 
   it('identifies arch collections', () => {

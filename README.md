@@ -144,11 +144,11 @@ npm install -g @paparats/cli
 brew install llama.cpp mostlygeek/llama-swap/llama-swap
 
 # 3. One-time bootstrap. Generates ~/.paparats/{docker-compose.yml,projects.yml},
-#    starts the stack, downloads the embedding model, wires Cursor/Claude Code MCP.
+#    starts the stack, downloads the embedding model, wires Cursor MCP.
 paparats install
 
 # 4. Add the projects you want indexed. Local paths bind-mount read-only into the
-#    indexer; git URLs and owner/repo shorthand get cloned.
+#    indexer; GitHub repos (URL or owner/repo shorthand) get cloned.
 paparats add ~/code/my-project
 paparats add git@github.com:acme/billing.git
 paparats add acme/widgets
@@ -157,8 +157,9 @@ paparats add acme/widgets
 paparats list
 ```
 
-That's it. Your IDE is already wired (`~/.cursor/mcp.json`, `~/.claude/mcp.json`) to
-`http://localhost:9876/mcp`. Open Cursor or Claude Code and ask:
+That's it. Cursor is already wired (`~/.cursor/mcp.json`) to `http://localhost:9876/mcp`;
+for Claude Code run `claude mcp add --scope user --transport http paparats http://localhost:9876/mcp`
+(see [Connecting MCP](#connecting-mcp)). Open Cursor or Claude Code and ask:
 
 > "Search this workspace for the auth middleware and show me everything that calls it."
 
@@ -181,7 +182,7 @@ to reconfigure — it diffs the existing compose and asks before overwriting han
 ~/.paparats/
 ├── docker-compose.yml          generated; hand-editable; install asks before overwriting
 ├── projects.yml        project list (CLI rewrites it; comments survive your manual edits)
-├── install.json                install flags persisted so add/remove can regenerate compose
+├── install.json                install flags persisted so add/remove can regenerate compose; chmod 600
 ├── .env                        secrets — Qdrant API key, GitHub token; chmod 600
 ├── models/                     bge-code-v1 + qwen3-embedding-0.6b GGUF (native embed mode)
 └── data/                       Docker volumes (mounted by name from compose)
@@ -200,9 +201,11 @@ Inside the Docker stack:
 | `embed`            | `ibaz/paparats-embed:latest`   | 11434 | Embed server — llama-server + llama-swap, `bge-code-v1` + `qwen3-embedding-0.6b` pre-baked (Linux default; macOS uses native embed server). llama-swap listens on 8080 inside the container |
 
 The indexer hot-reloads `projects.yml`. Edits that **change project metadata
-only** (group, language, indexing tweaks) reindex in place. Edits that **add or remove
-local-path projects** require a stack restart so Docker picks up the new bind-mount —
-the CLI does this for you on `paparats add` and `paparats remove`.
+only** (group, language, indexing tweaks) reindex in place; when the group changes, the
+project's data in the old group is purged. Deleting an entry purges its chunks, metadata
+and docs. Edits that **add or remove local-path projects** require a stack restart so
+Docker picks up the new bind-mount — the CLI does this for you on `paparats add` and
+`paparats remove`.
 
 ---
 
@@ -304,7 +307,8 @@ paparats install --mode support --server http://prod-server:9876
 ```
 
 The installer verifies the server is reachable, then wires Cursor MCP
-(`~/.cursor/mcp.json`) and Claude Code MCP (`~/.claude/mcp.json`) to the support
+(`~/.cursor/mcp.json`) and Claude Code (user scope, via `claude mcp add`; when the `claude`
+CLI isn't on your PATH it prints the command to run instead) to the support
 endpoint. Tools available on `/support/mcp`: `search_code`, `get_chunk`, `find_usages`,
 `list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`,
 `recent_changes`, `impact_analysis`, **`arch_context`**, **`arch_record_component`**,
@@ -606,14 +610,15 @@ repos:
     group: prod
     language: ruby
 
-  - url: git@github.com:acme/billing.git
+  - url: acme/billing-service # always owner/repo on github.com
     name: billing # override the auto-derived name
     group: prod
 ```
 
 The indexer hot-reloads this file. Adding/removing **local-path** entries causes the CLI
 to restart the stack so Docker picks up the new bind-mount; metadata-only edits reindex
-in place.
+in place, and removed entries are purged from the index. Remote entries are GitHub
+repositories written as `owner/repo`; `paparats add` rejects other hosts.
 
 ### `.paparats.yml` in your repo — per-project overrides
 
@@ -651,8 +656,16 @@ metadata:
       - '#(\d+)' # GitHub-style #123
 ```
 
-In-repo `.paparats.yml` always wins over `projects.yml`. The CLI never
-overwrites it.
+An in-repo `.paparats.yml` is the base config for that repo; `group`, `docs.kind` and
+`indexing.*` set for it in `projects.yml` (directly or via `defaults`) are layered on top,
+and the indexer's `PAPARATS_GROUP` overrides any group. The CLI never overwrites it.
+
+Exclude patterns follow `.gitignore` rules: a bare name (`dist`, `*.log`) matches at any
+depth, a pattern containing `/` (`spec/fixtures`, `/tmp`) is relative to the project root,
+and either one excludes everything beneath a matching directory. `indexing.paths` takes
+directories relative to the project root (`*` wildcards allowed); other glob syntax,
+absolute paths, `..`, and symlinks resolving outside the project are rejected, and
+symlinked files pointing outside the project or into `.git` are never indexed.
 
 ### Groups
 
@@ -753,9 +766,10 @@ change history, cost reporting — all in plain language.
 
 ## Connecting MCP
 
-`paparats install` already wires Cursor (`~/.cursor/mcp.json`) and Claude Code
-(`~/.claude/mcp.json`) to `http://localhost:9876/mcp`. The sections below are for
-manual setup or for adding the **support** endpoint alongside the default coding one.
+`paparats install` already wires Cursor (`~/.cursor/mcp.json`) to
+`http://localhost:9876/mcp`; `paparats install --mode support` wires both Cursor and Claude
+Code to the support endpoint. The sections below are for manual setup or for adding the
+**support** endpoint alongside the default coding one.
 
 ### Cursor
 
@@ -790,11 +804,12 @@ Restart Cursor after changing config.
 ### Claude Code
 
 ```bash
-# Coding endpoint (default)
-claude mcp add --transport http paparats http://localhost:9876/mcp
+# Coding endpoint (default). --scope user makes it available in every project
+# (stored in ~/.claude.json); omit it to register for the current project only.
+claude mcp add --scope user --transport http paparats http://localhost:9876/mcp
 
 # Support endpoint (for support bots/agents)
-claude mcp add --transport http paparats-support http://localhost:9876/support/mcp
+claude mcp add --scope user --transport http paparats-support http://localhost:9876/support/mcp
 ```
 
 Or add to `.mcp.json` in project root:
@@ -828,7 +843,7 @@ Or add to `.mcp.json` in project root:
 
 ```text
 paparats install [flags]                Bootstrap or reconfigure the global stack.
-paparats add <path-or-repo> [flags]     Add a project (local path or git URL/shorthand).
+paparats add <path-or-repo> [flags]     Add a project (local path or GitHub URL/shorthand).
 paparats list [--json] [--group g]      Show indexed projects with status from the indexer.
 paparats remove <name> [--yes]          Remove a project — deletes Qdrant + SQLite data.
 
@@ -954,6 +969,7 @@ Paparats ships with three observability layers that work together:
 Open `http://localhost:9876/ui` for a single-screen dashboard ([see screenshot at top of README](#paparats-mcp)) that visualises the analytics store above: ROI, top / slowest queries, cross-project usage, per-user activity, indexer status, embedding p95/p99, and recent failures. Polls every 5 s, no extra services to run.
 
 - Protect it (optional): `PAPARATS_UI_BASIC_AUTH=user:pass` — applies to `/ui` and `/api/analytics` only; `/mcp` and `/api/search` stay open so agents keep working.
+- Browser access from other sites is refused on every route (`403` for a foreign `Origin`), so a web page cannot read search results or call MCP tools. Allow specific origins with `PAPARATS_CORS_ORIGINS=https://app.example.com,...`.
 - Show the screenshot view to anyone without touching real data: `PAPARATS_UI_DEMO=true` (or append `?demo=1` to the URL once).
 
 ### Pre-built Grafana dashboard
@@ -1184,7 +1200,9 @@ jobs:
 ```
 
 Pass `"force": true` in the body to drop existing chunks first (destructive — use after
-schema/config changes). If the project isn't yet in `projects.yml`, add it once
+schema/config changes). Omitting `repos` (or sending `[]`) reindexes every project. A
+trigger that arrives while a cycle is running is queued and runs right after it — the
+response is `202` with `"status": "queued"` instead of `200` / `"triggered"`. If the project isn't yet in `projects.yml`, add it once
 during your initial setup and the indexer's cron + hot-reload will keep it in sync going
 forward.
 

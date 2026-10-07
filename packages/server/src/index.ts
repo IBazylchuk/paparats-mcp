@@ -11,7 +11,7 @@ import { MetadataStore } from './metadata-db.js';
 import { createTreeSitterManager } from './tree-sitter-parser.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
 import type { ProjectConfig } from './types.js';
-import { createApp, refreshGaugeMetrics } from './app.js';
+import { createApp, parseCorsOrigins, refreshGaugeMetrics } from './app.js';
 import { QueryCache } from './query-cache.js';
 import { createMetrics } from './metrics.js';
 import { buildTelemetry } from './telemetry/factory.js';
@@ -151,21 +151,30 @@ const watcherManager = new WatcherManager({
 
 // ── Create and start server ─────────────────────────────────────────────────
 
-const { app, mcpHandler, setShuttingDown, getShuttingDown, stopGroupPoll } = createApp({
-  searcher,
-  indexer,
-  watcherManager,
-  embeddingProvider,
-  projectsByGroup,
-  metadataStore,
-  metrics,
-  telemetry,
-  analytics: analytics ?? undefined,
-  archStore,
-  docsStore,
-  ...(PAPARATS_DOCS_AUDIENCE ? { docsAudienceScope: PAPARATS_DOCS_AUDIENCE } : {}),
-  terminologyStore,
-});
+let created: ReturnType<typeof createApp>;
+try {
+  created = createApp({
+    searcher,
+    indexer,
+    watcherManager,
+    embeddingProvider,
+    projectsByGroup,
+    metadataStore,
+    metrics,
+    telemetry,
+    analytics: analytics ?? undefined,
+    archStore,
+    docsStore,
+    ...(PAPARATS_DOCS_AUDIENCE ? { docsAudienceScope: PAPARATS_DOCS_AUDIENCE } : {}),
+    terminologyStore,
+  });
+} catch (err) {
+  // Misconfiguration (e.g. a malformed PAPARATS_UI_BASIC_AUTH or
+  // PAPARATS_CORS_ORIGINS) — fail closed with the reason, not a stack trace.
+  console.error(`[startup] ${(err as Error).message}`);
+  process.exit(1);
+}
+const { app, mcpHandler, setShuttingDown, getShuttingDown, stopGroupPoll } = created;
 
 const GAUGE_REFRESH_INTERVAL_MS = 15_000;
 let gaugeRefreshTimer: NodeJS.Timeout | undefined;
@@ -205,6 +214,10 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   }
   if (PAPARATS_DOCS_AUDIENCE?.length) {
     console.log(`  Docs audience scope:      ${PAPARATS_DOCS_AUDIENCE.join(', ')}`);
+  }
+  const corsOrigins = parseCorsOrigins(process.env.PAPARATS_CORS_ORIGINS);
+  if (corsOrigins.length > 0) {
+    console.log(`  CORS origins:             ${corsOrigins.join(', ')}`);
   }
 });
 

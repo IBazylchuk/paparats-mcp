@@ -1,4 +1,4 @@
-export { validateIndexingPaths } from './path-validation.js';
+export { validateIndexingPaths, filterFilesWithinRoot } from './path-validation.js';
 export { normalizeExcludePatterns } from './exclude-patterns.js';
 export {
   LANGUAGE_EXCLUDE_DEFAULTS,

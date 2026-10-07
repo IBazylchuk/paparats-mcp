@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll } from 'vitest';
+import { describe, it, expect, afterAll, beforeAll } from 'vitest';
 import { Parser, Language, type Tree } from 'web-tree-sitter';
 import { createRequire } from 'module';
 import { chunkByAst, type AstChunkerConfig } from '../src/ast-chunker.js';
@@ -62,6 +62,66 @@ describe('chunkByAst', () => {
     expect(chunks[0]!.content).toContain('function greet');
     expect(chunks[0]!.startLine).toBe(0);
     expect(chunks[0]!.endLine).toBe(2);
+  });
+
+  describe('long lines', () => {
+    beforeAll(async () => {
+      if (!parser) await setup();
+    });
+
+    it('cuts a line longer than maxChunkSize instead of emitting it whole', () => {
+      const data = Array.from({ length: 1500 }, (_, i) => i * 7919).join(',');
+      const code = `export const TABLE = [${data}];\nexport function f() {\n  return TABLE[0];\n}\n`;
+      expect(code.split('\n')[0]!.length).toBeGreaterThan(defaultConfig.maxChunkSize);
+
+      const chunks = chunkByAst(parse('typescript', code), code, defaultConfig);
+      for (const c of chunks)
+        expect(c.content.length).toBeLessThanOrEqual(defaultConfig.maxChunkSize);
+      // Nothing is lost: the pieces of the long line add back up to it.
+      const firstLinePieces = chunks.filter((c) => c.startLine === 0 && c.endLine === 0);
+      expect(firstLinePieces.map((c) => c.content).join('')).toBe(code.split('\n')[0]);
+      expect(chunks.some((c) => c.content.includes('function f()'))).toBe(true);
+    });
+  });
+
+  describe('long comment runs', () => {
+    beforeAll(async () => {
+      if (!parser) await setup();
+    });
+
+    const coveredLines = (chunks: Array<{ startLine: number; endLine: number }>) => {
+      const covered = new Set<number>();
+      for (const c of chunks) for (let l = c.startLine; l <= c.endLine; l++) covered.add(l);
+      return covered;
+    };
+
+    it('splits a run of line comments instead of growing one chunk past maxChunkSize', () => {
+      const comments = Array.from(
+        { length: 400 },
+        (_, i) => `// note ${i}: explains a detail of the surrounding code at some length`
+      ).join('\n');
+      const code = `function a() {\n  return 1;\n}\n${comments}\nfunction b() {\n  return 2;\n}\n`;
+      const chunks = chunkByAst(parse('typescript', code), code, defaultConfig);
+
+      for (const c of chunks)
+        expect(c.content.length).toBeLessThanOrEqual(defaultConfig.maxChunkSize);
+      const covered = coveredLines(chunks);
+      code.split('\n').forEach((line, i) => {
+        if (line.trim()) expect(covered.has(i)).toBe(true);
+      });
+    });
+
+    it('splits a single block comment larger than maxChunkSize', () => {
+      const body = Array.from({ length: 400 }, (_, i) => ` * line ${i} of a very long header`).join(
+        '\n'
+      );
+      const code = `/**\n${body}\n */\nfunction a() {\n  return 1;\n}\n`;
+      const chunks = chunkByAst(parse('typescript', code), code, defaultConfig);
+
+      for (const c of chunks)
+        expect(c.content.length).toBeLessThanOrEqual(defaultConfig.maxChunkSize);
+      expect(chunks.some((c) => c.content.includes('function a()'))).toBe(true);
+    });
   });
 
   it('multiple small functions → grouped until chunkSize', async () => {

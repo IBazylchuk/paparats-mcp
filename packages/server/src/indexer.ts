@@ -2,7 +2,12 @@ import { QdrantClient } from '@qdrant/js-client-rest';
 import { glob } from 'glob';
 import fs from 'fs';
 import path from 'path';
-import { filterFilesByGitignore, detectLanguageByPath, detectNonSource } from '@paparats/shared';
+import {
+  filterFilesByGitignore,
+  filterFilesWithinRoot,
+  detectLanguageByPath,
+  detectNonSource,
+} from '@paparats/shared';
 import { v7 as uuidv7 } from 'uuid';
 import PQueue from 'p-queue';
 import { Chunker } from './chunker.js';
@@ -20,12 +25,13 @@ import type { DocsStore } from './docs/store.js';
 import { NotMarkdownError } from './docs/chunker.js';
 import { parseFrontmatter } from './docs/frontmatter.js';
 import type { DocsKind } from './docs/types.js';
-import type { ChunkResult, ProjectConfig, IndexerStats } from './types.js';
+import type { ChunkResult, ProjectConfig, IndexerStats, IndexProjectReport } from './types.js';
 import type { Telemetry } from './telemetry/facade.js';
 import type { MetricsRegistry } from './metrics.js';
 import { NoOpMetrics } from './metrics.js';
 import { isArchCollection } from './arch/collection.js';
 import { isDocsCollection } from './docs/collection.js';
+import { isMissingCollection } from './qdrant-errors.js';
 import { isTermsCollection } from './terminology/collection.js';
 
 // ── Collection name helpers ──────────────────────────────────────────────────
@@ -35,6 +41,29 @@ const COLLECTION_PREFIX = 'paparats_';
 /** Map a logical group name to a Qdrant collection name */
 export function toCollectionName(group: string): string {
   return `${COLLECTION_PREFIX}${group}`;
+}
+
+/**
+ * Reject a group name whose code collection another group's sidecar would claim.
+ *
+ * Sidecar layers live at `paparats_<group>_arch|_docs|_terms`, so a code group
+ * named `billing_arch` owns `paparats_billing_arch` — the collection group
+ * `billing` keeps its arch memory in. The startup self-heal then takes the code
+ * index for a stale arch collection and drops it. Asking the sidecar helpers
+ * themselves keeps this check in step with the suffixes they actually use.
+ */
+export function validateGroupName(group: string): void {
+  const collection = toCollectionName(group);
+  if (
+    isArchCollection(collection) ||
+    isDocsCollection(collection) ||
+    isTermsCollection(collection)
+  ) {
+    throw new Error(
+      `Invalid group name "${group}": names ending in _arch, _docs or _terms are reserved ` +
+        `for sidecar collections. Choose a different group name.`
+    );
+  }
 }
 
 /** Map a Qdrant collection name back to a logical group name */
@@ -317,6 +346,9 @@ export class Indexer {
       try {
         return await fn();
       } catch (err) {
+        // A missing collection will not appear on retry. Rethrow it untouched so
+        // callers can tell "nothing indexed yet" apart from Qdrant failing.
+        if (isMissingCollection(err)) throw err;
         lastError = err as Error;
         if (attempt < retries - 1) {
           const delay = 1000 * 2 ** attempt;
@@ -327,51 +359,178 @@ export class Indexer {
         }
       }
     }
-    throw new Error(`Qdrant failed after ${retries} retries: ${lastError?.message}`);
+    throw new Error(`Qdrant failed after ${retries} retries: ${lastError?.message}`, {
+      cause: lastError,
+    });
   }
 
-  /** Fetch existing chunk hashes for a file from Qdrant */
-  private async getFileChunkHashes(
+  /**
+   * What is stored for one file, as one comparable key per point (see
+   * {@link chunkStateKey}). A list rather than a set, so duplicated points show up
+   * as a count mismatch instead of collapsing into a match. Empty when the
+   * collection does not exist; any other failure throws, so a file whose state
+   * could not be read is retried rather than mistaken for a new one.
+   */
+  private async readStoredFileKeys(
     groupName: string,
     projectName: string,
     relPath: string
-  ): Promise<Set<string>> {
+  ): Promise<string[]> {
+    const keys: string[] = [];
+    let offset: string | number | undefined = undefined;
     try {
-      const hashes = new Set<string>();
-      let offset: string | number | undefined = undefined;
-
       for (;;) {
-        const result = await this.qdrant.scroll(this.col(groupName), {
-          filter: {
-            must: [
-              { key: 'project', match: { value: projectName } },
-              { key: 'file', match: { value: relPath } },
-            ],
-          },
-          with_payload: { include: ['hash'] },
-          with_vector: false,
-          limit: 1000,
-          ...(offset !== undefined ? { offset } : {}),
-        });
-
+        const result = await this.retryQdrant(() =>
+          this.qdrant.scroll(this.col(groupName), {
+            filter: {
+              must: [
+                { key: 'project', match: { value: projectName } },
+                { key: 'file', match: { value: relPath } },
+              ],
+            },
+            with_payload: {
+              include: ['hash', 'startLine', 'endLine', 'service', 'bounded_context', 'tags'],
+            },
+            with_vector: false,
+            limit: 1000,
+            ...(offset !== undefined ? { offset } : {}),
+          })
+        );
         for (const point of result.points) {
-          const hash = (point.payload as Record<string, unknown> | null)?.['hash'];
-          if (typeof hash === 'string') {
-            hashes.add(hash);
-          }
+          const p = (point.payload ?? {}) as Record<string, unknown>;
+          keys.push(
+            chunkStateKey(
+              p['hash'],
+              p['startLine'],
+              p['endLine'],
+              p['service'],
+              p['bounded_context'],
+              p['tags']
+            )
+          );
         }
-
         if (!result.next_page_offset) break;
         offset = result.next_page_offset as string | number;
       }
-
-      return hashes;
     } catch (err) {
-      console.warn(
-        `[indexer] Failed to get chunk hashes for ${projectName}/${relPath}: ${(err as Error).message}`
-      );
-      return new Set<string>();
+      if (isMissingCollection(err)) return [];
+      throw err;
     }
+    return keys;
+  }
+
+  /**
+   * Whether the stored points for a file already match what indexing it now
+   * would write. Compares line ranges and project metadata as well as content:
+   * a hash-only check skipped files whose chunks merely moved (stale line numbers
+   * and chunk ids) and never applied `service`/`tags` changes to unchanged files.
+   */
+  private async isFileUnchanged(
+    groupName: string,
+    project: ProjectConfig,
+    storedName: string,
+    relPath: string,
+    chunks: ChunkResult[]
+  ): Promise<boolean> {
+    const stored = await this.readStoredFileKeys(groupName, storedName, relPath);
+    if (stored.length !== chunks.length) return false;
+    const tags = resolveTags(project.metadata, relPath);
+    const wanted = chunks.map((c) =>
+      chunkStateKey(
+        c.hash,
+        c.startLine,
+        c.endLine,
+        project.metadata.service,
+        project.metadata.bounded_context,
+        tags
+      )
+    );
+    stored.sort();
+    wanted.sort();
+    return stored.every((key, i) => key === wanted[i]);
+  }
+
+  /**
+   * Drop a file's points and SQLite metadata. For a file that still exists but no
+   * longer yields chunks (emptied, binary, minified) — the orphan sweep only
+   * catches files that are gone, so without this their old chunks stayed
+   * searchable. Checks first, so the common "never indexed" case costs a read,
+   * not a write.
+   */
+  private async removeStoredFile(
+    groupName: string,
+    storedName: string,
+    relPath: string
+  ): Promise<void> {
+    const stored = await this.readStoredFileKeys(groupName, storedName, relPath);
+    if (stored.length === 0) return;
+    await this.deleteStoredFilePoints(groupName, storedName, relPath);
+    this.metadataStore?.deleteByFile(groupName, storedName, relPath);
+  }
+
+  private async deleteStoredFilePoints(
+    groupName: string,
+    storedName: string,
+    relPath: string
+  ): Promise<void> {
+    await this.retryQdrant(() =>
+      this.qdrant.delete(this.col(groupName), {
+        filter: {
+          must: [
+            { key: 'project', match: { value: storedName } },
+            { key: 'file', match: { value: relPath } },
+          ],
+        },
+        wait: true,
+      })
+    );
+  }
+
+  /**
+   * Write one file's chunks in place of whatever was stored for it. Every
+   * indexing path goes through here so they agree on the order: embed and build
+   * all points first — the slow, failure-prone step — so a failed embedding
+   * leaves the indexed version searchable; then delete the old points
+   * unconditionally, so a missed read can never leave two copies; then upsert.
+   */
+  private async replaceFileChunks(
+    groupName: string,
+    project: ProjectConfig,
+    storedName: string,
+    relPath: string,
+    language: string,
+    chunks: ChunkResult[],
+    symbolResults: SymbolExtractionResult[] | null
+  ): Promise<Array<{ id: string; vector: number[]; payload: Record<string, unknown> }>> {
+    const embeddings = await this.provider.embedBatchPassage(chunks.map((c) => c.content));
+    if (embeddings.length !== chunks.length) {
+      throw new Error(
+        `Embedding mismatch: got ${embeddings.length} embeddings for ${chunks.length} chunks in ${relPath}`
+      );
+    }
+
+    const points = this.buildPointPayloads(
+      chunks,
+      embeddings,
+      groupName,
+      storedName,
+      relPath,
+      language,
+      resolveTags(project.metadata, relPath),
+      project.metadata.service,
+      project.metadata.bounded_context,
+      symbolResults
+    );
+
+    await this.deleteStoredFilePoints(groupName, storedName, relPath);
+    const batchSize = project.indexing.batchSize;
+    for (let i = 0; i < points.length; i += batchSize) {
+      const batch = points.slice(i, i + batchSize);
+      await this.retryQdrant(() =>
+        this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
+      );
+    }
+    return points;
   }
 
   /** Get all unique file paths currently indexed for a project in Qdrant */
@@ -489,14 +648,6 @@ export class Indexer {
         );
       }
     }
-  }
-
-  private hashSetsEqual(a: Set<string>, b: Set<string>): boolean {
-    if (a.size !== b.size) return false;
-    for (const h of a) {
-      if (!b.has(h)) return false;
-    }
-    return true;
   }
 
   /**
@@ -657,6 +808,7 @@ export class Indexer {
    *  matches the current provider — mismatches mean a silent broken search,
    *  so we surface them loudly. */
   async ensureCollection(groupName: string): Promise<void> {
+    validateGroupName(groupName);
     try {
       await this.qdrant.getCollection(this.col(groupName));
       await this.validateCollectionMeta(groupName);
@@ -845,7 +997,12 @@ export class Indexer {
 
   /** Index a single file into its group collection */
   async indexFile(groupName: string, project: ProjectConfig, filePath: string): Promise<number> {
+    validateGroupName(groupName);
     const relPath = path.relative(project.path, filePath);
+    if (filterFilesWithinRoot([filePath], project.path).length === 0) {
+      console.warn(`  [indexer] Skipping ${relPath}: resolves outside the project or into .git`);
+      return 0;
+    }
     // Storage-layer project name (suffix applied). Use for all Qdrant/chunk_id/
     // metadata calls; keep `project.name` for logging & telemetry (logical name).
     const storedName = this.stored(project.name);
@@ -853,15 +1010,22 @@ export class Indexer {
     let content: string;
     try {
       const buffer = await fs.promises.readFile(filePath);
-      if (buffer.includes(0)) return 0; // Binary file
       content = buffer.toString('utf8');
-      if (content.includes('\uFFFD')) return 0; // Invalid UTF-8
+      // Binary or invalid UTF-8: nothing to index, and nothing earlier may linger.
+      if (buffer.includes(0) || content.includes('\uFFFD')) {
+        await this.removeStoredFile(groupName, storedName, relPath);
+        return 0;
+      }
     } catch (err) {
+      // A read failure may be transient — keep whatever was indexed before.
       console.error(`  Failed to read ${relPath}: ${(err as Error).message}`);
       return 0;
     }
 
-    if (!content.trim()) return 0;
+    if (!content.trim()) {
+      await this.removeStoredFile(groupName, storedName, relPath);
+      return 0;
+    }
 
     // Skip machine-generated / non-source content (base64 asset blobs, minified
     // bundles) before it reaches the chunker or embedder. Such files have a
@@ -883,6 +1047,7 @@ export class Indexer {
         });
       }
       this.stats.skipped++;
+      await this.removeStoredFile(groupName, storedName, relPath);
       return 0;
     }
 
@@ -891,62 +1056,25 @@ export class Indexer {
       groupName,
       file: relPath,
     });
-    if (chunks.length === 0) return 0;
+    if (chunks.length === 0) {
+      await this.removeStoredFile(groupName, storedName, relPath);
+      return 0;
+    }
 
-    // Compare chunk hashes to skip unchanged files
-    const newHashes = new Set(chunks.map((c) => c.hash));
-    const existingHashes = await this.getFileChunkHashes(groupName, storedName, relPath);
-    if (this.hashSetsEqual(newHashes, existingHashes)) {
+    if (await this.isFileUnchanged(groupName, project, storedName, relPath, chunks)) {
       this.stats.skipped++;
       return 0;
     }
 
-    // Delete old chunks if file was previously indexed
-    if (existingHashes.size > 0) {
-      await this.retryQdrant(() =>
-        this.qdrant.delete(this.col(groupName), {
-          filter: {
-            must: [
-              { key: 'project', match: { value: storedName } },
-              { key: 'file', match: { value: relPath } },
-            ],
-          },
-          wait: true,
-        })
-      );
-    }
-
-    const contents = chunks.map((c) => c.content);
-    const embeddings = await this.provider.embedBatchPassage(contents);
-
-    if (embeddings.length !== chunks.length) {
-      throw new Error(
-        `Embedding mismatch: got ${embeddings.length} embeddings for ${chunks.length} chunks in ${relPath}`
-      );
-    }
-
-    const tags = resolveTags(project.metadata, relPath);
-
-    const points = this.buildPointPayloads(
-      chunks,
-      embeddings,
+    const points = await this.replaceFileChunks(
       groupName,
+      project,
       storedName,
       relPath,
       language,
-      tags,
-      project.metadata.service,
-      project.metadata.bounded_context,
+      chunks,
       symbolResults
     );
-
-    const batchSize = project.indexing.batchSize;
-    for (let i = 0; i < points.length; i += batchSize) {
-      const batch = points.slice(i, i + batchSize);
-      await this.retryQdrant(() =>
-        this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
-      );
-    }
 
     this.telemetry?.upsertFile({
       groupName,
@@ -966,13 +1094,23 @@ export class Indexer {
 
   /** Index all files in a project into its group collection */
   async indexProject(project: ProjectConfig): Promise<number> {
+    return (await this.indexProjectWithReport(project)).chunks;
+  }
+
+  /**
+   * {@link indexProject}, also reporting how many files failed. Per-file errors
+   * are logged and skipped so one bad file cannot sink the run, which makes the
+   * plain chunk count look like success either way — callers that record "this
+   * source state is indexed" need the error count to know whether it is.
+   */
+  async indexProjectWithReport(project: ProjectConfig): Promise<IndexProjectReport> {
     const groupName = project.group;
     // Storage-layer project name (suffix applied) — see indexFile.
     const storedName = this.stored(project.name);
 
     if (!fs.existsSync(project.path)) {
       console.error(`  Project path not found: ${project.path}`);
-      return 0;
+      return { chunks: 0, errors: 1 };
     }
 
     await this.ensureCollection(groupName);
@@ -988,7 +1126,11 @@ export class Indexer {
       });
       found.forEach((f) => fileSet.add(f));
     }
-    let files = Array.from(fileSet);
+    // Globs follow symlinks: a committed `leak.ts -> .git/config` (a remote URL
+    // carrying a token) or a link out of the repository would be read and made
+    // searchable. Dropping them here also lets the orphan sweep remove anything
+    // indexed through such a link before.
+    let files = filterFilesWithinRoot(Array.from(fileSet), project.path);
     if (project.indexing.respectGitignore) {
       files = filterFilesByGitignore(files, project.path);
     }
@@ -997,6 +1139,7 @@ export class Indexer {
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
     let totalChunks = 0;
     let processed = 0;
+    let errors = 0;
     const skippedBefore = this.stats.skipped;
 
     const changedFiles = new Set<string>();
@@ -1018,6 +1161,7 @@ export class Indexer {
             await new Promise<void>((resolve) => setImmediate(resolve));
           }
         } catch (err) {
+          errors++;
           this.stats.errors++;
           this.metrics.incIndexErrorsTotal(groupName, 1);
           const rel = path.relative(project.path, file);
@@ -1044,7 +1188,14 @@ export class Indexer {
 
     // Post-indexing: git metadata + symbol graph (single Qdrant scan for both)
     const needsGit = this.metadataStore && project.metadata.git.enabled && totalChunks > 0;
-    const needsSymbols = this.metadataStore && this.treeSitter && totalChunks > 0;
+    // The graph is also rebuilt when the project has none. Otherwise a stable
+    // repository whose graph was lost — a failed rebuild (edges are deleted before
+    // the new ones are written) or a reset table — stayed without callers/usages
+    // until some file happened to change.
+    const needsSymbols =
+      this.metadataStore &&
+      this.treeSitter &&
+      (totalChunks > 0 || !this.metadataStore.hasEdgesForProject(groupName, storedName));
 
     if (needsGit || needsSymbols) {
       try {
@@ -1113,7 +1264,7 @@ export class Indexer {
       }
     }
 
-    return totalChunks;
+    return { chunks: totalChunks, errors };
   }
 
   /**
@@ -1150,11 +1301,18 @@ export class Indexer {
       ignore: project.exclude,
       nodir: true,
     });
-    let files = Array.from(new Set(found));
+    // Same symlink guard as the code walk — see indexProjectWithReport.
+    let files = filterFilesWithinRoot(Array.from(new Set(found)), project.path);
     if (project.indexing.respectGitignore) {
       files = filterFilesByGitignore(files, project.path);
     }
-    if (files.length === 0) return 0;
+    // Repo-relative paths, as the store keys documents. Anything indexed earlier
+    // that is not in this set is pruned once the walk is done.
+    const live = new Set(files.map((f) => path.relative(project.path, f)));
+    if (files.length === 0) {
+      await this.pruneRemovedDocs(groupName, cleanName, live);
+      return 0;
+    }
     console.log(`  [docs] ${files.length} markdown file(s) found`);
 
     // One git walk for the repo, reused for every file below. Empty for
@@ -1164,15 +1322,10 @@ export class Indexer {
     // Docs that ship alongside source are classified separately from long-form
     // prose: they score deceptively well against questions they don't answer, so
     // search holds them to a higher relevance floor (DEFAULT_DOCS_CODE_MIN_COSINE).
-    //
-    // The signal is whether the repo contains code at all. A documentation mirror
-    // detects no languages, so it is `prose`; anything with source is `code`. This
-    // needs no configuration and errs toward `code` (the stricter floor) when
-    // detection is uncertain. `.paparats.yml` can override via `docs.kind`.
-    // `docs` is optional at runtime: callers outside this package build
-    // ProjectConfig objects by hand, so it may be absent despite the type.
-    const kind: DocsKind =
-      project.docs?.kind ?? (project.languages.length === 0 ? 'prose' : 'code');
+    // `.paparats.yml` can override via `docs.kind`. `docs` is optional at runtime:
+    // callers outside this package build ProjectConfig objects by hand, so it may
+    // be absent despite the type.
+    const kind: DocsKind = project.docs?.kind ?? (await this.classifyDocs(project, files.length));
     console.log(`  [docs] classified as ${kind}`);
 
     let totalChunks = 0;
@@ -1205,9 +1358,14 @@ export class Indexer {
         totalChunks += n;
       } catch (err) {
         if (err instanceof NotMarkdownError) {
+          // A file that stopped being markdown still holds the chunks from when
+          // it was; leaving `live` lets the prune remove them.
+          live.delete(rel);
           skipped++;
           continue; // not markdown — skip, never index
         }
+        // Any other failure keeps the file in `live`: a transient error must not
+        // unpublish the version indexed last time.
         console.warn(`  [docs] Failed to index ${rel} (non-fatal): ${(err as Error).message}`);
       }
     }
@@ -1215,7 +1373,59 @@ export class Indexer {
       console.log(`  [docs] Skipped ${skipped} non-markdown file(s)`);
     }
     console.log(`  [docs] Indexed ${totalChunks} chunk(s) from ${files.length - skipped} file(s)`);
+    await this.pruneRemovedDocs(groupName, cleanName, live);
     return totalChunks;
+  }
+
+  /**
+   * Whether a project's markdown is long-form `prose` or `code` docs living beside
+   * source. A detected language means source, so `code`. Detection works from
+   * manifests (package.json, Gemfile, ...), so a documentation mirror and a repo
+   * in a language without a profile both come back as `generic`; for those the
+   * file mix decides — `prose` only when markdown makes up nearly all of the
+   * repository, so an uncertain case still gets the stricter `code` floor.
+   */
+  private async classifyDocs(project: ProjectConfig, markdownCount: number): Promise<DocsKind> {
+    if (project.languages.some((l) => l !== 'generic')) return 'code';
+    let all = await glob('**/*', {
+      cwd: project.path,
+      absolute: true,
+      ignore: project.exclude,
+      nodir: true,
+    });
+    if (project.indexing.respectGitignore) {
+      all = filterFilesByGitignore(all, project.path);
+    }
+    // Images and attachments ride along with mirrored pages and say nothing about
+    // whether the repository holds code.
+    const content = all.filter((f) => !DOCS_ASSET_EXTENSIONS.has(path.extname(f).toLowerCase()));
+    if (content.length === 0) return 'code';
+    return markdownCount / content.length >= DOCS_PROSE_MIN_SHARE ? 'prose' : 'code';
+  }
+
+  /**
+   * Remove documents whose file the walk no longer produced — deleted, renamed,
+   * newly excluded, or no longer markdown. Non-fatal: a failed prune leaves the
+   * stale documents for the next run, it never fails the index.
+   */
+  private async pruneRemovedDocs(
+    groupName: string,
+    projectName: string,
+    live: Set<string>
+  ): Promise<void> {
+    if (!this.docsStore) return;
+    try {
+      const removed = await this.docsStore.pruneDocuments(groupName, projectName, live);
+      if (removed.length > 0) {
+        console.log(
+          `  [docs] Removed ${removed.length} deleted document(s): ${removed.join(', ')}`
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `  [docs] Removing deleted documents failed (non-fatal): ${(err as Error).message}`
+      );
+    }
   }
 
   /**
@@ -1321,58 +1531,49 @@ export class Indexer {
     );
   }
 
-  /** Update a single file (delete old chunks + re-index) */
+  /**
+   * Update a single file. {@link indexFile} replaces the stored version itself,
+   * after embedding — deleting up front unpublished the file whenever the
+   * re-index then failed.
+   */
   async updateFile(groupName: string, project: ProjectConfig, filePath: string): Promise<void> {
     const relPath = path.relative(project.path, filePath);
-    const storedName = this.stored(project.name);
-
-    try {
-      await this.retryQdrant(() =>
-        this.qdrant.delete(this.col(groupName), {
-          filter: {
-            must: [
-              { key: 'project', match: { value: storedName } },
-              { key: 'file', match: { value: relPath } },
-            ],
-          },
-          wait: true,
-        })
-      );
-    } catch (err) {
-      console.warn(
-        `[indexer] Could not delete old chunks for ${relPath}: ${(err as Error).message}`
-      );
-    }
 
     if (fs.existsSync(filePath)) {
       const n = await this.indexFile(groupName, project, filePath);
       console.log(`[indexer] Updated ${groupName}/${project.name}/${relPath} (${n} chunks)`);
     } else {
+      await this.removeStoredFile(groupName, this.stored(project.name), relPath);
       console.log(`[indexer] Deleted ${groupName}/${project.name}/${relPath}`);
     }
   }
 
-  /** Remove all chunks for a file */
+  /** Remove all chunks and metadata for a file (watcher unlink — never throws) */
   async deleteFile(groupName: string, project: ProjectConfig, filePath: string): Promise<void> {
     const relPath = path.relative(project.path, filePath);
-    const storedName = this.stored(project.name);
-
     try {
-      await this.retryQdrant(() =>
-        this.qdrant.delete(this.col(groupName), {
-          filter: {
-            must: [
-              { key: 'project', match: { value: storedName } },
-              { key: 'file', match: { value: relPath } },
-            ],
-          },
-          wait: true,
-        })
-      );
+      await this.deleteStoredFile(groupName, this.stored(project.name), relPath);
       console.log(`[indexer] Removed ${groupName}/${project.name}/${relPath}`);
-    } catch {
-      // ignore
+    } catch (err) {
+      console.warn(`[indexer] Could not remove ${relPath}: ${(err as Error).message}`);
     }
+  }
+
+  /**
+   * Delete a file's points and SQLite metadata. A missing collection is "nothing
+   * to delete"; any other failure throws.
+   */
+  private async deleteStoredFile(
+    groupName: string,
+    storedName: string,
+    relPath: string
+  ): Promise<void> {
+    try {
+      await this.deleteStoredFilePoints(groupName, storedName, relPath);
+    } catch (err) {
+      if (!isMissingCollection(err)) throw err;
+    }
+    this.metadataStore?.deleteByFile(groupName, storedName, relPath);
   }
 
   /** Content-based: index files from in-memory content (no filesystem access) */
@@ -1404,6 +1605,7 @@ export class Indexer {
         const lang = language ?? detectLanguageByPath(relPath, content) ?? defaultLang;
 
         if (!content.trim()) {
+          await this.removeStoredFile(groupName, storedName, relPath);
           await yieldIfDue();
           return;
         }
@@ -1413,65 +1615,26 @@ export class Indexer {
           file: relPath,
         });
         if (chunks.length === 0) {
+          await this.removeStoredFile(groupName, storedName, relPath);
           await yieldIfDue();
           return;
         }
 
-        // Compare chunk hashes to skip unchanged files
-        const newHashes = new Set(chunks.map((c) => c.hash));
-        const existingHashes = await this.getFileChunkHashes(groupName, storedName, relPath);
-        if (this.hashSetsEqual(newHashes, existingHashes)) {
+        if (await this.isFileUnchanged(groupName, project, storedName, relPath, chunks)) {
           this.stats.skipped++;
           await yieldIfDue();
           return;
         }
 
-        // Delete old chunks if file was previously indexed
-        if (existingHashes.size > 0) {
-          await this.retryQdrant(() =>
-            this.qdrant.delete(this.col(groupName), {
-              filter: {
-                must: [
-                  { key: 'project', match: { value: storedName } },
-                  { key: 'file', match: { value: relPath } },
-                ],
-              },
-              wait: true,
-            })
-          );
-        }
-
-        const contents = chunks.map((c) => c.content);
-        const embeddings = await this.provider.embedBatchPassage(contents);
-
-        if (embeddings.length !== chunks.length) {
-          throw new Error(
-            `Embedding mismatch: got ${embeddings.length} embeddings for ${chunks.length} chunks in ${relPath}`
-          );
-        }
-
-        const tags = resolveTags(project.metadata, relPath);
-
-        const points = this.buildPointPayloads(
-          chunks,
-          embeddings,
+        const points = await this.replaceFileChunks(
           groupName,
+          project,
           storedName,
           relPath,
           lang,
-          tags,
-          project.metadata.service,
-          project.metadata.bounded_context,
+          chunks,
           symbolResults
         );
-
-        const batchSize = project.indexing.batchSize;
-        for (let i = 0; i < points.length; i += batchSize) {
-          const batch = points.slice(i, i + batchSize);
-          await this.retryQdrant(() =>
-            this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
-          );
-        }
 
         this.telemetry?.upsertFile({
           groupName,
@@ -1507,26 +1670,11 @@ export class Indexer {
     language: string,
     project: ProjectConfig
   ): Promise<number> {
+    validateGroupName(groupName);
     const storedName = this.stored(projectName);
-    try {
-      await this.retryQdrant(() =>
-        this.qdrant.delete(this.col(groupName), {
-          filter: {
-            must: [
-              { key: 'project', match: { value: storedName } },
-              { key: 'file', match: { value: relPath } },
-            ],
-          },
-          wait: true,
-        })
-      );
-    } catch (err) {
-      console.warn(
-        `[indexer] Could not delete old chunks for ${relPath}: ${(err as Error).message}`
-      );
-    }
 
     if (!content.trim()) {
+      await this.removeStoredFile(groupName, storedName, relPath);
       console.log(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks, empty)`);
       return 0;
     }
@@ -1536,41 +1684,21 @@ export class Indexer {
       file: relPath,
     });
     if (chunks.length === 0) {
+      await this.removeStoredFile(groupName, storedName, relPath);
       console.log(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks)`);
       return 0;
     }
 
-    const contents = chunks.map((c) => c.content);
-    const embeddings = await this.provider.embedBatchPassage(contents);
-
-    if (embeddings.length !== chunks.length) {
-      throw new Error(
-        `Embedding mismatch: got ${embeddings.length} embeddings for ${chunks.length} chunks in ${relPath}`
-      );
-    }
-
-    const tags = resolveTags(project.metadata, relPath);
-
-    const points = this.buildPointPayloads(
-      chunks,
-      embeddings,
+    // Replaces the stored version only after embedding — see replaceFileChunks.
+    const points = await this.replaceFileChunks(
       groupName,
+      project,
       storedName,
       relPath,
       language,
-      tags,
-      project.metadata.service,
-      project.metadata.bounded_context,
+      chunks,
       symbolResults
     );
-
-    const batchSize = project.indexing.batchSize;
-    for (let i = 0; i < points.length; i += batchSize) {
-      const batch = points.slice(i, i + batchSize);
-      await this.retryQdrant(() =>
-        this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
-      );
-    }
 
     this.telemetry?.upsertFile({
       groupName,
@@ -1610,30 +1738,35 @@ export class Indexer {
         })
       );
       console.log(`[indexer] Removed all chunks for ${groupName}/${projectName}`);
-    } catch {
-      // ignore (collection may not exist)
+    } catch (err) {
+      // A missing collection means there is nothing to delete. Anything else is
+      // a real failure: swallowing it let delete_project report success while the
+      // chunks were still in Qdrant.
+      if (isMissingCollection(err)) return;
+      throw err;
     }
+  }
+
+  /**
+   * Remove a project from every layer the indexer writes: code chunks, SQLite
+   * metadata (commits, tickets, symbol edges) and docs. `projectName` is the
+   * clean name. Throws when Qdrant fails, so a caller never reports a deletion
+   * that did not happen.
+   */
+  async purgeProject(groupName: string, projectName: string): Promise<void> {
+    await this.deleteProjectChunks(groupName, projectName);
+    // Metadata rows are keyed by chunk_id, which embeds the stored (suffixed) name.
+    this.metadataStore?.deleteByProject(groupName, this.stored(projectName));
+    // Docs are written under the clean name — see indexDocsProject.
+    await this.docsStore?.deleteProject(groupName, projectName);
   }
 
   /** Content-based: delete chunks by group, project, and relative path (no filesystem) */
   async deleteFileByPath(groupName: string, projectName: string, relPath: string): Promise<void> {
-    const storedName = this.stored(projectName);
-    try {
-      await this.retryQdrant(() =>
-        this.qdrant.delete(this.col(groupName), {
-          filter: {
-            must: [
-              { key: 'project', match: { value: storedName } },
-              { key: 'file', match: { value: relPath } },
-            ],
-          },
-          wait: true,
-        })
-      );
-      console.log(`[indexer] Removed ${groupName}/${projectName}/${relPath}`);
-    } catch {
-      // ignore
-    }
+    // Throws on a real Qdrant failure so the API does not report a deletion that
+    // did not happen.
+    await this.deleteStoredFile(groupName, this.stored(projectName), relPath);
+    console.log(`[indexer] Removed ${groupName}/${projectName}/${relPath}`);
   }
 
   /** Delete entire group collection and re-index all its projects */
@@ -1831,3 +1964,43 @@ export class Indexer {
     return result;
   }
 }
+
+/**
+ * Comparable identity of one stored chunk: content hash, line range, and the
+ * project metadata copied into its payload. Tags are sorted so their order is not
+ * mistaken for a change.
+ */
+function chunkStateKey(
+  hash: unknown,
+  startLine: unknown,
+  endLine: unknown,
+  service: unknown,
+  boundedContext: unknown,
+  tags: unknown
+): string {
+  const sortedTags = Array.isArray(tags) ? tags.map(String).sort() : [];
+  return JSON.stringify([
+    hash,
+    startLine,
+    endLine,
+    service ?? null,
+    boundedContext ?? null,
+    sortedTags,
+  ]);
+}
+
+/** Share of a `generic` repository's files that must be markdown to count as prose. */
+const DOCS_PROSE_MIN_SHARE = 0.8;
+
+/** Attachment types ignored when judging whether a repository is a docs mirror. */
+const DOCS_ASSET_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.svg',
+  '.webp',
+  '.ico',
+  '.pdf',
+  '.drawio',
+]);

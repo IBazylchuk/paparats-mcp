@@ -245,30 +245,33 @@ export class Searcher {
       )
     );
 
-    // Merge: keep highest score per unique hash, track which variation contributed each result
-    const byHash = new Map<string, SearchResult>();
-    const contributedBy = new Map<string, number>(); // hash -> variation index that first added it
+    // Merge: keep highest score per chunk, track which variation contributed each
+    // result. Keyed by location, not content hash — identical code in two files
+    // (vendored or generated copies) is two results, and collapsing them hid one.
+    const byChunk = new Map<string, SearchResult>();
+    const contributedBy = new Map<string, number>(); // chunk -> variation index that first added it
     for (let i = 0; i < responses.length; i++) {
       const response = responses[i]!;
       for (const result of response.results) {
-        const existing = byHash.get(result.hash);
+        const key = resultKey(result);
+        const existing = byChunk.get(key);
         if (!existing) {
-          byHash.set(result.hash, result);
-          contributedBy.set(result.hash, i);
+          byChunk.set(key, result);
+          contributedBy.set(key, i);
         } else if (result.score > existing.score) {
-          byHash.set(result.hash, result);
+          byChunk.set(key, result);
         }
       }
     }
 
-    const merged = Array.from(byHash.values())
+    const merged = Array.from(byChunk.values())
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
 
     // Log which variations contributed to final results
     const variationHits = new Map<number, number>();
     for (const result of merged) {
-      const idx = contributedBy.get(result.hash) ?? 0;
+      const idx = contributedBy.get(resultKey(result)) ?? 0;
       variationHits.set(idx, (variationHits.get(idx) ?? 0) + 1);
     }
 
@@ -395,9 +398,9 @@ export class Searcher {
 
     let results: SearchResult[];
     try {
-      const hits = await this.retryQdrant(() =>
-        this.qdrant.search(toCollectionName(groupName), {
-          vector: queryVector,
+      const { points: hits } = await this.retryQdrant(() =>
+        this.qdrant.query(toCollectionName(groupName), {
+          query: queryVector,
           limit,
           with_payload: true,
           filter: { must, must_not: [this.metaExclusion()] },
@@ -483,9 +486,9 @@ export class Searcher {
 
     let results: SearchResult[];
     try {
-      const hits = await this.retryQdrant(() =>
-        this.qdrant.search(toCollectionName(groupName), {
-          vector: queryVector,
+      const { points: hits } = await this.retryQdrant(() =>
+        this.qdrant.query(toCollectionName(groupName), {
+          query: queryVector,
           limit,
           with_payload: true,
           filter,
@@ -757,4 +760,12 @@ export class Searcher {
       savingsPercent,
     };
   }
+}
+
+/** Identity of a search result: its chunk id, or its location for legacy points without one. */
+function resultKey(result: SearchResult): string {
+  return (
+    result.chunk_id ??
+    `${result.project}//${result.file}//${result.startLine}-${result.endLine}//${result.hash}`
+  );
 }

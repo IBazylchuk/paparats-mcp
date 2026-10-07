@@ -29,7 +29,7 @@ function fakeQdrant() {
     deleteCollection: vi.fn().mockResolvedValue(undefined),
     upsert: vi.fn().mockResolvedValue(undefined),
     scroll: vi.fn().mockResolvedValue({ points: [] }),
-    search: vi.fn().mockResolvedValue([]),
+    query: vi.fn().mockResolvedValue({ points: [] }),
     setPayload: vi.fn().mockResolvedValue(undefined),
     retrieve: vi.fn().mockResolvedValue([]),
     delete: vi.fn().mockResolvedValue(undefined),
@@ -150,7 +150,7 @@ describe('ArchStore.upsertDecision', () => {
   it('creates a new decision when nothing similar exists', async () => {
     const qdrant = fakeQdrant();
     // nearest-search returns nothing
-    qdrant.search = vi.fn().mockResolvedValue([]);
+    qdrant.query = vi.fn().mockResolvedValue({ points: [] });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -174,11 +174,15 @@ describe('ArchStore.upsertDecision', () => {
 
   it('returns status=duplicate when a near-identical decision exists (>= 0.85)', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi
-      .fn()
-      .mockResolvedValue([
-        { id: 'prior-uuid', score: 0.9, payload: { arch_kind: 'decision', title: 'Prior choice' } },
-      ]);
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
+        {
+          id: 'prior-uuid',
+          score: 0.9,
+          payload: { arch_kind: 'decision', title: 'Prior choice' },
+        },
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -200,11 +204,11 @@ describe('ArchStore.upsertDecision', () => {
 
   it('returns status=similar when a related decision exists (0.70 <= sim < 0.85)', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi
-      .fn()
-      .mockResolvedValue([
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
         { id: 'related-uuid', score: 0.7, payload: { arch_kind: 'decision', title: 'Related' } },
-      ]);
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -224,11 +228,11 @@ describe('ArchStore.upsertDecision', () => {
 
   it('bypasses similarity gate when supersedes is explicit', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi
-      .fn()
-      .mockResolvedValue([
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
         { id: 'prior-uuid', score: 0.95, payload: { arch_kind: 'decision', title: 'Prior' } },
-      ]);
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -253,7 +257,7 @@ describe('ArchStore.upsertDecision', () => {
 
   it('writes project to payload when provided, omits the field when not', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([]);
+    qdrant.query = vi.fn().mockResolvedValue({ points: [] });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -290,13 +294,15 @@ describe('ArchStore.upsertDecision', () => {
     // Qdrant returns a duplicate-score hit but it belongs to project=app-b.
     // The gate must skip it and let the app-a write through.
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([
-      {
-        id: 'b-prior',
-        score: 0.95,
-        payload: { arch_kind: 'decision', title: 'Same idea (app-b)', project: 'app-b' },
-      },
-    ]);
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
+        {
+          id: 'b-prior',
+          score: 0.95,
+          payload: { arch_kind: 'decision', title: 'Same idea (app-b)', project: 'app-b' },
+        },
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -320,13 +326,15 @@ describe('ArchStore.upsertDecision', () => {
     //   2. duplicate sitting at global scope (no project field) → also block,
     //      because globals are visible to every project query.
     const qdrantSameProject = fakeQdrant();
-    qdrantSameProject.search = vi.fn().mockResolvedValue([
-      {
-        id: 'a-prior',
-        score: 0.92,
-        payload: { arch_kind: 'decision', title: 'Prior', project: 'app-a' },
-      },
-    ]);
+    qdrantSameProject.query = vi.fn().mockResolvedValue({
+      points: [
+        {
+          id: 'a-prior',
+          score: 0.92,
+          payload: { arch_kind: 'decision', title: 'Prior', project: 'app-a' },
+        },
+      ],
+    });
     const storeA = new ArchStore({
       qdrant: qdrantSameProject as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -344,13 +352,15 @@ describe('ArchStore.upsertDecision', () => {
     expect(qdrantSameProject.upsert).not.toHaveBeenCalled();
 
     const qdrantGlobal = fakeQdrant();
-    qdrantGlobal.search = vi.fn().mockResolvedValue([
-      {
-        id: 'global-prior',
-        score: 0.92,
-        payload: { arch_kind: 'decision', title: 'Cross-cutting prior' },
-      },
-    ]);
+    qdrantGlobal.query = vi.fn().mockResolvedValue({
+      points: [
+        {
+          id: 'global-prior',
+          score: 0.92,
+          payload: { arch_kind: 'decision', title: 'Cross-cutting prior' },
+        },
+      ],
+    });
     const storeB = new ArchStore({
       qdrant: qdrantGlobal as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -372,13 +382,15 @@ describe('ArchStore.upsertDecision', () => {
     // Writing without project (global) and Qdrant returns a project-scoped
     // near-match. Gate must skip it; the global write proceeds.
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([
-      {
-        id: 'a-prior',
-        score: 0.95,
-        payload: { arch_kind: 'decision', title: 'app-a only', project: 'app-a' },
-      },
-    ]);
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
+        {
+          id: 'a-prior',
+          score: 0.95,
+          payload: { arch_kind: 'decision', title: 'app-a only', project: 'app-a' },
+        },
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -401,7 +413,7 @@ describe('ArchStore.upsertDecision', () => {
 describe('ArchStore.upsertLesson', () => {
   it('creates a new lesson when nothing similar exists', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([]);
+    qdrant.query = vi.fn().mockResolvedValue({ points: [] });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -426,11 +438,11 @@ describe('ArchStore.upsertLesson', () => {
 
   it('returns status=updated and bumps updatedAt on duplicate lesson', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi
-      .fn()
-      .mockResolvedValue([
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
         { id: 'lesson-uuid', score: 0.9, payload: { arch_kind: 'lesson', rule: 'Use UUIDv7' } },
-      ]);
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -456,11 +468,11 @@ describe('ArchStore.upsertLesson', () => {
 
   it('returns status=similar without writing when sim is in the mid band', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi
-      .fn()
-      .mockResolvedValue([
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
         { id: 'lesson-uuid', score: 0.7, payload: { arch_kind: 'lesson', rule: 'Related rule' } },
-      ]);
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -480,7 +492,7 @@ describe('ArchStore.upsertLesson', () => {
 
   it('writes project to payload when provided, omits the field when not', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([]);
+    qdrant.query = vi.fn().mockResolvedValue({ points: [] });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -516,13 +528,15 @@ describe('ArchStore.upsertLesson', () => {
     // must create a fresh lesson — and crucially must NOT bumpUpdatedAt on
     // app-b's lesson.
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([
-      {
-        id: 'b-lesson',
-        score: 0.95,
-        payload: { arch_kind: 'lesson', rule: 'Same rule', project: 'app-b' },
-      },
-    ]);
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
+        {
+          id: 'b-lesson',
+          score: 0.95,
+          payload: { arch_kind: 'lesson', rule: 'Same rule', project: 'app-b' },
+        },
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -548,24 +562,26 @@ describe('ArchStore.upsertLesson', () => {
 describe('ArchStore.search', () => {
   it('embeds the query and filters by arch_kind when given', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([
-      {
-        id: 'a',
-        score: 0.9,
-        payload: {
-          arch_kind: 'component',
-          kind: 'component',
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
+        {
           id: 'a',
-          name: 'X',
-          summary: 's',
-          files: [],
-          neighbours: [],
-          anchors: [],
-          createdAt: 1,
-          updatedAt: 1,
+          score: 0.9,
+          payload: {
+            arch_kind: 'component',
+            kind: 'component',
+            id: 'a',
+            name: 'X',
+            summary: 's',
+            files: [],
+            neighbours: [],
+            anchors: [],
+            createdAt: 1,
+            updatedAt: 1,
+          },
         },
-      },
-    ]);
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -576,7 +592,7 @@ describe('ArchStore.search', () => {
     });
     expect(out).toHaveLength(1);
     expect(out[0]!.kind).toBe('component');
-    const searchArgs = qdrant.search.mock.calls[0]![1] as { filter: { must: unknown[] } };
+    const searchArgs = qdrant.query.mock.calls[0]![1] as { filter: { must: unknown[] } };
     expect(JSON.stringify(searchArgs.filter)).toContain('arch_kind');
   });
 
@@ -587,7 +603,7 @@ describe('ArchStore.search', () => {
       provider: fakeProvider(),
     });
     await store.search('my-app', 'x', { limit: 5 });
-    const searchArgs = qdrant.search.mock.calls[0]![1] as { filter: { must_not: unknown[] } };
+    const searchArgs = qdrant.query.mock.calls[0]![1] as { filter: { must_not: unknown[] } };
     const must_not = JSON.stringify(searchArgs.filter.must_not);
     expect(must_not).toContain('superseded');
     expect(must_not).toContain('deprecated');
@@ -600,7 +616,7 @@ describe('ArchStore.search', () => {
       provider: fakeProvider(),
     });
     await store.search('my-app', 'x', { includeHistory: true, limit: 5 });
-    const searchArgs = qdrant.search.mock.calls[0]![1] as {
+    const searchArgs = qdrant.query.mock.calls[0]![1] as {
       filter?: { must_not?: unknown[] };
     };
     if (searchArgs.filter && searchArgs.filter.must_not) {
@@ -612,7 +628,7 @@ describe('ArchStore.search', () => {
 describe('ArchStore.searchWithVector', () => {
   it('skips embedding when caller supplies a pre-computed vector', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([]);
+    qdrant.query = vi.fn().mockResolvedValue({ points: [] });
     const provider = fakeProvider();
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
@@ -621,8 +637,8 @@ describe('ArchStore.searchWithVector', () => {
     const vector = Array(512).fill(0.5);
     await store.searchWithVector('my-app', vector, { limit: 3 });
     expect(provider.embed).not.toHaveBeenCalled();
-    const searchArgs = qdrant.search.mock.calls[0]![1] as { vector: number[]; limit: number };
-    expect(searchArgs.vector).toBe(vector);
+    const searchArgs = qdrant.query.mock.calls[0]![1] as { query: number[]; limit: number };
+    expect(searchArgs.query).toBe(vector);
     expect(searchArgs.limit).toBe(3);
   });
 });
@@ -664,23 +680,25 @@ describe('ArchStore.bumpUpdatedAt', () => {
 describe('ArchStore.searchWithVector min_score filter', () => {
   it('drops hits below the minScore threshold and attaches the score to survivors', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([
-      {
-        id: 'hi',
-        score: 0.8,
-        payload: { kind: 'component', name: 'hi', files: [], neighbours: [], anchors: [] },
-      },
-      {
-        id: 'mid',
-        score: 0.55,
-        payload: { kind: 'component', name: 'mid', files: [], neighbours: [], anchors: [] },
-      },
-      {
-        id: 'lo',
-        score: 0.3,
-        payload: { kind: 'component', name: 'lo', files: [], neighbours: [], anchors: [] },
-      },
-    ]);
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
+        {
+          id: 'hi',
+          score: 0.8,
+          payload: { kind: 'component', name: 'hi', files: [], neighbours: [], anchors: [] },
+        },
+        {
+          id: 'mid',
+          score: 0.55,
+          payload: { kind: 'component', name: 'mid', files: [], neighbours: [], anchors: [] },
+        },
+        {
+          id: 'lo',
+          score: 0.3,
+          payload: { kind: 'component', name: 'lo', files: [], neighbours: [], anchors: [] },
+        },
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -696,63 +714,65 @@ describe('ArchStore.searchWithVector min_score filter', () => {
 describe('ArchStore.searchWithVector project filter', () => {
   it('hard-filters components to project=X and lets decisions/lessons (project=X or no project) pass', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([
-      {
-        id: 'a-comp',
-        score: 0.8,
-        payload: {
-          kind: 'component',
-          name: 'a-comp',
-          project: 'app-a',
-          files: [],
-          neighbours: [],
-          anchors: [],
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
+        {
+          id: 'a-comp',
+          score: 0.8,
+          payload: {
+            kind: 'component',
+            name: 'a-comp',
+            project: 'app-a',
+            files: [],
+            neighbours: [],
+            anchors: [],
+          },
         },
-      },
-      {
-        id: 'b-comp',
-        score: 0.78,
-        payload: {
-          kind: 'component',
-          name: 'b-comp',
-          project: 'app-b',
-          files: [],
-          neighbours: [],
-          anchors: [],
+        {
+          id: 'b-comp',
+          score: 0.78,
+          payload: {
+            kind: 'component',
+            name: 'b-comp',
+            project: 'app-b',
+            files: [],
+            neighbours: [],
+            anchors: [],
+          },
         },
-      },
-      {
-        id: 'no-proj-comp',
-        score: 0.77,
-        payload: {
-          kind: 'component',
-          name: 'no-proj-comp',
-          files: [],
-          neighbours: [],
-          anchors: [],
+        {
+          id: 'no-proj-comp',
+          score: 0.77,
+          payload: {
+            kind: 'component',
+            name: 'no-proj-comp',
+            files: [],
+            neighbours: [],
+            anchors: [],
+          },
         },
-      },
-      {
-        id: 'global-decision',
-        score: 0.75,
-        payload: { kind: 'decision', title: 'cross-cutting', scope: 'global' },
-      },
-      {
-        id: 'a-decision',
-        score: 0.74,
-        payload: { kind: 'decision', title: 'app-a decision', project: 'app-a', scope: 'global' },
-      },
-      {
-        id: 'b-decision',
-        score: 0.73,
-        payload: { kind: 'decision', title: 'app-b decision', project: 'app-b', scope: 'global' },
-      },
-      {
-        id: 'rule',
-        score: 0.7,
-        payload: { kind: 'lesson', rule: 'r', scope: 'global', severity: 'info' },
-      },
-    ]);
+        {
+          id: 'global-decision',
+          score: 0.75,
+          payload: { kind: 'decision', title: 'cross-cutting', scope: 'global' },
+        },
+        {
+          id: 'a-decision',
+          score: 0.74,
+          payload: { kind: 'decision', title: 'app-a decision', project: 'app-a', scope: 'global' },
+        },
+        {
+          id: 'b-decision',
+          score: 0.73,
+          payload: { kind: 'decision', title: 'app-b decision', project: 'app-b', scope: 'global' },
+        },
+        {
+          id: 'rule',
+          score: 0.7,
+          payload: { kind: 'lesson', rule: 'r', scope: 'global', severity: 'info' },
+        },
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -777,7 +797,7 @@ describe('ArchStore.searchWithVector project filter', () => {
 
   it('overfetches when project is set so the post-filter does not return short', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([]);
+    qdrant.query = vi.fn().mockResolvedValue({ points: [] });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -786,25 +806,25 @@ describe('ArchStore.searchWithVector project filter', () => {
       limit: 5,
       project: 'app-a',
     });
-    const searchArgs = qdrant.search.mock.calls[0]![1] as { limit: number };
+    const searchArgs = qdrant.query.mock.calls[0]![1] as { limit: number };
     expect(searchArgs.limit).toBeGreaterThanOrEqual(15);
   });
 
   it('returns full limit-sized list when no project is set (no overfetch)', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([]);
+    qdrant.query = vi.fn().mockResolvedValue({ points: [] });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
     });
     await store.searchWithVector('shared', Array(512).fill(0), { limit: 5 });
-    const searchArgs = qdrant.search.mock.calls[0]![1] as { limit: number };
+    const searchArgs = qdrant.query.mock.calls[0]![1] as { limit: number };
     expect(searchArgs.limit).toBe(5);
   });
 
   it('is best-effort: when the project filter leaves fewer hits than limit, returns the short list with a single Qdrant call (no recursive top-up)', async () => {
     // Overfetched 30 hits, only 2 match project=app-a. We return those 2 — we
-    // do NOT issue a second qdrant.search to top up. Pin this behaviour so
+    // do NOT issue a second qdrant.query to top up. Pin this behaviour so
     // nobody adds a recursive fetch loop under the hood later.
     const hits = Array.from({ length: 30 }, (_, i) => ({
       id: `c-${i}`,
@@ -819,7 +839,7 @@ describe('ArchStore.searchWithVector project filter', () => {
       },
     }));
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue(hits);
+    qdrant.query = vi.fn().mockResolvedValue({ points: hits });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -829,7 +849,7 @@ describe('ArchStore.searchWithVector project filter', () => {
       project: 'app-a',
     });
     expect(out).toHaveLength(2);
-    expect(qdrant.search).toHaveBeenCalledTimes(1);
+    expect(qdrant.query).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1253,13 +1273,13 @@ describe('ArchStore.searchWithVector project boost', () => {
 
   it('adds +0.05 to a project-matched card score and leaves global cards untouched', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi
-      .fn()
-      .mockResolvedValue([
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
         searchableDecision('global', undefined, 0.7),
         searchableDecision('matched', 'app-a', 0.7),
         searchableDecision('other', 'app-b', 0.7),
-      ]);
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -1275,12 +1295,12 @@ describe('ArchStore.searchWithVector project boost', () => {
   it('re-orders results so a boosted project-scoped card outranks a slightly higher global one', async () => {
     const qdrant = fakeQdrant();
     // Raw cosine: global 0.72 > project 0.70. After boost: 0.72 vs 0.75 → flip.
-    qdrant.search = vi
-      .fn()
-      .mockResolvedValue([
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
         searchableDecision('global', undefined, 0.72),
         searchableDecision('matched', 'app-a', 0.7),
-      ]);
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -1291,12 +1311,12 @@ describe('ArchStore.searchWithVector project boost', () => {
 
   it('does not boost anyone when no project filter is set', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi
-      .fn()
-      .mockResolvedValue([
+    qdrant.query = vi.fn().mockResolvedValue({
+      points: [
         searchableDecision('app-tagged', 'app-a', 0.7),
         searchableDecision('global', undefined, 0.7),
-      ]);
+      ],
+    });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -1308,7 +1328,9 @@ describe('ArchStore.searchWithVector project boost', () => {
   it('lets a boosted card cross a minScore that the raw cosine alone would have failed', async () => {
     const qdrant = fakeQdrant();
     // Raw 0.46 + 0.05 = 0.51, crosses minScore=0.50.
-    qdrant.search = vi.fn().mockResolvedValue([searchableComponent('borderline', 'app-a', 0.46)]);
+    qdrant.query = vi
+      .fn()
+      .mockResolvedValue({ points: [searchableComponent('borderline', 'app-a', 0.46)] });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -1322,7 +1344,9 @@ describe('ArchStore.searchWithVector project boost', () => {
 
   it('caps boosted score at 1 (no overflow when raw cosine is already very high)', async () => {
     const qdrant = fakeQdrant();
-    qdrant.search = vi.fn().mockResolvedValue([searchableDecision('top', 'app-a', 0.99)]);
+    qdrant.query = vi
+      .fn()
+      .mockResolvedValue({ points: [searchableDecision('top', 'app-a', 0.99)] });
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
