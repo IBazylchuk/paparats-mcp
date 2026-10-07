@@ -259,6 +259,57 @@ export class DocsStore {
     await this.qdrant.delete(collection, { filter, wait: true });
   }
 
+  /**
+   * Delete every document of `project` whose file is not in `keep`, reversing each
+   * one's IDF contribution. Re-indexing replaces the files a walk finds, but never
+   * visits a file that is gone — without this a deleted, renamed or newly excluded
+   * document stays searchable indefinitely.
+   *
+   * @returns the repo-relative paths of the documents removed.
+   */
+  async pruneDocuments(
+    group: string,
+    project: string,
+    keep: ReadonlySet<string>
+  ): Promise<string[]> {
+    const indexed = await this.listDocumentFiles(group, project);
+    const stale = Array.from(indexed).filter((file) => !keep.has(file));
+    for (const file of stale) {
+      await this.deleteDocument(group, project, file);
+    }
+    return stale;
+  }
+
+  /**
+   * Repo-relative paths of every document indexed for `project`. A failed scan
+   * returns what it collected so far — a partial list can only make a prune remove
+   * less, never more.
+   */
+  private async listDocumentFiles(group: string, project: string): Promise<Set<string>> {
+    const files = new Set<string>();
+    let offset: string | number | Record<string, unknown> | undefined | null = undefined;
+    try {
+      for (;;) {
+        const page = await this.qdrant.scroll(toDocsCollectionName(group), {
+          limit: 1000,
+          with_payload: { include: ['file'] },
+          with_vector: false,
+          filter: { must: [{ key: 'project', match: { value: project } }] },
+          ...(offset !== undefined && offset !== null ? { offset } : {}),
+        });
+        for (const p of page.points) {
+          const file = (p.payload as { file?: unknown } | undefined)?.file;
+          if (typeof file === 'string') files.add(file);
+        }
+        if (!page.next_page_offset) break;
+        offset = page.next_page_offset;
+      }
+    } catch {
+      // Collection doesn't exist yet — nothing indexed.
+    }
+    return files;
+  }
+
   /** Delete all docs for a project (all files). Also clears is left to reindex flows. */
   async deleteProject(group: string, project: string): Promise<void> {
     const collection = toDocsCollectionName(group);

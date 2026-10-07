@@ -213,6 +213,83 @@ describe('DocsStore.indexDocument', () => {
   });
 });
 
+describe('DocsStore.pruneDocuments', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let idf: DocsIdfStore;
+  let store: DocsStore;
+
+  type ScrollArg = { filter: { must: Array<{ key: string; match: { value: string } }> } };
+  const fileOf = (arg: ScrollArg): string | undefined =>
+    arg.filter.must.find((c) => c.key === 'file')?.match.value;
+
+  /** Qdrant holding `docs` (file → chunk contents) for project `p`. */
+  function holding(docs: Record<string, string[]>) {
+    qdrant.scroll.mockImplementation(async (_c: string, arg: ScrollArg) => {
+      const file = fileOf(arg);
+      const entries = Object.entries(docs).filter(([f]) => file === undefined || f === file);
+      return {
+        points: entries.flatMap(([f, chunks]) =>
+          chunks.map((content) => ({ id: `${f}#${content}`, payload: { file: f, content } }))
+        ),
+        next_page_offset: null,
+      };
+    });
+  }
+
+  const deletedFiles = (): Array<string | undefined> =>
+    qdrant.delete.mock.calls.map((c) => fileOf(c[1] as ScrollArg));
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    idf = mkIdf();
+    store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf,
+    });
+  });
+
+  it('deletes only the documents whose file is not kept', async () => {
+    holding({ 'keep.md': ['kept body'], 'gone.md': ['gone body'], 'old/moved.md': ['moved'] });
+    const removed = await store.pruneDocuments('g', 'p', new Set(['keep.md']));
+    expect(removed.sort()).toEqual(['gone.md', 'old/moved.md']);
+    expect(deletedFiles().sort()).toEqual(['gone.md', 'old/moved.md']);
+    for (const call of qdrant.delete.mock.calls) {
+      expect(call[0]).toBe(toDocsCollectionName('g'));
+      const must = (call[1] as ScrollArg).filter.must;
+      expect(must).toContainEqual({ key: 'project', match: { value: 'p' } });
+    }
+  });
+
+  it('lists only the given project', async () => {
+    holding({});
+    await store.pruneDocuments('g', 'p', new Set());
+    const listing = qdrant.scroll.mock.calls[0]![1] as ScrollArg;
+    expect(listing.filter.must).toEqual([{ key: 'project', match: { value: 'p' } }]);
+  });
+
+  it('reverses the IDF contribution of a pruned document', async () => {
+    idf.addDocument('g', new Set(['zebra', 'stripes']), 2);
+    holding({ 'gone.md': ['zebra stripes'] });
+    await store.pruneDocuments('g', 'p', new Set());
+    const stats = idf.getCorpusStats('g');
+    expect(stats.docCount).toBe(0);
+    expect(stats.docFreq('zebra')).toBe(0);
+  });
+
+  it('deletes nothing when every indexed file is kept', async () => {
+    holding({ 'a.md': ['a'], 'b.md': ['b'] });
+    expect(await store.pruneDocuments('g', 'p', new Set(['a.md', 'b.md']))).toEqual([]);
+    expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+
+  it('deletes nothing when the collection does not exist', async () => {
+    qdrant.scroll.mockRejectedValue(new Error('Not found: Collection'));
+    expect(await store.pruneDocuments('g', 'p', new Set())).toEqual([]);
+    expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+});
+
 describe('DocsStore.search', () => {
   let qdrant: ReturnType<typeof fakeQdrant>;
   let idf: DocsIdfStore;

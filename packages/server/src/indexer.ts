@@ -1154,7 +1154,13 @@ export class Indexer {
     if (project.indexing.respectGitignore) {
       files = filterFilesByGitignore(files, project.path);
     }
-    if (files.length === 0) return 0;
+    // Repo-relative paths, as the store keys documents. Anything indexed earlier
+    // that is not in this set is pruned once the walk is done.
+    const live = new Set(files.map((f) => path.relative(project.path, f)));
+    if (files.length === 0) {
+      await this.pruneRemovedDocs(groupName, cleanName, live);
+      return 0;
+    }
     console.log(`  [docs] ${files.length} markdown file(s) found`);
 
     // One git walk for the repo, reused for every file below. Empty for
@@ -1205,9 +1211,14 @@ export class Indexer {
         totalChunks += n;
       } catch (err) {
         if (err instanceof NotMarkdownError) {
+          // A file that stopped being markdown still holds the chunks from when
+          // it was; leaving `live` lets the prune remove them.
+          live.delete(rel);
           skipped++;
           continue; // not markdown — skip, never index
         }
+        // Any other failure keeps the file in `live`: a transient error must not
+        // unpublish the version indexed last time.
         console.warn(`  [docs] Failed to index ${rel} (non-fatal): ${(err as Error).message}`);
       }
     }
@@ -1215,7 +1226,33 @@ export class Indexer {
       console.log(`  [docs] Skipped ${skipped} non-markdown file(s)`);
     }
     console.log(`  [docs] Indexed ${totalChunks} chunk(s) from ${files.length - skipped} file(s)`);
+    await this.pruneRemovedDocs(groupName, cleanName, live);
     return totalChunks;
+  }
+
+  /**
+   * Remove documents whose file the walk no longer produced — deleted, renamed,
+   * newly excluded, or no longer markdown. Non-fatal: a failed prune leaves the
+   * stale documents for the next run, it never fails the index.
+   */
+  private async pruneRemovedDocs(
+    groupName: string,
+    projectName: string,
+    live: Set<string>
+  ): Promise<void> {
+    if (!this.docsStore) return;
+    try {
+      const removed = await this.docsStore.pruneDocuments(groupName, projectName, live);
+      if (removed.length > 0) {
+        console.log(
+          `  [docs] Removed ${removed.length} deleted document(s): ${removed.join(', ')}`
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `  [docs] Removing deleted documents failed (non-fatal): ${(err as Error).message}`
+      );
+    }
   }
 
   /**

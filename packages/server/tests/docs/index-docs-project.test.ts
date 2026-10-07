@@ -58,7 +58,21 @@ function project(dir: string, overrides?: Partial<ProjectConfig>): ProjectConfig
 function fakeDocsStore() {
   return {
     indexDocument: vi.fn(async () => 3),
+    pruneDocuments: vi.fn(async (): Promise<string[]> => []),
   };
+}
+
+/** The set of files the walk asked the store to keep, from its single prune call. */
+function keptFiles(store: { pruneDocuments: ReturnType<typeof vi.fn> }): string[] {
+  expect(store.pruneDocuments).toHaveBeenCalledTimes(1);
+  const [group, projectName, keep] = store.pruneDocuments.mock.calls[0] as [
+    string,
+    string,
+    Set<string>,
+  ];
+  expect(group).toBe('g');
+  expect(projectName).toBe('billing');
+  return Array.from(keep).sort();
 }
 
 describe('Indexer.indexDocsProject', () => {
@@ -139,6 +153,7 @@ describe('Indexer.indexDocsProject', () => {
         if (input.file === 'bad.md') throw new NotMarkdownError('no structure');
         return 2;
       }),
+      pruneDocuments: vi.fn(async (): Promise<string[]> => []),
     };
     const indexer = new Indexer({
       qdrantUrl: 'http://localhost:6333',
@@ -150,5 +165,75 @@ describe('Indexer.indexDocsProject', () => {
     const n = await indexer.indexDocsProject(project(dir));
     expect(n).toBe(2); // only good.md contributed
     expect(docsStore.indexDocument).toHaveBeenCalledTimes(2);
+  });
+
+  describe('removing documents that are gone', () => {
+    function indexerWith(docsStore: unknown): Indexer {
+      return new Indexer({
+        qdrantUrl: 'http://localhost:6333',
+        embeddingProvider: provider,
+        dimensions: 4,
+        qdrantClient: {} as never,
+        docsStore: docsStore as DocsStore,
+      });
+    }
+
+    it('keeps exactly the files the walk found, so a deleted one is pruned', async () => {
+      fs.writeFileSync(path.join(dir, 'guide.md'), '# Guide\n\nhow to deploy');
+      fs.mkdirSync(path.join(dir, 'sub'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'sub', 'ops.md'), '# Ops\n\nrestart');
+      const docsStore = fakeDocsStore();
+      await indexerWith(docsStore).indexDocsProject(project(dir));
+      expect(keptFiles(docsStore)).toEqual(['guide.md', path.join('sub', 'ops.md')].sort());
+    });
+
+    it('prunes every document once the last markdown file is gone', async () => {
+      fs.writeFileSync(path.join(dir, 'code.ts'), 'const x = 1;');
+      const docsStore = fakeDocsStore();
+      expect(await indexerWith(docsStore).indexDocsProject(project(dir))).toBe(0);
+      expect(keptFiles(docsStore)).toEqual([]);
+    });
+
+    it('prunes a file that is no longer markdown', async () => {
+      fs.writeFileSync(path.join(dir, 'good.md'), '# Good\n\nreal markdown');
+      fs.writeFileSync(path.join(dir, 'bad.md'), 'not really markdown');
+      const { NotMarkdownError } = await import('../../src/docs/chunker.js');
+      const docsStore = {
+        indexDocument: vi.fn(async (_g: string, input: { file: string }) => {
+          if (input.file === 'bad.md') throw new NotMarkdownError('no structure');
+          return 2;
+        }),
+        pruneDocuments: vi.fn(async (): Promise<string[]> => []),
+      };
+      await indexerWith(docsStore).indexDocsProject(project(dir));
+      expect(keptFiles(docsStore)).toEqual(['good.md']);
+    });
+
+    it('keeps a file whose indexing failed, so a transient error does not unpublish it', async () => {
+      fs.writeFileSync(path.join(dir, 'good.md'), '# Good\n\nreal markdown');
+      fs.writeFileSync(path.join(dir, 'flaky.md'), '# Flaky\n\nembedder was down');
+      const docsStore = {
+        indexDocument: vi.fn(async (_g: string, input: { file: string }) => {
+          if (input.file === 'flaky.md') throw new Error('embedding server unavailable');
+          return 2;
+        }),
+        pruneDocuments: vi.fn(async (): Promise<string[]> => []),
+      };
+      await indexerWith(docsStore).indexDocsProject(project(dir));
+      expect(keptFiles(docsStore)).toEqual(['flaky.md', 'good.md']);
+    });
+
+    it('does not prune when the project path is missing', async () => {
+      const docsStore = fakeDocsStore();
+      await indexerWith(docsStore).indexDocsProject(project(path.join(dir, 'gone')));
+      expect(docsStore.pruneDocuments).not.toHaveBeenCalled();
+    });
+
+    it('does not fail the run when the prune fails', async () => {
+      fs.writeFileSync(path.join(dir, 'guide.md'), '# Guide\n\nhow to deploy');
+      const docsStore = fakeDocsStore();
+      docsStore.pruneDocuments.mockRejectedValueOnce(new Error('qdrant down'));
+      expect(await indexerWith(docsStore).indexDocsProject(project(dir))).toBe(3);
+    });
   });
 });
