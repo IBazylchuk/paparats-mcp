@@ -46,6 +46,15 @@ export interface ParsedFrontmatter {
   lastModifiedAt: number | null;
   /** Every scalar key from the block, for callers that want the raw values. */
   fields: Record<string, string>;
+  /**
+   * Raw value of the `audience` key, or `undefined` when the block has none.
+   *
+   * Kept raw rather than folded into {@link fields}, which drops non-scalars: the
+   * indexer has to tell an absent label (inherit the project default) from one
+   * that is present but unusable — a list, a map, an empty value — which must
+   * fail closed instead of silently inheriting a possibly wider default.
+   */
+  audience: unknown;
 }
 
 /**
@@ -62,6 +71,7 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
     title: null,
     lastModifiedAt: null,
     fields: {},
+    audience: undefined,
   };
 
   const opening = OPENING_FENCE.exec(raw);
@@ -86,9 +96,11 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return empty;
 
   const fields: Record<string, string> = {};
+  let audience: unknown = undefined;
   for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
     const scalar = toScalar(value);
     if (scalar !== null) fields[key.toLowerCase()] = scalar;
+    if (key.toLowerCase() === 'audience') audience = value;
   }
 
   return {
@@ -97,6 +109,7 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
     title: pick(fields, TITLE_KEYS),
     lastModifiedAt: pickDate(fields),
     fields,
+    audience,
   };
 }
 

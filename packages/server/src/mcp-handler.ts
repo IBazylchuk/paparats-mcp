@@ -37,7 +37,16 @@ import {
   DocsStore,
   applyAudienceScope,
   normalizeAudience,
+  sectionText,
 } from './docs/store.js';
+import type { DocsDocument, DocsSearchHit } from './docs/types.js';
+import {
+  KNOWLEDGE_MAX_QUERY_CHARS,
+  KNOWLEDGE_MCP_PATH,
+  effectiveKnowledgeScope,
+  isKnowledgeAuthenticated,
+  type KnowledgeScope,
+} from './knowledge-mode.js';
 import { TerminologyStore } from './terminology/store.js';
 import {
   buildArchContextWithVector,
@@ -393,22 +402,33 @@ export function describeStaleness(
   return `\nLast updated ${when} ago — may describe behaviour that has since changed.`;
 }
 
-export function describeExcerpt(hit: {
-  docChunkCount: number;
-  includedChunks: number[];
-  file: string;
-}): string {
+export function describeExcerpt(
+  hit: {
+    docChunkCount: number;
+    includedChunks: number[];
+    file: string;
+    project?: string;
+  },
+  fullText: DocsFullTextVia = 'file'
+): string {
   const total = hit.docChunkCount;
   const shown = hit.includedChunks.length;
   if (total <= 0 || shown <= 0 || shown >= total) return '';
   const first = hit.includedChunks[0]!;
   const last = hit.includedChunks[shown - 1]!;
   const where = shown === 1 ? `section ${first + 1}` : `sections ${first + 1}-${last + 1}`;
-  return (
-    `\nExcerpt: ${where} of ${total} — read \`${hit.file}\` for the rest` +
-    ` (this passage may not be the document's full answer).`
-  );
+  const rest =
+    fullText === 'get_document'
+      ? `call get_document with project \`${hit.project ?? ''}\` and file \`${hit.file}\` for the full text`
+      : `read \`${hit.file}\` for the rest`;
+  return `\nExcerpt: ${where} of ${total} — ${rest} (this passage may not be the document's full answer).`;
 }
+
+/**
+ * How a docs reader gets past an excerpt: open the file (coding — the agent has
+ * the repository) or call `get_document` (support and knowledge — they do not).
+ */
+export type DocsFullTextVia = 'file' | 'get_document';
 
 /**
  * Render matched glossary terms as a section placed BEFORE the search results.
@@ -428,6 +448,224 @@ export function describeGlossary(
     })
     .join('\n');
   return `## Glossary\n\nTerms from the company glossary that may appear below:\n\n${body}\n\n---\n\n`;
+}
+
+/** Which documents a docs tool may return. `null` means unrestricted on that axis. */
+interface DocsScope {
+  /** Audience ceiling: a request can only narrow within it. */
+  audience: string[] | null;
+  /** Projects whose documents are visible. */
+  projects: string[] | null;
+}
+
+/** Closing note for a multi-hit docs result: rank is a guide, not a verdict. */
+function describeDocsAlternatives(fullText: DocsFullTextVia): string {
+  // Ranking is good but not perfect (measured on one corpus over 102 answerable
+  // queries: the top hit is right ~87% of the time, the right doc is in the top 5
+  // ~97%), so the reader is told to consider the whole list rather than stop at #1.
+  const partial =
+    fullText === 'get_document'
+      ? 'call get_document when an excerpt is partial'
+      : 'read a full file when an excerpt is partial';
+  return `\n\n---\n\nThese are the best-matching excerpts, most relevant first. The first result is not always the right one — scan the alternatives before concluding, and ${partial}.`;
+}
+
+/** One docs hit as markdown: breadcrumb heading, provenance lines, then the passage. */
+function renderDocsHit(h: DocsSearchHit, now: number, fullText: DocsFullTextVia): string {
+  const crumb = [h.docTitle, ...h.headingPath].filter(Boolean).join(' > ');
+  const src = h.sourceUrl ? `\nSource: ${h.sourceUrl}` : '';
+  return `### ${crumb} (${h.score.toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}${describeExcerpt(h, fullText)}${describeStaleness(h, now, DEFAULT_DOCS_STALE_AFTER_MS)}\n\n${h.content}`;
+}
+
+/** Epoch milliseconds as ISO 8601, or null when unknown or out of range. */
+function toIsoTime(ms: number | null): string | null {
+  if (ms === null || !Number.isFinite(ms) || Math.abs(ms) > 8.64e15) return null;
+  return new Date(ms).toISOString();
+}
+
+/** Longest `project` / `group` a docs read accepts. */
+const MAX_DOCS_NAME_CHARS = 256;
+/** Longest `file` a docs read accepts. */
+const MAX_DOCS_FILE_CHARS = 1024;
+
+/**
+ * Structured form of one knowledge-mode `search_docs` hit — what a wrapping
+ * service needs to build a citation without parsing the markdown.
+ */
+const DOCS_HIT_OUTPUT = z.object({
+  title: z.string().describe('Document title.'),
+  heading_path: z.array(z.string()).describe('Headings from the document root to the passage.'),
+  source_url: z.string().nullable().describe('Link to the original document, when known.'),
+  project: z.string().describe('Pass with `file` to get_document for the whole document.'),
+  file: z.string().describe('Pass with `project` to get_document for the whole document.'),
+  excerpt: z
+    .string()
+    .describe('The matching passage and its neighbouring sections — not the whole document.'),
+  included_sections: z
+    .array(z.number().int())
+    .describe('1-based numbers of the sections in `excerpt`.'),
+  total_sections: z
+    .number()
+    .int()
+    .describe('Number of sections in the whole document; 0 when unknown.'),
+  last_modified: z
+    .string()
+    .nullable()
+    .describe('ISO 8601 time of the last content change, when known.'),
+  score: z.number().describe('Fused rank score — orders the hits; not a confidence.'),
+});
+
+function toStructuredDocsHit(h: DocsSearchHit): z.infer<typeof DOCS_HIT_OUTPUT> {
+  return {
+    title: h.docTitle,
+    heading_path: h.headingPath,
+    source_url: h.sourceUrl,
+    project: h.project,
+    file: h.file,
+    excerpt: sectionText(h),
+    included_sections: h.includedChunks.map((i) => i + 1),
+    total_sections: h.docChunkCount,
+    last_modified: toIsoTime(h.lastModifiedAt),
+    score: h.score,
+  };
+}
+
+/** Structured form of a `get_document` page. */
+const DOCUMENT_OUTPUT = {
+  title: z.string().describe('Document title.'),
+  source_url: z.string().nullable().describe('Link to the original document, when known.'),
+  last_modified: z
+    .string()
+    .nullable()
+    .describe('ISO 8601 time of the last content change, when known.'),
+  project: z.string(),
+  file: z.string(),
+  total_sections: z.number().int().describe('Number of sections in the whole document.'),
+  sections: z
+    .array(
+      z.object({
+        section: z.number().int().describe('1-based position in the document.'),
+        heading_path: z.array(z.string()).describe('Headings from the document root.'),
+        text: z.string().describe('The section text as written.'),
+      })
+    )
+    .describe('The sections on this page, in reading order.'),
+  next_section: z
+    .number()
+    .int()
+    .nullable()
+    .describe('Pass as `from_section` to read on; null when this page ends the document.'),
+};
+
+/**
+ * Most characters of section text one `get_document` call returns. Roughly ten
+ * thousand tokens: enough for a typical page in one call, small enough that a
+ * long manual does not flood the caller's context.
+ */
+export const DOCUMENT_PAGE_MAX_CHARS = 40_000;
+
+/**
+ * Heading lines for the part of `next` not shared with `prev`. The title is the
+ * H1, so depth d renders at level d + 2, capped at 6.
+ */
+function headingLines(prev: string[], next: string[]): string[] {
+  let common = 0;
+  while (common < prev.length && common < next.length && prev[common] === next[common]) common++;
+  const lines: string[] = [];
+  for (let d = common; d < next.length; d++) {
+    lines.push(`${'#'.repeat(Math.min(d + 2, 6))} ${next[d]}`);
+  }
+  return lines;
+}
+
+/**
+ * One page of a document for `get_document`: the sections from `fromSection`
+ * (1-based) on, as many as fit in `maxChars` — always at least one. Null when
+ * `fromSection` is past the end.
+ */
+export function pageDocument(
+  doc: DocsDocument,
+  fromSection: number,
+  maxChars: number,
+  now: number = Date.now()
+): { text: string; structured: z.infer<z.ZodObject<typeof DOCUMENT_OUTPUT>> } | null {
+  const total = doc.sections.length;
+  const start = fromSection - 1;
+  if (start < 0 || start >= total) return null;
+
+  const blocks: string[] = [];
+  let used = 0;
+  let end = start;
+  let prevPath: string[] = [];
+  for (let i = start; i < total; i++) {
+    const section = doc.sections[i]!;
+    // The first section of a page restates its full heading trail, so a page read
+    // on its own still says where in the document it is.
+    const block = [...headingLines(i === start ? [] : prevPath, section.headingPath), section.text]
+      .join('\n\n')
+      .trim();
+    if (i > start && used + block.length > maxChars) break;
+    blocks.push(block);
+    used += block.length;
+    end = i + 1;
+    prevPath = section.headingPath;
+  }
+
+  const next = end < total ? end + 1 : null;
+  const lastModified = toIsoTime(doc.lastModifiedAt);
+  const header = [
+    `# ${doc.docTitle}`,
+    ...(doc.sourceUrl ? [`Source: ${doc.sourceUrl}`] : []),
+    `Project: ${doc.project} · File: ${doc.file}`,
+    ...(lastModified ? [`Last updated: ${lastModified.slice(0, 10)}`] : []),
+  ].join('\n');
+  const range =
+    start === 0 && next === null
+      ? `Complete document (${total} section${total === 1 ? '' : 's'}).`
+      : `Sections ${start + 1}-${end} of ${total}.`;
+  const more =
+    next !== null
+      ? `\n\n---\n\nThe document continues: call get_document again with from_section: ${next} for the rest.`
+      : '';
+  const text = `${header}${describeStaleness(doc, now, DEFAULT_DOCS_STALE_AFTER_MS)}\n${range}\n\n---\n\n${blocks.join('\n\n')}${more}`;
+
+  return {
+    text,
+    structured: {
+      title: doc.docTitle,
+      source_url: doc.sourceUrl,
+      last_modified: lastModified,
+      project: doc.project,
+      file: doc.file,
+      total_sections: total,
+      sections: doc.sections.slice(start, end).map((section, k) => ({
+        section: start + k + 1,
+        heading_path: section.headingPath,
+        text: section.text,
+      })),
+      next_section: next,
+    },
+  };
+}
+
+/**
+ * The one answer for a document that cannot be returned — missing, or outside
+ * this endpoint's project or audience scope. Identical in every case, so the
+ * response is no oracle for what exists.
+ */
+function documentNotFoundText(project: string, file: string): string {
+  return `Document not found: project \`${project}\`, file \`${file}\`. It may have been moved or removed — search again with search_docs.`;
+}
+
+/**
+ * The error a knowledge-mode tool reports when a backend fails. The cause is
+ * logged here; the caller, outside the organisation, gets a generic message
+ * rather than internal hostnames or driver details from a Qdrant or embedding
+ * error.
+ */
+function knowledgeUnavailable(tool: string, err: unknown): Error {
+  console.error(`[mcp] knowledge ${tool} failed: ${(err as Error).message}`);
+  return new Error('Documentation is temporarily unavailable. Try again shortly.');
 }
 
 /**
@@ -506,6 +744,15 @@ export interface McpHandlerConfig {
   docsAudienceScope?: string[];
   /** Optional terminology-layer store. When unset, term_* tools are skipped. */
   terminologyStore?: TerminologyStore;
+  /**
+   * Knowledge mode: its audience ceiling and optional project allowlist. When set,
+   * {@link KNOWLEDGE_MCP_PATH} is mounted; unset, the route does not exist. Both
+   * are intersected with {@link docsAudienceScope} and the searcher's project
+   * scope, which can only narrow them. Bearer auth and the body limit are applied
+   * by `knowledgeRequestGuards` ahead of the app's body parser; the route refuses
+   * any request that did not pass them.
+   */
+  knowledge?: KnowledgeScope;
   /** Optional metrics registry. NoOp by default — see metrics.ts. */
   metrics?: MetricsRegistry;
   /**
@@ -523,7 +770,7 @@ type TransportEntry = {
   lastActivity: number;
 };
 
-export type McpMode = 'coding' | 'support';
+export type McpMode = 'coding' | 'support' | 'knowledge';
 
 /**
  * Pick the user-visible text when `arch_context` returns no sections.
@@ -744,7 +991,17 @@ export const SUPPORT_TOOLS = new Set([
   'term_search',
   'term_list',
   'term_record',
+  // Whole-document reads: support cannot open the files a docs excerpt names.
+  'get_document',
 ]);
+
+/**
+ * The knowledge mode serves curated documentation to a consumer outside the
+ * organisation, so it gets the two docs reads and nothing else — no code, no
+ * glossary, no project listing, no health or analytics, no writes. Coding keeps
+ * its "read the file" path and has no `get_document`.
+ */
+export const KNOWLEDGE_TOOLS = new Set(['search_docs', 'get_document']);
 
 /** Workflow-prompt names available in each mode. Content lives in prompts.json. */
 export const CODING_PROMPTS = [
@@ -765,6 +1022,8 @@ export const SUPPORT_PROMPTS = [
   // which is registered in support mode — offering it would hand support a workflow
   // whose every step fails.
 ];
+/** None: every workflow drives tools the knowledge mode does not have. */
+export const KNOWLEDGE_PROMPTS: string[] = [];
 
 export class McpHandler {
   private searcher: Searcher;
@@ -779,6 +1038,8 @@ export class McpHandler {
   private archStore: ArchStore | null;
   private docsStore: DocsStore | null;
   private docsAudienceScope: string[] | null;
+  /** Effective knowledge-mode scope (already intersected with the globals), or null when off. */
+  private knowledgeScope: KnowledgeScope | null;
   private terminologyStore: TerminologyStore | null;
   private metrics: MetricsRegistry;
   private sessionIdentity = new Map<
@@ -810,6 +1071,12 @@ export class McpHandler {
       config.docsAudienceScope && config.docsAudienceScope.length > 0
         ? config.docsAudienceScope
         : null;
+    this.knowledgeScope = config.knowledge
+      ? effectiveKnowledgeScope(config.knowledge, {
+          docsAudience: this.docsAudienceScope,
+          projects: this.searcher.getProjectScope(),
+        })
+      : null;
     this.terminologyStore = config.terminologyStore ?? null;
     this.metrics = config.metrics ?? new NoOpMetrics();
     this.maxSessions = Math.max(1, config.maxSessions ?? DEFAULT_MAX_SESSIONS);
@@ -833,7 +1100,7 @@ export class McpHandler {
     }
   }
 
-  /** Mount all MCP routes on the Express app (coding + support modes) */
+  /** Mount all MCP routes on the Express app (coding, support and — when configured — knowledge) */
   mount(app: Express): void {
     // Coding mode (backwards-compatible paths)
     app.get('/sse', (req, res) => this.handleSSE(req, res, 'coding'));
@@ -844,6 +1111,12 @@ export class McpHandler {
     app.get('/support/sse', (req, res) => this.handleSSE(req, res, 'support'));
     app.post('/support/messages', (req, res) => this.handleMessages(req, res, 'support'));
     app.all('/support/mcp', (req, res) => this.handleStreamableHTTP(req, res, 'support'));
+
+    // Knowledge mode: one stateless path, no SSE, no /messages. Not mounted at
+    // all unless configured, so an unconfigured server answers 404.
+    if (this.knowledgeScope) {
+      app.all(KNOWLEDGE_MCP_PATH, (req, res) => this.handleKnowledgeHTTP(req, res));
+    }
   }
 
   /** Graceful shutdown: stop cleanup interval and close all sessions */
@@ -995,11 +1268,29 @@ export class McpHandler {
   }
 
   private createMcpServer(mode: McpMode): McpServer {
-    let instructions = mode === 'coding' ? prompts.codingInstructions : prompts.supportInstructions;
-    const tools = mode === 'coding' ? CODING_TOOLS : SUPPORT_TOOLS;
+    const knowledge = mode === 'knowledge' ? this.knowledgeScope : null;
+    if (mode === 'knowledge' && !knowledge) {
+      throw new Error('knowledge mode is not configured');
+    }
+    let instructions =
+      mode === 'coding'
+        ? prompts.codingInstructions
+        : mode === 'support'
+          ? prompts.supportInstructions
+          : prompts.knowledgeInstructions;
+    const tools =
+      mode === 'coding' ? CODING_TOOLS : mode === 'support' ? SUPPORT_TOOLS : KNOWLEDGE_TOOLS;
 
     const scope = createProjectScopeGuard(this.searcher, this.indexer);
-    if (scope.projects) {
+    // Which documents this endpoint may return. Coding and support read under the
+    // process-wide ceilings; the knowledge mode under its own, already intersected
+    // with them.
+    const docsScope: DocsScope = knowledge
+      ? { audience: knowledge.audience, projects: knowledge.projects }
+      : { audience: this.docsAudienceScope, projects: scope.projects };
+    // Not announced to the knowledge consumer: project names are internal, and it
+    // never needs them — search results carry the project to pass back.
+    if (scope.projects && mode !== 'knowledge') {
       instructions += `\n\nThis server is scoped to projects: ${scope.projects.join(', ')}. All searches are automatically filtered.`;
     }
 
@@ -1031,6 +1322,46 @@ export class McpHandler {
         originalTool(...wrapHandler(args))) as typeof server.tool;
     }
 
+    // Resources describe the deployment (groups, projects, chunk counts, arch
+    // stats) — none of it is for the knowledge consumer.
+    if (mode !== 'knowledge') this.registerResources(server, scope);
+
+    this.registerTools(server, mode, tools, scope, docsScope);
+
+    // ── Workflow prompts ─────────────────────────────────────────────────────
+    const promptNames =
+      mode === 'coding' ? CODING_PROMPTS : mode === 'support' ? SUPPORT_PROMPTS : KNOWLEDGE_PROMPTS;
+    for (const name of promptNames) {
+      const workflow = prompts.workflows[name];
+      if (!workflow) continue;
+      server.registerPrompt(
+        name,
+        {
+          title: workflow.title,
+          description: workflow.description,
+          argsSchema: buildWorkflowArgsSchema(workflow.args),
+        },
+        (rawArgs) => {
+          const args = rawArgs as Record<string, string | undefined>;
+          return {
+            messages: [
+              {
+                role: 'user' as const,
+                content: {
+                  type: 'text' as const,
+                  text: interpolateWorkflowMessage(workflow.message, args),
+                },
+              },
+            ],
+          };
+        }
+      );
+    }
+
+    return server;
+  }
+
+  private registerResources(server: McpServer, scope: ProjectScopeGuard): void {
     // ── Resource: project overview ──────────────────────────────────────────
     server.resource('project-overview', 'context://project-overview', async () => {
       try {
@@ -1157,7 +1488,15 @@ export class McpHandler {
         }
       );
     }
+  }
 
+  private registerTools(
+    server: McpServer,
+    mode: McpMode,
+    tools: Set<string>,
+    scope: ProjectScopeGuard,
+    docsScope: DocsScope
+  ): void {
     // ── Tool: search_code ───────────────────────────────────────────────────
     if (tools.has('search_code'))
       server.registerTool(
@@ -3569,8 +3908,12 @@ export class McpHandler {
     }
 
     // ── Tool: search_docs ────────────────────────────────────────────────────
-    if (tools.has('search_docs') && this.docsStore) {
+    if (tools.has('search_docs') && this.docsStore && mode === 'knowledge') {
+      this.registerKnowledgeSearchDocs(server, this.docsStore, docsScope);
+    } else if (tools.has('search_docs') && this.docsStore) {
       const docsStore = this.docsStore;
+      // Support has no repository to open, so its excerpts point at get_document.
+      const fullText: DocsFullTextVia = mode === 'support' ? 'get_document' : 'file';
       server.registerTool(
         'search_docs',
         {
@@ -3632,7 +3975,7 @@ export class McpHandler {
           // than silently widening to the ceiling.
           const effectiveAudience = applyAudienceScope(
             normalizeAudience(audience),
-            this.docsAudienceScope
+            docsScope.audience
           );
           if (effectiveAudience !== null && effectiveAudience.length === 0) {
             return {
@@ -3646,7 +3989,6 @@ export class McpHandler {
           }
           const groupNames = group ? [group] : this.getGroupNames();
           const termStore = this.terminologyStore;
-          const all = [];
           // Matched glossary terms are reported ALONGSIDE the results, never folded
           // into the query text. Appending definitions before embedding pastes
           // corpus wording into the question and drags the vector toward whichever
@@ -3656,8 +3998,8 @@ export class McpHandler {
           // is unaffected.
           const glossary: Array<{ term: string; definition: string; aliases: string[] }> = [];
           const seenTerms = new Set<string>();
-          for (const g of groupNames) {
-            if (termStore) {
+          if (termStore) {
+            for (const g of groupNames) {
               try {
                 const terms = await termStore.search(g, query, {
                   ...(project !== undefined ? { project } : {}),
@@ -3675,19 +4017,15 @@ export class McpHandler {
                 // fail the documentation search itself.
               }
             }
-            const hits = await docsStore.search(g, query, {
-              ...(project !== undefined ? { project } : {}),
-              // Docs are stored under the clean project name, same as the scope.
-              ...(scope.projects ? { projects: scope.projects } : {}),
-              ...(effectiveAudience !== null ? { audience: effectiveAudience } : {}),
-              ...(limit !== undefined ? { limit } : {}),
-              ...(min_score !== undefined ? { minCosine: min_score } : {}),
-              ...(min_score_code !== undefined ? { minCosineCode: min_score_code } : {}),
-            });
-            for (const h of hits) all.push({ group: g, ...h });
           }
-          all.sort((a, b) => b.score - a.score);
-          const top = all.slice(0, limit ?? 8);
+          const top = await this.searchDocsHits(docsStore, query, groupNames, {
+            project,
+            projects: docsScope.projects,
+            audience: effectiveAudience,
+            limit,
+            minCosine: min_score,
+            minCosineCode: min_score_code,
+          });
           const glossaryMd = describeGlossary(glossary);
           if (top.length === 0) {
             // Still worth returning the glossary: a matched term often explains the
@@ -3704,24 +4042,16 @@ export class McpHandler {
           // One clock read for the whole result set, so two hits of the same age
           // can never be described differently.
           const now = Date.now();
-          const md = top
-            .map((h) => {
-              const crumb = [h.docTitle, ...h.headingPath].filter(Boolean).join(' > ');
-              const src = h.sourceUrl ? `\nSource: ${h.sourceUrl}` : '';
-              return `### ${crumb} (${h.score.toFixed(3)})\nProject: ${h.project} · File: ${h.file}${src}${describeExcerpt(h)}${describeStaleness(h, now, DEFAULT_DOCS_STALE_AFTER_MS)}\n\n${h.content}`;
-            })
-            .join('\n\n---\n\n');
-          // Ranking is good but not perfect (measured on one corpus over 102
-          // answerable queries: the top hit is right ~87% of the time, the right
-          // doc is in the top 5 ~97%), so the reader is told to consider the
-          // whole list rather than stop at #1.
-          const footer =
-            top.length > 1
-              ? '\n\n---\n\nThese are the best-matching excerpts, most relevant first. The first result is not always the right one — scan the alternatives before concluding, and read a full file when an excerpt is partial.'
-              : '';
+          const md = top.map((h) => renderDocsHit(h, now, fullText)).join('\n\n---\n\n');
+          const footer = top.length > 1 ? describeDocsAlternatives(fullText) : '';
           return { content: [{ type: 'text' as const, text: glossaryMd + md + footer }] };
         }
       );
+    }
+
+    // ── Tool: get_document ───────────────────────────────────────────────────
+    if (tools.has('get_document') && this.docsStore) {
+      this.registerGetDocument(server, mode, this.docsStore, docsScope);
     }
 
     // ── Tool: term_search ────────────────────────────────────────────────────
@@ -3897,43 +4227,236 @@ export class McpHandler {
         }
       );
     }
+  }
 
-    // ── Workflow prompts ─────────────────────────────────────────────────────
-    const promptNames = mode === 'coding' ? CODING_PROMPTS : SUPPORT_PROMPTS;
-    for (const name of promptNames) {
-      const workflow = prompts.workflows[name];
-      if (!workflow) continue;
-      server.registerPrompt(
-        name,
-        {
-          title: workflow.title,
-          description: workflow.description,
-          argsSchema: buildWorkflowArgsSchema(workflow.args),
+  // ── Docs reads shared by the modes ──────────────────────────────────────
+
+  /**
+   * Search `groupNames` and return the best `limit` hits across them, best first.
+   * Scoping is the caller's, already resolved: `projects` and `audience` are
+   * applied as given (null = unrestricted).
+   */
+  private async searchDocsHits(
+    docsStore: DocsStore,
+    query: string,
+    groupNames: string[],
+    opts: {
+      project?: string | undefined;
+      projects: string[] | null;
+      audience: string[] | null;
+      limit?: number | undefined;
+      minCosine?: number | undefined;
+      minCosineCode?: number | undefined;
+    }
+  ): Promise<DocsSearchHit[]> {
+    const all: DocsSearchHit[] = [];
+    for (const g of groupNames) {
+      const hits = await docsStore.search(g, query, {
+        ...(opts.project !== undefined ? { project: opts.project } : {}),
+        // Docs are stored under the clean project name, same as the scope.
+        ...(opts.projects ? { projects: opts.projects } : {}),
+        ...(opts.audience !== null ? { audience: opts.audience } : {}),
+        ...(opts.limit !== undefined ? { limit: opts.limit } : {}),
+        ...(opts.minCosine !== undefined ? { minCosine: opts.minCosine } : {}),
+        ...(opts.minCosineCode !== undefined ? { minCosineCode: opts.minCosineCode } : {}),
+      });
+      all.push(...hits);
+    }
+    all.sort((a, b) => b.score - a.score);
+    return all.slice(0, opts.limit ?? 8);
+  }
+
+  /** Every known group, or just `group` when it is one of them (none otherwise). */
+  private knownGroups(group: string | undefined): string[] {
+    const known = this.getGroupNames();
+    if (group === undefined) return known;
+    return known.includes(group) ? [group] : [];
+  }
+
+  /**
+   * Find one document within a docs scope. A project off the allowlist, an
+   * unknown group and an audience above the ceiling all return null, exactly like
+   * a document that does not exist.
+   */
+  private async findDocument(
+    docsStore: DocsStore,
+    docsScope: DocsScope,
+    project: string,
+    file: string,
+    group: string | undefined
+  ): Promise<DocsDocument | null> {
+    if (docsScope.projects !== null && !docsScope.projects.includes(project)) return null;
+    const opts = docsScope.audience !== null ? { audience: docsScope.audience } : {};
+    for (const g of this.knownGroups(group)) {
+      const doc = await docsStore.getDocument(g, project, file, opts);
+      if (doc) return doc;
+    }
+    return null;
+  }
+
+  /**
+   * `search_docs` as the knowledge mode serves it: no glossary block, excerpts
+   * pointing at `get_document`, a capped query, no relevance-floor overrides (an
+   * empty result must keep meaning "not documented"), and structured hits for
+   * citation building.
+   */
+  private registerKnowledgeSearchDocs(
+    server: McpServer,
+    docsStore: DocsStore,
+    docsScope: DocsScope
+  ): void {
+    const text = prompts.knowledgeTools.search_docs;
+    server.registerTool(
+      'search_docs',
+      {
+        title: text.title ?? 'Search Documentation',
+        description: text.description,
+        inputSchema: {
+          query: z
+            .string()
+            .min(1)
+            .max(KNOWLEDGE_MAX_QUERY_CHARS)
+            .describe('The question, in natural language.'),
+          project: z
+            .string()
+            .max(MAX_DOCS_NAME_CHARS)
+            .optional()
+            .describe('Restrict to one project, as returned by an earlier result. Omit for all.'),
+          group: z
+            .string()
+            .max(MAX_DOCS_NAME_CHARS)
+            .optional()
+            .describe('Restrict to one group. Omit unless told which one to use.'),
+          audience: z
+            .array(z.string().max(64))
+            .max(16)
+            .optional()
+            .describe(
+              'Narrow to some of the visibility labels this endpoint serves. It can never ' +
+                'widen past them: a label the endpoint does not serve matches nothing.'
+            ),
+          limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
         },
-        (rawArgs) => {
-          const args = rawArgs as Record<string, string | undefined>;
+        outputSchema: { hits: z.array(DOCS_HIT_OUTPUT) },
+        annotations: READ_ONLY,
+      },
+      async ({ query, project, group, audience, limit }) => {
+        const empty = {
+          content: [{ type: 'text' as const, text: `No documentation found for "${query}".` }],
+          structuredContent: { hits: [] },
+        };
+        // Narrow-only: the caller's labels are intersected with the ceiling, and a
+        // disjoint request matches nothing instead of falling back to the ceiling.
+        const effectiveAudience = applyAudienceScope(
+          normalizeAudience(audience),
+          docsScope.audience
+        );
+        if (effectiveAudience !== null && effectiveAudience.length === 0) return empty;
+
+        let top: DocsSearchHit[];
+        try {
+          top = await this.searchDocsHits(docsStore, query, this.knownGroups(group), {
+            project,
+            projects: docsScope.projects,
+            audience: effectiveAudience,
+            limit,
+          });
+        } catch (err) {
+          throw knowledgeUnavailable('search_docs', err);
+        }
+        if (top.length === 0) return empty;
+
+        const now = Date.now();
+        const md = top.map((h) => renderDocsHit(h, now, 'get_document')).join('\n\n---\n\n');
+        const footer = top.length > 1 ? describeDocsAlternatives('get_document') : '';
+        return {
+          content: [{ type: 'text' as const, text: md + footer }],
+          structuredContent: { hits: top.map(toStructuredDocsHit) },
+        };
+      }
+    );
+  }
+
+  /** `get_document` — whole-document reads for the modes that cannot open files. */
+  private registerGetDocument(
+    server: McpServer,
+    mode: McpMode,
+    docsStore: DocsStore,
+    docsScope: DocsScope
+  ): void {
+    const text =
+      mode === 'knowledge' ? prompts.knowledgeTools.get_document : prompts.tools.get_document;
+    const fallback = 'Return the full text of an indexed document, section by section.';
+    server.registerTool(
+      'get_document',
+      {
+        title: text?.title ?? 'Get Document',
+        description: text?.description ?? fallback,
+        inputSchema: {
+          project: z
+            .string()
+            .min(1)
+            .max(MAX_DOCS_NAME_CHARS)
+            .describe('Project of the document, exactly as search_docs returned it.'),
+          file: z
+            .string()
+            .min(1)
+            .max(MAX_DOCS_FILE_CHARS)
+            .describe('File of the document, exactly as search_docs returned it.'),
+          group: z
+            .string()
+            .max(MAX_DOCS_NAME_CHARS)
+            .optional()
+            .describe('Group to look in. Omit to look in every group.'),
+          from_section: z
+            .number()
+            .int()
+            .min(1)
+            .optional()
+            .describe('1-based section to start from when paging through a long document.'),
+        },
+        outputSchema: DOCUMENT_OUTPUT,
+        annotations: READ_ONLY,
+      },
+      async ({ project, file, group, from_section }) => {
+        let doc: DocsDocument | null;
+        try {
+          doc = await this.findDocument(docsStore, docsScope, project, file, group);
+        } catch (err) {
+          if (mode === 'knowledge') throw knowledgeUnavailable('get_document', err);
+          throw err;
+        }
+        if (!doc) {
           return {
-            messages: [
-              {
-                role: 'user' as const,
-                content: {
-                  type: 'text' as const,
-                  text: interpolateWorkflowMessage(workflow.message, args),
-                },
-              },
-            ],
+            content: [{ type: 'text' as const, text: documentNotFoundText(project, file) }],
+            isError: true,
           };
         }
-      );
-    }
-
-    return server;
+        const page = pageDocument(doc, from_section ?? 1, DOCUMENT_PAGE_MAX_CHARS);
+        if (!page) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: `Section ${from_section} is past the end of this document, which has ${doc.sections.length} section(s).`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        return {
+          content: [{ type: 'text' as const, text: page.text }],
+          structuredContent: page.structured,
+        };
+      }
+    );
   }
 
   // ── SSE transport (Cursor) ──────────────────────────────────────────────
 
   private async handleSSE(_req: Request, res: Response, mode: McpMode): Promise<void> {
     try {
+      tctx.patch({ mcpMode: mode });
       // Refresh group list before serving a new session
       await this.syncGroupsWithTimeout();
 
@@ -3977,6 +4500,7 @@ export class McpHandler {
 
   private async handleMessages(req: Request, res: Response, mode: McpMode): Promise<void> {
     try {
+      tctx.patch({ mcpMode: mode });
       const sessionId = req.query.sessionId as string | undefined;
       const entry = sessionId ? this.transports[sessionId] : undefined;
 
@@ -4017,6 +4541,7 @@ export class McpHandler {
 
   private async handleStreamableHTTP(req: Request, res: Response, mode: McpMode): Promise<void> {
     try {
+      tctx.patch({ mcpMode: mode });
       const sessionId = req.headers['mcp-session-id'] as string | undefined;
       let transportEntry = sessionId ? this.transports[sessionId] : undefined;
 
@@ -4173,6 +4698,64 @@ export class McpHandler {
         res.status(500).json({
           jsonrpc: '2.0',
           error: { code: -32603, message: (err as Error).message },
+          id: null,
+        });
+      }
+    }
+  }
+
+  // ── Knowledge mode: stateless Streamable HTTP ──────────────────────────
+
+  /**
+   * Serve one knowledge-mode request statelessly: a fresh MCP server and
+   * transport per POST, both closed when the response ends. No session ids, so a
+   * load balancer needs neither sticky sessions nor idle-timeout tuning, and no
+   * state outlives the request.
+   */
+  private async handleKnowledgeHTTP(req: Request, res: Response): Promise<void> {
+    // Defence in depth: bearer auth runs in middleware mounted ahead of the body
+    // parser (knowledgeRequestGuards). Should the route ever be mounted without
+    // it, the mode refuses instead of serving unauthenticated callers.
+    if (!isKnowledgeAuthenticated(req)) {
+      res.set('WWW-Authenticate', 'Bearer realm="paparats-knowledge"');
+      res.status(401).json({
+        jsonrpc: '2.0',
+        error: { code: -32001, message: 'Unauthorized' },
+        id: null,
+      });
+      return;
+    }
+    if (req.method !== 'POST') {
+      res.set('Allow', 'POST');
+      res.status(405).json({
+        jsonrpc: '2.0',
+        error: {
+          code: -32000,
+          message: 'Method not allowed: this endpoint is stateless and accepts POST only.',
+        },
+        id: null,
+      });
+      return;
+    }
+    tctx.patch({ mcpMode: 'knowledge' });
+    try {
+      if (this.isInitializeRequest(req.body)) await this.syncGroupsWithTimeout();
+      const server = this.createMcpServer('knowledge');
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on('close', () => {
+        server.close().catch((err: unknown) => {
+          console.warn(`[mcp] Failed to close knowledge server: ${(err as Error).message}`);
+        });
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      console.error('[mcp] Knowledge request error:', err);
+      if (!res.headersSent) {
+        // Generic on purpose: the caller is outside the organisation.
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message: 'Internal error' },
           id: null,
         });
       }

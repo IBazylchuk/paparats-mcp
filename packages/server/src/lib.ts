@@ -93,12 +93,19 @@ export {
   DEFAULT_DOCS_STALE_AFTER_MS,
   normalizeAudience,
   applyAudienceScope,
+  AUDIENCE_LABEL_PATTERN,
+  isValidAudienceLabel,
+  validateAudienceLabel,
+  resolveDocumentAudience,
+  sectionText,
 } from './docs/store.js';
 export type {
   DocsStoreConfig,
   IndexDocumentInput,
   DocsSearchOpts,
   DocsStats,
+  GetDocumentOpts,
+  ResolvedDocumentAudience,
 } from './docs/store.js';
 export { parseFrontmatter } from './docs/frontmatter.js';
 export type { ParsedFrontmatter } from './docs/frontmatter.js';
@@ -112,7 +119,13 @@ export {
   ensureDocsCollection,
   dropDocsCollection,
 } from './docs/collection.js';
-export type { DocsChunk, DocsSearchHit, MarkdownChunkOptions } from './docs/types.js';
+export type {
+  DocsChunk,
+  DocsDocument,
+  DocsSection,
+  DocsSearchHit,
+  MarkdownChunkOptions,
+} from './docs/types.js';
 
 // ── Terminology layer ──────────────────────────────────────────────────────
 export { TerminologyStore } from './terminology/store.js';

@@ -62,8 +62,8 @@ export function resolveRepoProject(
 /**
  * Layer projects.yml overrides onto a repo's own `.paparats.yml` (overrides
  * win). Only the fields the indexer has always applied on top of a repo config
- * are merged: `group`, `docs.kind` and `indexing.*`. `exclude` replaces the
- * repo's list; `exclude_extra` is appended to the repo's own extras.
+ * are merged: `group`, `docs.kind`, `docs.audience` and `indexing.*`. `exclude`
+ * replaces the repo's list; `exclude_extra` is appended to the repo's own extras.
  */
 function mergeOverrides(raw: PaparatsConfig, overrides: RepoOverrides | undefined): PaparatsConfig {
   if (!overrides) return raw;
@@ -73,7 +73,12 @@ function mergeOverrides(raw: PaparatsConfig, overrides: RepoOverrides | undefine
   // An explicit kind wins over auto-detection, which keys off whether the repo
   // contains code and so misreads a docs repo that ships its own tooling.
   if (overrides.docs?.kind !== undefined) {
-    merged.docs = { ...raw.docs, kind: overrides.docs.kind };
+    merged.docs = { ...merged.docs, kind: overrides.docs.kind };
+  }
+  // The operator's label wins over the repo's own: projects.yml is where the
+  // deployment decides what may leave through a narrower audience.
+  if (overrides.docs?.audience !== undefined) {
+    merged.docs = { ...merged.docs, audience: overrides.docs.audience };
   }
 
   const o = overrides.indexing;

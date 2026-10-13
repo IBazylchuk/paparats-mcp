@@ -127,3 +127,17 @@ describe('parseFrontmatter', () => {
     expect(r.content).not.toContain('title:');
   });
 });
+
+describe('parseFrontmatter audience', () => {
+  it('is undefined when the block has no audience key', () => {
+    expect(parseFrontmatter('---\ntitle: T\n---\n# T\n').audience).toBeUndefined();
+    expect(parseFrontmatter('# No block\n').audience).toBeUndefined();
+  });
+
+  it('keeps the raw value, so a list or a map is not mistaken for an absent label', () => {
+    expect(parseFrontmatter('---\naudience: client\n---\n# T\n').audience).toBe('client');
+    expect(parseFrontmatter('---\nAudience: client\n---\n# T\n').audience).toBe('client');
+    expect(parseFrontmatter('---\naudience: [a, b]\n---\n# T\n').audience).toEqual(['a', 'b']);
+    expect(parseFrontmatter('---\naudience: {x: 1}\n---\n# T\n').audience).toEqual({ x: 1 });
+  });
+});

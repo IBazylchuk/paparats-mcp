@@ -70,6 +70,7 @@ export class OtelSink implements TelemetrySink {
       'paparats.client': ctx.client ?? 'none',
       'paparats.request_id': ctx.requestId,
       ...(ctx.anchorProject ? { 'paparats.anchor_project': ctx.anchorProject } : {}),
+      ...(ctx.mcpMode ? { 'paparats.mcp_mode': ctx.mcpMode } : {}),
       ...flatten(extra),
     });
     return span;

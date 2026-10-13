@@ -166,6 +166,47 @@ repos:
     expect(result.repos[1]!.overrides?.docs?.kind).toBe('prose');
   });
 
+  it('merges docs.audience from defaults per field, next to docs.kind', () => {
+    writeConfig(`
+defaults:
+  docs:
+    kind: prose
+    audience: client
+
+repos:
+  - url: org/handbook
+  - url: org/partner-guide
+    docs:
+      audience: partner
+`);
+    const result = loadIndexerConfig(configPath);
+    expect(result.repos[0]!.overrides?.docs).toEqual({ kind: 'prose', audience: 'client' });
+    // The repo's label wins; the inherited kind survives.
+    expect(result.repos[1]!.overrides?.docs).toEqual({ kind: 'prose', audience: 'partner' });
+  });
+
+  it('fails loading on an invalid docs.audience in defaults', () => {
+    writeConfig(`
+defaults:
+  docs:
+    audience: Client
+repos:
+  - url: org/a
+`);
+    expect(() => loadIndexerConfig(configPath)).toThrow(/docs\.audience in defaults: "Client"/);
+  });
+
+  it('fails loading on an invalid or non-string docs.audience in a repo entry', () => {
+    writeConfig(`
+repos:
+  - url: org/a
+  - url: org/b
+    docs:
+      audience: [client]
+`);
+    expect(() => loadIndexerConfig(configPath)).toThrow(/docs\.audience in repo entry #2/);
+  });
+
   it('parses cron from defaults', () => {
     writeConfig(`
 defaults:

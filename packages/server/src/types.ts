@@ -61,6 +61,12 @@ export interface DocsConfig {
    * small build script, which would otherwise be treated as `code`.
    */
   kind?: DocsKind;
+  /**
+   * Default visibility label for this project's documents (e.g. `client`). A
+   * document's own frontmatter `audience:` overrides it. Omit to store every
+   * document as `internal`. Must match `^[a-z0-9][a-z0-9_-]{0,63}$`.
+   */
+  audience?: string;
 }
 
 export interface IndexingConfig {
@@ -112,6 +118,8 @@ export interface ProjectConfig {
 export interface ResolvedDocsConfig {
   /** Explicit classification, or null to let the indexer auto-detect. */
   kind: DocsKind | null;
+  /** Default audience label for the project's documents, or null for `internal`. */
+  audience: string | null;
 }
 
 export interface ResolvedIndexingConfig {

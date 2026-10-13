@@ -7,7 +7,12 @@ import {
   DEFAULT_AUDIENCE,
   normalizeAudience,
   applyAudienceScope,
+  isValidAudienceLabel,
+  validateAudienceLabel,
+  resolveDocumentAudience,
+  sectionText,
 } from '../../src/docs/store.js';
+import { chunkMarkdown } from '../../src/docs/chunker.js';
 import { DocsIdfStore } from '../../src/docs/idf-store.js';
 import { NotMarkdownError } from '../../src/docs/chunker.js';
 import {
@@ -1085,5 +1090,183 @@ describe('DocsStore.reindexDocs', () => {
     await expect(store.reindexDocs('g')).rejects.toThrow('embed server down');
     expect(qdrant.deleteCollection).not.toHaveBeenCalled();
     expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('audience labels', () => {
+  it('accepts lower-case labels of letters, digits, "-" and "_" up to 64 characters', () => {
+    for (const ok of ['client', 'public', 'partner-docs', 'tier_2', '2024', 'a'.repeat(64)]) {
+      expect(isValidAudienceLabel(ok), ok).toBe(true);
+    }
+    for (const bad of ['', 'Client', ' client', 'client ', '-client', 'a b', 'a'.repeat(65), 'é']) {
+      expect(isValidAudienceLabel(bad), JSON.stringify(bad)).toBe(false);
+    }
+    expect(isValidAudienceLabel(42)).toBe(false);
+  });
+
+  it('names the setting and the value when it rejects a label', () => {
+    expect(() => validateAudienceLabel('Client', 'docs.audience for project "handbook"')).toThrow(
+      /docs\.audience for project "handbook": "Client"/
+    );
+    expect(() => validateAudienceLabel('client', 'x')).not.toThrow();
+  });
+
+  describe('resolveDocumentAudience', () => {
+    it('inherits the project default, or internal, when the document has no label', () => {
+      expect(resolveDocumentAudience(undefined, 'client')).toEqual({
+        audience: 'client',
+        rejected: null,
+      });
+      expect(resolveDocumentAudience(undefined, null)).toEqual({
+        audience: DEFAULT_AUDIENCE,
+        rejected: null,
+      });
+    });
+
+    it('lets a valid frontmatter label win over the project default', () => {
+      expect(resolveDocumentAudience('partner', 'client').audience).toBe('partner');
+      expect(resolveDocumentAudience('  partner ', 'client').audience).toBe('partner');
+      expect(resolveDocumentAudience('internal', 'client').audience).toBe('internal');
+    });
+
+    it('fails closed to internal — not the project default — on an unusable label', () => {
+      for (const bad of ['Client', '', null, ['client'], { a: 1 }, 'has space']) {
+        const r = resolveDocumentAudience(bad, 'client');
+        expect(r.audience, JSON.stringify(bad)).toBe(DEFAULT_AUDIENCE);
+        expect(r.rejected).toBe(JSON.stringify(bad));
+      }
+    });
+
+    it('reads a numeric label as its decimal string, like the rest of the frontmatter', () => {
+      expect(resolveDocumentAudience(2024, null).audience).toBe('2024');
+    });
+  });
+});
+
+describe('sectionText', () => {
+  it('removes exactly the breadcrumb the chunker prepended', () => {
+    const chunks = chunkMarkdown('# Runbook\n\nIntro.\n\n## Deploy\n\nRun the script.', {
+      docTitle: 'Ops',
+    });
+    expect(chunks.map((c) => sectionText({ docTitle: 'Ops', ...c }))).toEqual([
+      'Intro.',
+      'Run the script.',
+    ]);
+  });
+
+  it('removes a single-segment breadcrumb (a preamble under the title)', () => {
+    const [chunk] = chunkMarkdown('Preamble line.\n\n- one\n- two\n\n[link](https://example.com)', {
+      docTitle: 'Notes',
+    });
+    expect(sectionText({ docTitle: 'Notes', ...chunk! })).toBe(
+      'Preamble line.\n\n- one\n- two\n\n[link](https://example.com)'
+    );
+  });
+
+  it('leaves text alone when its first line only looks like a breadcrumb', () => {
+    const content = 'Ops > Deploy\n\nThis line is prose, not a breadcrumb.';
+    expect(sectionText({ docTitle: 'Other', headingPath: ['Deploy'], content })).toBe(content);
+  });
+});
+
+describe('DocsStore.getDocument', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let store: DocsStore;
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf: mkIdf(),
+    });
+  });
+
+  function point(docId: string, chunkIndex: number, headingPath: string[], body: string) {
+    const crumb = ['Guide', ...headingPath].join(' > ');
+    return {
+      id: `${docId}-${chunkIndex}`,
+      payload: {
+        doc_id: docId,
+        doc_title: 'Guide',
+        project: 'handbook',
+        file: 'guide.md',
+        source_url: 'https://docs.example.com/guide',
+        audience: 'client',
+        kind: 'prose',
+        last_modified_at: 1_700_000_000_000,
+        heading_path: headingPath,
+        chunk_index: chunkIndex,
+        content: `${crumb}\n\n${body}`,
+        startLine: chunkIndex * 10,
+        endLine: chunkIndex * 10 + 5,
+      },
+    };
+  }
+
+  it('returns every section in chunk order without the embedding breadcrumb', async () => {
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [
+        point('0190-b', 2, ['Setup', 'Verify'], 'Check the status page.'),
+        point('0190-b', 0, [], 'Intro.'),
+        point('0190-b', 1, ['Setup'], 'Install it.'),
+      ],
+      next_page_offset: null,
+    });
+    const doc = await store.getDocument('g', 'handbook', 'guide.md');
+    expect(doc).toMatchObject({
+      project: 'handbook',
+      file: 'guide.md',
+      docTitle: 'Guide',
+      sourceUrl: 'https://docs.example.com/guide',
+      audience: 'client',
+      lastModifiedAt: 1_700_000_000_000,
+    });
+    expect(doc!.sections.map((s) => [s.index, s.headingPath, s.text])).toEqual([
+      [0, [], 'Intro.'],
+      [1, ['Setup'], 'Install it.'],
+      [2, ['Setup', 'Verify'], 'Check the status page.'],
+    ]);
+  });
+
+  it('keeps only the newest version when a read overlaps a re-index', async () => {
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [point('0190-a', 0, [], 'Old text.'), point('0190-b', 0, [], 'New text.')],
+      next_page_offset: null,
+    });
+    const doc = await store.getDocument('g', 'handbook', 'guide.md');
+    expect(doc!.sections.map((s) => s.text)).toEqual(['New text.']);
+  });
+
+  it('filters by project, file and — when given — audience, in the query itself', async () => {
+    await store.getDocument('g', 'handbook', 'guide.md', { audience: ['client', 'public'] });
+    const [collection, req] = qdrant.scroll.mock.calls[0] as [string, { filter: unknown }];
+    expect(collection).toBe(toDocsCollectionName('g'));
+    expect(req.filter).toEqual({
+      must: [
+        { key: 'project', match: { value: 'handbook' } },
+        { key: 'file', match: { value: 'guide.md' } },
+        { key: 'audience', match: { any: ['client', 'public'] } },
+      ],
+    });
+  });
+
+  it('reads a document outside the audience, a missing one and a missing collection alike', async () => {
+    expect(await store.getDocument('g', 'handbook', 'guide.md', { audience: ['client'] })).toBe(
+      null
+    );
+    qdrant.scroll.mockRejectedValueOnce(Object.assign(new Error('Not found'), { status: 404 }));
+    expect(await store.getDocument('g', 'handbook', 'guide.md')).toBe(null);
+    // An empty ceiling matches nothing and never queries.
+    qdrant.scroll.mockClear();
+    expect(await store.getDocument('g', 'handbook', 'guide.md', { audience: [] })).toBe(null);
+    expect(qdrant.scroll).not.toHaveBeenCalled();
+  });
+
+  it('surfaces any other Qdrant failure instead of reporting the document missing', async () => {
+    qdrant.scroll.mockRejectedValueOnce(new Error('connection refused'));
+    await expect(store.getDocument('g', 'handbook', 'guide.md')).rejects.toThrow(
+      'connection refused'
+    );
   });
 });

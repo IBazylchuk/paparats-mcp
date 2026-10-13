@@ -17,6 +17,11 @@ import type { AnalyticsStore } from './telemetry/analytics-store.js';
 import { identityMiddleware } from './telemetry/identity-middleware.js';
 import { tctx } from './telemetry/context.js';
 import { buildAnalyticsRouter } from './analytics-api.js';
+import {
+  KNOWLEDGE_MCP_PATH,
+  knowledgeRequestGuards,
+  type KnowledgeModeConfig,
+} from './knowledge-mode.js';
 
 /** Run a promise with a timeout; reject with Error on timeout */
 export async function withTimeout<T>(
@@ -229,6 +234,11 @@ export interface CreateAppOptions {
   docsAudienceScope?: string[];
   /** Optional terminology-layer store. Pass to enable the term_* MCP tools. */
   terminologyStore?: import('./terminology/store.js').TerminologyStore;
+  /**
+   * Knowledge mode (see `parseKnowledgeModeEnv`). When set, `/knowledge/mcp` is
+   * mounted behind bearer auth and a small body limit; unset, it does not exist.
+   */
+  knowledgeMode?: KnowledgeModeConfig;
 }
 
 export interface CreateAppResult {
@@ -257,6 +267,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     docsStore,
     docsAudienceScope,
     terminologyStore,
+    knowledgeMode,
   } = options;
 
   // Parsed before anything starts, so a malformed value fails startup cleanly.
@@ -378,6 +389,13 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   // CORS headers only for explicitly allowed origins; none by default.
   if (corsOrigins.length > 0) {
     app.use(cors({ origin: corsOrigins, exposedHeaders: ['Mcp-Session-Id'] }));
+  }
+  // The knowledge route is reachable from outside the trust boundary: its bearer
+  // check and 64 kB body limit must run BEFORE the global 50 MB parser, so an
+  // unauthenticated caller never gets a body read and an authenticated one never
+  // gets more than the small limit.
+  if (knowledgeMode) {
+    app.use(KNOWLEDGE_MCP_PATH, ...knowledgeRequestGuards(knowledgeMode));
   }
   app.use(express.json({ limit: '50mb' }));
   app.use(identityMiddleware());
@@ -862,6 +880,9 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     ...(docsAudienceScope ? { docsAudienceScope } : {}),
     terminologyStore,
     ...(metrics ? { metrics } : {}),
+    ...(knowledgeMode
+      ? { knowledge: { audience: knowledgeMode.audience, projects: knowledgeMode.projects } }
+      : {}),
   });
   mcpHandler.mount(app);
 

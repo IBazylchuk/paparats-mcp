@@ -18,7 +18,7 @@ import type {
 const PAPARATS_DIR = path.join(os.homedir(), '.paparats');
 const DEFAULT_DB_PATH = path.join(PAPARATS_DIR, 'analytics.db');
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const TOKENS_PER_LANGUAGE_SEED: Record<string, number> = {
   ts: 5.5,
@@ -98,8 +98,35 @@ export class AnalyticsStore implements TelemetrySink {
     const current = row?.v ?? 0;
     if (current >= SCHEMA_VERSION) return;
 
+    const recordVersion = (version: number): void => {
+      this.db
+        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
+        .run(version, Date.now());
+    };
+
     const tx = this.db.transaction(() => {
-      this.db.exec(`
+      if (current < 1) {
+        this.migrateToV1();
+        recordVersion(1);
+      }
+      if (current < 2) {
+        // v2: the MCP endpoint (coding / support / knowledge) each tool call came
+        // through. Guarded so a half-applied upgrade cannot fail on a re-run.
+        const columns = this.db.prepare('PRAGMA table_info(tool_calls)').all() as Array<{
+          name: string;
+        }>;
+        if (!columns.some((c) => c.name === 'mode')) {
+          this.db.exec('ALTER TABLE tool_calls ADD COLUMN mode TEXT');
+        }
+        recordVersion(2);
+      }
+    });
+    tx();
+  }
+
+  /** The original schema. Later versions alter it; never edit it in place. */
+  private migrateToV1(): void {
+    this.db.exec(`
         CREATE TABLE IF NOT EXISTS search_events (
           id              TEXT PRIMARY KEY,
           request_id      TEXT,
@@ -225,11 +252,6 @@ export class AnalyticsStore implements TelemetrySink {
           tokens_per_line REAL NOT NULL
         );
       `);
-      this.db
-        .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
-        .run(SCHEMA_VERSION, Date.now());
-    });
-    tx();
   }
 
   private prepareStatements(): void {
@@ -266,8 +288,8 @@ export class AnalyticsStore implements TelemetrySink {
     `);
 
     this.insToolCall = this.db.prepare(`
-      INSERT INTO tool_calls (id, ts, user, session, tool, duration_ms, ok, error)
-      VALUES (@id, @ts, @user, @session, @tool, @duration_ms, @ok, @error)
+      INSERT INTO tool_calls (id, ts, user, session, tool, duration_ms, ok, error, mode)
+      VALUES (@id, @ts, @user, @session, @tool, @duration_ms, @ok, @error, @mode)
     `);
 
     this.insIndexingRun = this.db.prepare(`
@@ -443,6 +465,7 @@ export class AnalyticsStore implements TelemetrySink {
         duration_ms: event.durationMs,
         ok: event.ok ? 1 : 0,
         error: event.error,
+        mode: ctx.mcpMode,
       });
     } catch (err) {
       console.warn('[analytics] recordToolCall failed:', (err as Error).message);

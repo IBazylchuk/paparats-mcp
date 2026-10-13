@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import * as yaml from 'js-yaml';
+import { validateAudienceLabel } from '@paparats/server';
 import type { RepoConfig, IndexerFileConfig, RepoOverrides } from './types.js';
 
 /** Current name. */
@@ -135,6 +136,18 @@ function parseRepoEntry(
 }
 
 /**
+ * Reject a malformed `docs.audience` at load time. The label decides who may read
+ * a repo's documents, so a typo has to stop the config rather than surface later
+ * as documents silently stored under the wrong label.
+ */
+function validateDocsAudience(docs: unknown, where: string): void {
+  if (!docs || typeof docs !== 'object') return;
+  const audience = (docs as Record<string, unknown>)['audience'];
+  if (audience === undefined) return;
+  validateAudienceLabel(audience, `indexer config: docs.audience in ${where}`);
+}
+
+/**
  * Validate the parsed config structure.
  */
 function validateConfig(config: unknown): asserts config is IndexerFileConfig {
@@ -147,7 +160,12 @@ function validateConfig(config: unknown): asserts config is IndexerFileConfig {
     throw new Error('Invalid indexer config: "repos" must be an array');
   }
 
-  for (const entry of c['repos'] as unknown[]) {
+  const defaults = c['defaults'];
+  if (defaults && typeof defaults === 'object') {
+    validateDocsAudience((defaults as Record<string, unknown>)['docs'], 'defaults');
+  }
+
+  (c['repos'] as unknown[]).forEach((entry, i) => {
     if (!entry || typeof entry !== 'object') {
       throw new Error('Invalid indexer config: each repo entry must be an object');
     }
@@ -157,7 +175,8 @@ function validateConfig(config: unknown): asserts config is IndexerFileConfig {
     if (!hasUrl && !hasPath) {
       throw new Error('Invalid indexer config: each repo entry must have a "url" or "path" field');
     }
-  }
+    validateDocsAudience(e['docs'], `repo entry #${i + 1}`);
+  });
 }
 
 export interface LoadConfigResult {

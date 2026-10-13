@@ -19,8 +19,8 @@ import {
 } from './bm25.js';
 import type { DocsIdfStore } from './idf-store.js';
 import { isMissingCollection } from '../qdrant-errors.js';
-import { chunkMarkdown, NotMarkdownError } from './chunker.js';
-import type { DocsChunk, DocsKind, DocsSearchHit } from './types.js';
+import { chunkMarkdown, NotMarkdownError, renderBreadcrumb } from './chunker.js';
+import type { DocsChunk, DocsDocument, DocsKind, DocsSearchHit } from './types.js';
 
 export interface DocsStoreConfig {
   qdrant: QdrantClient;
@@ -35,6 +35,23 @@ export interface DocsStoreConfig {
  * never surfaces them by accident. Fail-closed by construction.
  */
 export const DEFAULT_AUDIENCE = 'internal';
+
+/**
+ * Shape of an audience label: lower-case, starting with a letter or digit, at most
+ * 64 characters. Strict on purpose — a label decides who may read a document, so
+ * `Client` and `client ` must not quietly mean something other than `client`.
+ */
+export const AUDIENCE_LABEL_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+
+/** Options for {@link DocsStore.getDocument}. */
+export interface GetDocumentOpts {
+  /**
+   * Visibility labels the caller may read (match-any). A document outside them
+   * reads back exactly like a missing one. Omit for no restriction; an empty list
+   * matches nothing.
+   */
+  audience?: string[];
+}
 
 /** Input describing one markdown document to index (or re-index). */
 export interface IndexDocumentInput {
@@ -432,6 +449,83 @@ export class DocsStore {
         : base;
 
     return this.mergeNeighbours(group, gated, limit, opts.mergeNeighbours ?? 1);
+  }
+
+  /**
+   * Every stored section of one (project, file) document in `chunk_index` order,
+   * with the breadcrumb the chunker prepended for embedding removed.
+   *
+   * Keyed by (project, file) rather than `doc_id`: every indexing pass mints a new
+   * `doc_id`, so one taken from an earlier search can be gone by the time it is
+   * fetched. Should the read overlap a re-index of the same file, only the newest
+   * `doc_id` is kept (UUIDv7 sorts by creation time), so two versions never
+   * interleave.
+   *
+   * @returns null when the document is not indexed, its collection does not
+   *   exist, or its audience is outside `opts.audience` — deliberately one answer
+   *   for all three, so a caller cannot probe for documents it may not read.
+   *   Any other Qdrant failure throws.
+   */
+  async getDocument(
+    group: string,
+    project: string,
+    file: string,
+    opts: GetDocumentOpts = {}
+  ): Promise<DocsDocument | null> {
+    if (opts.audience !== undefined && opts.audience.length === 0) return null;
+    const must: Array<Record<string, unknown>> = [
+      { key: 'project', match: { value: project } },
+      { key: 'file', match: { value: file } },
+    ];
+    // A chunk with no stored audience does not match — the same fail-closed rule
+    // as search.
+    if (opts.audience !== undefined) must.push({ key: 'audience', match: { any: opts.audience } });
+
+    const chunks: DocsSearchHit[] = [];
+    let offset: string | number | Record<string, unknown> | undefined | null = undefined;
+    try {
+      for (;;) {
+        const page = await this.qdrant.scroll(toDocsCollectionName(group), {
+          limit: 256,
+          with_payload: true,
+          with_vector: false,
+          filter: { must },
+          ...(offset !== undefined && offset !== null ? { offset } : {}),
+        });
+        for (const p of page.points) {
+          const payload = p.payload as Record<string, unknown> | null | undefined;
+          if (payload) chunks.push(toHit(payload, 0));
+        }
+        if (!page.next_page_offset) break;
+        offset = page.next_page_offset;
+      }
+    } catch (err) {
+      if (isMissingCollection(err)) return null;
+      throw err;
+    }
+    if (chunks.length === 0) return null;
+
+    const newest = chunks.reduce((max, c) => (c.docId > max ? c.docId : max), '');
+    const current = chunks
+      .filter((c) => c.docId === newest)
+      .sort((a, b) => a.chunkIndex - b.chunkIndex);
+    const first = current[0]!;
+    return {
+      project,
+      file,
+      docTitle: first.docTitle,
+      sourceUrl: first.sourceUrl,
+      audience: first.audience,
+      kind: first.kind,
+      lastModifiedAt: first.lastModifiedAt,
+      sections: current.map((c) => ({
+        index: c.chunkIndex,
+        headingPath: c.headingPath,
+        text: sectionText(c),
+        startLine: c.startLine,
+        endLine: c.endLine,
+      })),
+    };
   }
 
   /**
@@ -877,6 +971,86 @@ export function applyAudienceScope(
   if (!requested) return scope;
   const allow = new Set(scope);
   return requested.filter((a) => allow.has(a));
+}
+
+/** Whether `label` is a well-formed audience label (see {@link AUDIENCE_LABEL_PATTERN}). */
+export function isValidAudienceLabel(label: unknown): label is string {
+  return typeof label === 'string' && AUDIENCE_LABEL_PATTERN.test(label);
+}
+
+/**
+ * Throw unless `label` is a well-formed audience label. `where` names the setting
+ * in the message, e.g. `docs.audience in /repo/.paparats.yml`.
+ */
+export function validateAudienceLabel(label: unknown, where: string): asserts label is string {
+  if (isValidAudienceLabel(label)) return;
+  throw new Error(
+    `Invalid ${where}: ${JSON.stringify(label)}. Audience labels must match ` +
+      `${AUDIENCE_LABEL_PATTERN.source} (lower-case letters, digits, "-" and "_", at most 64 characters).`
+  );
+}
+
+/** Outcome of {@link resolveDocumentAudience}. */
+export interface ResolvedDocumentAudience {
+  /** The label to store on every chunk of the document. */
+  audience: string;
+  /**
+   * The rejected frontmatter value, rendered for a log line, when the document
+   * named an audience that is not a usable label. Null otherwise.
+   */
+  rejected: string | null;
+}
+
+/**
+ * Decide the audience label of one document from its frontmatter `audience`
+ * value (`undefined` when the key is absent) and the project default.
+ *
+ * - frontmatter label present and valid → it wins over the project default;
+ * - absent → the project default, or {@link DEFAULT_AUDIENCE} when there is none;
+ * - present but unusable (malformed, empty, a list, a map) → {@link DEFAULT_AUDIENCE}.
+ *   Never the project default: it may be wider than what the author meant, and a
+ *   typo must not publish a document.
+ *
+ * Scalars are read the way the rest of the frontmatter is — a number becomes its
+ * decimal string — and surrounding whitespace is trimmed.
+ */
+export function resolveDocumentAudience(
+  frontmatter: unknown,
+  projectDefault: string | null
+): ResolvedDocumentAudience {
+  if (frontmatter === undefined) {
+    return { audience: projectDefault ?? DEFAULT_AUDIENCE, rejected: null };
+  }
+  const scalar =
+    typeof frontmatter === 'string'
+      ? frontmatter.trim()
+      : typeof frontmatter === 'number' || typeof frontmatter === 'boolean'
+        ? String(frontmatter)
+        : null;
+  if (scalar !== null && isValidAudienceLabel(scalar)) {
+    return { audience: scalar, rejected: null };
+  }
+  const shown = JSON.stringify(frontmatter) ?? String(frontmatter);
+  return {
+    audience: DEFAULT_AUDIENCE,
+    rejected: shown.length > 120 ? `${shown.slice(0, 120)}…` : shown,
+  };
+}
+
+/**
+ * A stored chunk's section text without the breadcrumb the chunker prepended for
+ * embedding. The prefix is rebuilt from the stored title and heading path and
+ * removed only on an exact match, so a section whose own first line merely looks
+ * like a breadcrumb is never cut.
+ */
+export function sectionText(
+  chunk: Pick<DocsSearchHit, 'docTitle' | 'headingPath' | 'content'>
+): string {
+  const crumb = renderBreadcrumb(chunk.docTitle, chunk.headingPath);
+  const prefix = `${crumb}\n\n`;
+  return crumb.length > 0 && chunk.content.startsWith(prefix)
+    ? chunk.content.slice(prefix.length)
+    : chunk.content;
 }
 
 // ── Payload helpers ─────────────────────────────────────────────────────────

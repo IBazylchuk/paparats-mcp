@@ -31,6 +31,8 @@ export interface ToolPrompt {
 export interface Prompts {
   codingInstructions: string;
   supportInstructions: string;
+  /** System prompt for the knowledge endpoint (`/knowledge/mcp`), written for an agent answering non-engineers. */
+  knowledgeInstructions: string;
   common: { searchFirst: string; noResults: string };
   tools: {
     search_code: ToolPrompt;
@@ -58,6 +60,17 @@ export interface Prompts {
     term_list?: ToolPrompt;
     term_record?: ToolPrompt;
     term_delete?: ToolPrompt;
+    get_document?: ToolPrompt;
+  };
+  /**
+   * Knowledge-mode descriptions of the two tools it serves. Kept apart from
+   * `tools`: that endpoint's reader is an agent for non-engineers outside the
+   * organisation, so the coding/support wording (read the file, check the code)
+   * would be wrong there.
+   */
+  knowledgeTools: {
+    search_docs: ToolPrompt;
+    get_document: ToolPrompt;
   };
   resources: {
     projectOverview: {
@@ -83,6 +96,21 @@ function validatePrompts(data: unknown): Prompts {
   }
   if (typeof p.supportInstructions !== 'string') {
     throw new Error('prompts.supportInstructions must be a string');
+  }
+  if (typeof p.knowledgeInstructions !== 'string') {
+    throw new Error('prompts.knowledgeInstructions must be a string');
+  }
+  if (!p.knowledgeTools || typeof p.knowledgeTools !== 'object') {
+    throw new Error('prompts.knowledgeTools must be an object');
+  }
+  for (const name of ['search_docs', 'get_document']) {
+    const t = (p.knowledgeTools as Record<string, unknown>)[name];
+    if (!t || typeof t !== 'object') {
+      throw new Error(`prompts.knowledgeTools.${name} must be an object`);
+    }
+    if (typeof (t as Record<string, unknown>).description !== 'string') {
+      throw new Error(`prompts.knowledgeTools.${name}.description must be a string`);
+    }
   }
   if (!p.common || typeof p.common !== 'object') {
     throw new Error('prompts.common must be an object');

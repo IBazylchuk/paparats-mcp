@@ -12,6 +12,12 @@ import { createTreeSitterManager } from './tree-sitter-parser.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
 import type { ProjectConfig } from './types.js';
 import { createApp, parseCorsOrigins, refreshGaugeMetrics } from './app.js';
+import {
+  KNOWLEDGE_MCP_PATH,
+  effectiveKnowledgeScope,
+  parseKnowledgeModeEnv,
+  type KnowledgeModeConfig,
+} from './knowledge-mode.js';
 import { QueryCache } from './query-cache.js';
 import { createMetrics } from './metrics.js';
 import { buildTelemetry } from './telemetry/factory.js';
@@ -46,6 +52,19 @@ const PAPARATS_DOCS_AUDIENCE = process.env.PAPARATS_DOCS_AUDIENCE
       .map((a) => a.trim())
       .filter(Boolean)
   : undefined;
+/**
+ * Knowledge mode: a docs-only, bearer-authenticated MCP endpoint for consumers
+ * outside the trust boundary (`PAPARATS_KNOWLEDGE_TOKENS`,
+ * `PAPARATS_KNOWLEDGE_AUDIENCE`, optional `PAPARATS_KNOWLEDGE_PROJECTS`). Off
+ * unless configured; a half configuration refuses to start.
+ */
+let KNOWLEDGE_MODE: KnowledgeModeConfig | null;
+try {
+  KNOWLEDGE_MODE = parseKnowledgeModeEnv(process.env);
+} catch (err) {
+  console.error(`[startup] ${(err as Error).message}`);
+  process.exit(1);
+}
 /**
  * Suffix appended to project names in the storage layer so two stands can
  * share one Qdrant without their eviction scans deleting each other's chunks.
@@ -167,6 +186,7 @@ try {
     docsStore,
     ...(PAPARATS_DOCS_AUDIENCE ? { docsAudienceScope: PAPARATS_DOCS_AUDIENCE } : {}),
     terminologyStore,
+    ...(KNOWLEDGE_MODE ? { knowledgeMode: KNOWLEDGE_MODE } : {}),
   });
 } catch (err) {
   // Misconfiguration (e.g. a malformed PAPARATS_UI_BASIC_AUTH or
@@ -191,6 +211,30 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`paparats-mcp listening on http://0.0.0.0:${PORT}`);
   console.log(`  MCP Coding:               http://localhost:${PORT}/mcp`);
   console.log(`  MCP Support:              http://localhost:${PORT}/support/mcp`);
+  if (KNOWLEDGE_MODE) {
+    // Never the tokens — only how many there are.
+    const effective = effectiveKnowledgeScope(KNOWLEDGE_MODE, {
+      docsAudience: PAPARATS_DOCS_AUDIENCE ?? null,
+      projects: PAPARATS_PROJECTS ?? null,
+    });
+    console.log(
+      `  MCP Knowledge:            http://localhost:${PORT}${KNOWLEDGE_MCP_PATH} (stateless, bearer auth, ${KNOWLEDGE_MODE.tokens.length} token(s))`
+    );
+    console.log(`    audience ceiling:       ${effective.audience.join(', ') || '(none)'}`);
+    console.log(
+      `    project allowlist:      ${effective.projects ? effective.projects.join(', ') || '(none)' : 'all projects'}`
+    );
+    if (effective.audience.length === 0 || effective.projects?.length === 0) {
+      console.warn(
+        '  ⚠ The knowledge mode can serve nothing: its scope does not overlap PAPARATS_DOCS_AUDIENCE / PAPARATS_PROJECTS.'
+      );
+    }
+    if (!effective.projects) {
+      console.warn(
+        '  ⚠ PAPARATS_KNOWLEDGE_PROJECTS is not set: a document labelled for this audience in ANY project is served.'
+      );
+    }
+  }
   console.log(`  MCP SSE (legacy):         http://localhost:${PORT}/sse`);
   console.log(`  Health:                   http://localhost:${PORT}/health`);
   console.log(`  Stats:                    http://localhost:${PORT}/api/stats`);

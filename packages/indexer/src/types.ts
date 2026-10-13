@@ -30,6 +30,12 @@ export interface RepoOverrides {
   docs?: {
     /** `prose` for long-form documentation, `code` for docs shipped beside source. */
     kind?: DocsKind;
+    /**
+     * Default visibility label for the repo's documents (e.g. `client`). A
+     * document's frontmatter `audience:` overrides it; without either a document
+     * is stored as `internal`. Must match `^[a-z0-9][a-z0-9_-]{0,63}$`.
+     */
+    audience?: string;
   };
   indexing?: {
     paths?: string[];
