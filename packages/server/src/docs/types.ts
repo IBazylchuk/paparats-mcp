@@ -114,3 +114,31 @@ export interface DocsSearchHit {
  *   versus 0.383/0.547 for `prose`. Hence the higher default floor.
  */
 export type DocsKind = 'prose' | 'code';
+
+/** One stored section of a document, as returned by `DocsStore.getDocument`. */
+export interface DocsSection {
+  /** 0-indexed position within the document (the stored `chunk_index`). */
+  index: number;
+  /** Heading trail from the document root to this section. */
+  headingPath: string[];
+  /** The section's text as written, without the breadcrumb prepended for embedding. */
+  text: string;
+  /** 0-indexed inclusive start line in the original source. */
+  startLine: number;
+  /** 0-indexed inclusive end line in the original source. */
+  endLine: number;
+}
+
+/** A whole indexed document, rebuilt from its stored chunks. */
+export interface DocsDocument {
+  project: string;
+  file: string;
+  docTitle: string;
+  sourceUrl: string | null;
+  audience: string;
+  kind: DocsKind;
+  /** Unix epoch milliseconds of the last content change, or `null` when unknown. */
+  lastModifiedAt: number | null;
+  /** Every section in document order. */
+  sections: DocsSection[];
+}

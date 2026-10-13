@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import Database from 'better-sqlite3';
 import { AnalyticsStore } from '../src/telemetry/analytics-store.js';
 import { tctx, newContext } from '../src/telemetry/context.js';
 import {
@@ -493,5 +494,64 @@ describe('analytics queries', () => {
     expect(rows.length).toBeGreaterThan(0);
     const ast = rows.find((r) => r.error_class === 'ast_chunk_zero');
     expect(ast?.count).toBe(2);
+  });
+});
+
+describe('AnalyticsStore tool_calls.mode', () => {
+  let dbPath: string;
+  beforeEach(() => {
+    dbPath = tmpFile();
+  });
+  afterEach(() => {
+    fs.rmSync(path.dirname(dbPath), { recursive: true, force: true });
+  });
+
+  const modes = (db: Database.Database) =>
+    db.prepare('SELECT tool, mode FROM tool_calls ORDER BY ts').all() as Array<{
+      tool: string;
+      mode: string | null;
+    }>;
+
+  it('records the MCP endpoint each tool call came through', () => {
+    const store = new AnalyticsStore({ dbPath });
+    try {
+      const call = (tool: string) =>
+        store.recordToolCall({ ts: Date.now(), tool, durationMs: 1, ok: true, error: null });
+      tctx.run(newContext({ user: 'agent', mcpMode: 'knowledge' }), () => call('search_docs'));
+      tctx.run(newContext({ user: 'alice' }), () => call('search_code'));
+      expect(modes(store.database)).toEqual([
+        { tool: 'search_docs', mode: 'knowledge' },
+        { tool: 'search_code', mode: null },
+      ]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('adds the column to a database created by the first schema version', () => {
+    // Build a version-1 database: today's schema with version 2 rolled back.
+    new AnalyticsStore({ dbPath }).close();
+    const old = new Database(dbPath);
+    old.exec(`
+      ALTER TABLE tool_calls DROP COLUMN mode;
+      DELETE FROM schema_migrations WHERE version = 2;
+      INSERT INTO tool_calls VALUES ('a', 1, 'alice', NULL, 'search_code', 3, 1, NULL);
+    `);
+    old.close();
+
+    const store = new AnalyticsStore({ dbPath });
+    try {
+      tctx.run(newContext({ mcpMode: 'support' }), () =>
+        store.recordToolCall({ ts: 2, tool: 'get_document', durationMs: 1, ok: true, error: null })
+      );
+      expect(modes(store.database)).toEqual([
+        { tool: 'search_code', mode: null },
+        { tool: 'get_document', mode: 'support' },
+      ]);
+    } finally {
+      store.close();
+    }
+    // Re-opening an upgraded database is a no-op.
+    new AnalyticsStore({ dbPath }).close();
   });
 });

@@ -20,9 +20,10 @@ Three jobs in one process:
   expansion (abbreviations, case variants, plurals, filler removal), in-memory LRU
   query cache with per-group invalidation, confidence scoring, token-savings
   telemetry.
-- **MCP server.** Two endpoints — `/mcp` (coding) and `/support/mcp` (support) — each
-  with its own tool set and system instructions. SSE for Cursor, Streamable HTTP for
-  Claude Code. Plus an agent-maintained **architectural memory** layer.
+- **MCP server.** Three endpoints — `/mcp` (coding), `/support/mcp` (support) and the
+  opt-in, docs-only `/knowledge/mcp` (knowledge) — each with its own tool set and system
+  instructions. SSE for Cursor, Streamable HTTP for Claude Code. Plus an agent-maintained
+  **architectural memory** layer.
 
 ## Endpoints
 
@@ -39,11 +40,57 @@ http://<host>:9876/messages                – MCP, coding mode (SSE message cha
 http://<host>:9876/support/mcp             – MCP, support mode
 http://<host>:9876/support/sse             – MCP, support mode (SSE)
 http://<host>:9876/support/messages        – MCP, support mode (SSE message channel)
+
+http://<host>:9876/knowledge/mcp           – MCP, knowledge mode (stateless, bearer auth,
+                                             POST only; mounted only when configured)
 ```
 
 `POST /api/index` registers a project; `POST /api/watch/...` controls the watcher.
 See the [main README](https://github.com/IBazylchuk/paparats-mcp#mcp-tools-reference)
 for the full tool inventory per endpoint.
+
+## Knowledge mode
+
+A docs-only MCP endpoint for a consumer in another network — an agent backend behind a
+load balancer that may search curated documentation and nothing else. Off unless
+`PAPARATS_KNOWLEDGE_TOKENS` and `PAPARATS_KNOWLEDGE_AUDIENCE` are both set; one without
+the other stops the server at startup.
+
+- **Tools:** `search_docs` and `get_document` only. No glossary block, no resources, no
+  workflow prompts. `search_docs` returns `structuredContent` with an `outputSchema`, so
+  a wrapping service can build citations without parsing markdown.
+- **Auth:** `Authorization: Bearer <token>`, compared in constant time, checked before
+  the request body is read. `401` + `WWW-Authenticate: Bearer` otherwise.
+- **Scope:** documents labelled with an audience in `PAPARATS_KNOWLEDGE_AUDIENCE`
+  (never `internal`), in the projects of `PAPARATS_KNOWLEDGE_PROJECTS` when set. Both
+  are intersected with `PAPARATS_DOCS_AUDIENCE` / `PAPARATS_PROJECTS` when those are
+  set. Out-of-scope documents read exactly like missing ones.
+- **Transport:** stateless Streamable HTTP — a fresh server and transport per `POST`,
+  no session id; `GET`/`DELETE` answer `405`. 64 kB body limit, 1000-character query
+  cap.
+
+Documents get their audience at index time: frontmatter `audience:` first, then
+`docs.audience` from `.paparats.yml` / `projects.yml`, otherwise `internal`. An invalid
+frontmatter value is logged and stored as `internal`. See the
+[main README](https://github.com/IBazylchuk/paparats-mcp#documentation-audience-labels).
+
+**Set `PAPARATS_KNOWLEDGE_PROJECTS`** — otherwise a stray `audience:` in some code
+repository's README is enough to widen what the endpoint serves.
+
+Expose only that path, POST only. For example with nginx:
+
+```nginx
+location = /knowledge/mcp {
+  limit_except POST { deny all; }
+  client_max_body_size 64k;
+  proxy_pass http://paparats:9876;
+  proxy_http_version 1.1;
+  proxy_buffering off; # responses stream as text/event-stream
+}
+location / {
+  return 404;
+}
+```
 
 ## Architectural memory
 
@@ -123,7 +170,8 @@ support-only — recording belongs to the architectural-review workflow.
 | `metadata-db.ts`                    | SQLite store for git commits, tickets, symbol edges                                                     |
 | `git-metadata.ts`                   | Git history extraction — diff-hunk mapping to chunks                                                    |
 | `ticket-extractor.ts`               | Jira / GitHub / custom ticket parsing                                                                   |
-| `mcp-handler.ts`                    | MCP protocol — dual-mode endpoints with isolated tool sets and instructions                             |
+| `mcp-handler.ts`                    | MCP protocol — coding, support and knowledge endpoints with isolated tool sets and instructions         |
+| `knowledge-mode.ts`                 | Knowledge mode — env parsing, bearer auth, body limit, scope intersection                               |
 | `watcher.ts`                        | `ProjectWatcher` (chokidar) + `WatcherManager`                                                          |
 | `arch/types.ts`                     | Architectural-memory types                                                                              |
 | `arch/collection.ts`                | Per-group `paparats_<group>_arch` collection lifecycle                                                  |
@@ -149,6 +197,10 @@ support-only — recording belongs to the architectural-review workflow.
 | `TEXT_EMBEDDING_DIMENSIONS` | `1024`                                 | Arch-layer text embedding dimensions                         |
 | `PAPARATS_METRICS`          | `false`                                | Set to `true` to expose `/metrics`                           |
 | `PAPARATS_PROJECTS`         | —                                      | Comma-separated allow-list of project names                  |
+| `PAPARATS_DOCS_AUDIENCE`    | —                                      | Comma-separated audience ceiling for `search_docs` / `get_document` on the coding and support endpoints |
+| `PAPARATS_KNOWLEDGE_TOKENS` | —                                      | Comma-separated bearer tokens (≥ 16 characters) for `/knowledge/mcp`. Set together with `PAPARATS_KNOWLEDGE_AUDIENCE`, or neither |
+| `PAPARATS_KNOWLEDGE_AUDIENCE` | —                                    | Audience ceiling of `/knowledge/mcp`; `internal` is refused   |
+| `PAPARATS_KNOWLEDGE_PROJECTS` | —                                    | Optional project allowlist of `/knowledge/mcp` — recommended  |
 | `PAPARATS_UI_BASIC_AUTH`    | —                                      | `user:pass` for `/ui` and `/api/analytics/...`; a malformed value stops startup |
 | `PAPARATS_CORS_ORIGINS`     | —                                      | Comma-separated exact origins (e.g. `https://app.example.com`) browsers may call the server from. Unset = no CORS headers, and any request whose `Origin` is neither this server nor listed gets `403`. Requests without `Origin` (MCP clients, curl) are unaffected |
 | `OTEL_*`                    | —                                      | Standard OpenTelemetry env vars (Tempo / Honeycomb / Datadog / Elastic APM)  |

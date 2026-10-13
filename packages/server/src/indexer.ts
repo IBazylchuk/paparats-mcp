@@ -21,7 +21,7 @@ import { resolveAstLanguage } from './ast-language.js';
 import type { SymbolExtractionResult } from './ast-symbol-extractor.js';
 import { buildSymbolEdges } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
-import type { DocsStore } from './docs/store.js';
+import { resolveDocumentAudience, type DocsStore } from './docs/store.js';
 import { NotMarkdownError } from './docs/chunker.js';
 import { parseFrontmatter } from './docs/frontmatter.js';
 import type { DocsKind } from './docs/types.js';
@@ -1327,6 +1327,9 @@ export class Indexer {
     // be absent despite the type.
     const kind: DocsKind = project.docs?.kind ?? (await this.classifyDocs(project, files.length));
     console.log(`  [docs] classified as ${kind}`);
+    // Validated when the config was resolved; null means every document is
+    // `internal` unless its own frontmatter says otherwise.
+    const defaultAudience = project.docs?.audience ?? null;
 
     let totalChunks = 0;
     let skipped = 0;
@@ -1343,12 +1346,21 @@ export class Indexer {
       // yields the canonical link and the page title, and strips the block from
       // the prose so it is not chunked and embedded as content.
       const fm = parseFrontmatter(content);
+      // Every pass rewrites every document (fresh doc_id, no unchanged-skip), so
+      // a changed label takes effect on the next run without a migration.
+      const { audience, rejected } = resolveDocumentAudience(fm.audience, defaultAudience);
+      if (rejected !== null) {
+        console.warn(
+          `  [docs] ${rel}: ignoring frontmatter audience ${rejected} (not a valid label) — stored as ${audience}`
+        );
+      }
       try {
         const n = await this.docsStore.indexDocument(groupName, {
           project: cleanName,
           file: rel,
           content: fm.content,
           kind,
+          audience,
           // The document's own timestamp wins over the file's: in a mirror the
           // file date is when the mirror last wrote it, not when the page changed.
           lastModifiedAt: fm.lastModifiedAt ?? modifiedTimes.get(rel) ?? null,

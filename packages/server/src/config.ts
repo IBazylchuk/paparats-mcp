@@ -9,6 +9,7 @@ import {
 } from '@paparats/shared';
 import { validateTicketPatterns } from './ticket-extractor.js';
 import { validateGroupName } from './indexer.js';
+import { validateAudienceLabel } from './docs/store.js';
 import type {
   PaparatsConfig,
   ProjectConfig,
@@ -373,6 +374,11 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
 
   const metadata = resolveMetadata(raw.metadata, projectName);
 
+  const audience = raw.docs?.audience;
+  if (audience !== undefined) {
+    validateAudienceLabel(audience, `docs.audience for project "${projectName}"`);
+  }
+
   return {
     name: projectName,
     path: path.resolve(projectDir),
@@ -384,7 +390,7 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
     watcher,
     embeddings,
     metadata,
-    docs: { kind: raw.docs?.kind ?? null },
+    docs: { kind: raw.docs?.kind ?? null, audience: audience ?? null },
   };
 }
 
@@ -533,6 +539,6 @@ export function buildProjectConfigFromContent(
     watcher: DEFAULT_WATCHER,
     embeddings: DEFAULT_EMBEDDINGS,
     metadata: resolveMetadata(undefined, projectName),
-    docs: { kind: null },
+    docs: { kind: null, audience: null },
   };
 }

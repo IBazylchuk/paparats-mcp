@@ -97,6 +97,40 @@ describe('resolveRepoProject', () => {
       const { project } = resolveRepoProject(makeRepo(dir, { docs: { kind: 'prose' } }), dir);
       expect(project.docs?.kind).toBe('prose');
     });
+
+    it("lets a projects.yml docs.audience beat the repo's own, keeping its kind", () => {
+      writeRepoConfig('group: team\nlanguage: ruby\ndocs:\n  kind: code\n  audience: client\n');
+      const { project } = resolveRepoProject(makeRepo(dir, { docs: { audience: 'partner' } }), dir);
+      expect(project.docs).toEqual({ kind: 'code', audience: 'partner' });
+    });
+
+    it("keeps the repo's docs.audience when the override only sets docs.kind", () => {
+      writeRepoConfig('group: team\nlanguage: ruby\ndocs:\n  audience: client\n');
+      const { project } = resolveRepoProject(makeRepo(dir, { docs: { kind: 'prose' } }), dir);
+      expect(project.docs).toEqual({ kind: 'prose', audience: 'client' });
+    });
+  });
+
+  it('takes docs.audience from .paparats.yml alone', () => {
+    writeRepoConfig('group: team\nlanguage: ruby\ndocs:\n  audience: client\n');
+    expect(resolveRepoProject(makeRepo(dir), dir).project.docs).toEqual({
+      kind: null,
+      audience: 'client',
+    });
+  });
+
+  it('takes docs.audience from projects.yml when the repo has no .paparats.yml', () => {
+    const { project, source } = resolveRepoProject(
+      makeRepo(dir, { docs: { audience: 'client' } }),
+      dir
+    );
+    expect(source).toBe('overrides');
+    expect(project.docs).toEqual({ kind: null, audience: 'client' });
+  });
+
+  it("rejects an invalid docs.audience in the repo's own .paparats.yml", () => {
+    writeRepoConfig('group: team\nlanguage: ruby\ndocs:\n  audience: Client Facing\n');
+    expect(() => resolveRepoProject(makeRepo(dir), dir)).toThrow(/docs\.audience/);
   });
 
   it('uses .paparats.yml as-is without overrides', () => {

@@ -768,3 +768,34 @@ describe('buildProjectConfigFromContent', () => {
     expect(() => buildProjectConfigFromContent('billing', 'billing_terms')).toThrow(/reserved/);
   });
 });
+
+describe('docs.audience', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = createTempDir();
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('resolves a project default label from .paparats.yml', () => {
+    writeConfig(dir, `group: my-group\nlanguage: ruby\ndocs:\n  audience: client\n`);
+    expect(loadProject(dir).docs).toEqual({ kind: null, audience: 'client' });
+  });
+
+  it('resolves to null — every document internal — when unset', () => {
+    writeConfig(dir, MINIMAL_CONFIG);
+    expect(loadProject(dir).docs).toEqual({ kind: null, audience: null });
+    expect(buildProjectConfigFromContent('p', 'g').docs).toEqual({ kind: null, audience: null });
+  });
+
+  it.each(['Client', '', 'has space', '-lead'])('fails config loading on label %j', (label) => {
+    const raw: PaparatsConfig = { group: 'my-group', language: 'ruby', docs: { audience: label } };
+    expect(() => resolveProject(dir, raw)).toThrow(/docs\.audience/);
+  });
+
+  it('fails config loading on a non-string label', () => {
+    writeConfig(dir, `group: my-group\nlanguage: ruby\ndocs:\n  audience: [client]\n`);
+    expect(() => loadProject(dir)).toThrow(/docs\.audience/);
+  });
+});

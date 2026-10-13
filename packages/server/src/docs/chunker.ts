@@ -205,8 +205,12 @@ function computeHeadingPath(sections: Section[], index: number): string[] {
   return path;
 }
 
-/** Render the breadcrumb prefix prepended to each chunk's embedded text. */
-function renderBreadcrumb(docTitle: string | undefined, headingPath: string[]): string {
+/**
+ * Render the breadcrumb prefix prepended to each chunk's embedded text. Exported
+ * so a stored chunk can be turned back into its section text: the payload keeps
+ * the title and heading path, which reproduce the prefix exactly.
+ */
+export function renderBreadcrumb(docTitle: string | undefined, headingPath: string[]): string {
   const parts = [docTitle, ...headingPath].filter((p): p is string => !!p && p.length > 0);
   return parts.join(' > ');
 }

@@ -306,4 +306,69 @@ describe('Indexer.indexDocsProject', () => {
       expect(await indexerWith(docsStore).indexDocsProject(project(dir))).toBe(3);
     });
   });
+
+  describe('audience labels', () => {
+    function indexerWith(docsStore: unknown): Indexer {
+      return new Indexer({
+        qdrantUrl: 'http://localhost:6333',
+        embeddingProvider: provider,
+        dimensions: 4,
+        qdrantClient: {} as never,
+        docsStore: docsStore as DocsStore,
+      });
+    }
+    /** file → audience the walk stored it under. */
+    async function labels(defaultAudience: string | null): Promise<Record<string, string>> {
+      const docsStore = fakeDocsStore();
+      await indexerWith(docsStore).indexDocsProject(
+        project(dir, { docs: { kind: null, audience: defaultAudience } })
+      );
+      return Object.fromEntries(
+        docsStore.indexDocument.mock.calls.map((c) => {
+          const input = c[1] as { file: string; audience: string };
+          return [input.file, input.audience];
+        })
+      );
+    }
+    const doc = (frontmatter: string) => `---\n${frontmatter}\n---\n# Title\n\nbody`;
+
+    it('stores every document as internal when nothing labels it', async () => {
+      fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\nbody');
+      expect(await labels(null)).toEqual({ 'a.md': 'internal' });
+    });
+
+    it('applies the project default to documents without their own label', async () => {
+      fs.writeFileSync(path.join(dir, 'a.md'), '# A\n\nbody');
+      expect(await labels('client')).toEqual({ 'a.md': 'client' });
+    });
+
+    it('lets a document frontmatter label override the project default', async () => {
+      fs.writeFileSync(path.join(dir, 'narrow.md'), doc('audience: partner'));
+      fs.writeFileSync(path.join(dir, 'plain.md'), '# Plain\n\nbody');
+      expect(await labels('client')).toEqual({ 'narrow.md': 'partner', 'plain.md': 'client' });
+    });
+
+    it('stores an invalid or non-scalar frontmatter label as internal, never the project default', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        fs.writeFileSync(path.join(dir, 'upper.md'), doc('audience: Client'));
+        fs.writeFileSync(path.join(dir, 'list.md'), doc('audience: [client, public]'));
+        fs.writeFileSync(path.join(dir, 'empty.md'), doc('audience:'));
+        expect(await labels('client')).toEqual({
+          'upper.md': 'internal',
+          'list.md': 'internal',
+          'empty.md': 'internal',
+        });
+        const logged = warn.mock.calls.map((c) => String(c[0]));
+        expect(logged.some((l) => l.includes('upper.md') && l.includes('"Client"'))).toBe(true);
+        expect(logged.some((l) => l.includes('list.md') && l.includes('["client","public"]'))).toBe(
+          true
+        );
+        // Under the JSON schema an empty value parses as "", not null.
+        expect(logged.some((l) => l.includes('empty.md') && l.includes('""'))).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  });
 });
