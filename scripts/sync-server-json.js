@@ -45,7 +45,10 @@ if (Array.isArray(serverData.packages) && serverData.packages[0]) {
 writeFileSync(serverPath, JSON.stringify(serverData, null, 2) + '\n');
 console.log(`Updated server.json to ${version}`);
 
-// Client manifests that carry their own version field.
+// Client manifests that carry their own version field. Only the top-level
+// "version" line is rewritten: re-serialising with JSON.stringify would undo
+// Prettier's formatting (it expands short arrays) and fail `prettier:check`.
+const TOP_LEVEL_VERSION = /^( {2}"version": )"[^"]*"/m;
 for (const rel of [
   'gemini-extension.json',
   '.cursor-plugin/plugin.json',
@@ -53,10 +56,12 @@ for (const rel of [
   'grok/.grok-plugin/plugin.json',
 ]) {
   const path = join(rootDir, rel);
-  const manifest = JSON.parse(readFileSync(path, 'utf8'));
-  if (manifest.version !== version) {
-    manifest.version = version;
-    writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
-    console.log(`Updated ${rel} to ${version}`);
+  const text = readFileSync(path, 'utf8');
+  if (JSON.parse(text).version === version) continue;
+  if (!TOP_LEVEL_VERSION.test(text)) {
+    console.error(`No top-level "version" line in ${rel}`);
+    process.exit(1);
   }
+  writeFileSync(path, text.replace(TOP_LEVEL_VERSION, `$1"${version}"`));
+  console.log(`Updated ${rel} to ${version}`);
 }
