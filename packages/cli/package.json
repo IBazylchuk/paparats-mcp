@@ -1,6 +1,6 @@
 {
   "name": "@paparats/cli",
-  "version": "2.9.1",
+  "version": "2.10.0",
   "mcpName": "io.github.IBazylchuk/paparats-mcp",
   "type": "module",
   "description": "Self-hosted semantic code search MCP server for Claude Code, Cursor and Codex: tree-sitter AST chunking, symbol graph, git history, local Qdrant + llama.cpp embeddings.",
@@ -76,7 +76,7 @@
   },
   "dependencies": {
     "@inquirer/prompts": "^8.7.4",
-    "@paparats/shared": "^2.9.1",
+    "@paparats/shared": "^2.10.0",
     "chalk": "^6.0.1",
     "commander": "^15.0.0",
     "glob": "^13.0.6",
