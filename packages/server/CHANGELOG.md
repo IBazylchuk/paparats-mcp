@@ -1,5 +1,11 @@
 # @paparats/server
 
+## 2.11.1
+
+### Patch Changes
+
+- @paparats/shared@2.11.1
+
 ## 2.11.0
 
 ### Minor Changes

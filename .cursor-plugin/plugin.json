@@ -1,7 +1,7 @@
 {
   "name": "paparats",
   "description": "Self-hosted semantic code search across all your repos. Indexes code with tree-sitter and a local embedding model; nothing leaves your machine.",
-  "version": "2.11.0",
+  "version": "2.11.1",
   "author": {
     "name": "Ilya Bazylchuk"
   },
