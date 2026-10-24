@@ -1627,6 +1627,14 @@ top-K, so recall matters more than exact ordering.
 > values shift with hardware, quantization, and corpus, but the relative ordering
 > between models is what drives model selection here.
 
+**End-to-end retrieval.** The tables above compare embedders in isolation. `yarn bench`
+scores the whole search path — chunking, instruction prefixes, query expansion — on a
+hand-labelled query set over this repository, broken down by query type (natural language,
+exact identifiers, error strings, config keys, code snippets, cross-package questions).
+Current dense-only baseline: file-level MRR@10 0.767, chunk-level Recall@10 0.825
+([summary](packages/bench/baselines/paparats-f5b2a75-bge-code-v1.md)). How to run it and
+compare two runs: [docs/benchmarking.md](docs/benchmarking.md).
+
 ---
 
 ## FAQ

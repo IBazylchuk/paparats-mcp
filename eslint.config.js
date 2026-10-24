@@ -13,6 +13,9 @@ export default tseslint.config(
       '**/coverage/**',
       '.husky/**',
       '**/*.lock',
+      // Retrieval bench: exported source snapshots and ad-hoc reports (git-ignored).
+      'packages/bench/.cache/**',
+      'packages/bench/reports/**',
     ],
   },
   js.configs.recommended,
