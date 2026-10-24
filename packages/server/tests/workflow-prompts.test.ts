@@ -70,10 +70,20 @@ describe('workflow prompts', () => {
     // These tools shipped registered but undocumented in either instruction set, so
     // clients without our plugins had no idea when to reach for them.
     for (const key of ['codingInstructions', 'supportInstructions'] as const) {
-      for (const tool of ['search_docs', 'term_search', 'term_record']) {
+      for (const tool of ['search_docs', 'term_search']) {
         expect(prompts[key], `${tool} should be mentioned in ${key}`).toContain(tool);
       }
     }
+    expect(prompts.codingInstructions).toContain('term_record');
+  });
+
+  it('never tells support to call a write tool', () => {
+    // Support is read-only; an instruction naming a write tool it does not have
+    // sends the model looking for it, or into telling the user it recorded something.
+    expect(prompts.supportInstructions).not.toMatch(
+      /term_record|term_delete|arch_record_|arch_delete/
+    );
+    expect(prompts.supportInstructions).toMatch(/engineer, who records it/);
   });
 
   it('warns in both modes that a miss on a sparse layer is not evidence', () => {

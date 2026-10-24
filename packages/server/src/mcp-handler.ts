@@ -989,11 +989,10 @@ export const SUPPORT_TOOLS = new Set([
   // `CODING_TOOLS`. Support routes "why is it built this way" to an engineer.
   // docs — read.
   'search_docs',
-  // glossary — read + write. Support is where undocumented vocabulary actually
-  // surfaces (customer emails, AM shorthand), so they can record it too.
+  // glossary — read only. Support is strictly read-only: it meets undocumented
+  // vocabulary first, but hands it to an engineer, who records it in coding mode.
   'term_search',
   'term_list',
-  'term_record',
   // Whole-document reads: support cannot open the files a docs excerpt names.
   'get_document',
 ]);
@@ -4118,7 +4117,7 @@ export class McpHandler {
               content: [
                 {
                   type: 'text' as const,
-                  text: `No glossary term found for "${query}". The glossary is agent-authored and incomplete — search the code and docs before concluding the term is unused, and record it with term_record once confirmed.`,
+                  text: `No glossary term found for "${query}". The glossary is agent-authored and incomplete — search the code and docs before concluding the term is unused${tools.has('term_record') ? ', and record it with term_record once confirmed' : ''}.`,
                 },
               ],
             };

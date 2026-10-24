@@ -1993,6 +1993,15 @@ describe('tool annotations', () => {
     }
   });
 
+  it('keeps the support endpoint read-only', async () => {
+    // Support users have no code access and act on customers' behalf; nothing
+    // they run may change the index, the glossary or the arch layer.
+    const writers = (await listTools('/support/mcp')).filter(
+      (t) => t.annotations?.readOnlyHint !== true
+    );
+    expect(writers.map((t) => t.name)).toEqual([]);
+  });
+
   it('marks queries read-only in a closed domain', async () => {
     const tools = await listTools('/mcp');
 

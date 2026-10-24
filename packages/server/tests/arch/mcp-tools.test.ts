@@ -482,14 +482,13 @@ describe('arch tool exposure per mode', () => {
     expect([...SUPPORT_TOOLS].filter((t) => t.startsWith('arch_'))).toEqual([]);
   });
 
-  it('lets support read and write the glossary, but not delete from it', () => {
-    // The glossary is not the arch layer: a definition is a fact about vocabulary,
-    // checkable by whoever supplied it, and support meets undocumented shorthand
-    // first. Only the destructive tool is withheld.
-    for (const tool of ['term_search', 'term_list', 'term_record']) {
+  it('lets support read the glossary but not write to it', () => {
+    // Support is strictly read-only. It meets undocumented shorthand first, but
+    // hands it to an engineer, who records it from coding mode.
+    for (const tool of ['term_search', 'term_list']) {
       expect(SUPPORT_TOOLS.has(tool), `${tool} should be available in support mode`).toBe(true);
     }
-    for (const tool of ['term_delete', 'delete_project']) {
+    for (const tool of ['term_record', 'term_delete', 'delete_project']) {
       expect(SUPPORT_TOOLS.has(tool), `${tool} must not be reachable from support`).toBe(false);
       expect(CODING_TOOLS.has(tool), `${tool} should stay available in coding mode`).toBe(true);
     }
