@@ -1,11 +1,19 @@
 {
   "name": "paparats",
   "description": "Local semantic code search across all your repos. Indexes code with tree-sitter and a local embedding model; nothing leaves your machine.",
-  "version": "2.9.0",
-  "author": { "name": "Ilya Bazylchuk" },
+  "version": "2.9.1",
+  "author": {
+    "name": "Ilya Bazylchuk"
+  },
   "homepage": "https://github.com/IBazylchuk/paparats-mcp",
   "repository": "https://github.com/IBazylchuk/paparats-mcp",
   "license": "MIT",
-  "keywords": ["mcp", "semantic-search", "code-search", "local-first", "qdrant"],
+  "keywords": [
+    "mcp",
+    "semantic-search",
+    "code-search",
+    "local-first",
+    "qdrant"
+  ],
   "logo": "assets/logo.png"
 }
