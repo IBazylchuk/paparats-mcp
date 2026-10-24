@@ -24,6 +24,18 @@ import { buildTelemetry } from './telemetry/factory.js';
 import { tctx, systemContext } from './telemetry/context.js';
 import { scheduleRetention } from './telemetry/retention.js';
 
+/**
+ * `--stdio`: serve the coding endpoint over stdin/stdout instead of HTTP, for
+ * clients and inspectors that spawn the server. stdout then carries the MCP
+ * protocol, so every log line is sent to stderr.
+ */
+const STDIO = process.argv.includes('--stdio');
+if (STDIO) {
+  console.log = console.error;
+  console.info = console.error;
+  console.debug = console.error;
+}
+
 // ── State ──────────────────────────────────────────────────────────────────
 
 /** Registered projects grouped by group name */
@@ -207,65 +219,87 @@ if (metrics.enabled) {
   gaugeRefreshTimer.unref();
 }
 
-const server = app.listen(PORT, '0.0.0.0', () => {
-  console.log(`paparats-mcp listening on http://0.0.0.0:${PORT}`);
-  console.log(`  MCP Coding:               http://localhost:${PORT}/mcp`);
-  console.log(`  MCP Support:              http://localhost:${PORT}/support/mcp`);
-  if (KNOWLEDGE_MODE) {
-    // Never the tokens — only how many there are.
-    const effective = effectiveKnowledgeScope(KNOWLEDGE_MODE, {
-      docsAudience: PAPARATS_DOCS_AUDIENCE ?? null,
-      projects: PAPARATS_PROJECTS ?? null,
+const server = STDIO
+  ? null
+  : app.listen(PORT, '0.0.0.0', () => {
+      console.log(`paparats-mcp listening on http://0.0.0.0:${PORT}`);
+      console.log(`  MCP Coding:               http://localhost:${PORT}/mcp`);
+      console.log(`  MCP Support:              http://localhost:${PORT}/support/mcp`);
+      if (KNOWLEDGE_MODE) {
+        // Never the tokens — only how many there are.
+        const effective = effectiveKnowledgeScope(KNOWLEDGE_MODE, {
+          docsAudience: PAPARATS_DOCS_AUDIENCE ?? null,
+          projects: PAPARATS_PROJECTS ?? null,
+        });
+        console.log(
+          `  MCP Knowledge:            http://localhost:${PORT}${KNOWLEDGE_MCP_PATH} (stateless, bearer auth, ${KNOWLEDGE_MODE.tokens.length} token(s))`
+        );
+        console.log(`    audience ceiling:       ${effective.audience.join(', ') || '(none)'}`);
+        console.log(
+          `    project allowlist:      ${effective.projects ? effective.projects.join(', ') || '(none)' : 'all projects'}`
+        );
+        if (effective.audience.length === 0 || effective.projects?.length === 0) {
+          console.warn(
+            '  ⚠ The knowledge mode can serve nothing: its scope does not overlap PAPARATS_DOCS_AUDIENCE / PAPARATS_PROJECTS.'
+          );
+        }
+        if (!effective.projects) {
+          console.warn(
+            '  ⚠ PAPARATS_KNOWLEDGE_PROJECTS is not set: a document labelled for this audience in ANY project is served.'
+          );
+        }
+      }
+      console.log(`  MCP SSE (legacy):         http://localhost:${PORT}/sse`);
+      console.log(`  Health:                   http://localhost:${PORT}/health`);
+      console.log(`  Stats:                    http://localhost:${PORT}/api/stats`);
+      console.log(
+        `  Qdrant:                   ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`
+      );
+      console.log(`  Embeddings:               ${EMBED_URL}`);
+      if (metrics.enabled) {
+        console.log(`  Metrics:                  http://localhost:${PORT}/metrics`);
+      }
+      if (PAPARATS_PROJECTS?.length) {
+        console.log(`  Project scope:            ${PAPARATS_PROJECTS.join(', ')}`);
+        const slashProjects = PAPARATS_PROJECTS.filter((p) => p.includes('/'));
+        if (slashProjects.length > 0) {
+          console.warn(
+            `  ⚠ PAPARATS_PROJECTS contains org/repo-style names: ${slashProjects.join(', ')}`
+          );
+          console.warn(
+            `    Project names are directory basenames (e.g. "billing" not "org/billing").`
+          );
+          console.warn(
+            `    Check your PAPARATS_PROJECTS values match actual indexed project names.`
+          );
+        }
+      }
+      if (PAPARATS_DOCS_AUDIENCE?.length) {
+        console.log(`  Docs audience scope:      ${PAPARATS_DOCS_AUDIENCE.join(', ')}`);
+      }
+      const corsOrigins = parseCorsOrigins(process.env.PAPARATS_CORS_ORIGINS);
+      if (corsOrigins.length > 0) {
+        console.log(`  CORS origins:             ${corsOrigins.join(', ')}`);
+      }
     });
-    console.log(
-      `  MCP Knowledge:            http://localhost:${PORT}${KNOWLEDGE_MCP_PATH} (stateless, bearer auth, ${KNOWLEDGE_MODE.tokens.length} token(s))`
-    );
-    console.log(`    audience ceiling:       ${effective.audience.join(', ') || '(none)'}`);
-    console.log(
-      `    project allowlist:      ${effective.projects ? effective.projects.join(', ') || '(none)' : 'all projects'}`
-    );
-    if (effective.audience.length === 0 || effective.projects?.length === 0) {
-      console.warn(
-        '  ⚠ The knowledge mode can serve nothing: its scope does not overlap PAPARATS_DOCS_AUDIENCE / PAPARATS_PROJECTS.'
-      );
-    }
-    if (!effective.projects) {
-      console.warn(
-        '  ⚠ PAPARATS_KNOWLEDGE_PROJECTS is not set: a document labelled for this audience in ANY project is served.'
-      );
-    }
-  }
-  console.log(`  MCP SSE (legacy):         http://localhost:${PORT}/sse`);
-  console.log(`  Health:                   http://localhost:${PORT}/health`);
-  console.log(`  Stats:                    http://localhost:${PORT}/api/stats`);
-  console.log(
-    `  Qdrant:                   ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`
-  );
-  console.log(`  Embeddings:               ${EMBED_URL}`);
-  if (metrics.enabled) {
-    console.log(`  Metrics:                  http://localhost:${PORT}/metrics`);
-  }
-  if (PAPARATS_PROJECTS?.length) {
-    console.log(`  Project scope:            ${PAPARATS_PROJECTS.join(', ')}`);
-    const slashProjects = PAPARATS_PROJECTS.filter((p) => p.includes('/'));
-    if (slashProjects.length > 0) {
-      console.warn(
-        `  ⚠ PAPARATS_PROJECTS contains org/repo-style names: ${slashProjects.join(', ')}`
-      );
-      console.warn(`    Project names are directory basenames (e.g. "billing" not "org/billing").`);
-      console.warn(`    Check your PAPARATS_PROJECTS values match actual indexed project names.`);
-    }
-  }
-  if (PAPARATS_DOCS_AUDIENCE?.length) {
-    console.log(`  Docs audience scope:      ${PAPARATS_DOCS_AUDIENCE.join(', ')}`);
-  }
-  const corsOrigins = parseCorsOrigins(process.env.PAPARATS_CORS_ORIGINS);
-  if (corsOrigins.length > 0) {
-    console.log(`  CORS origins:             ${corsOrigins.join(', ')}`);
-  }
-});
 
-server.on('error', (err: NodeJS.ErrnoException) => {
+if (STDIO) {
+  mcpHandler.connectStdio('coding').then(
+    () => {
+      console.log('paparats-mcp serving the coding endpoint over stdio');
+      console.log(`  Qdrant:     ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`);
+      console.log(`  Embeddings: ${EMBED_URL}`);
+    },
+    (err: unknown) => {
+      console.error(`[startup] stdio transport failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  );
+  // The client closing our stdin is the stdio equivalent of a disconnect.
+  process.stdin.on('end', () => void shutdown());
+}
+
+server?.on('error', (err: NodeJS.ErrnoException) => {
   if (err.code === 'EADDRINUSE') {
     console.error(`\nError: Port ${PORT} is already in use`);
     console.error('Set a different PORT environment variable or stop the other process\n');
@@ -314,14 +348,16 @@ async function shutdown(): Promise<void> {
 
   console.log('\nShutting down gracefully...');
 
-  await new Promise<void>((resolve) => {
-    server.close((err) => {
-      if (err) console.error('Error closing server:', err);
-      resolve();
+  if (server) {
+    await new Promise<void>((resolve) => {
+      server.close((err) => {
+        if (err) console.error('Error closing server:', err);
+        resolve();
+      });
+      // Force-resolve after 5s if connections don't drain
+      setTimeout(resolve, 5000);
     });
-    // Force-resolve after 5s if connections don't drain
-    setTimeout(resolve, 5000);
-  });
+  }
 
   if (gaugeRefreshTimer) clearInterval(gaugeRefreshTimer);
   stopGroupPoll();

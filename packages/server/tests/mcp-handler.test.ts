@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import { v7 as uuidv7 } from 'uuid';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
 import {
@@ -191,6 +193,23 @@ describe('McpHandler', () => {
     getSpy.mockRestore();
     postSpy.mockRestore();
     allSpy.mockRestore();
+  });
+
+  it('connectStdio serves the coding tool set over a single transport', async () => {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = await handler.connectStdio('coding', serverTransport);
+    const client = new Client({ name: 'stdio-test', version: '1.0.0' });
+    try {
+      await client.connect(clientTransport);
+      const { tools } = await client.listTools();
+      const names = tools.map((t) => t.name);
+      expect(names).toContain('search_code');
+      expect(names).toContain('find_usages');
+      expect(names).not.toContain('impact_analysis');
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 
   it('destroy clears cleanup interval', () => {
