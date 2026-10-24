@@ -4,6 +4,15 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.11.2] - 2026-10-24
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- c90e055: `health_check` now says when Qdrant cannot be reached, with the reason (`ECONNREFUSED`, `ENOTFOUND`, ...) and the setting to check, instead of returning Node's bare `fetch failed`.
+- 3803ce2: The support endpoint (`/support/mcp`) is read-only again: `term_record` is no longer registered there. Support instructions now tell the agent to pass a new or corrected glossary definition to an engineer, who records it from the coding endpoint, and `term_search` stops suggesting `term_record` where it is unavailable. A test now fails if any support tool is not annotated read-only.
+
 ## [2.11.1] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer

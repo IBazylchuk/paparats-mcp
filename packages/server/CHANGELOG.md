@@ -1,5 +1,13 @@
 # @paparats/server
 
+## 2.11.2
+
+### Patch Changes
+
+- c90e055: `health_check` now says when Qdrant cannot be reached, with the reason (`ECONNREFUSED`, `ENOTFOUND`, ...) and the setting to check, instead of returning Node's bare `fetch failed`.
+- 3803ce2: The support endpoint (`/support/mcp`) is read-only again: `term_record` is no longer registered there. Support instructions now tell the agent to pass a new or corrected glossary definition to an engineer, who records it from the coding endpoint, and `term_search` stops suggesting `term_record` where it is unavailable. A test now fails if any support tool is not annotated read-only.
+  - @paparats/shared@2.11.2
+
 ## 2.11.1
 
 ### Patch Changes
