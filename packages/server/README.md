@@ -22,7 +22,7 @@ Three jobs in one process:
   telemetry.
 - **MCP server.** Three endpoints — `/mcp` (coding), `/support/mcp` (support) and the
   opt-in, docs-only `/knowledge/mcp` (knowledge) — each with its own tool set and system
-  instructions. SSE for Cursor, Streamable HTTP for Claude Code. Plus an agent-maintained
+  instructions. Streamable HTTP for every client, with legacy SSE routes kept. Plus an agent-maintained
   **architectural memory** layer.
 
 ## Endpoints
@@ -164,7 +164,7 @@ support-only — recording belongs to the architectural-review workflow.
 | `indexer.ts`                        | Group-aware Qdrant indexing — `createQdrantClient()`, `toCollectionName()`, single-parse `chunkFile()`  |
 | `searcher.ts`                       | Vector search with query expansion, cache, metrics                                                      |
 | `query-expansion.ts`                | Abbreviation / case / plural / filler expansion                                                         |
-| `task-prefixes.ts`                  | Jina task-prefix detection                                                                              |
+| `task-prefixes.ts`                  | Query-type detection + bge-code-v1 / Qwen3 query instructions                                           |
 | `query-cache.ts`                    | In-memory LRU cache with TTL and per-group invalidation                                                 |
 | `metrics.ts`                        | Prometheus metrics (`prom-client`) + `NoOpMetrics` fallback                                             |
 | `metadata.ts`                       | Tag resolution + auto-detection from directory structure                                                |
@@ -186,7 +186,7 @@ support-only — recording belongs to the architectural-review workflow.
 | `PORT`                      | `9876`                                 | HTTP port                                                    |
 | `QDRANT_URL`                | `http://localhost:6333`                | Qdrant endpoint (https → port 443, http → 6333)              |
 | `QDRANT_API_KEY`            | —                                      | Qdrant Cloud API key                                         |
-| `EMBED_URL`                 | `http://127.0.0.1:11434`               | Embed server endpoint (llama-swap; internal port 8080 mapped to host 11434) |
+| `EMBED_URL`                 | `http://127.0.0.1:18434`               | Embed server endpoint (llama-swap; internal port 8080, host port 18434 in the generated stack) |
 | `EMBED_BATCH_SIZE`          | —                                      | Embeddings per llama-server call                            |
 | `EMBED_TTL`                 | `0`                                    | Idle seconds before a model unloads; `0` = never (default)  |
 | `EMBEDDING_PROVIDER`        | `llama`                                | Code embedding provider: `llama` \| `openai` \| `voyage`    |

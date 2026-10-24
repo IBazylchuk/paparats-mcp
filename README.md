@@ -1,4 +1,4 @@
-# Paparats MCP
+# Paparats MCP: self-hosted semantic code search for AI coding agents
 
 <img src="docs/paparats-kvetka.png" alt="Paparats-kvetka (fern flower)" width="200" align="right">
 
@@ -7,19 +7,25 @@
 [![PulseMCP](https://img.shields.io/badge/PulseMCP-listed-01696f)](https://www.pulsemcp.com/servers/paparats-mcp)
 [![MCP Badge](https://lobehub.com/badge/mcp/ibazylchuk-paparats-mcp)](https://lobehub.com/mcp/ibazylchuk-paparats-mcp)
 
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp) &nbsp;<sub>← try the full stack in your browser, no install ([details](#try-it-in-the-browser-no-install))</sub>
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp) &nbsp;<sub>← try the full stack in your own Codespace, no local install ([details](#try-it-in-the-browser-no-install))</sub>
+
+**Paparats MCP is an open-source, self-hosted MCP server that gives Claude Code, Cursor,
+Codex, GitHub Copilot and any other MCP client semantic code search across many
+repositories, without your code leaving your machine.** It indexes each repo with
+tree-sitter AST chunking, builds a cross-chunk symbol graph (`find_usages`: calls, callers,
+references), attaches git history and ticket references to every chunk, and stores vectors
+in Qdrant using local llama.cpp embeddings (`bge-code-v1` for code, `Qwen3-Embedding-0.6B`
+for docs). Install with `npm install -g @paparats/cli && paparats install`. It runs on your
+own machine or server in Docker; there is no hosted SaaS.
+
+**Use it when** grep-and-read loops burn your agent's context on a large or multi-repo
+codebase, or when several people and agents should share one index. **Skip it when** you
+have one small repo, or when you need precise refactors — that is a job for an LSP-based
+tool such as [Serena](https://github.com/oraios/serena), which pairs well with Paparats.
 
 **Paparats-kvetka** — a magical flower from Slavic folklore that blooms on Kupala Night
-and grants whoever finds it the power to see hidden things. Likewise, paparats-mcp
+and grants whoever finds it the power to see hidden things. Likewise, Paparats MCP
 helps your agent see the right code across a sea of repositories.
-
-> 🌿 Works with **Claude Code · Cursor · Windsurf · Copilot · Codex · Antigravity** · any MCP-compatible agent
-
-**Give your AI coding assistant deep, real understanding of your entire workspace.**
-Paparats indexes every repo you care about — semantically, with AST-aware chunking and
-a cross-chunk symbol graph — and exposes it through the Model Context Protocol. Search
-by meaning, follow `who-uses-what` through real symbol edges, see who last touched a
-chunk and which ticket it came from — all without your code ever leaving your machine.
 
 <a href="docs/dashboard.png"><img src="docs/dashboard.png" alt="Paparats operator console — ROI, top queries, cross-project usage, indexer health, embedding latency (synthetic data)" width="100%"></a>
 
@@ -28,48 +34,56 @@ chunk and which ticket it came from — all without your code ever leaving your 
 - ⚡ **One install, one config.** `paparats install` → `paparats add ~/code/repo` → done.
 - 🌳 **AST-aware chunking and symbol extraction.** Tree-sitter parses every supported
   file once and feeds both chunking and the cross-chunk symbol graph (calls /
-  called_by / references / referenced_by) — 11 languages including TypeScript, Python,
-  Go, Rust, Java, Ruby, C, C++, C#.
+  called_by / references / referenced_by) — 11 languages: TypeScript (incl. TSX),
+  JavaScript, Python, Go, Rust, Java, Ruby, C, C++, C# and Terraform/HCL.
 - 🧠 **Architectural memory that the agent maintains itself.** A second vector store
-  per group holds **components, decisions (ADRs) and lessons learned** — your agent
-  writes them as it works and reads them before answering. Bootstrap on day one with
-  the `init_arch_memory` MCP prompt (the `/init` of architectural memory). Server-side
-  similarity gate prevents duplicates, supersedes links replace stale decisions, a
-  `min_score` threshold gates low-confidence reads, every card carries an
-  "updated N ago" stamp, and Prometheus metrics tell you whether your memory is
+  per group holds **components, decisions (ADRs) and lessons learned** — your coding
+  agent writes them as it works and reads them before cross-component changes. Bootstrap
+  on day one with the `init_arch_memory` MCP prompt (the `/init` of architectural
+  memory). Server-side similarity gate prevents duplicates, supersedes links replace
+  stale decisions, a `min_score` threshold gates low-confidence reads, every card carries
+  an "updated N ago" stamp, and Prometheus metrics tell you whether your memory is
   actually being used.
+- 🔄 **Keeps itself fresh.** The indexer checks every repo for changes every 10 minutes
+  (a `git ls-remote` for remote repos, a file mtime/size fingerprint for local ones),
+  reindexes only what changed, and runs a full safety-net pass every few hours. A
+  `POST /trigger` reindexes on demand, e.g. from CI.
 - 💸 **Saves tokens.** Returns only the chunks that matter, with token-savings telemetry
-  to prove it (per-query, per-user, per-anchor-project).
+  to estimate it (per-query, per-user, per-anchor-project).
 - 🔭 **Production-ready observability.** Prometheus `/metrics`, OpenTelemetry traces
   (Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud, **Elastic APM**), local SQLite
   analytics, and a built-in `/ui` operator console that visualises ROI, query quality,
   cross-project usage and indexer health in one screen.
 - 🏠 **100% local by default.** Qdrant + a local embed server (llama.cpp llama-server +
   llama-swap) on your machine. No cloud, no API keys, no telemetry leaving the box. Bring
-  your own Qdrant Cloud / embed server URL if you want.
+  your own Qdrant Cloud / embed server URL, or a cloud embedding provider, if you want.
+
+📏 **Benchmarked, not assumed:** `bge-code-v1` reaches Recall@5 **0.480** vs **0.408** for
+`jina-code-embeddings-1.5b` on CoIR CosQA (20,604 code docs, 500 queries) — see the
+[methodology](#model-benchmarks--methodology).
 
 ---
 
 ## Table of Contents
 
 - [Why Paparats?](#why-paparats)
-- [Quick Start](#quick-start)
+- [Quick start: install semantic code search locally](#quick-start-install-semantic-code-search-locally)
 - [How the install works](#how-the-install-works)
 - [Install variants](#install-variants)
 - [Migrating from a v1 install](#migrating-from-a-v1-install)
 - [Support agent setup](#support-agent-setup)
 - [How It Works](#how-it-works)
 - [Key Features](#key-features)
-- [Use Cases](#use-cases)
 - [Architectural memory](#architectural-memory-agent-maintained-adrs-components-lessons)
+- [Use Cases](#use-cases)
 - [Configuration](#configuration)
 - [MCP Tools Reference](#mcp-tools-reference)
-- [Connecting MCP](#connecting-mcp)
+- [How to connect Paparats to Claude Code, Cursor and other MCP clients](#how-to-connect-paparats-to-claude-code-cursor-and-other-mcp-clients)
 - [CLI Commands](#cli-commands)
-- [Monitoring](#monitoring)
-- [Analytics & Observability](#analytics--observability)
+- [Monitoring and observability](#monitoring-and-observability)
 - [Architecture](#architecture)
 - [Embedding Model Setup](#embedding-model-setup)
+- [FAQ](#faq)
 - [Comparison with Alternatives](#comparison-with-alternatives)
 - [Token Savings Metrics](#token-savings-metrics)
 - [Contributing](#contributing)
@@ -84,15 +98,16 @@ AI coding assistants are smart, but they can only see files you open. They don't
 ### What you get
 
 - **Semantic code search** — ask "where is the rate limiting logic?" and get exact code ranked by meaning, not grep matches
-- **Real-time sync** — edit a file, and 2 seconds later it's re-indexed. No manual re-runs
+- **Automatic freshness** — the indexer notices changed repos within about 10 minutes and reindexes only the changed files; trigger a reindex over HTTP when you need it sooner
 - **Cross-chunk symbol graph** — `find_usages` walks AST-derived edges (calls, called_by, references, referenced_by) so the agent can trace dependencies without re-grepping
 - **Token savings** — return only relevant chunks instead of full files to reduce context size
 - **Multi-project workspaces** — search across backend, frontend, infra repos in one query
 - **100% local & private** — Qdrant vector database + local llama-server embeddings. Nothing leaves your laptop
-- **AST-aware chunking** — code split by AST nodes (functions/classes) via tree-sitter, not arbitrary character counts (TypeScript, JavaScript, TSX, Python, Go, Rust, Java, Ruby, C, C++, C#; regex fallback for Terraform)
+- **AST-aware chunking** — code split by AST nodes (functions/classes) via tree-sitter, not arbitrary character counts (TypeScript/TSX, JavaScript, Python, Go, Rust, Java, Ruby, C, C++, C#, Terraform/HCL; regex fallback for other file types)
 - **Rich metadata** — each chunk knows its symbol name (from tree-sitter AST), service, domain context, and tags from directory structure
 - **Git history per chunk** — see who last modified a chunk, when, and which tickets (Jira, GitHub) are linked to it
-- **Architectural memory** — a living knowledge base of components, decisions (ADRs) and lessons learned, written by the agent as it learns, deduplicated server-side by vector similarity, and consulted on every support query so the agent stays consistent across sessions
+- **Architectural memory** — a living knowledge base of components, decisions (ADRs) and lessons learned, written by the coding agent as it learns, deduplicated server-side by vector similarity, and consulted before cross-component changes so the agent stays consistent across sessions
+- **Docs and glossary** — optional hybrid search over your markdown documentation, and a shared glossary of team vocabulary that agents can read and extend
 
 ### Who benefits
 
@@ -106,15 +121,17 @@ AI coding assistants are smart, but they can only see files you open. They don't
 
 ---
 
-## Quick Start
+<a id="quick-start"></a>
+
+## Quick start: install semantic code search locally
 
 ### Try it in the browser (no install)
 
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp)
 
-Spin up a full Qdrant + embed server + paparats stack in a Codespace.
-A small slice of the repo (`packages/shared/src`) is auto-indexed on first start so
-you can run
+Spin up a full Qdrant + embed server + paparats stack in your own Codespace (this is
+not a hosted Paparats service — it runs in your GitHub account). A small slice of the
+repo (`packages/shared/src`) is auto-indexed on first start so you can run
 
 ```bash
 paparats search -g demo 'gitignore filter'
@@ -126,14 +143,14 @@ at it via the URL VS Code shows in the Ports panel.
 > Note: Codespaces is for demo only. With CPU embedding the full repo
 > would take 15+ minutes and can hit batch timeouts on large files. For real
 > workloads run locally — or set `OPENAI_API_KEY` (or `VOYAGE_API_KEY`) as a
-> Codespaces user secret and indexing drops to a couple of seconds; see the
-> Embedding providers section below.
+> Codespaces user secret and indexing drops to a couple of seconds; see
+> [Embedding Model Setup](#embedding-model-setup).
 
 ### Run locally
 
-You need **Docker** and **Docker Compose v2**. On macOS, also install the **embed server
-natively** — running it inside Docker on macOS is significantly slower because the Docker
-VM cannot use Apple Silicon GPU (Metal) acceleration.
+You need **Node.js 24+**, **Docker** and **Docker Compose v2**. On macOS, also install the
+**embed server natively** — running it inside Docker on macOS is significantly slower
+because the Docker VM cannot use Apple Silicon GPU (Metal) acceleration.
 
 ```bash
 # 1. Install the CLI.
@@ -144,7 +161,7 @@ npm install -g @paparats/cli
 brew install llama.cpp mostlygeek/llama-swap/llama-swap
 
 # 3. One-time bootstrap. Generates ~/.paparats/{docker-compose.yml,projects.yml},
-#    starts the stack, downloads the embedding model, wires Cursor MCP.
+#    starts the stack, downloads the embedding models (~2 GB), wires Cursor MCP.
 paparats install
 
 # 4. Add the projects you want indexed. Local paths bind-mount read-only into the
@@ -157,9 +174,11 @@ paparats add acme/widgets
 paparats list
 ```
 
-That's it. Cursor is already wired (`~/.cursor/mcp.json`) to `http://localhost:9876/mcp`;
-for Claude Code run `claude mcp add --scope user --transport http paparats http://localhost:9876/mcp`
-(see [Connecting MCP](#connecting-mcp)). Open Cursor or Claude Code and ask:
+That's it. When Cursor is installed (`~/.cursor` exists), it is already wired
+(`~/.cursor/mcp.json`) to `http://localhost:9876/mcp`; for Claude Code run
+`claude mcp add --scope user --transport http paparats http://localhost:9876/mcp`
+(see [connecting MCP clients](#how-to-connect-paparats-to-claude-code-cursor-and-other-mcp-clients)).
+Open Cursor or Claude Code and ask:
 
 > "Search this workspace for the auth middleware and show me everything that calls it."
 
@@ -168,7 +187,7 @@ for Claude Code run `claude mcp add --scope user --transport http paparats http:
 Just run `paparats install` again. The installer detects the legacy per-project
 compose, asks once before swapping it for the new global setup, and **preserves your
 indexed data** (Qdrant collections, SQLite metadata, embedding cache). Your in-repo
-`.paparats.yml` files keep working as per-project overrides.
+`.paparats.yml` files keep working as the base config for each project.
 
 ---
 
@@ -181,24 +200,31 @@ to reconfigure — it diffs the existing compose and asks before overwriting han
 ```
 ~/.paparats/
 ├── docker-compose.yml          generated; hand-editable; install asks before overwriting
-├── projects.yml        project list (CLI rewrites it; comments survive your manual edits)
+├── projects.yml                project list (CLI rewrites it; see the note in the file about comments)
 ├── install.json                install flags persisted so add/remove can regenerate compose; chmod 600
-├── .env                        secrets — Qdrant API key, GitHub token; chmod 600
+├── .env                        secrets and overrides — Qdrant API key, GitHub token; chmod 600
 ├── models/                     bge-code-v1 + qwen3-embedding-0.6b GGUF (native embed mode)
-└── data/                       Docker volumes (mounted by name from compose)
-    ├── qdrant/                 vector index
-    ├── sqlite/                 metadata.db, embeddings.db, analytics.db
-    └── repos/                  cloned remote projects
+└── llama-swap.yaml, llama-swap.log   native embed server config and log (native embed mode)
 ```
+
+Indexed data does not live in this directory. It is kept in named Docker volumes created
+by the compose file: `qdrant_data` (vector index), `paparats_data` (metadata,
+embedding cache and analytics SQLite files) and `indexer_repos` (cloned remote
+projects). The whole `~/.paparats` directory is bind-mounted read-only into the indexer at
+`/config`, which is how it sees `projects.yml`.
 
 Inside the Docker stack:
 
-| Service            | Image                          | Port  | Role                                                     |
-| ------------------ | ------------------------------ | ----- | -------------------------------------------------------- |
-| `paparats-mcp`     | `ibaz/paparats-server:latest`  | 9876  | MCP HTTP/SSE endpoints, search, metadata API             |
-| `paparats-indexer` | `ibaz/paparats-indexer:latest` | 9877  | Cron + on-demand indexing, hot-reload of project list    |
-| `qdrant`           | `qdrant/qdrant:latest`         | 6333  | Vector DB (skipped when you pass `--qdrant-url`)         |
-| `embed`            | `ibaz/paparats-embed:latest`   | 11434 | Embed server — llama-server + llama-swap, `bge-code-v1` + `qwen3-embedding-0.6b` pre-baked (Linux default; macOS uses native embed server). llama-swap listens on 8080 inside the container |
+| Service            | Image                          | Host port | Role                                                     |
+| ------------------ | ------------------------------ | --------- | -------------------------------------------------------- |
+| `paparats`         | `ibaz/paparats-server:latest`  | 9876      | MCP HTTP endpoints, search, metadata API                 |
+| `paparats-indexer` | `ibaz/paparats-indexer:latest` | 9877      | Scheduled + on-demand indexing, hot-reload of project list |
+| `qdrant`           | `qdrant/qdrant:latest`         | 6333      | Vector DB (skipped when you pass `--qdrant-url`)         |
+| `embed`            | `ibaz/paparats-embed:latest`   | 18434     | Embed server — llama-server + llama-swap, `bge-code-v1` + `qwen3-embedding-0.6b` pre-baked. Docker embed mode only (Linux default); on macOS the native embed server listens on the same port. llama-swap listens on 8080 inside the container |
+
+Host ports can be changed with `PAPARATS_PORT`, `INDEXER_PORT`, `QDRANT_PORT` and
+`EMBED_PORT` in `~/.paparats/.env`. The embed port is 18434 rather than Ollama's 11434 so
+the two can run side by side.
 
 The indexer hot-reloads `projects.yml`. Edits that **change project metadata
 only** (group, language, indexing tweaks) reindex in place; when the group changes, the
@@ -232,21 +258,32 @@ When `--qdrant-url` is set the Qdrant container is omitted from the stack entire
 ### Bring your own embed server
 
 ```bash
-paparats install --embed-url http://10.0.0.5:11434
+paparats install --embed-url http://10.0.0.5:18434
 ```
 
 Skips both the native and Docker embed server.
 
 > **The remote endpoint must serve the `bge-code-v1` model (and `qwen3-embedding-0.6b` for the
-> arch-memory layer) over an OpenAI-style `/v1/embeddings` API.** The installer will not
-> touch a remote instance. The simplest way is to run the pre-baked image on that host —
+> arch-memory and docs layers) over an OpenAI-style `/v1/embeddings` API.** The installer will
+> not touch a remote instance. The simplest way is to run the pre-baked image on that host —
 > no model registration needed, llama-swap loads GGUF by name on first request:
 >
 > ```bash
-> docker run -d -p 11434:8080 ibaz/paparats-embed:latest
+> docker run -d -p 18434:8080 ibaz/paparats-embed:latest
 > ```
 >
-> Then `paparats install --embed-url http://that-host:11434` and Paparats will use it.
+> Then `paparats install --embed-url http://that-host:18434` and Paparats will use it.
+
+### Use a cloud embedding provider
+
+```bash
+paparats install --embeddings openai --embedding-api-key sk-...
+paparats install --embeddings voyage --embedding-api-key pa-...
+```
+
+Skips the local embed service for code embeddings. Code chunks and queries are then sent
+to that provider — see [Embedding Model Setup](#embedding-model-setup) and
+[PRIVACY.md](PRIVACY.md).
 
 ### Force Docker embed server on macOS
 
@@ -274,8 +311,8 @@ old per-project flow with no `paparats-indexer` service), it prints a one-screen
 migration notice and asks before tearing the legacy stack down.
 
 **What survives:** Qdrant collections, SQLite metadata, indexer repos, and any
-`.paparats.yml` files inside your repos (those still take precedence over
-`projects.yml` overrides).
+`.paparats.yml` files inside your repos (they stay the base config for each project;
+`group`, `docs` and `indexing` overrides from `projects.yml` are layered on top).
 
 **What's deleted:** the legacy `docker-compose.yml` and `.env`. They are regenerated on
 the spot under the new schema.
@@ -303,7 +340,7 @@ embed server needed on this side.
 paparats install --mode support
 
 # Connect to a remote server
-paparats install --mode support --server http://prod-server:9876
+paparats install --mode support --server http://paparats.example.com:9876
 ```
 
 The installer verifies the server is reachable, then wires Cursor MCP
@@ -311,10 +348,11 @@ The installer verifies the server is reachable, then wires Cursor MCP
 CLI isn't on your PATH it prints the command to run instead) to the support
 endpoint. Tools available on `/support/mcp`: `search_code`, `get_chunk`, `find_usages`,
 `list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`,
-`recent_changes`, `impact_analysis`, **`arch_context`**, **`arch_record_component`**,
-**`arch_record_decision`**, **`arch_record_lesson`** (architectural memory — see
-[Key Features](#architectural-memory-agent-maintained-adrs-components-lessons)), plus
-the analytics tools described in **Observability** below.
+`recent_changes`, `impact_analysis`, `search_docs`, `get_document`, `term_search`,
+`term_list`, `term_record`, plus the six analytics tools described in
+[Monitoring and observability](#monitoring-and-observability). The support endpoint is
+read-only for code and has no architectural-memory tools — see the
+[MCP Tools Reference](#mcp-tools-reference).
 
 ---
 
@@ -328,14 +366,15 @@ Your projects                   Paparats                       AI assistant
   frontend/                │   - chunks code       │          ┌──────────────┐
     .paparats.yml ────────►│   - embeds via llama  │─────────►│ MCP search   │
   infra/                   │   - stores in Qdrant  │          │ tool call    │
-    .paparats.yml ────────►│   - watches changes   │          └──────────────┘
+    .paparats.yml ────────►│   - re-checks on cron │          └──────────────┘
                            └──────────────────────┘
 ```
 
 ### Indexing Pipeline
 
-During each indexer cycle (cron-driven, on-demand via `paparats add`, or triggered by
-the indexer's chokidar file watcher), every file in scope flows through this pipeline:
+During each indexer cycle (the scheduled change check or full pass, `paparats add`, a
+`projects.yml` edit, or a `POST /trigger`), every file in scope flows through this
+pipeline:
 
 ```
  Source file
@@ -374,7 +413,7 @@ the indexer's chokidar file watcher), every file in scope flows through this pip
  └────────┬────────┘
           ▼
  ┌─────────────────┐
- │ 7. Embedding     │  Jina Code Embeddings 1.5B via llama-server
+ │ 7. Embedding     │  bge-code-v1 (code, 1536d) via llama-server
  │                  │  SQLite cache (content-hash key) → skip
  │                  │  already-embedded content
  └────────┬────────┘
@@ -398,19 +437,43 @@ the indexer's chokidar file watcher), every file in scope flows through this pip
 
 Step 5's symbol extractor only emits **module-level** definitions — locals declared
 inside function bodies, callback args, and hook closures stay out of the graph because
-they're not addressable from another chunk anyway.
+they're not addressable from another chunk anyway. The chunking design is explained in
+[docs/chunking-strategy.md](docs/chunking-strategy.md).
+
+When `INDEX_DOCS=true` is set on the indexer, each repo's markdown also goes through a
+separate docs pass into the documentation layer (see
+[Documentation search](#documentation-search-opt-in)).
 
 ### Search Flow
 
-AI assistant queries via MCP → server detects query type (nl2code / code2code / techqa) → expands query (abbreviations, case variants, plurals) → all variants searched in parallel against Qdrant → results merged by max score → only relevant chunks returned with confidence scores and symbol info.
+AI assistant queries via MCP → server detects query type (natural language → code, code → code, technical question) → wraps the query in the matching `bge-code-v1` instruction → expands query (abbreviations, case variants, plurals) → all variants searched in parallel against Qdrant → results merged by max score → only relevant chunks returned with confidence scores and symbol info.
 
-### Watching
+### Keeping the index fresh
 
-The indexer container watches the projects mounted into it via chokidar with debouncing
-(1s default). On change, only the affected file re-enters the pipeline. Unchanged content
-is never re-embedded thanks to the content-hash cache. The indexer also hot-reloads
-`~/.paparats/projects.yml` itself: metadata-only edits reindex in place;
-add/remove of local-path projects triggers a stack restart through the CLI.
+The indexer container decides when to reindex; the MCP server never watches your files.
+Three mechanisms keep the index in step with your code:
+
+- **Fast change check** (`CRON_FAST`, default `*/10 * * * *` — every 10 minutes). For each
+  repo the indexer takes a fingerprint — `git ls-remote <url> HEAD` for remote repos, a
+  hash of (path, mtime, size) over the project's file set for bind-mounted local paths —
+  and reindexes the repo only when it differs from the last successful run. Unchanged
+  files are skipped by content hash and are never re-embedded.
+- **Full safety-net pass** (`CRON`). Reindexes every repo regardless of the fingerprint.
+  The indexer's built-in default is every 3 hours (`0 */3 * * *`); the compose file that
+  `paparats install` generates sets every 6 hours (`0 */6 * * *`).
+- **On demand.** `paparats add` reindexes the project it adds, saving
+  `paparats edit projects` triggers a full indexing cycle (unchanged files are skipped by
+  content hash), and `POST http://localhost:9877/trigger`
+  reindexes one, several or all repos (see [CI/CD reindex on push](#cicd-reindex-on-push)).
+
+Both schedules can be set in `projects.yml` (`defaults.cron_fast`, `defaults.cron`) or in
+the indexer environment. `CHANGE_DETECTION=false` turns the fast check off and leaves only
+the full pass. The server caches search results for up to 5 minutes, so a repeated
+identical query can return the previous answer until its cache entry expires.
+
+The indexer also hot-reloads `~/.paparats/projects.yml` itself: metadata-only edits
+reindex in place; add/remove of local-path projects triggers a stack restart through the
+CLI.
 
 ---
 
@@ -418,11 +481,14 @@ add/remove of local-path projects triggers a stack restart through the CLI.
 
 ### Better Search Quality
 
-**Task-specific embeddings** — Jina Code Embeddings supports 3 query types (nl2code, code2code, techqa) with different prefixes for better relevance:
+**Task-specific embeddings** — `bge-code-v1` is instruction-tuned, so each query is
+wrapped in the instruction its model card gives for the detected query type (documents are
+embedded without one). The docs and architecture layers use Qwen3-Embedding's single
+retrieval instruction:
 
-- `"find authentication middleware"` → `nl2code` prefix (natural language → code)
-- `"function validateUser(req, res)"` → `code2code` prefix (code → similar code)
-- `"how does OAuth work in this app?"` → `techqa` prefix (technical questions)
+- `"find authentication middleware"` → natural language → code (CosQA instruction)
+- `"function validateUser(req, res)"` → code → similar code (CodeTrans-DL instruction)
+- `"how does OAuth work in this app?"` → technical question (StackOverflow-QA instruction)
 
 **Query expansion** — every search generates 2-3 variations server-side:
 
@@ -439,11 +505,11 @@ All variants searched in parallel, results merged by max score.
 
 **Embedding cache** — SQLite cache with content-hash keys + Float32 vectors. Unchanged code never re-embedded. LRU cleanup at 100k entries.
 
-**AST-aware chunking** — tree-sitter AST nodes define natural chunk boundaries for 11 languages. Falls back to regex strategies (block-based for Ruby, brace-based for JS/TS, indent-based for Python, fixed-size) for unsupported languages.
+**AST-aware chunking** — tree-sitter AST nodes define natural chunk boundaries for 11 languages. Falls back to regex strategies (block-based, brace-based, indent-based, fixed-size) for other file types and for files where AST chunking yields nothing.
 
-**Real-time watching** — the indexer's `chokidar` watcher reindexes a project on file
-changes with debouncing (1s default). For local-path projects bind-mounted into the
-indexer, edits on your host show up in MCP queries within seconds.
+**Change detection** — a cheap fingerprint per repo every 10 minutes means an unchanged
+repo costs one `git ls-remote` or one directory stat, not a reindex. See
+[Keeping the index fresh](#keeping-the-index-fresh).
 
 ### Cross-chunk symbol graph
 
@@ -470,8 +536,10 @@ authoring a single doc.
 The agent reads them via **`arch_context`** before any architectural answer, and
 writes them via **`arch_record_component`**, **`arch_record_decision`**, and
 **`arch_record_lesson`** whenever it discovers something new or learns from a
-correction. Each card carries an `updated N ago` stamp in the read tool so the agent
-can spot stale memory and verify against current code.
+correction. **`arch_list`** enumerates every card (for audits), **`arch_suggest_components`**
+proposes the most-called files not yet covered by a component card, and **`arch_delete`**
+removes obsolete cards. Each card carries an `updated N ago` stamp in the read tool so the
+agent can spot stale memory and verify against current code.
 
 **Server-side similarity gate** (cosine over [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)
 text embeddings, 1024d):
@@ -495,10 +563,11 @@ so it disappears from default search but remains in history.
 - 🚦 **No memory rot** — similarity gate kills duplicates, supersedes link replaces
   stale decisions, age stamps trigger verification against code.
 
-Lives in a separate Qdrant collection per group (`paparats_<group>_arch`). Reading
-(`arch_context`) is available on **both** endpoints — coding agents need to know
-about prior decisions before refactoring. Writing (`arch_record_*`) is **support-only**:
-recording belongs to the architectural-review workflow, not to every line edit.
+Lives in a separate Qdrant collection per group (`paparats_<group>_arch`). The layer is
+**coding-only, for reads and writes alike**: every `arch_*` tool is on the coding endpoint
+(`/mcp`), where the agent can verify a card against the code. The support endpoint has no
+arch tools — a rationale it cannot check against code is not something support should
+quote, so support routes "why is it built this way?" questions to an engineer.
 
 **`arch_context` accepts a `min_score` parameter** (default `0.45`, cosine over
 [Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B)). Lower it to broaden recall on a sparse
@@ -507,8 +576,8 @@ explicit low-confidence hint when the question matched nothing above the thresho
 so the agent knows to either rephrase or lower `min_score` instead of inventing
 context.
 
-**Initialise the arch layer on day one.** Two purpose-built MCP **workflow prompts**
-make the boring scaffolding work disappear:
+**Initialise the arch layer on day one.** Three purpose-built MCP **workflow prompts** on
+the coding endpoint make the boring scaffolding work disappear:
 
 - **`init_arch_memory`** — the `/init` of architectural memory. Walks the repo,
   identifies 8-20 components by domain boundary, writes them, and captures any
@@ -520,8 +589,9 @@ make the boring scaffolding work disappear:
 - **`record_lesson_from_correction`** — converts a user correction into a structured
   lesson card (rule / why / when) without overrecording typos.
 
-**MCP resources for live introspection:**
+**MCP resources for live introspection** (coding and support endpoints):
 
+- **`context://project-overview`** — indexed groups and projects with chunk counts.
 - **`arch://schema`** — the full card-schema reference (fields, similarity-gate
   thresholds, write semantics). Cite it from the agent when explaining the model.
 - **`arch://stats/{group}`** — live counts (total / by kind / by status) and the
@@ -541,6 +611,40 @@ counter and the cosine score of returned cards lands in a histogram:
 These let you spot a memory that's not being written to, a similarity gate that's
 too aggressive, or a sparse group where every query returns low-confidence hits.
 
+### Documentation search (opt-in)
+
+With `INDEX_DOCS=true` on the indexer, each repo's markdown is indexed into a separate
+collection per group (`paparats_<group>_docs`) with Qwen3-Embedding-0.6B. `search_docs`
+runs a hybrid search — dense vectors plus BM25 keywords, fused with reciprocal rank
+fusion (RRF) — and returns excerpts with their heading path and source link;
+`get_document` (support and knowledge endpoints) returns a whole document section by
+section. Every document carries an [audience label](#documentation-audience-labels) that
+the endpoints can filter on.
+
+`INDEX_DOCS` is off by default and the generated compose does not set it, so on a
+default install `search_docs`, `get_document` and the knowledge endpoint return nothing.
+To turn it on, add `INDEX_DOCS: 'true'` to the `environment:` block of the
+`paparats-indexer` service in `~/.paparats/docker-compose.yml` (`paparats edit compose`)
+and run `paparats restart` — and see the note on
+[hand edits](#environment-variables) being regenerated.
+
+### Glossary
+
+A per-group glossary (`paparats_<group>_terms`) holds team vocabulary — abbreviations,
+product names, domain terms — with a definition and aliases. `term_search` and
+`term_list` read it and `term_record` adds to it on both the coding and support endpoints
+(support meets undocumented shorthand first); `term_delete` is coding-only. Like
+decisions, new terms pass a duplicate/similar gate, so a near-identical term is returned
+instead of being written twice.
+
+### Workflow prompts per endpoint
+
+| Endpoint             | Prompts                                                                                                                  |
+| :------------------- | :----------------------------------------------------------------------------------------------------------------------- |
+| Coding (`/mcp`)      | `find_implementation`, `trace_callers`, `onboard_to_project`, `init_arch_memory`, `audit_architecture`, `record_lesson_from_correction` |
+| Support (`/support/mcp`) | `triage_incident`, `prepare_release_notes`, `assess_change_impact`, `onboard_to_project`                              |
+| Knowledge (`/knowledge/mcp`) | none                                                                                                             |
+
 ---
 
 ## Use Cases
@@ -549,13 +653,15 @@ too aggressive, or a sparse group where every query returns low-confidence hits.
 
 Connect via the **coding endpoint** (`/mcp`):
 
-| Use Case                     | How                                                                    |
-| ---------------------------- | ---------------------------------------------------------------------- |
-| **Navigate unfamiliar code** | `search_code "authentication middleware"` → exact locations            |
-| **Find similar patterns**    | `search_code "retry with exponential backoff"` → examples              |
-| **Trace dependencies**       | `find_usages {chunk_id, direction: "incoming"}` → callers via the graph |
-| **Explore context**          | `get_chunk <chunk_id> --radius_lines 50` → expand around               |
-| **Manage projects**          | `list_projects` and `delete_project` for index hygiene                 |
+| Use Case                       | How                                                                    |
+| ------------------------------ | ---------------------------------------------------------------------- |
+| **Navigate unfamiliar code**   | `search_code "authentication middleware"` → exact locations            |
+| **Find similar patterns**      | `search_code "retry with exponential backoff"` → examples              |
+| **Trace dependencies**         | `find_usages {chunk_id, direction: "incoming"}` → callers via the graph |
+| **Explore context**            | `get_chunk <chunk_id> --radius_lines 50` → expand around               |
+| **Manage projects**            | `list_projects` and `delete_project` for index hygiene                 |
+| **Architectural Q&A**          | `arch_context "why X"` → components / decisions / lessons (with age)   |
+| **Capture decisions & lessons**| `arch_record_decision` / `arch_record_lesson` — agent writes as it learns, server-side dedup |
 
 ### For Support Teams
 
@@ -568,8 +674,8 @@ Connect via the **support endpoint** (`/support/mcp`):
 | **Trace usages**               | `find_usages {chunk_id}` → who calls/references this chunk             |
 | **Change history**             | `get_chunk_meta <chunk_id>` → authors, dates, linked tickets           |
 | **Blast radius**               | `impact_analysis "payment retry"` → dependents grouped by service      |
-| **Architectural Q&A**          | `arch_context "why X"` → components / decisions / lessons (with age)   |
-| **Capture decisions & lessons**| `arch_record_decision` / `arch_record_lesson` — agent writes as it learns, server-side dedup |
+| **Look up team vocabulary**    | `term_search "abbreviation"` → definition and aliases                  |
+| **Read the docs**              | `search_docs "refund policy"` → excerpts; `get_document` → full page   |
 
 **Support chatbot example:**
 
@@ -598,7 +704,8 @@ Lives outside your repos. Edited by `paparats add` / `paparats remove` or by han
 
 ```yaml
 defaults:
-  cron: '0 */6 * * *' # global indexer schedule
+  cron: '0 */6 * * *' # full safety-net pass
+  cron_fast: '*/10 * * * *' # change check (fingerprint per repo)
   group: workspace # default group when an entry doesn't specify one
 
 repos:
@@ -620,9 +727,10 @@ to restart the stack so Docker picks up the new bind-mount; metadata-only edits 
 in place, and removed entries are purged from the index. Remote entries are GitHub
 repositories written as `owner/repo`; `paparats add` rejects other hosts.
 
-### `.paparats.yml` in your repo — per-project overrides
+### `.paparats.yml` in your repo — per-project config
 
-Drop one at the project root to override anything from the global file.
+The base config for one repo, committed with it. `projects.yml` can layer `group`, `docs`
+and `indexing` overrides on top (see below).
 
 ```yaml
 group: my-app
@@ -633,10 +741,10 @@ indexing:
   paths: [src, packages] # restrict to these subdirectories
   exclude: [node_modules, dist, '**/*.test.ts']
   exclude_extra: ['**/__fixtures__/**'] # added on top of language defaults
-  chunkSize: 1500 # characters per chunk (default: 1200)
-  overlap: 100 # chunk overlap (default: 100)
-  concurrency: 4 # parallel embedding requests
-  batchSize: 8 # embeddings per llama-server call
+  chunkSize: 1500 # characters per chunk, 128–8192 (default: 1024)
+  overlap: 100 # chunk overlap (default: 128)
+  concurrency: 4 # parallel embedding requests (default: 2)
+  batchSize: 8 # embeddings per llama-server call (default: 50)
 
 # Metadata
 metadata:
@@ -655,7 +763,7 @@ metadata:
       - '\b([A-Z]+-\d+)\b' # Jira-style PROJ-123
       - '#(\d+)' # GitHub-style #123
 
-# Documentation layer (the repo's markdown, served by search_docs)
+# Documentation layer (the repo's markdown, served by search_docs; needs INDEX_DOCS=true)
 docs:
   kind: prose # prose | code — omit to auto-detect
   audience: client # default visibility label for this repo's docs — omit = internal
@@ -663,8 +771,8 @@ docs:
 
 An in-repo `.paparats.yml` is the base config for that repo; `group`, `docs.kind`,
 `docs.audience` and `indexing.*` set for it in `projects.yml` (directly or via `defaults`)
-are layered on top, and the indexer's `PAPARATS_GROUP` overrides any group. The CLI never
-overwrites it.
+are layered on top and win, and the indexer's `PAPARATS_GROUP` overrides any group. The
+CLI never overwrites it.
 
 Exclude patterns follow `.gitignore` rules: a bare name (`dist`, `*.log`) matches at any
 depth, a pattern containing `/` (`spec/fixtures`, `/tmp`) is relative to the project root,
@@ -677,8 +785,10 @@ symlinked files pointing outside the project or into `.git` are never indexed.
 
 A **group** is a Qdrant collection (`paparats_<group>`). Multiple projects can share a
 group to enable cross-project search; each project lives as a `project:` field in the
-chunk payload. By default `group` defaults to the project name (one project, one
-collection). Set the same `group:` on multiple entries to consolidate them.
+chunk payload. A project without a group gets `defaults.group` from `projects.yml`, or
+the literal group `default` when that is unset — so by default all your projects share
+one collection, `paparats_default`, and one query searches all of them. Set different
+`group:` values to keep sets of projects apart.
 
 ### Git history per chunk
 
@@ -693,7 +803,8 @@ cross-repo `org/repo#99`). Surfaced through MCP tools `get_chunk_meta`, `search_
 Every indexed markdown document carries one **audience** label, and `search_docs` /
 `get_document` can be limited to some labels. That is how one index serves internal
 readers and a narrower audience (see the [knowledge endpoint](#knowledge-endpoint-knowledgemcp))
-without the narrower one ever seeing internal pages.
+without the narrower one ever seeing internal pages. Docs are only indexed when the
+indexer runs with `INDEX_DOCS=true` (see [Documentation search](#documentation-search-opt-in)).
 
 A document's label is decided at index time, first match wins:
 
@@ -742,22 +853,35 @@ opt-in, docs-only knowledge endpoint (`/knowledge/mcp`).
 ### Coding endpoint (`/mcp`)
 
 For developers using Claude Code, Cursor, etc. Focus: search code, read chunks, follow
-the cross-chunk symbol graph, manage projects.
+the cross-chunk symbol graph, maintain architectural memory and the glossary, manage
+projects.
 
-| Tool             | Description                                                                                                                  |
-| :--------------- | :--------------------------------------------------------------------------------------------------------------------------- |
-| `search_code`    | Semantic search across indexed projects. Returns chunks with symbol info and confidence scores.                              |
-| `get_chunk`      | Retrieve a chunk by ID with optional surrounding context.                                                                    |
-| `find_usages`    | Walk the symbol graph from a `chunk_id` — `incoming` (callers/references in), `outgoing` (calls/references out), or `both`.  |
-| `list_projects`  | List indexed projects with chunk counts and detected languages.                                                              |
-| `delete_project` | Wipe Qdrant chunks + SQLite metadata for a project (CLI's `paparats remove` calls it).                                       |
-| `health_check`   | Indexing status, chunks per group, running jobs.                                                                             |
-| `arch_context`   | Read-only architectural memory. Returns components, decisions, and lessons relevant to the query with `updated N ago` stamps and a `min_score` cutoff. |
+| Tool                      | Description                                                                                                                  |
+| :------------------------ | :--------------------------------------------------------------------------------------------------------------------------- |
+| `search_code`             | Semantic search across indexed projects. Returns chunks with symbol info and confidence scores.                              |
+| `get_chunk`               | Retrieve a chunk by ID with optional surrounding context.                                                                    |
+| `find_usages`             | Walk the symbol graph from a `chunk_id` — `incoming` (callers/references in), `outgoing` (calls/references out), or `both`.  |
+| `list_projects`           | List indexed projects with chunk counts and detected languages.                                                              |
+| `delete_project`          | Wipe Qdrant chunks + SQLite metadata for a project (`paparats remove` uses the equivalent HTTP endpoint).                    |
+| `health_check`            | Indexing status, chunks per group, running jobs.                                                                             |
+| `search_docs`             | Hybrid (dense + BM25, RRF-fused) search over indexed markdown documentation. Needs `INDEX_DOCS=true` on the indexer.         |
+| `arch_context`            | Read architectural memory: components, decisions, and lessons relevant to the query with `updated N ago` stamps and a `min_score` cutoff. |
+| `arch_list`               | Enumerate every arch card in a group — no ranking, no threshold. For audits and dedupe.                                     |
+| `arch_record_component`   | Record a component with `Does / Owns / Does not / Touched when` fields. Idempotent by (group, project, name); `project` is required. |
+| `arch_record_decision`    | Record an ADR-style decision (`context / decision / alternatives_rejected / consequences`). Server-side similarity gate refuses duplicates and surfaces near-matches; `supersedes` links replace prior decisions. |
+| `arch_record_lesson`      | Record a lesson as `rule / why / when`. Duplicates bump `updatedAt` (Reflexion confirmation) instead of overwriting.         |
+| `arch_suggest_components` | Suggest the most-called files (by symbol-graph in-degree) not yet covered by a component card.                               |
+| `arch_delete`             | Hard-delete arch cards by id. No undo.                                                                                       |
+| `term_search`             | Look up a term, abbreviation or domain concept in the group's glossary.                                                      |
+| `term_list`               | List recorded glossary terms in a group.                                                                                     |
+| `term_record`             | Record a glossary term (name, definition, aliases); a duplicate/similar gate prevents near-identical entries.                |
+| `term_delete`             | Hard-delete a glossary term by id. No undo.                                                                                  |
 
 ### Support endpoint (`/support/mcp`)
 
 For support teams and bots without direct code access. Focus: feature explanations,
-change history, cost reporting — all in plain language.
+change history, cost reporting — all in plain language. No architectural-memory tools and
+no project deletion.
 
 | Tool                   | Description                                                                            |
 | :--------------------- | :------------------------------------------------------------------------------------- |
@@ -771,17 +895,17 @@ change history, cost reporting — all in plain language.
 | `explain_feature`      | Comprehensive feature analysis: locations + recent changes for a question.            |
 | `recent_changes`       | Timeline grouped by date with commits, tickets, affected files. `since` filter.       |
 | `impact_analysis`      | Blast radius for a natural-language `question`: finds seed chunks, walks the symbol graph 1–2 hops (`max_hops`), groups dependents by service. No code. |
-| `arch_context`         | Read the architectural memory for a group — top-matching components, decisions and lessons, each stamped with "updated N ago" and a cosine score. Accepts a `min_score` parameter (default 0.45) to gate low-confidence hits. Call before any architectural answer. **Also available on `/mcp`.** |
-| `arch_record_component` | Record a component with `Does / Owns / Does not / Touched when` fields. Idempotent by `name`. |
-| `arch_record_decision` | Record an ADR-style decision (`context / decision / alternatives_rejected / consequences`). Server-side similarity gate refuses duplicates and surfaces near-matches; `supersedes` links replace prior decisions. |
-| `arch_record_lesson`   | Record a lesson as `rule / why / when`. Duplicates bump `updatedAt` (Reflexion confirmation) instead of overwriting. |
+| `search_docs`          | Same as coding endpoint.                                                               |
+| `get_document`         | Full text of a documentation page found by `search_docs`, section by section, paged at ~40k characters. Support cannot open files, so its excerpts point here. |
+| `term_search`          | Same as coding endpoint.                                                               |
+| `term_list`            | Same.                                                                                  |
+| `term_record`          | Same — support can add vocabulary it meets first; deleting terms is coding-only.       |
 | `token_savings_report` | Aggregate token-savings stats (naive baseline vs search-only vs actually consumed).   |
 | `top_queries`          | Most frequent queries by user/session/project anchor.                                  |
 | `slowest_searches`     | Top-N slowest searches with timing + chunk counts.                                    |
 | `cross_project_share`  | Off-anchor result share per user — indicator of search noise.                         |
 | `retry_rate`           | Tool-call retry rate per user — indicator of unhelpful results.                       |
 | `failed_chunks`        | AST parse failures, regex fallbacks, zero-chunk files, binary skips.                  |
-| `get_document`         | Full text of a documentation page found by `search_docs`, section by section, paged at ~40k characters. Support cannot open files, so its excerpts point here. |
 
 ### Knowledge endpoint (`/knowledge/mcp`)
 
@@ -807,6 +931,9 @@ or the proxy:
   `structuredContent` (title, heading path, source URL, project, file, excerpt, included
   and total sections, last modified, score) so a wrapping service can build citations
   without parsing markdown.
+
+The endpoint only has something to serve when the indexer runs with `INDEX_DOCS=true`
+(see [Documentation search](#documentation-search-opt-in)).
 
 | Variable                      | Meaning                                                                    |
 | :---------------------------- | :------------------------------------------------------------------------- |
@@ -876,7 +1003,7 @@ curl -sS -X POST https://knowledge.example.com/knowledge/mcp \
 3. token_savings_report                              → cost report for the last 7 days
 ```
 
-**Architectural memory (support agent):**
+**Architectural memory (coding agent, `/mcp`):**
 
 ```
 1. arch_context "why do we use qwen3-embedding-0.6b for the arch layer?"
@@ -890,12 +1017,17 @@ curl -sS -X POST https://knowledge.example.com/knowledge/mcp \
 
 ---
 
-## Connecting MCP
+<a id="connecting-mcp"></a>
 
-`paparats install` already wires Cursor (`~/.cursor/mcp.json`) to
-`http://localhost:9876/mcp`; `paparats install --mode support` wires both Cursor and Claude
-Code to the support endpoint. The sections below are for manual setup or for adding the
-**support** endpoint alongside the default coding one.
+## How to connect Paparats to Claude Code, Cursor and other MCP clients
+
+Every client connects over Streamable HTTP to `http://localhost:9876/mcp` (coding) or
+`http://localhost:9876/support/mcp` (support); no API key is needed. `paparats install`
+already wires Cursor (`~/.cursor/mcp.json`) to the coding endpoint when Cursor is
+installed; `paparats install --mode support` wires both Cursor and Claude Code to the
+support endpoint. The sections below are for manual setup or for adding the
+**support** endpoint alongside the default coding one. Legacy SSE routes (`/sse`,
+`/support/sse`) remain for clients that cannot speak Streamable HTTP.
 
 ### Cursor
 
@@ -925,7 +1057,8 @@ For support use case (feature explanations, change history, impact analysis):
 }
 ```
 
-Restart Cursor after changing config.
+Restart Cursor after changing config. A Cursor plugin manifest also lives in
+`.cursor-plugin/`.
 
 ### Claude Code
 
@@ -966,6 +1099,41 @@ The endpoint is the plugin's `server_url` option (default
 `http://localhost:9876/mcp`); set it to `/support/mcp` or to a shared server's
 address instead.
 
+### Codex
+
+Add to `~/.codex/config.toml` (or a trusted project's `.codex/config.toml`); a `url` key
+selects Streamable HTTP:
+
+```toml
+[mcp_servers.paparats]
+url = "http://localhost:9876/mcp"
+```
+
+### GitHub Copilot (VS Code)
+
+Add to `.vscode/mcp.json` in the workspace, or to the user configuration
+(**MCP: Open User Configuration**):
+
+```json
+{
+  "servers": {
+    "paparats": {
+      "type": "http",
+      "url": "http://localhost:9876/mcp"
+    }
+  }
+}
+```
+
+### Windsurf
+
+Open Cascade's MCP settings → **View raw config** (`mcp_config.json`) and add the server.
+Windsurf takes the address as `serverUrl`:
+
+```json
+{ "mcpServers": { "paparats": { "serverUrl": "http://localhost:9876/mcp" } } }
+```
+
 ### Antigravity
 
 Antigravity CLI (`agy`, Google's successor to Gemini CLI) installs the repository as a
@@ -996,18 +1164,36 @@ gemini extensions install https://github.com/IBazylchuk/paparats-mcp
 `grok/` is a Grok Build plugin (MCP server + the same skill). `llms-install.md` is a
 step-by-step install guide written for an agent: Cline (or any agent) can follow it to
 install the CLI, start the stack, index a project and add the server to its own MCP
-config. A Cursor plugin manifest lives in `.cursor-plugin/`.
+config. Any other client that speaks Streamable HTTP works with the URL above.
+
+### Clients that only spawn a process (stdio)
+
+`--stdio` serves the coding endpoint over stdin/stdout instead of HTTP. It still needs the
+running stack for Qdrant and the embedding server; point it at their host ports:
+
+```json
+{
+  "mcpServers": {
+    "paparats": {
+      "command": "docker",
+      "args": [
+        "run", "-i", "--rm",
+        "-e", "QDRANT_URL=http://host.docker.internal:6333",
+        "-e", "EMBED_URL=http://host.docker.internal:18434",
+        "ibaz/paparats-server", "node", "packages/server/dist/index.js", "--stdio"
+      ]
+    }
+  }
+}
+```
+
+On Linux add `"--add-host", "host.docker.internal:host-gateway"` to the `args`.
 
 ### Verify
 
-- `paparats status` — check stack is up
-- **Coding endpoint** (`/mcp`): `search_code`, `get_chunk`, `find_usages`,
-  `list_projects`, `delete_project`, `health_check`
-- **Support endpoint** (`/support/mcp`): `search_code`, `get_chunk`, `find_usages`,
-  `health_check`, `list_projects`, plus the support-specific tools `get_chunk_meta`,
-  `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`, and the
-  analytics tools listed in **Observability** (`token_savings_report`, `top_queries`,
-  `slowest_searches`, `cross_project_share`, `retry_rate`, `failed_chunks`)
+- `paparats status` — check the stack is up
+- Ask the client to list its tools and compare them with the
+  [MCP Tools Reference](#mcp-tools-reference) for the endpoint you connected
 - Ask the AI: _"Search this workspace for the auth middleware"_
 
 ---
@@ -1034,18 +1220,20 @@ paparats update                         Update CLI from npm + pull latest Docker
 ```
 
 The legacy per-project commands (`paparats init`, `paparats index`, `paparats watch`) are
-gone — adding a project is now `paparats add`, indexing is automatic in the indexer
-container, watching is the `chokidar` watcher inside the indexer.
+gone — adding a project is now `paparats add`, and indexing (including picking up
+changes) is automatic in the indexer container.
 
 ### Common flags
 
 **`paparats install`**
 
+- `--mode <developer|support>` — `developer` (default) runs the full Docker stack; `support` wires MCP clients only, no Docker stack
 - `--embed-mode <native|docker>` — force embed server mode (default: native on macOS, docker on Linux)
 - `--embed-url <url>` — external embed server; skips both native and docker embed server
+- `--embeddings <llama|openai|voyage>` — embedding backend (default: `llama`); `openai` / `voyage` skip the local embed service
+- `--embedding-api-key <key>` — API key for the chosen cloud provider (or set `OPENAI_API_KEY` / `VOYAGE_API_KEY`)
 - `--qdrant-url <url>` — external Qdrant; skips the Qdrant container
 - `--qdrant-api-key <key>` — for authenticated Qdrant (e.g. Qdrant Cloud); written to `~/.paparats/.env`
-- `--mode support` — wire MCP clients only, no Docker stack
 - `--server <url>` — server URL for support mode (default: `http://localhost:9876`)
 - `--force` — skip overwrite/migration prompts
 - `--non-interactive` — fail on any prompt instead of asking
@@ -1054,11 +1242,12 @@ container, watching is the `chokidar` watcher inside the indexer.
 **`paparats add <path-or-repo>`**
 
 - `--name <name>` — override the auto-derived project name (basename of path / repo)
-- `--group <group>` — override group (default: project name)
+- `--group <group>` — override group (default: `defaults.group` from `projects.yml`, otherwise `default`)
 - `--language <lang>` — override language (default: auto-detect)
 - `--no-restart` — skip the Docker restart for local-path adds (useful in scripts)
 - `--no-reindex` — skip the per-project reindex trigger
 - `--force` — drop the project's existing chunks before reindexing (destructive, use after schema/config changes)
+- `--non-interactive` — no prompts
 
 **`paparats remove <name>`**
 
@@ -1069,191 +1258,92 @@ container, watching is the `chokidar` watcher inside the indexer.
 - `-n, --limit <n>` — max results (default: 5)
 - `-p, --project <name>` — filter by project
 - `-g, --group <name>` — restrict to a group
+- `--server <url>` — server URL (default: `http://localhost:9876`)
 - `--json` — machine-readable output
 
-### Environment overrides
+`status`, `groups` and `doctor` also take `--server <url>`.
 
-| Var                    | Default                 | What                                       |
-| ---------------------- | ----------------------- | ------------------------------------------ |
-| `PAPARATS_SERVER_URL`  | `http://localhost:9876` | MCP server base URL (used by CLI commands) |
-| `PAPARATS_INDEXER_URL` | `http://localhost:9877` | Indexer base URL (`add`, `list`, `edit`)   |
+### Environment variables
+
+**CLI**
+
+| Var                    | Default                 | What                                                    |
+| ---------------------- | ----------------------- | ------------------------------------------------------- |
+| `PAPARATS_SERVER_URL`  | `http://localhost:9876` | Server base URL for `remove` (`add` and `list` talk to the indexer via `PAPARATS_INDEXER_URL`; other commands use `--server`) |
+| `PAPARATS_INDEXER_URL` | `http://localhost:9877` | Indexer base URL (`add`, `list`, `edit`)                |
+
+**Indexer** (`paparats-indexer` service)
+
+| Var                       | Default                    | What                                                                 |
+| ------------------------- | -------------------------- | -------------------------------------------------------------------- |
+| `CRON`                    | `0 */3 * * *` (generated compose: `0 */6 * * *`) | Full safety-net pass; `defaults.cron` in `projects.yml` wins |
+| `CRON_FAST`               | `*/10 * * * *`             | Change check; `defaults.cron_fast` in `projects.yml` wins            |
+| `CHANGE_DETECTION`        | `true`                     | `false` disables the change check and relies on `CRON` only          |
+| `INDEX_DOCS`              | `false`                    | `true` also indexes each repo's markdown into the docs layer         |
+| `STATE_DB_PATH`           | `/data/indexer-state.db`   | SQLite file with the per-repo fingerprints                           |
+| `CONFIG_DIR`              | `/config`                  | Directory holding `projects.yml`                                     |
+| `REPOS`                   | —                          | Comma-separated repos, used only when no `projects.yml` is found     |
+| `PAPARATS_GROUP`          | —                          | Put every repo into this one group, overriding all other settings    |
+| `PAPARATS_PROJECT_SUFFIX` | —                          | Suffix for stored project names, so two deployments can share one Qdrant |
+| `GITHUB_TOKEN`            | —                          | Token for cloning private GitHub repos (stored in `~/.paparats/.env`) |
+
+**Server** (`paparats` service) — the full list is in
+[packages/server/README.md](packages/server/README.md#configuration-env-vars).
+
+| Var                         | Default                    | What                                                         |
+| --------------------------- | -------------------------- | ------------------------------------------------------------ |
+| `QDRANT_URL`                | `http://localhost:6333`    | Qdrant endpoint (the generated compose points it at the stack) |
+| `EMBED_URL`                 | `http://127.0.0.1:18434`   | Embed server (llama-swap) endpoint                           |
+| `EMBED_BATCH_SIZE`          | generated compose: `5`     | Texts per embedding request                                  |
+| `EMBEDDING_PROVIDER`        | `llama`                    | `llama` \| `openai` \| `voyage` for the code layer           |
+| `TEXT_EMBEDDING_PROVIDER` / `_MODEL` / `_DIMENSIONS` | `llama` / `qwen3-embedding-0.6b` / `1024` | Embedder for the arch, docs and glossary layers |
+| `PAPARATS_PROJECTS`         | —                          | Comma-separated allowlist of projects the server serves      |
+| `PAPARATS_DOCS_AUDIENCE`    | —                          | Audience ceiling for docs on the coding and support endpoints |
+
+**Embed container** (`embed` service, Docker embed mode)
+
+| Var                          | Default        | What                                                        |
+| ---------------------------- | -------------- | ----------------------------------------------------------- |
+| `EMBED_TTL`                  | `0`            | Idle seconds before a model unloads; `0` keeps models resident |
+| `LLAMA_BATCH`                | `2048`         | Per-model compute batch size                                |
+| `LLAMA_THREADS`              | `-1` (auto)    | CPU threads per model                                       |
+| `EMBED_CPUS` / `EMBED_MEMORY` | `6.0` / `6G`  | Container CPU and memory limits                             |
+
+The generated compose reads the variables it references (ports, `CRON`,
+`EMBED_BATCH_SIZE`, `EMBED_TTL`, `LLAMA_*`, `EMBED_CPUS`, `EMBED_MEMORY`,
+`TEXT_EMBEDDING_MODEL`, `TEXT_EMBEDDING_DIMENSIONS`, API keys) from `~/.paparats/.env`, so
+setting them there survives regeneration. Anything else — `CRON_FAST`, `INDEX_DOCS`,
+`PAPARATS_METRICS`, `PAPARATS_PROJECTS` — goes into the service's `environment:` block in
+`~/.paparats/docker-compose.yml` (`paparats edit compose`), followed by `paparats restart`.
+`paparats add`, `remove`, `edit projects` and `update` regenerate the compose when its
+contents change and keep the previous file as `docker-compose.yml.bak`; re-apply such
+hand edits from there. `CRON_FAST` and `CRON` are better set in `projects.yml`
+(`defaults.cron_fast`, `defaults.cron`), which is never regenerated away.
 
 ---
 
-## Monitoring
+<a id="monitoring"></a>
+<a id="analytics--observability"></a>
 
-Paparats exposes Prometheus metrics for operational visibility. Opt in by setting `PAPARATS_METRICS=true` in the server's environment:
+## Monitoring and observability
 
-```yaml
-# In ~/.paparats/docker-compose.yml, under paparats service:
-environment:
-  PAPARATS_METRICS: 'true'
-```
+- **Prometheus** — set `PAPARATS_METRICS=true` on the server and the indexer, then scrape
+  `:9876/metrics` (search, embeddings, caches, arch memory) **and** `:9877/metrics`
+  (indexing counters). A ready Grafana dashboard is in
+  [`docs/grafana/paparats.json`](docs/grafana/paparats.json).
+- **Local analytics** — a SQLite store (on by default) records searches, tool calls and
+  indexing runs. The [`/ui`](#paparats-mcp-self-hosted-semantic-code-search-for-ai-coding-agents)
+  operator console at `http://localhost:9876/ui` and six support-endpoint tools
+  (`token_savings_report`, `top_queries`, `slowest_searches`, `cross_project_share`,
+  `retry_rate`, `failed_chunks`) read it.
+- **OpenTelemetry** — `PAPARATS_OTEL_ENABLED=true` + `OTEL_EXPORTER_OTLP_ENDPOINT` sends a
+  span per search, tool call, embedding and indexing run to any OTLP backend (Tempo,
+  Jaeger, Honeycomb, Datadog, Grafana Cloud, Elastic APM).
+- **Query cache** — search results are cached in memory for 5 minutes
+  (`QUERY_CACHE_TTL_MS`, `QUERY_CACHE_MAX_ENTRIES`).
 
-### Metrics endpoint
-
-```bash
-curl http://localhost:9876/metrics
-```
-
-### Key metrics
-
-| Metric                              | Type      | Description                         |
-| ----------------------------------- | --------- | ----------------------------------- |
-| `paparats_search_total`             | Counter   | Search requests by group and method |
-| `paparats_search_duration_seconds`  | Histogram | Search latency                      |
-| `paparats_index_files_total`        | Counter   | Files indexed                       |
-| `paparats_index_chunks_total`       | Counter   | Chunks indexed                      |
-| `paparats_query_cache_hit_rate`     | Gauge     | Query result cache hit rate         |
-| `paparats_embedding_cache_hit_rate` | Gauge     | Embedding cache hit rate            |
-| `paparats_watcher_events_total`     | Counter   | File watcher events                 |
-
-### Prometheus scrape config
-
-```yaml
-scrape_configs:
-  - job_name: paparats
-    scrape_interval: 15s
-    static_configs:
-      - targets: ['localhost:9876']
-```
-
-### Query cache
-
-Search results are cached in-memory (LRU, default 1000 entries, 5-minute TTL). The cache is automatically invalidated when files change. Configure via environment variables:
-
-- `QUERY_CACHE_MAX_ENTRIES` — max cached queries (default: 1000)
-- `QUERY_CACHE_TTL_MS` — TTL in milliseconds (default: 300000)
-
-Cache stats are included in `GET /api/stats` under the `queryCache` field.
-
----
-
-## Analytics & Observability
-
-Paparats ships with three observability layers that work together:
-
-1. **Prometheus** (`PAPARATS_METRICS=true`, see above) — scrape `/metrics`.
-2. **Local SQLite analytics store** at `~/.paparats/analytics.db` (default ON) — raw search/tool/indexing events. Six MCP tools query it directly: `token_savings_report`, `top_queries`, `cross_project_share`, `retry_rate`, `slowest_searches`, `failed_chunks`.
-3. **OpenTelemetry** (`PAPARATS_OTEL_ENABLED=true` + `OTEL_EXPORTER_OTLP_ENDPOINT`) — spans for every search, MCP tool call, embedding, indexing run, chunking error. Works with Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud — anything that speaks OTLP/HTTP.
-
-### Operator console (`/ui`)
-
-Open `http://localhost:9876/ui` for a single-screen dashboard ([see screenshot at top of README](#paparats-mcp)) that visualises the analytics store above: ROI, top / slowest queries, cross-project usage, per-user activity, indexer status, embedding p95/p99, and recent failures. Polls every 5 s, no extra services to run.
-
-- Protect it (optional): `PAPARATS_UI_BASIC_AUTH=user:pass` — applies to `/ui` and `/api/analytics` only; `/mcp` and `/api/search` stay open so agents keep working.
-- Browser access from other sites is refused on every route (`403` for a foreign `Origin`), so a web page cannot read search results or call MCP tools. Allow specific origins with `PAPARATS_CORS_ORIGINS=https://app.example.com,...`.
-- Show the screenshot view to anyone without touching real data: `PAPARATS_UI_DEMO=true` (or append `?demo=1` to the URL once).
-
-### Pre-built Grafana dashboard
-
-The built-in `/ui` covers the current snapshot. For history (latency p99 over weeks, GC trends, CPU under indexing bursts) wire `/metrics` to Prometheus and import [`docs/grafana/paparats.json`](docs/grafana/paparats.json) — 15 panels across four rows: **Traffic & latency**, **Embeddings**, **Indexing**, **Process health**.
-
-```bash
-# 1. Enable Prometheus surface on the server.
-PAPARATS_METRICS=true paparats up   # or set in your docker-compose.yml
-
-# 2. Point your Prometheus at http://<server>:9876/metrics.
-
-# 3. In Grafana: Dashboards → Import → upload docs/grafana/paparats.json
-#    → pick your Prometheus datasource → Import.
-```
-
-The dashboard uses a `${DS_PROMETHEUS}` variable, so it works with any Prometheus instance (local, Grafana Cloud, Mimir, VictoriaMetrics).
-
-### Sending traces to Elastic APM (or any OTLP backend)
-
-Elastic APM Server accepts OpenTelemetry natively since 7.14 — no agent install, no SDK injection. Set four env vars on the paparats container and restart:
-
-```bash
-PAPARATS_OTEL_ENABLED=true
-OTEL_EXPORTER_OTLP_ENDPOINT=https://your-apm-server:8200
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer <apm-secret-token>
-OTEL_SERVICE_NAME=paparats-mcp
-```
-
-Within a minute a new service `paparats-mcp` appears in APM → Services. The same env vars work for Tempo, Jaeger, Honeycomb, Datadog, Grafana Cloud Traces — change the endpoint and auth header.
-
-**What gets recorded** — one span per event, with paparats-specific attributes for filtering and grouping:
-
-| Span name                         | Key attributes                                                                       | When                                  |
-| --------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------- |
-| `paparats.search`                 | `tool`, `group`, `query.hash`, `query.length`, `search.duration_ms`, `result_count`, `cache_hit` | every `search_code` / `find_usages`   |
-| `paparats.get_chunk`              | `chunk_id`, `fetch.radius_lines`, `fetch.duration_ms`, `fetch.found`                 | every `get_chunk` call                |
-| `paparats.mcp.tool`               | `tool`, `tool.duration_ms`, `tool.ok`                                                | every MCP tool invocation             |
-| `paparats.embedding`              | `kind`, `batch_size`, `cache_hits`, `cache_miss`, `duration_ms`, `timeout`           | every embedding request               |
-| `paparats.indexing.run`           | `group`, `project`, `trigger`, `status`, `files_total`, `chunks_total`, `errors_total` | every indexer cycle                   |
-| `paparats.indexing.chunking_error`| `group`, `project`, `file`, `language`, `error_class`                                | per-file chunking failure             |
-
-Every span also carries `paparats.user`, `paparats.session`, `paparats.client`, `paparats.request_id`, and (when present) `paparats.anchor_project` from the identity headers above — so you can filter APM by user or correlate spans across a single MCP session.
-
-**What this is good for in Elastic APM:**
-
-- **Errors view** — chunking and embedding failures with stacktrace + file/language/error_class context, aggregated by error class.
-- **Transactions** — `paparats.search` becomes a transaction type. Sort by p95/p99/error rate to find the slow workloads. Filter by `paparats.tool=search_code` or `paparats.group=…` to slice by repo.
-- **Custom queries / metrics** — every paparats attribute is indexed. Build APM queries like `paparats.embedding.cache_miss:true AND duration_ms>500` to find slow cache-miss embeddings, or aggregate `paparats.search.result_count` per `paparats.group`.
-- **Log correlation** — if you ship paparats stdout to Elastic via Filebeat, the `trace.id` field links a log line back to its span.
-
-**What this is _not_ — honest caveats:**
-
-- Spans are flat (one event = one span), not parented. Service Map will show `paparats-mcp` as an isolated node; you won't see a "search → embedding → Qdrant" waterfall. Use the per-span `duration_ms` attributes for stage timing instead.
-- Outbound HTTP to Qdrant / the embed server is not auto-instrumented — to see those as separate dependencies in APM you'd need to enable `@opentelemetry/instrumentation-http` (planned, not shipped). For now, embedding and search latency live on the existing spans.
-- Per-request token-savings, top queries, and cross-project usage stay in the local SQLite store — they're aggregations, not events. View them in the built-in `/ui` console, not in APM.
-
-For pure metrics (CPU, GC, RSS, request rates) Elastic Metricbeat or our Prometheus exporter (above) is a better fit than APM.
-
-### Identity attribution
-
-Clients (IDE plugins, CLI) can set `X-Paparats-User`, `X-Paparats-Session`, `X-Paparats-Client`, `X-Paparats-Anchor-Project` headers. The header name for `user` is configurable via `PAPARATS_IDENTITY_HEADER` (default `X-Paparats-User`). Missing header → events are attributed to `anonymous`. There is no cryptographic verification — this is for attribution, not access control.
-
-`GET /api/stats` echoes the resolved identity, useful for verifying header propagation:
-
-```bash
-curl -H 'X-Paparats-User: alice' http://localhost:9876/api/stats | jq .identity
-```
-
-### Token-savings estimators
-
-Three levels, computed from raw events at query-time:
-
-- **Naive baseline** — what a model would have read if it pulled the whole file for each result.
-- **Search-only** — tokens actually returned by `search_code`.
-- **Actually consumed** — tokens that the client subsequently fetched via `get_chunk`. The most honest signal, since it discounts noisy results that were never used.
-
-Run `token_savings_report` from any MCP client connected to `/support/mcp`.
-
-### Cross-project noise
-
-When a client passes `X-Paparats-Anchor-Project` (or specifies a single project in the search call), the share of results from _other_ projects in the same group is recorded. Use `cross_project_share` to see how noisy your group's index is for each user.
-
-### Indexer-pipeline visibility
-
-`failed_chunks` aggregates AST parse failures, regex fallbacks, zero-chunk files, and binary skips. `slowest_searches` ranks individual searches by latency.
-
-### Configuration matrix
-
-| Env var                                 | Default                    | Purpose                                                     |
-| --------------------------------------- | -------------------------- | ----------------------------------------------------------- |
-| `PAPARATS_METRICS`                      | `false`                    | Prometheus surface (existing, unchanged)                    |
-| `PAPARATS_ANALYTICS_ENABLED`            | `true`                     | Local SQLite analytics writes                               |
-| `PAPARATS_ANALYTICS_DB_PATH`            | `~/.paparats/analytics.db` | Analytics DB file                                           |
-| `PAPARATS_ANALYTICS_RETENTION_DAYS`     | `90`                       | Daily prune cutoff                                          |
-| `PAPARATS_ANALYTICS_RETENTION_RUN_HOUR` | `3`                        | Hour-of-day for prune (local time)                          |
-| `PAPARATS_IDENTITY_HEADER`              | `X-Paparats-User`          | Header name for user attribution                            |
-| `PAPARATS_LOG_RESULT_FILES`             | `true`                     | If `false`, store NULL for `search_results.file`            |
-| `PAPARATS_LOG_QUERY_TEXT`               | `true`                     | If `false`, store NULL for `search_events.query_text`       |
-| `PAPARATS_REFORMULATION_WINDOW_MS`      | `90000`                    | Reformulation detection window                              |
-| `PAPARATS_TELEMETRY_SAMPLE_RATE`        | `1.0`                      | Sampling rate (errors are always kept)                      |
-| `PAPARATS_OTEL_ENABLED`                 | `false`                    | Enable OTel SDK + OTLP exporter                             |
-| `OTEL_EXPORTER_OTLP_ENDPOINT`           | unset                      | OTLP HTTP endpoint (e.g. `http://localhost:4318/v1/traces`) |
-| `OTEL_EXPORTER_OTLP_HEADERS`            | unset                      | OTLP auth headers (`key=value,key2=value2`)                 |
-| `OTEL_SERVICE_NAME`                     | `paparats-mcp`             | OTel resource attribute                                     |
-| `OTEL_RESOURCE_ATTRIBUTES`              | unset                      | Extra resource attrs (`key=value,key2=value2`)              |
-
-### PII guidance
-
-- File paths and query text are stored locally by default. For shared deployments where paths could leak sensitive info, set `PAPARATS_LOG_RESULT_FILES=false` and/or `PAPARATS_LOG_QUERY_TEXT=false`.
-- OTel spans never carry full query text by default — only `paparats.query.hash` and length.
+Metric names, the scrape config, span attributes, identity headers, the full variable
+matrix and PII guidance are in [docs/observability.md](docs/observability.md).
 
 ---
 
@@ -1270,37 +1360,46 @@ paparats-mcp/
 │   │   │   ├── indexer.ts            # Group-aware indexing, single-parse chunkFile()
 │   │   │   ├── searcher.ts           # Search with query expansion, cache, metrics
 │   │   │   ├── query-expansion.ts    # Abbreviation, case, plural expansion
-│   │   │   ├── task-prefixes.ts      # Jina task prefix detection
+│   │   │   ├── task-prefixes.ts      # Query-type detection + bge-code-v1 / Qwen3 instructions
 │   │   │   ├── query-cache.ts        # In-memory LRU search result cache
 │   │   │   ├── metrics.ts            # Prometheus metrics (opt-in)
 │   │   │   ├── ast-chunker.ts        # AST-based code chunking (tree-sitter, primary strategy)
-│   │   │   ├── chunker.ts            # Regex-based code chunking (fallback for unsupported languages)
+│   │   │   ├── chunker.ts            # Regex-based code chunking (fallback)
 │   │   │   ├── ast-symbol-extractor.ts # AST-based symbol extraction (module-level only, 11 languages)
 │   │   │   ├── ast-queries.ts        # Tree-sitter S-expression queries per language
+│   │   │   ├── ast-language.ts       # Per-file language detection for AST parsing
 │   │   │   ├── tree-sitter-parser.ts # WASM tree-sitter manager
 │   │   │   ├── symbol-graph.ts       # Cross-chunk symbol edges (calls/called_by/refs)
-│   │   │   ├── embeddings.ts         # llama-server provider + SQLite cache
-│   │   │   ├── config.ts             # .paparats.yml reader + validation
+│   │   │   ├── embeddings.ts         # llama-server, OpenAI and Voyage providers + SQLite cache
+│   │   │   ├── config.ts             # .paparats.yml reader + validation, 11 language profiles
 │   │   │   ├── metadata.ts           # Tag resolution + auto-detection
 │   │   │   ├── metadata-db.ts        # SQLite store for git commits + tickets + symbol edges
 │   │   │   ├── git-metadata.ts       # Git history extraction + chunk mapping
 │   │   │   ├── ticket-extractor.ts   # Jira/GitHub/custom ticket parsing
-│   │   │   ├── mcp-handler.ts        # MCP protocol — dual-mode (coding /mcp + support /support/mcp)
-│   │   │   ├── watcher.ts            # File watcher (chokidar)
-│   │   │   ├── arch/                 # Architectural memory layer (components, decisions, lessons)
-│   │   │   │   ├── types.ts          # ArchComponent, ArchDecision, ArchLesson, ArchWriteResult
-│   │   │   │   ├── collection.ts     # Per-group Qdrant collection (`paparats_<group>_arch`) lifecycle
-│   │   │   │   ├── text-embeddings.ts # qwen3-embedding-0.6b text embedder (1024d, last-pooled, llama-server)
-│   │   │   │   ├── store.ts          # CRUD + server-side similarity gate (cosine 0.85 / 0.70)
-│   │   │   │   └── context.ts        # `arch_context` query — top-N across kinds with age stamps
+│   │   │   ├── mcp-handler.ts        # MCP protocol — coding, support and knowledge endpoints
+│   │   │   ├── knowledge-mode.ts     # Knowledge endpoint: env parsing, bearer auth, body limit
+│   │   │   ├── analytics-api.ts      # REST API behind the /ui console
+│   │   │   ├── qdrant-errors.ts      # Missing-collection vs Qdrant-failure detection
+│   │   │   ├── prompts/              # Tool descriptions, instructions, workflow prompts (prompts.json)
+│   │   │   ├── arch/                 # Architectural memory layer (`paparats_<group>_arch`)
+│   │   │   ├── docs/                 # Documentation layer (`paparats_<group>_docs`, BM25 + RRF)
+│   │   │   ├── terminology/          # Glossary layer (`paparats_<group>_terms`)
+│   │   │   ├── telemetry/            # Analytics store, OpenTelemetry, identity headers, retention
 │   │   │   └── types.ts              # Shared types
 │   │   └── Dockerfile
 │   ├── indexer/         # Automated repo indexer (Docker image: ibaz/paparats-indexer)
 │   │   ├── src/
-│   │   │   ├── index.ts              # Entry: Express mini-server + cron scheduler
+│   │   │   ├── index.ts              # Entry: Express mini-server (/trigger, /health) + both cron schedules
+│   │   │   ├── orchestrator.ts       # Index cycles, triggers and hot reload through one per-repo lock
+│   │   │   ├── change-detector.ts    # git ls-remote / mtime fingerprints for the fast change check
+│   │   │   ├── state-store.ts        # SQLite store of per-repo fingerprints
+│   │   │   ├── project-resolver.ts   # .paparats.yml + projects.yml overrides → resolved project
 │   │   │   ├── config-loader.ts      # projects.yml parser + per-repo overrides
-│   │   │   ├── config-watcher.ts     # chokidar watcher for hot-reloading the project list
+│   │   │   ├── config-watcher.ts     # Hot reload of projects.yml
 │   │   │   ├── repo-manager.ts       # parseReposEnv(), cloneOrPull() using simple-git
+│   │   │   ├── keyed-serializer.ts   # One task at a time per repo
+│   │   │   ├── trigger-queue.ts      # Merges /trigger requests that arrive during a cycle
+│   │   │   ├── trigger-filter.ts     # Resolves which repos a trigger targets
 │   │   │   ├── scheduler.ts          # node-cron wrapper
 │   │   │   └── types.ts              # IndexerConfig, RepoConfig, RepoOverrides, IndexerFileConfig
 │   │   └── Dockerfile
@@ -1318,6 +1417,7 @@ paparats-mcp/
 │           ├── gitignore.ts          # Gitignore parsing
 │           ├── exclude-patterns.ts   # Glob exclude normalization
 │           └── language-excludes.ts  # Language-specific exclude defaults
+├── docs/                # Guides: chunking, replacing models, observability, releasing
 └── examples/
     └── paparats.yml.*   # Config examples per language
 ```
@@ -1326,11 +1426,22 @@ paparats-mcp/
 
 ## Stack
 
-- **Qdrant** — vector database (1 collection per group with `paparats_` prefix for code, plus a separate `paparats_<group>_arch` collection per group for the architectural memory layer; cosine similarity, payload filtering)
-- **Embed server** — llama.cpp `llama-server` + `llama-swap` serving local embeddings via `bge-code-v1` for code (1536d, task-specific prefixes) **and `qwen3-embedding-0.6b` for the architectural memory layer** (1024d, last-pooled). Both Apache-2.0. llama-swap routes by model name; models stay resident by default (`EMBED_TTL=0`), with opt-in idle unload via `EMBED_TTL`
-- **SQLite** — embedding cache (`~/.paparats/cache/embeddings.db`) + git metadata + symbol edges store (`~/.paparats/metadata.db`)
-- **MCP** — Model Context Protocol (SSE for Cursor, Streamable HTTP for Claude Code). Dual endpoints: `/mcp` (coding) and `/support/mcp` (support)
+- **Qdrant** — vector database. Per group: `paparats_<group>` for code, plus
+  `paparats_<group>_arch` (architectural memory), `paparats_<group>_docs` (documentation,
+  dense + BM25) and `paparats_<group>_terms` (glossary). Cosine similarity, payload
+  filtering
+- **Embed server** — llama.cpp `llama-server` + `llama-swap` serving local embeddings via `bge-code-v1` for code (1536d, instruction per query type) **and `qwen3-embedding-0.6b` for the arch, docs and glossary layers** (1024d, last-pooled). Both Apache-2.0. llama-swap routes by model name; models stay resident by default (`EMBED_TTL=0`), with opt-in idle unload via `EMBED_TTL`
+- **SQLite** — embedding cache, git metadata + symbol edges store and analytics, all in the `paparats_data` volume; the indexer's per-repo fingerprints in `STATE_DB_PATH`
+- **MCP** — Model Context Protocol over Streamable HTTP for all clients, with legacy SSE routes (`/sse`, `/support/sse`). Three endpoints: `/mcp` (coding), `/support/mcp` (support) and the opt-in `/knowledge/mcp` (docs-only)
 - **TypeScript** monorepo with Yarn workspaces
+
+### Docker images
+
+| Image                   | Source                        | Compressed size (Docker Hub, `latest`) |
+| ----------------------- | ----------------------------- | -------------------------------------- |
+| `ibaz/paparats-server`  | `packages/server/Dockerfile`  | ~100 MB                                |
+| `ibaz/paparats-indexer` | `packages/indexer/Dockerfile` | ~100 MB                                |
+| `ibaz/paparats-embed`   | `packages/embed/Dockerfile`   | ~2.5 GB (includes both models)         |
 
 ---
 
@@ -1353,8 +1464,9 @@ Bot workflow (via /support/mcp):
 
 ### CI/CD reindex on push
 
-Indexing lives in the indexer container. To force a reindex of a project from CI,
-trigger the indexer's HTTP endpoint:
+Indexing lives in the indexer container. The fast change check picks up a push within
+about 10 minutes on its own; to reindex right away, trigger the indexer's HTTP endpoint
+from CI:
 
 ```yaml
 name: Reindex Paparats
@@ -1367,7 +1479,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          curl -X POST http://your-paparats-host:9877/trigger \
+          curl -X POST http://paparats.example.com:9877/trigger \
             -H 'Content-Type: application/json' \
             -d '{"repos": ["your-org/your-repo"]}'
 ```
@@ -1375,9 +1487,9 @@ jobs:
 Pass `"force": true` in the body to drop existing chunks first (destructive — use after
 schema/config changes). Omitting `repos` (or sending `[]`) reindexes every project. A
 trigger that arrives while a cycle is running is queued and runs right after it — the
-response is `202` with `"status": "queued"` instead of `200` / `"triggered"`. If the project isn't yet in `projects.yml`, add it once
-during your initial setup and the indexer's cron + hot-reload will keep it in sync going
-forward.
+response is `202` with `"status": "queued"` instead of `200` / `"triggered"`. If the
+project isn't yet in `projects.yml`, add it once during your initial setup and the
+indexer's schedules + hot-reload will keep it in sync going forward.
 
 ### Code-review assistant
 
@@ -1406,59 +1518,58 @@ refuses to mix providers in one collection and surfaces a clear error).
 | **OpenAI**   | `text-embedding-3-small`    | 1536  | Sent to OpenAI | ~30 s                    | ~$0.02 / 1 M tokens   |
 | **Voyage**   | `voyage-code-3`             | 1024  | Sent to Voyage | ~30 s                    | ~$0.18 / 1 M tokens   |
 
-Valid `EMBEDDING_PROVIDER` values: `llama` | `openai` | `voyage`. Selection
-precedence: explicit `EMBEDDING_PROVIDER` → `OPENAI_API_KEY` present →
-`VOYAGE_API_KEY` present → `llama`. So setting just your API key in the
-environment is enough to switch.
+The supported way to pick a provider is the installer:
 
 ```bash
-# OpenAI — cheapest cloud option
-export OPENAI_API_KEY=sk-...
-docker compose up -d
-
-# Voyage AI — best quality on code per recent benchmarks
-export VOYAGE_API_KEY=pa-...
-docker compose up -d
-
-# Force a provider explicitly (overrides auto-detect)
-export EMBEDDING_PROVIDER=voyage
+paparats install --embeddings openai --embedding-api-key sk-...   # OpenAI — cheapest cloud option
+paparats install --embeddings voyage --embedding-api-key pa-...   # Voyage AI — code-specialised model
+paparats install --embeddings llama                               # back to the local default
 ```
 
-Overrides: `EMBEDDING_MODEL` (defaults: `text-embedding-3-small`,
-`voyage-code-3`, `bge-code-v1`) and `EMBEDDING_DIMENSIONS` (1536 /
-1024 / 1536). Voyage `voyage-code-3` supports 256/512/1024/2048 via
-Matryoshka — set `EMBEDDING_DIMENSIONS` to opt into a non-default size.
+On a hand-rolled deployment, the server and indexer read `EMBEDDING_PROVIDER`
+(`llama` | `openai` | `voyage`). Selection precedence: explicit `EMBEDDING_PROVIDER` →
+`OPENAI_API_KEY` present → `VOYAGE_API_KEY` present → `llama`. Overrides:
+`EMBEDDING_MODEL` (defaults: `text-embedding-3-small`, `voyage-code-3`, `bge-code-v1`)
+and `EMBEDDING_DIMENSIONS` (1536 / 1024 / 1536). Voyage `voyage-code-3` supports
+256/512/1024/2048 via Matryoshka — set `EMBEDDING_DIMENSIONS` to opt into a non-default
+size.
+
+Swapping the local model for another one has non-obvious traps (verbatim instruction
+strings, pooling, reindexing); follow
+[docs/replacing-embedding-models.md](docs/replacing-embedding-models.md).
 
 ### Local (llama) — defaults below
 
-Default model: [BAAI/bge-code-v1](https://huggingface.co/BAAI/bge-code-v1) (served as a Q8_0 GGUF) — code-optimized, Apache-2.0, 1536 dims, 32k context. The embed server is llama.cpp `llama-server` + `llama-swap`: `llama-server` loads the GGUF directly and `llama-swap` routes by model name and lazy-loads it on first request. There is **no Modelfile and no model-registration step** — llama-swap discovers the model by name.
+Default model: [BAAI/bge-code-v1](https://huggingface.co/BAAI/bge-code-v1) (served as a Q8_0 GGUF) — code-optimized, Apache-2.0, 1536 dims. The embed server is llama.cpp `llama-server` + `llama-swap`: `llama-server` loads the GGUF directly and `llama-swap` routes by model name and lazy-loads it on first request. There is **no Modelfile and no model-registration step** — llama-swap discovers the model by name.
 
 **Recommended:** `paparats install` automates this:
 
-- **Native mode** (`--embed-mode native`, default on macOS): installs the embed server via `brew install llama.cpp mostlygeek/llama-swap/llama-swap` (Metal-accelerated) and downloads the GGUF to `~/.paparats/models/`
+- **Native mode** (`--embed-mode native`, default on macOS): installs the embed server via `brew install llama.cpp mostlygeek/llama-swap/llama-swap` (Metal-accelerated), downloads the GGUF files to `~/.paparats/models/`, and serves them on port 18434
 - **Docker mode** (`--embed-mode docker`, default on Linux): Uses the `ibaz/paparats-embed` image with `bge-code-v1` + `qwen3-embedding-0.6b` pre-baked — zero setup
 
 **Manual setup (Docker):**
 
 ```bash
 # Run the pre-baked embed server. llama-swap serves on 8080 inside the container
-# (mapped to host 11434) and loads models by name — nothing else to configure.
-docker run -d -p 11434:8080 ibaz/paparats-embed:latest
+# (mapped here to host port 18434, the port Paparats uses by default) and loads
+# models by name — nothing else to configure.
+docker run -d -p 18434:8080 ibaz/paparats-embed:latest
 
 # Verify (llama-swap exposes an OpenAI-style API)
-curl http://localhost:8080/health
-curl http://localhost:8080/v1/models
+curl http://localhost:18434/health
+curl http://localhost:18434/v1/models
 ```
 
-| Spec         | Value                               |
-| ------------ | ----------------------------------- |
-| Model        | BAAI/bge-code-v1 (Apache-2.0)       |
-| Dimensions   | 1536                                |
-| Context      | 32,768 tokens (recommended ≤ 8,192) |
-| Quantization | Q8_0 (~1.5 GB)                      |
-| Languages    | 15+ programming languages           |
+| Spec         | Value                                                  |
+| ------------ | ------------------------------------------------------ |
+| Model        | BAAI/bge-code-v1 (Apache-2.0)                          |
+| Dimensions   | 1536                                                   |
+| Context      | served with an 8,192-token context (model supports 32k) |
+| Quantization | Q8_0 (~1.5 GB)                                         |
+| Languages    | 15+ programming languages                              |
 
-Task-specific prefixes (nl2code, code2code, techqa) applied automatically.
+The query instruction from the model card is applied automatically per query type
+(natural language → code, code → code, technical Q&A).
 
 ### Model benchmarks & methodology
 
@@ -1509,7 +1620,8 @@ top-K, so recall matters more than exact ordering.
   when an agent consumes the top-K directly.
 - **Late chunking** was evaluated and rejected: decoder-family models (Qwen3)
   can't do it (causal attention), and it degrades multi-topic documents anyway.
-  Structural / per-topic chunking is the dominant quality lever, not the model.
+  Structural / per-topic chunking is the dominant quality lever, not the model
+  (see [docs/chunking-strategy.md](docs/chunking-strategy.md)).
 
 > Numbers were measured on Apple-silicon (Metal) with Q8_0 quantization; absolute
 > values shift with hardware, quantization, and corpus, but the relative ordering
@@ -1517,64 +1629,135 @@ top-K, so recall matters more than exact ordering.
 
 ---
 
+## FAQ
+
+### What is Paparats MCP?
+
+Paparats MCP is an open-source MCP server for semantic code search over many
+repositories. It runs on your own machine or server with Qdrant and local llama.cpp
+embeddings, so code is never sent to a third party, and it adds a symbol graph, git
+history per chunk and agent-maintained architectural memory on top of the search.
+
+### How do I add semantic code search to Claude Code?
+
+Run `npm install -g @paparats/cli && paparats install` (on macOS first
+`brew install llama.cpp mostlygeek/llama-swap/llama-swap`), then
+`paparats add ~/code/your-repo`, then
+`claude mcp add --scope user --transport http paparats http://localhost:9876/mcp`.
+Claude Code then gets `search_code`, `get_chunk`, `find_usages` and the other coding
+tools. The [Claude Code plugin](#claude-code-plugin) does the last step and adds a skill
+that tells Claude when to search and when to grep.
+
+### Does my code leave my machine?
+
+No, not by default. Indexing, embeddings (llama.cpp) and the vector store (Qdrant) all run
+locally in Docker; what gets downloaded is the Docker images (the embed image ships the
+models) or, in native embed mode, the GGUF model files. Your code is never uploaded. Cloud
+embeddings (OpenAI, Voyage), a remote Qdrant and OpenTelemetry export are opt-in. See
+[PRIVACY.md](PRIVACY.md).
+
+### Is there a hosted version or public demo?
+
+No. Paparats is self-hosted only. To try it without installing anything locally, open the
+repo in [GitHub Codespaces](#try-it-in-the-browser-no-install): the dev container starts
+the stack in your Codespace and indexes a small part of this repository on first start.
+
+### How fresh is the index after I change code?
+
+Within about 10 minutes by default. The indexer fingerprints every repo every 10 minutes
+(`CRON_FAST`) and reindexes only the files that changed; a full pass runs every few hours
+as a safety net. For an immediate update, `POST /trigger` to the indexer (for example from
+CI). Search results are cached for up to 5 minutes on top of that. There is no file
+watcher, so edits are not visible within seconds. See
+[Keeping the index fresh](#keeping-the-index-fresh).
+
+### How is Paparats different from claude-context?
+
+[claude-context](https://github.com/zilliztech/claude-context) is a per-user stdio server
+whose quick start uses OpenAI embeddings and a Milvus / Zilliz Cloud vector store (Ollama
+and a self-hosted Milvus are options); it has hybrid BM25 + vector search and syncs
+changes every 5 minutes, and each search targets one codebase path. Paparats runs locally
+by default, searches many repos in one query, and adds a symbol graph, git history per
+chunk and a shared server with separate coding, support and docs endpoints. It has no BM25
+on the code layer.
+
+### How is Paparats different from Serena?
+
+[Serena](https://github.com/oraios/serena) drives language servers (or a JetBrains IDE)
+for precise symbol lookup, references and editing in the project you are working on.
+Paparats is a vector index for finding code by meaning across many repos, and it has no
+editing tools. They complement each other.
+
+### How is Paparats different from codebase-memory-mcp?
+
+[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) is a single native
+binary that builds a local code knowledge graph with structural, BM25 and semantic search,
+a type-aware call graph, cross-service links and many more languages, with a lighter setup
+than Paparats. Paparats is a Docker stack built around a shared server: one index for many
+users and agents, a support endpoint with no code or architecture writes, a docs-only
+knowledge endpoint, git
+history and ticket references per chunk, and usage analytics.
+
+### Can it search several repositories at once?
+
+Yes. Projects in the same group share one Qdrant collection, so one query covers backend,
+frontend and infra repos together. Without explicit groups, all projects land in the
+`default` group.
+
+### Which languages are supported?
+
+AST chunking and symbol extraction cover 11 languages: TypeScript (incl. TSX),
+JavaScript, Python, Go, Rust, Java, Ruby, C, C++, C# and Terraform/HCL. Other file types
+are chunked with a regex fallback and get no symbol edges.
+
+### What hardware does it need?
+
+Docker with Compose v2, Node.js 24+ and about 2 GB of disk for the two embedding models.
+CPU-only works; in Docker mode the embed container reserves 2 GB of RAM (6 GB limit). On
+macOS the native llama.cpp build uses Metal and is much faster than the Docker image.
+
+### Which MCP clients work?
+
+Any MCP client that speaks Streamable HTTP. This README has setup for Claude Code, Cursor,
+Codex, GitHub Copilot in VS Code, Windsurf, Antigravity, Gemini CLI, Grok Build and Cline
+— see [connecting MCP clients](#how-to-connect-paparats-to-claude-code-cursor-and-other-mcp-clients).
+
+---
+
 ## Comparison with Alternatives
 
-### Feature Matrix
+One line on each, then a side-by-side table. Facts about other projects come from their
+own READMEs and documentation as of 2026-10-24; "—" means the project does not document
+it. Corrections are welcome.
 
-#### Deployment
+- **[claude-context](https://github.com/zilliztech/claude-context)** — MCP server for
+  hybrid (BM25 + vector) code search; OpenAI + Zilliz Cloud in the quick start.
+- **[Serena](https://github.com/oraios/serena)** — IDE-like symbol retrieval, editing and
+  refactoring tools backed by language servers or a JetBrains plugin.
+- **[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)** — local code
+  knowledge graph in one native binary, with structural, BM25 and semantic search.
+- **[claude-context-local](https://github.com/FarhanAliRaza/claude-context-local)** —
+  local semantic code search with EmbeddingGemma and FAISS (beta; last commit Nov 2025).
+- **[Sourcegraph MCP](https://sourcegraph.com/docs/api/mcp)** — code search, navigation
+  and history from a Sourcegraph Enterprise instance.
+- **[Greptile](https://www.greptile.com/)** is an AI code-review service; its MCP server
+  exposes review comments and context rather than a search index, so it is left out of
+  the table.
 
-| Feature     | Paparats | Vexify | SeaGOAT | Augment | Sourcegraph | Greptile | Bloop |
-| :---------- | :------: | :----: | :-----: | :-----: | :---------: | :------: | :---: |
-| Open source |  ✅ MIT  | ✅ MIT | ✅ MIT  |   ❌    | ⚠️ Partial  |    ❌    | ⚠️ 1  |
-| Fully local |    ✅    |   ✅   |   ✅    | ⚠️ No 2 |     ❌      |    ❌    |  ✅   |
-
-#### Search Quality
-
-| Feature         | Paparats  | Vexify | SeaGOAT  |  Augment   | Sourcegraph |  Greptile  | Bloop  |
-| :-------------- | :-------: | :----: | :------: | :--------: | :---------: | :--------: | :----: |
-| Code embeddings | ✅ Jina 3 |  ⚠️ 4  |   ❌ 5   | ⚠️ Partial | ⚠️ Partial  | ⚠️ Partial |   ✅   |
-| Vector database | ✅ Qdrant | SQLite | ChromaDB |  Propri.   |   Propri.   |  pgvector  | Qdrant |
-| AST chunking    |    ✅     |   ❌   |    ❌    | ⚠️ Partial | ⚠️ Partial  | ⚠️ Partial |   ✅   |
-| Query expansion |   ✅ 6    |   ❌   |    ❌    | ⚠️ Partial | ⚠️ Partial  | ⚠️ Partial |   ❌   |
-
-#### Developer Experience
-
-| Feature            | Paparats  |   Vexify   |  SeaGOAT   |  Augment   | Sourcegraph |  Greptile  |   Bloop    |
-| :----------------- | :-------: | :--------: | :--------: | :--------: | :---------: | :--------: | :--------: |
-| Real-time watching |  ✅ Auto  |     ❌     |     ❌     |  ⚠️ CI/CD  |     ✅      | ⚠️ Partial | ⚠️ Partial |
-| Embedding cache    | ✅ SQLite | ⚠️ Partial |     ❌     | ⚠️ Partial | ⚠️ Partial  | ⚠️ Partial |     ❌     |
-| Multi-project      | ✅ Groups |     ✅     |     ❌     |     ✅     |     ✅      |     ✅     |     ✅     |
-| One-cmd install    |    ✅     | ⚠️ Partial | ⚠️ Partial |     ❌     |     ❌      |     ❌     |     ❌     |
-
-#### AI Integration
-
-| Feature                | Paparats | Vexify | SeaGOAT |  Augment   | Sourcegraph | Greptile | Bloop |
-| :--------------------- | :------: | :----: | :-----: | :--------: | :---------: | :------: | :---: |
-| MCP native             |    ✅    |   ✅   |   ❌    |     ✅     |     ❌      |  ⚠️ API  |  ❌   |
-| Symbol graph           |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
-| Token metrics          |    ✅    |   ❌   |   ❌    | ⚠️ Partial |     ❌      |    ❌    |  ❌   |
-| Git history            |    ✅    |   ❌   |   ❌    |     ❌     | ⚠️ Partial  |    ❌    |  ❌   |
-| Ticket extraction      |    ✅    |   ❌   |   ❌    |     ❌     |     ❌      |    ❌    |  ❌   |
-| Architectural memory 7 |  ✅ ADRs |   ❌   |   ❌    |     ❌     |     ❌      |    ❌    |  ❌   |
-
-#### Pricing
-
-|      |  Paparats   |   Vexify    |   SeaGOAT   | Augment | Sourcegraph | Greptile |    Bloop    |
-| :--- | :---------: | :---------: | :---------: | :-----: | :---------: | :------: | :---------: |
-| Cost | ✅ **Free** | ✅ **Free** | ✅ **Free** | ❌ Paid |   ❌ Paid   | ❌ Paid  | ⚠️ Archived |
-
-<details>
-<summary>Notes</summary>
-
-1. Bloop archived January 2, 2025
-2. Augment Context Engine indexes locally but stores vectors in cloud
-3. Jina Code Embeddings 1.5B (1536 dims) with task-specific prefixes (nl2code, code2code, techqa)
-4. Vexify supports Ollama models but limited to specific embeddings (jina-embeddings-2-base-code, nomic-embed-text)
-5. SeaGOAT locked to all-MiniLM-L6-v2 (384 dims, general-purpose)
-6. Abbreviations, case variants, plurals, filler word removal
-7. Agent-maintained components / decisions (ADRs) / lessons in a second Qdrant collection per group; server-side similarity gate deduplicates writes, `supersedes` links replace stale decisions, every card carries an "updated N ago" stamp on read
-
-</details>
+|                                   | Paparats                                     | claude-context                                  | Serena                                         | codebase-memory-mcp                              | claude-context-local          | Sourcegraph MCP                      |
+| :-------------------------------- | :------------------------------------------- | :---------------------------------------------- | :--------------------------------------------- | :----------------------------------------------- | :---------------------------- | :----------------------------------- |
+| Approach                          | Vector search over AST chunks + symbol graph | Hybrid BM25 + vector search over AST chunks     | Language-server symbol tools                   | Code knowledge graph + structural/BM25/semantic search | Vector search (FAISS)    | Keyword, natural-language and symbol search |
+| Runs locally by default           | ✅ Docker stack                              | ❌ OpenAI + Zilliz Cloud (local setup possible) | ✅                                             | ✅ native binary                                 | ✅                            | ❌ needs a Sourcegraph Enterprise instance |
+| Many repos in one query           | ✅ groups                                    | ❌ one codebase path per search                 | ⚠️ active project; can query other projects    | ⚠️ per project; cross-repo service links         | —                             | ✅                                   |
+| Callers / references              | ✅ AST-derived edges                         | —                                               | ✅ via language server (most precise)          | ✅ call graph with type resolution               | —                             | ✅                                   |
+| Keyword (BM25) search on code     | ❌ dense vectors + query expansion           | ✅                                              | regex search tool                              | ✅                                               | —                             | ✅ keyword search                    |
+| Git history per result            | ✅ commits + ticket refs per chunk           | —                                               | —                                              | ⚠️ git diff → affected symbols                   | —                             | ✅ commit and diff search            |
+| Keeps the index fresh             | ⚠️ change check every 10 min + scheduled full pass | ✅ Merkle-tree sync every 5 min          | n/a (reads live code)                          | ✅ watches the project of an open session        | ⚠️ incremental on re-index    | ✅ server-side                       |
+| Code editing / refactoring tools  | ❌                                           | ❌                                              | ✅                                             | ❌                                               | ❌                            | ❌                                   |
+| One shared server for a team      | ✅ coding, support and docs-only endpoints | ❌ per-user stdio                          | —                                              | ⚠️ per machine; graph artifacts can be shared    | ❌                            | ✅                                   |
+| Languages                         | 11 (tree-sitter)                             | 14 listed                                       | 40+ (language servers)                         | 162 (per its README)                             | 9+                            | all (text search)                    |
+| Setup                             | Docker + npm CLI, ~2 GB models               | `npx` + API keys                                | `uv tool install`                              | install script                                   | install script (Python, uv)   | Enterprise admin setup               |
+| License / cost                    | MIT, free                                    | MIT; embedding and vector DB usage unless self-hosted | GPL-3.0-or-later, free; paid JetBrains plugin | MIT, free                                | GPL-3.0 (per README), free    | commercial                           |
 
 ---
 
@@ -1628,76 +1811,17 @@ MIT
 
 ---
 
-## Releasing (maintainers)
-
-Releases are driven by [Changesets](https://github.com/changesets/changesets). Versioning + CHANGELOG generation happen in CI; **publishing to npm and tagging happen locally** from a maintainer machine that's authenticated with npm. There are no npm credentials in CI.
-
-### Authoring a changeset (per PR)
-
-```bash
-yarn changeset
-# Pick affected packages, bump type (patch/minor/major), and write the user-facing summary.
-git add .changeset/
-git commit -m "chore: changeset"
-```
-
-All four packages (`@paparats/shared`, `@paparats/cli`, `@paparats/server`, `@paparats/indexer`) are kept on a **fixed version** — pick any one and the rest are bumped to match.
-
-### How a release happens
-
-**1. CI opens a release PR (automatic).** The [Release workflow](.github/workflows/release.yml) runs on every push to `main`. If pending `.changeset/*.md` files exist, it opens (or updates) a `chore: release` PR with: version bumps in every `package.json`, regenerated per-package `CHANGELOG.md` files, `server.json` synced via `scripts/sync-server-json.js`, and the consumed `.changeset/*.md` files deleted.
-
-**2. Maintainer merges the release PR.** No further CI publish step runs.
-
-**3. Maintainer publishes locally.** From a clean checkout of `main` after the merge:
-
-```bash
-git checkout main && git pull
-yarn release:local         # or `--dry-run` to preview
-```
-
-`yarn release:local` runs `scripts/release-local.sh`, which:
-
-- refuses to run unless you're on `main`, the tree is clean, and you're in sync with `origin/main`;
-- refuses if any pending `.changeset/*.md` are present (means the release PR wasn't merged);
-- reads the new version from `packages/cli/package.json`;
-- builds, runs `yarn changeset publish` (skips already-published versions), then tags `vX.Y.Z` and pushes the tag.
-
-**4. Downstream workflows fire on the tag.** Pushing `vX.Y.Z` triggers [docker-publish.yml](.github/workflows/docker-publish.yml) and [publish-mcp.yml](.github/workflows/publish-mcp.yml) automatically.
-
-### Required credentials
-
-| Where | What                                | Purpose                                           |
-| ----- | ----------------------------------- | ------------------------------------------------- |
-| CI    | `GITHUB_TOKEN` (auto)               | Open/update the `chore: release` PR               |
-| Local | `npm login` (or `NPM_TOKEN` in env) | `yarn changeset publish` to publish `@paparats/*` |
-
-No npm token lives in GitHub secrets — publishing is intentionally a manual, authenticated step.
-
-### Manual / fallback flows
-
-`./scripts/release-docker.sh --push` still builds and pushes the Docker images by hand if needed (e.g. between official releases). It reads the version from `package.json`.
-
-### Docker images
-
-| Image                   | Source                        | Size                   |
-| ----------------------- | ----------------------------- | ---------------------- |
-| `ibaz/paparats-server`  | `packages/server/Dockerfile`  | ~200 MB                |
-| `ibaz/paparats-indexer` | `packages/indexer/Dockerfile` | ~200 MB                |
-| `ibaz/paparats-embed`   | `packages/embed/Dockerfile`   | ~2.3 GB (includes models) |
-
----
-
 ## Contributing
 
 Contributions welcome! Areas of interest:
 
 - Additional language support (PHP, Elixir, Scala, Kotlin, Swift)
-- Alternative embedding providers (OpenAI, Cohere, local GGUF via llama.cpp)
+- More embedding providers (Cohere and others)
 - Performance optimizations (chunking strategies, cache eviction)
 - Agent use cases (support bots, QA automation, code analytics)
 
-Open an issue or pull request to get started.
+Open an issue or pull request to get started. Every PR carries a changeset; the release
+process is described in [docs/releasing.md](docs/releasing.md).
 
 ---
 
@@ -1709,6 +1833,7 @@ Open an issue or pull request to get started.
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) — local embedding runtime (`llama-server`)
 - [llama-swap](https://github.com/mostlygeek/llama-swap) — model router / lazy loader in front of llama-server
 - [MCP](https://modelcontextprotocol.io) — Model Context Protocol
+- [llms.txt](llms.txt) — a short, machine-readable summary of this project for AI tools
 
 ---
 

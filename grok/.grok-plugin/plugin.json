@@ -1,7 +1,7 @@
 {
   "name": "paparats",
   "displayName": "Paparats",
-  "description": "Local semantic code search across all your repos. Indexes code with tree-sitter and a local embedding model; nothing leaves your machine.",
+  "description": "Self-hosted semantic code search across all your repos. Indexes code with tree-sitter and a local embedding model; nothing leaves your machine.",
   "version": "2.9.1",
   "author": {
     "name": "Ilya Bazylchuk"

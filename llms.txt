@@ -1,0 +1,31 @@
+# Paparats MCP
+
+> Paparats MCP is an open-source (MIT), self-hosted MCP server for semantic code search
+> across many repositories, for Claude Code, Cursor, Codex, GitHub Copilot and any other
+> MCP client. It indexes code with tree-sitter AST chunking, builds a cross-chunk symbol
+> graph, attaches git history and ticket references to every chunk, and stores vectors in
+> Qdrant using local llama.cpp embeddings. Code never leaves the machine by default.
+> There is no hosted version.
+
+## Docs
+
+- [README](https://github.com/IBazylchuk/paparats-mcp#readme): what it is, install, configuration, tools, FAQ
+- [Agent install guide](https://github.com/IBazylchuk/paparats-mcp/blob/main/llms-install.md): step-by-step install for an AI agent
+- [MCP tools reference](https://github.com/IBazylchuk/paparats-mcp#mcp-tools-reference): tools per endpoint
+- [FAQ](https://github.com/IBazylchuk/paparats-mcp#faq): privacy, freshness, hardware, supported clients
+- [Comparison with alternatives](https://github.com/IBazylchuk/paparats-mcp#comparison-with-alternatives): claude-context, Serena, codebase-memory-mcp, claude-context-local, Sourcegraph
+- [Chunking strategy](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/chunking-strategy.md)
+- [Replacing embedding models](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/replacing-embedding-models.md)
+- [Monitoring and observability](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/observability.md)
+- [Privacy](https://github.com/IBazylchuk/paparats-mcp/blob/main/PRIVACY.md)
+
+## Facts
+
+- Install: `npm install -g @paparats/cli && paparats install`, then `paparats add <path-or-github-repo>`; needs Node.js 24+ and Docker with Compose v2
+- Package: @paparats/cli (npm); MCP Registry id io.github.IBazylchuk/paparats-mcp; license MIT
+- Endpoints (Streamable HTTP, default port 9876): /mcp (coding), /support/mcp (support), /knowledge/mcp (docs-only, opt-in, bearer auth)
+- Embeddings: bge-code-v1 for code (1536d), Qwen3-Embedding-0.6B for docs, glossary and architectural memory (1024d), served locally by llama.cpp llama-server + llama-swap; OpenAI and Voyage are opt-in
+- Languages with AST chunking and symbol extraction: TypeScript (incl. TSX), JavaScript, Python, Go, Rust, Java, Ruby, C, C++, C#, Terraform/HCL
+- Freshness: the indexer checks each repo for changes every 10 minutes (git ls-remote or file mtime/size fingerprint) and runs a full pass every few hours; POST /trigger on port 9877 reindexes on demand; there is no file watcher
+- Multi-repo: projects in the same group share one Qdrant collection and are searched together
+- Not included: code editing or refactoring tools, BM25 keyword search on the code layer (the docs layer is hybrid)

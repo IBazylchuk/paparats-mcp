@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "paparats",
   "displayName": "Paparats",
-  "description": "Local semantic code search across all your repos. Search by meaning, follow callers through a symbol graph, and get exact chunks instead of whole files. Runs on your machine; your code never leaves it.",
+  "description": "Self-hosted semantic code search across all your repos. Search by meaning, follow callers through a symbol graph, and get exact chunks instead of whole files. Runs on your machine; your code never leaves it.",
   "version": "2.9.1",
   "author": {
     "name": "Ilya Bazylchuk",
