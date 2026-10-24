@@ -9,6 +9,8 @@ const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../package.json') as { version: string };
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { Searcher } from './searcher.js';
 import type { Indexer } from './indexer.js';
 import { parseChunkId } from './indexer.js';
@@ -1117,6 +1119,22 @@ export class McpHandler {
     if (this.knowledgeScope) {
       app.all(KNOWLEDGE_MCP_PATH, (req, res) => this.handleKnowledgeHTTP(req, res));
     }
+  }
+
+  /**
+   * Serve a single MCP session over stdin/stdout (`--stdio`), for clients and
+   * inspectors that spawn the server instead of connecting over HTTP. The
+   * transport is injectable for tests. Knowledge mode is HTTP-only: it relies on
+   * bearer auth that stdio has no place for.
+   */
+  async connectStdio(
+    mode: Exclude<McpMode, 'knowledge'>,
+    transport: Transport = new StdioServerTransport()
+  ): Promise<McpServer> {
+    await this.syncGroupsWithTimeout();
+    const server = this.createMcpServer(mode);
+    await server.connect(transport);
+    return server;
   }
 
   /** Graceful shutdown: stop cleanup interval and close all sessions */
