@@ -57,7 +57,7 @@ report() {
 # ── Files ───────────────────────────────────────────────────────────────────
 # --untracked matters: a newly added fixture is the most likely place for a leak
 # and is not yet in the index, so a default git grep would not see it.
-for pat in "${PATTERNS[@]}"; do
+for pat in ${PATTERNS[@]+"${PATTERNS[@]}"}; do
   # -I skips binaries; -E for the ticket-id alternation; -n for line numbers.
   if hits=$(git grep --untracked -nIE -i -e "$pat" -- . "${EXCLUDE_PATHS[@]}" 2>/dev/null); then
     report
@@ -72,7 +72,7 @@ done
 BASE_REF="${BASE_REF:-origin/main}"
 if git rev-parse --verify --quiet "$BASE_REF" > /dev/null; then
   range="$BASE_REF..HEAD"
-  for pat in "${PATTERNS[@]}"; do
+  for pat in ${PATTERNS[@]+"${PATTERNS[@]}"}; do
     if hits=$(git log "$range" --format='%h %s%n%b' 2>/dev/null | grep -nIE -i -e "$pat"); then
       report
       echo "  pattern in commit messages: $pat"

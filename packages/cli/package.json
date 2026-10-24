@@ -70,20 +70,19 @@
     "prepublishOnly": "npm run build && npm run test"
   },
   "dependencies": {
-    "@inquirer/prompts": "^8.7.3",
+    "@inquirer/prompts": "^8.7.4",
     "@paparats/shared": "^2.9.0",
     "chalk": "^6.0.1",
-    "chokidar": "^5.0.0",
     "commander": "^15.0.0",
     "glob": "^13.0.6",
-    "js-yaml": "^5.4.3",
+    "js-yaml": "^5.5.0",
     "minimatch": "^10.2.6",
     "ora": "^9.4.1",
     "p-limit": "^7.3.3"
   },
   "devDependencies": {
-    "@types/node": "^26.6.4",
+    "@types/node": "^26.6.5",
     "typescript": "^6.0.3",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.5"
   }
 }
