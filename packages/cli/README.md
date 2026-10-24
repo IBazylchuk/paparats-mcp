@@ -89,7 +89,7 @@ Once connected, your AI assistant gets access to these tools:
 
 **Coding mode** (`/mcp`): `search_code`, `get_chunk`, `find_usages`, `list_projects`, `delete_project`, `health_check`, `search_docs`, the architectural-memory tools (`arch_context`, `arch_list`, `arch_record_component`, `arch_record_decision`, `arch_record_lesson`, `arch_suggest_components`, `arch_delete`) and the glossary tools (`term_search`, `term_list`, `term_record`, `term_delete`)
 
-**Support mode** (`/support/mcp`): `search_code`, `get_chunk`, `find_usages`, `list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`, `search_docs`, `get_document`, `term_search`, `term_list`, `term_record` and six analytics tools
+**Support mode** (`/support/mcp`): `search_code`, `get_chunk`, `find_usages`, `list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`, `search_docs`, `get_document`, `term_search`, `term_list` and six analytics tools
 
 The full reference is in the [main README](https://github.com/IBazylchuk/paparats-mcp#mcp-tools-reference).
 

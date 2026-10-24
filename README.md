@@ -351,9 +351,9 @@ CLI isn't on your PATH it prints the command to run instead) to the support
 endpoint. Tools available on `/support/mcp`: `search_code`, `get_chunk`, `find_usages`,
 `list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`,
 `recent_changes`, `impact_analysis`, `search_docs`, `get_document`, `term_search`,
-`term_list`, `term_record`, plus the six analytics tools described in
+`term_list`, plus the six analytics tools described in
 [Monitoring and observability](#monitoring-and-observability). The support endpoint is
-read-only for code and has no architectural-memory tools — see the
+read-only — it writes nothing to the index, glossary or architectural memory — see the
 [MCP Tools Reference](#mcp-tools-reference).
 
 ---
@@ -634,8 +634,9 @@ and run `paparats restart` — and see the note on
 
 A per-group glossary (`paparats_<group>_terms`) holds team vocabulary — abbreviations,
 product names, domain terms — with a definition and aliases. `term_search` and
-`term_list` read it and `term_record` adds to it on both the coding and support endpoints
-(support meets undocumented shorthand first); `term_delete` is coding-only. Like
+`term_list` read it on both the coding and support endpoints; `term_record` and
+`term_delete` are coding-only, since support is read-only (it hands new vocabulary to an
+engineer). Like
 decisions, new terms pass a duplicate/similar gate, so a near-identical term is returned
 instead of being written twice.
 
@@ -901,7 +902,6 @@ no project deletion.
 | `get_document`         | Full text of a documentation page found by `search_docs`, section by section, paged at ~40k characters. Support cannot open files, so its excerpts point here. |
 | `term_search`          | Same as coding endpoint.                                                               |
 | `term_list`            | Same.                                                                                  |
-| `term_record`          | Same — support can add vocabulary it meets first; deleting terms is coding-only.       |
 | `token_savings_report` | Aggregate token-savings stats (naive baseline vs search-only vs actually consumed).   |
 | `top_queries`          | Most frequent queries by user/session/project anchor.                                  |
 | `slowest_searches`     | Top-N slowest searches with timing + chunk counts.                                    |

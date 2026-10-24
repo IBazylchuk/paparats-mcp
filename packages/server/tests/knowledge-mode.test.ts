@@ -877,7 +877,6 @@ describe('tool sets', () => {
         'search_docs',
         'term_search',
         'term_list',
-        'term_record',
         'get_document',
       ].sort()
     );
