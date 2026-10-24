@@ -15,13 +15,7 @@
   "privacyPolicyUrl": "https://github.com/IBazylchuk/paparats-mcp/blob/main/PRIVACY.md",
   "license": "MIT",
   "icon": "icon.png",
-  "keywords": [
-    "semantic-search",
-    "code-search",
-    "local-first",
-    "qdrant",
-    "multi-repo"
-  ],
+  "keywords": ["semantic-search", "code-search", "local-first", "qdrant", "multi-repo"],
   "userConfig": {
     "server_url": {
       "type": "string",

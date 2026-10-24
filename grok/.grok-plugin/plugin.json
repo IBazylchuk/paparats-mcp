@@ -9,11 +9,5 @@
   "homepage": "https://github.com/IBazylchuk/paparats-mcp",
   "repository": "https://github.com/IBazylchuk/paparats-mcp",
   "license": "MIT",
-  "keywords": [
-    "mcp",
-    "semantic-search",
-    "code-search",
-    "local-first",
-    "qdrant"
-  ]
+  "keywords": ["mcp", "semantic-search", "code-search", "local-first", "qdrant"]
 }
