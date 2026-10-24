@@ -4,6 +4,14 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.11.1] - 2026-10-24
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- a73dc59: The root `CHANGELOG.md` and the GitHub Release notes now include every package's entries. They were built from the server package's changelog alone, so changes that bumped only the CLI were missing — eleven entries, including the 2.11.0 release-flow fix and the 2.10.0 README rewrite, are restored. Dependency-bump lines and empty "Patch Changes" headings are no longer copied.
+
 ## [2.11.0] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
