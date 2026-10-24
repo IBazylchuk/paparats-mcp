@@ -58,6 +58,7 @@ import {
 import type { ArchContextResult, ArchWriteResult } from './arch/types.js';
 import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
 import { validateGroupName } from './config.js';
+import { describeQdrantError } from './qdrant-errors.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -1662,7 +1663,11 @@ export class McpHandler {
               content: [
                 {
                   type: 'text' as const,
-                  text: JSON.stringify({ status: 'error', error: (err as Error).message }, null, 2),
+                  text: JSON.stringify(
+                    { status: 'error', error: describeQdrantError(err) },
+                    null,
+                    2
+                  ),
                 },
               ],
               isError: true,
