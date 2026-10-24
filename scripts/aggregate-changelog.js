@@ -11,8 +11,9 @@
  * every run, which gives idempotency for free and lets us also backfill
  * any historical post-Changesets versions that were missed.
  *
- * Source of truth: packages/server/CHANGELOG.md. With `fixed` versioning,
- * all four packages have identical entry bodies, so reading one is enough.
+ * Sources: all four packages/<name>/CHANGELOG.md files. `fixed` versioning
+ * keeps the version numbers in step, but an entry lands only in the
+ * changelogs of the packages its changeset names, so they are merged.
  * Dates come from `git log` against the changelog file (the commit that
  * added the version's heading), falling back to today.
  */
@@ -25,32 +26,131 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(__dirname, '..');
 
 const ROOT_CHANGELOG = join(rootDir, 'CHANGELOG.md');
-const SOURCE_CHANGELOG = join(rootDir, 'packages/server/CHANGELOG.md');
 const BEGIN_MARKER = '<!-- BEGIN AGGREGATED -->';
 const END_MARKER = '<!-- END AGGREGATED -->';
 
 const PACKAGES = ['@paparats/shared', '@paparats/cli', '@paparats/server', '@paparats/indexer'];
+const SOURCE_CHANGELOGS = PACKAGES.map((name) =>
+  join(rootDir, 'packages', name.replace('@paparats/', ''), 'CHANGELOG.md')
+);
 
 const INTRO = `> **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by \`scripts/aggregate-changelog.js\`. Per-package detail lives in \`packages/<name>/CHANGELOG.md\`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).`;
 
-function parseSourceChangelog(content) {
-  const lines = content.split(/\r?\n/);
-  const versions = [];
+const SECTION_ORDER = ['Major Changes', 'Minor Changes', 'Patch Changes'];
+
+/**
+ * Parse one package changelog into `version -> { section -> entries[] }`.
+ * An entry is a top-level `- ` bullet with every line up to the next bullet
+ * or heading.
+ */
+function parsePackageChangelog(content) {
+  const versions = new Map();
+  let entries = null;
   let current = null;
-  for (const line of lines) {
-    const m = line.match(/^## (\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)\s*$/);
-    if (m) {
-      if (current) versions.push(current);
-      current = { version: m[1], bodyLines: [] };
+  for (const line of content.split(/\r?\n/)) {
+    const versionMatch = line.match(/^## (\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?)\s*$/);
+    if (versionMatch) {
+      entries = new Map();
+      versions.set(versionMatch[1], entries);
+      current = null;
       continue;
     }
-    if (current) current.bodyLines.push(line);
+    if (!entries) continue;
+    const sectionMatch = line.match(/^### (.+?)\s*$/);
+    if (sectionMatch) {
+      if (!entries.has(sectionMatch[1])) entries.set(sectionMatch[1], []);
+      current = { list: entries.get(sectionMatch[1]), lines: null };
+      continue;
+    }
+    if (!current) continue;
+    if (line.startsWith('- ')) {
+      current.lines = [line];
+      current.list.push(current.lines);
+    } else if (current.lines) {
+      current.lines.push(line);
+    }
   }
-  if (current) versions.push(current);
-  return versions.map(({ version, bodyLines }) => ({
-    version,
-    body: cleanBody(bodyLines.join('\n')),
-  }));
+  return versions;
+}
+
+/**
+ * Strip noise that `@changesets/changelog-github` injects into entries but
+ * that has no value in an aggregated single-maintainer view: `Thanks
+ * [@user](url)! - ` prefixes, and dependency-bump lines (`Updated
+ * dependencies`, `@paparats/<name>@x.y.z`) — under `fixed` versioning every
+ * package always bumps to the same version, so they are pure boilerplate.
+ * Returns null for an entry that is nothing but such a line.
+ */
+const DEPENDENCY_LINE = /^\s*- (?:Updated dependencies|@paparats\/\S+@\S+\s*$)/;
+
+function cleanEntry(lines) {
+  if (DEPENDENCY_LINE.test(lines[0])) return null;
+  const kept = lines.filter((line) => !DEPENDENCY_LINE.test(line));
+  const text = kept
+    .join('\n')
+    .replace(/(\) )Thanks \[@[^\]]+\]\([^)]+\)! - /g, '$1')
+    .trimEnd();
+  return text || null;
+}
+
+/**
+ * Merge every package's entries per version. A changeset that bumps several
+ * packages appears in each of their changelogs with the same text, so entries
+ * are de-duplicated; one that bumps a single package (say a CLI-only fix)
+ * exists only in that package's changelog, which is why reading one file is
+ * not enough.
+ */
+function mergePackageChangelogs(parsed) {
+  const merged = new Map();
+  for (const versions of parsed) {
+    for (const [version, sections] of versions) {
+      if (!merged.has(version)) merged.set(version, new Map());
+      const target = merged.get(version);
+      for (const [section, entries] of sections) {
+        if (!target.has(section)) target.set(section, []);
+        const list = target.get(section);
+        for (const lines of entries) {
+          const text = cleanEntry(lines);
+          if (text && !list.includes(text)) list.push(text);
+        }
+      }
+    }
+  }
+  return [...merged.entries()]
+    .sort(([a], [b]) => compareVersionsDesc(a, b))
+    .map(([version, sections]) => ({ version, body: renderBody(sections) }));
+}
+
+function compareVersionsDesc(a, b) {
+  const [coreA, preA] = a.split('-', 2);
+  const [coreB, preB] = b.split('-', 2);
+  const partsA = coreA.split('.').map(Number);
+  const partsB = coreB.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (partsA[i] !== partsB[i]) return partsB[i] - partsA[i];
+  }
+  if (preA === preB) return 0;
+  if (preA === undefined) return -1;
+  if (preB === undefined) return 1;
+  return preB.localeCompare(preA, 'en', { numeric: true });
+}
+
+// A multi-paragraph entry is followed by a blank line, as Changesets writes it.
+function joinEntries(entries) {
+  return entries
+    .map((text, i) => (i < entries.length - 1 && text.includes('\n\n') ? `${text}\n` : text))
+    .join('\n');
+}
+
+function renderBody(sections) {
+  const names = [
+    ...SECTION_ORDER.filter((name) => sections.has(name)),
+    ...[...sections.keys()].filter((name) => !SECTION_ORDER.includes(name)),
+  ];
+  const parts = names
+    .filter((name) => sections.get(name).length > 0)
+    .map((name) => `### ${name}\n\n${joinEntries(sections.get(name))}`);
+  return parts.length > 0 ? parts.join('\n\n') : 'Dependency updates only.';
 }
 
 /**
@@ -77,24 +177,6 @@ function findVersionDate(version) {
   } catch {
     return null;
   }
-}
-
-/**
- * Strip noise that `@changesets/changelog-github` injects into entry
- * bodies but that has no value in an aggregated single-maintainer view:
- *   - `Thanks [@user](url)! - ` prefixes on every bullet
- *   - The trailing `- Updated dependencies [...]:` block plus its
- *     `- @paparats/<name>@x.y.z` follow-up lines (under `fixed` versioning
- *     every package always bumps to the same version, so the block is
- *     pure boilerplate)
- */
-function cleanBody(body) {
-  let cleaned = body.replace(/(\) )Thanks \[@[^\]]+\]\([^)]+\)! - /g, '$1');
-  cleaned = cleaned.replace(
-    /\n+- Updated dependencies[^\n]*\n(?:[ \t]+- @paparats\/[^\n]+\n?)+/g,
-    ''
-  );
-  return cleaned.trim();
 }
 
 function todayIso() {
@@ -148,10 +230,11 @@ function updateRootChangelog(aggregatedBlock) {
 }
 
 function main() {
-  const sourceContent = readFileSync(SOURCE_CHANGELOG, 'utf8');
-  const versions = parseSourceChangelog(sourceContent);
+  const versions = mergePackageChangelogs(
+    SOURCE_CHANGELOGS.map((file) => parsePackageChangelog(readFileSync(file, 'utf8')))
+  );
   if (versions.length === 0) {
-    console.log('No version sections found in packages/server/CHANGELOG.md');
+    console.log('No version sections found in packages/*/CHANGELOG.md');
     return;
   }
   const block = buildAggregatedBlock(versions);
