@@ -1051,7 +1051,6 @@ __metadata:
     "@types/express": "npm:^5.0.6"
     "@types/node": "npm:^26.6.5"
     better-sqlite3: "npm:^13.0.3"
-    chokidar: "npm:^5.0.0"
     cors: "npm:^2.8.6"
     express: "npm:^5.3.0"
     glob: "npm:^13.0.6"

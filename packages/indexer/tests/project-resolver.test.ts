@@ -139,7 +139,6 @@ describe('resolveRepoProject', () => {
     expect(source).toBe('repo-config');
     expect(project.group).toBe('team');
     expect(project.patterns).toEqual(['app/**/*.rb', 'app/**/*.rake']);
-    expect(project.watcher.enabled).toBe(false);
   });
 
   it('builds from overrides alone, with PAPARATS_GROUP winning', () => {

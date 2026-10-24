@@ -45,7 +45,8 @@ http://<host>:9876/knowledge/mcp           – MCP, knowledge mode (stateless, b
                                              POST only; mounted only when configured)
 ```
 
-`POST /api/index` registers a project; `POST /api/watch/...` controls the watcher.
+`POST /api/index` registers a project; `POST /api/file-changed` and `POST /api/file-deleted`
+update single files.
 See the [main README](https://github.com/IBazylchuk/paparats-mcp#mcp-tools-reference)
 for the full tool inventory per endpoint.
 
@@ -172,7 +173,6 @@ support-only — recording belongs to the architectural-review workflow.
 | `ticket-extractor.ts`               | Jira / GitHub / custom ticket parsing                                                                   |
 | `mcp-handler.ts`                    | MCP protocol — coding, support and knowledge endpoints with isolated tool sets and instructions         |
 | `knowledge-mode.ts`                 | Knowledge mode — env parsing, bearer auth, body limit, scope intersection                               |
-| `watcher.ts`                        | `ProjectWatcher` (chokidar) + `WatcherManager`                                                          |
 | `arch/types.ts`                     | Architectural-memory types                                                                              |
 | `arch/collection.ts`                | Per-group `paparats_<group>_arch` collection lifecycle                                                  |
 | `arch/text-embeddings.ts`           | `qwen3-embedding-0.6b` text embedder via llama-server                                                   |

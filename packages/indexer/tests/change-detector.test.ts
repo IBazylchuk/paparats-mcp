@@ -27,7 +27,6 @@ function makeProject(root: string, overrides: Partial<ProjectConfig> = {}): Proj
       concurrency: 1,
       batchSize: 1,
     },
-    watcher: { enabled: false, debounceMs: 0 },
     embeddings: { provider: 'llama', model: 'm', dimensions: 1 },
     metadata: {
       service: '',

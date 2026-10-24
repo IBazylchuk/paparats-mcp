@@ -1560,7 +1560,7 @@ export class Indexer {
     }
   }
 
-  /** Remove all chunks and metadata for a file (watcher unlink — never throws) */
+  /** Remove all chunks and metadata for a file by absolute path (never throws) */
   async deleteFile(groupName: string, project: ProjectConfig, filePath: string): Promise<void> {
     const relPath = path.relative(project.path, filePath);
     try {

@@ -21,7 +21,6 @@ export interface StatsResponse {
     maxSize: number;
     hitRate: number;
   };
-  watcher?: Record<string, { eventsProcessed: number }>;
   memory?: { heapUsed: number; heapTotal: number };
 }
 
@@ -174,16 +173,6 @@ export async function runGroups(
         const cache = data.cache;
         const hitRatePercent = (cache.hitRate * 100).toFixed(1);
         console.log(`  ${chalk.dim('Cache hit rate:')} ${hitRatePercent}%`);
-      }
-
-      if (data.watcher) {
-        const totalEvents = Object.values(data.watcher).reduce<number>(
-          (sum, w) => sum + (w?.eventsProcessed ?? 0),
-          0
-        );
-        if (totalEvents > 0) {
-          console.log(`  ${chalk.dim('File changes processed:')} ${totalEvents}`);
-        }
       }
 
       if (data.memory) {

@@ -60,7 +60,7 @@ describe('LANGUAGE_EXCLUDE_DEFAULTS', () => {
 
 describe('terraform secret/state excludes', () => {
   // Mirror the real matching path: normalizeExcludePatterns → Minimatch against
-  // the relative file path (see server watcher/config).
+  // the relative file path (see server config).
   const matchers = normalizeExcludePatterns(LANGUAGE_EXCLUDE_DEFAULTS.terraform!).map(
     (p) => new Minimatch(p)
   );

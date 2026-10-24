@@ -510,7 +510,7 @@
     },
     {
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "description": "Files and chunks added per second, broken down by group. Indexing runs in bursts — expect spikes when a new repo comes online or when the watcher catches a large change.",
+      "description": "Files and chunks added per second, broken down by group. Indexing runs in bursts — expect spikes when a new repo comes online or when the indexer picks up a large change.",
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -537,7 +537,7 @@
           "unit": "short"
         }
       },
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 21 },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 21 },
       "id": 10,
       "options": {
         "legend": {
@@ -557,57 +557,6 @@
         }
       ],
       "title": "Indexing throughput (chunks/s by group)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "description": "Watcher event rate per group, split by type (change / unlink / add). A flat line at zero means the watcher isn't seeing file changes — possibly because no project is mounted, or chokidar lost its handles.",
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "axisBorderShow": false,
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 12,
-            "gradientMode": "none",
-            "hideFrom": { "legend": false, "tooltip": false, "viz": false },
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 4,
-            "scaleDistribution": { "type": "linear" },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": { "group": "A", "mode": "none" },
-            "thresholdsStyle": { "mode": "off" }
-          },
-          "mappings": [],
-          "unit": "ops"
-        }
-      },
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 21 },
-      "id": 11,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-          "expr": "sum by (event_type) (rate(paparats_watcher_events_total[5m]))",
-          "legendFormat": "{{event_type}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Watcher events",
       "type": "timeseries"
     },
     {

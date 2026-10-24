@@ -20,7 +20,6 @@ import { tctx } from '../src/telemetry/context.js';
 import { prompts } from '../src/prompts/index.js';
 import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
-import type { WatcherManager } from '../src/watcher.js';
 import type { CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { DocsDocument, DocsSearchHit } from '../src/docs/types.js';
 import type { ProjectConfig } from '../src/types.js';
@@ -295,7 +294,6 @@ function projectConfig(name: string): ProjectConfig {
       concurrency: 2,
       batchSize: 50,
     },
-    watcher: { enabled: false, debounce: 1000, stabilityThreshold: 1000 },
     embeddings: { provider: 'llama', model: 'test', dimensions: 4 },
     metadata: {
       service: name,
@@ -369,7 +367,6 @@ async function start(
   const created = createApp({
     searcher: mockSearcher(opts.projectScope ?? null),
     indexer: mockIndexer(),
-    watcherManager: { getStats: vi.fn() } as unknown as WatcherManager,
     embeddingProvider: { getCacheStats: vi.fn() } as unknown as CachedEmbeddingProvider,
     projectsByGroup: new Map([['g1', [projectConfig('handbook')]]]),
     docsStore: docsStore as never,

@@ -6,7 +6,6 @@ import { DocsStore } from './docs/store.js';
 import { DocsIdfStore } from './docs/idf-store.js';
 import { TerminologyStore } from './terminology/store.js';
 import { Searcher } from './searcher.js';
-import { WatcherManager } from './watcher.js';
 import { MetadataStore } from './metadata-db.js';
 import { createTreeSitterManager } from './tree-sitter-parser.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
@@ -163,23 +162,6 @@ const searcher = new Searcher({
   projectSuffix: PAPARATS_PROJECT_SUFFIX,
 });
 
-const watcherManager = new WatcherManager({
-  onFileChanged: async (groupName, project, filePath) => {
-    await tctx.run(systemContext('watcher'), async () => {
-      searcher.invalidateGroupCache(groupName);
-      metrics.incWatcherEventsTotal(groupName, 'changed');
-      await indexer.updateFile(groupName, project, filePath);
-    });
-  },
-  onFileDeleted: async (groupName, project, filePath) => {
-    await tctx.run(systemContext('watcher'), async () => {
-      searcher.invalidateGroupCache(groupName);
-      metrics.incWatcherEventsTotal(groupName, 'deleted');
-      await indexer.deleteFile(groupName, project, filePath);
-    });
-  },
-});
-
 // ── Create and start server ─────────────────────────────────────────────────
 
 let created: ReturnType<typeof createApp>;
@@ -187,7 +169,6 @@ try {
   created = createApp({
     searcher,
     indexer,
-    watcherManager,
     embeddingProvider,
     projectsByGroup,
     metadataStore,
@@ -362,7 +343,6 @@ async function shutdown(): Promise<void> {
   if (gaugeRefreshTimer) clearInterval(gaugeRefreshTimer);
   stopGroupPoll();
   mcpHandler.destroy();
-  await watcherManager.stopAll();
   embeddingProvider.close();
   archEmbeddingProvider.close();
   metadataStore.close();

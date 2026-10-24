@@ -59,7 +59,7 @@ export const tctx = {
 };
 
 export function systemContext(
-  actor: 'watcher' | 'scheduler' | 'indexer' | 'cli' | 'arch-heal' | 'docs-heal' | 'terms-heal'
+  actor: 'scheduler' | 'indexer' | 'cli' | 'arch-heal' | 'docs-heal' | 'terms-heal'
 ): TelemetryContext {
   return newContext({ user: `system:${actor}` });
 }

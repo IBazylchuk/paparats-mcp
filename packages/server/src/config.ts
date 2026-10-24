@@ -17,7 +17,6 @@ import type {
   ResolvedIndexingConfig,
   ResolvedMetadataConfig,
   GitMetadataConfig,
-  WatcherConfig,
   EmbeddingsConfig,
 } from './types.js';
 
@@ -114,12 +113,6 @@ const DEFAULT_INDEXING: ResolvedIndexingConfig = {
   overlap: 128,
   concurrency: 2,
   batchSize: 50,
-};
-
-const DEFAULT_WATCHER: Required<WatcherConfig> = {
-  enabled: true,
-  debounce: 1000,
-  stabilityThreshold: 1000,
 };
 
 // Default model: BAAI/bge-code-v1 (Apache-2.0, 1536d, --pooling last).
@@ -328,13 +321,6 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
     batchSize: userIndexing.batchSize ?? DEFAULT_INDEXING.batchSize,
   };
 
-  if (raw.watcher?.debounce !== undefined) {
-    const d = raw.watcher.debounce;
-    if (!Number.isInteger(d) || d < 100 || d > 10000) {
-      throw new Error(`watcher.debounce must be between 100 and 10000ms, got ${d}`);
-    }
-  }
-
   if (raw.embeddings?.provider !== undefined) {
     const provider = raw.embeddings.provider;
     if (!VALID_EMBEDDING_PROVIDERS.includes(provider)) {
@@ -344,19 +330,6 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
       );
     }
   }
-
-  if (raw.watcher?.stabilityThreshold !== undefined) {
-    const s = raw.watcher.stabilityThreshold;
-    if (!Number.isInteger(s) || s < 100 || s > 10000) {
-      throw new Error(`watcher.stabilityThreshold must be between 100 and 10000ms, got ${s}`);
-    }
-  }
-
-  const watcher: Required<WatcherConfig> = {
-    enabled: raw.watcher?.enabled ?? DEFAULT_WATCHER.enabled,
-    debounce: raw.watcher?.debounce ?? DEFAULT_WATCHER.debounce,
-    stabilityThreshold: raw.watcher?.stabilityThreshold ?? DEFAULT_WATCHER.stabilityThreshold,
-  };
 
   const embeddings: Required<EmbeddingsConfig> = {
     provider: raw.embeddings?.provider ?? DEFAULT_EMBEDDINGS.provider,
@@ -387,7 +360,6 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
     patterns,
     exclude,
     indexing,
-    watcher,
     embeddings,
     metadata,
     docs: { kind: raw.docs?.kind ?? null, audience: audience ?? null },
@@ -536,7 +508,6 @@ export function buildProjectConfigFromContent(
     patterns: [],
     exclude: [],
     indexing,
-    watcher: DEFAULT_WATCHER,
     embeddings: DEFAULT_EMBEDDINGS,
     metadata: resolveMetadata(undefined, projectName),
     docs: { kind: null, audience: null },

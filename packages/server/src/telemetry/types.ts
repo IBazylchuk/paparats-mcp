@@ -51,7 +51,7 @@ export interface IndexingRunEvent {
   endedAt: number | null;
   groupName: string;
   projectName: string | null;
-  trigger: 'cron' | 'api' | 'watcher' | 'cli';
+  trigger: 'cron' | 'api' | 'cli';
   filesTotal: number;
   filesSkipped: number;
   chunksTotal: number;

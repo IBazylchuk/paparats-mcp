@@ -5,7 +5,3 @@ language: typescript
 indexing:
   paths: ["src/"]
   exclude: ["node_modules/**", "dist/**", ".next/**", "coverage/**"]
-
-watcher:
-  enabled: true
-  debounce: 500
