@@ -567,7 +567,7 @@ Connect via the **support endpoint** (`/support/mcp`):
 | **Recent changes**             | `recent_changes "auth" --since 2024-01-01` → timeline with tickets     |
 | **Trace usages**               | `find_usages {chunk_id}` → who calls/references this chunk             |
 | **Change history**             | `get_chunk_meta <chunk_id>` → authors, dates, linked tickets           |
-| **Blast radius**               | `impact_analysis <chunk_id>` → cross-chunk + cross-project impact      |
+| **Blast radius**               | `impact_analysis "payment retry"` → dependents grouped by service      |
 | **Architectural Q&A**          | `arch_context "why X"` → components / decisions / lessons (with age)   |
 | **Capture decisions & lessons**| `arch_record_decision` / `arch_record_lesson` — agent writes as it learns, server-side dedup |
 
@@ -770,7 +770,7 @@ change history, cost reporting — all in plain language.
 | `search_changes`       | Semantic search filtered by last-commit date. Each result shows when it last changed. |
 | `explain_feature`      | Comprehensive feature analysis: locations + recent changes for a question.            |
 | `recent_changes`       | Timeline grouped by date with commits, tickets, affected files. `since` filter.       |
-| `impact_analysis`      | Cross-chunk impact for a `chunk_id` — symbol graph traversal + cross-project blast radius. |
+| `impact_analysis`      | Blast radius for a natural-language `question`: finds seed chunks, walks the symbol graph 1–2 hops (`max_hops`), groups dependents by service. No code. |
 | `arch_context`         | Read the architectural memory for a group — top-matching components, decisions and lessons, each stamped with "updated N ago" and a cosine score. Accepts a `min_score` parameter (default 0.45) to gate low-confidence hits. Call before any architectural answer. **Also available on `/mcp`.** |
 | `arch_record_component` | Record a component with `Does / Owns / Does not / Touched when` fields. Idempotent by `name`. |
 | `arch_record_decision` | Record an ADR-style decision (`context / decision / alternatives_rejected / consequences`). Server-side similarity gate refuses duplicates and surfaces near-matches; `supersedes` links replace prior decisions. |
@@ -950,6 +950,53 @@ Or add to `.mcp.json` in project root:
   }
 }
 ```
+
+### Claude Code plugin
+
+The repository is also a Claude Code plugin marketplace. The plugin registers the
+coding endpoint and adds a `paparats-search` skill (when to search semantically,
+when to grep):
+
+```bash
+/plugin marketplace add IBazylchuk/paparats-mcp
+/plugin install paparats@paparats
+```
+
+The endpoint is the plugin's `server_url` option (default
+`http://localhost:9876/mcp`); set it to `/support/mcp` or to a shared server's
+address instead.
+
+### Antigravity
+
+Antigravity CLI (`agy`, Google's successor to Gemini CLI) installs the repository as a
+plugin (`plugin.json` + `mcp_config.json`):
+
+```bash
+agy plugin install https://github.com/IBazylchuk/paparats-mcp
+```
+
+Or add the server by hand to `~/.gemini/config/mcp_config.json` — Antigravity uses
+`serverUrl`; the older `url` / `httpUrl` keys are not read:
+
+```json
+{ "mcpServers": { "paparats": { "serverUrl": "http://localhost:9876/mcp" } } }
+```
+
+### Gemini CLI
+
+Gemini CLI (still available for Code Assist Standard / Enterprise and API-key users)
+installs the repository as an extension (`gemini-extension.json`, `httpUrl`):
+
+```bash
+gemini extensions install https://github.com/IBazylchuk/paparats-mcp
+```
+
+### Grok Build, Cline and other clients
+
+`grok/` is a Grok Build plugin (MCP server + the same skill). `llms-install.md` is a
+step-by-step install guide written for an agent: Cline (or any agent) can follow it to
+install the CLI, start the stack, index a project and add the server to its own MCP
+config. A Cursor plugin manifest lives in `.cursor-plugin/`.
 
 ### Verify
 
