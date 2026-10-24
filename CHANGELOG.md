@@ -14,7 +14,7 @@
 
 ### Patch Changes
 
-- @paparats/shared@2.11.0
+- fd0942a: `yarn release:local` now also creates the GitHub Release for each version, with its changelog entry as notes, so directories that track GitHub Releases (such as Glama) pick up new versions. The Docker and MCP Registry workflows now trigger on the version tag only, so a published release no longer starts them a second time.
 
 ## [2.10.0] - 2026-10-24
 
@@ -26,13 +26,13 @@
 
 ### Patch Changes
 
+- 7399d74: README and package metadata brought in line with the code. The README now describes index freshness as it works (a change check every 10 minutes plus a scheduled full pass and `POST /trigger`, no file watcher), lists the tools each MCP endpoint really has (architectural memory is coding-only; docs and glossary tools added), and corrects the embedding model (`bge-code-v1`, not Jina), the embed port (18434), the default group (`default`), chunking defaults and the projects.yml precedence. It gains an FAQ, a sourced comparison with claude-context, Serena, codebase-memory-mcp, claude-context-local and Sourcegraph, setup snippets for Codex, GitHub Copilot and Windsurf, and an environment-variable reference. Maintainer release notes moved to `docs/releasing.md` and the observability deep dive to `docs/observability.md`; `llms.txt` was added. The CLI README, `llms-install.md`, the npm description and keywords, `server.json` and the client plugin manifests use the same "self-hosted semantic code search" definition.
 - ed3f624: Remove the server's unused file watcher (never started since content-based indexing); index freshness comes from the indexer's change detection.
 
   - `GET /api/stats` no longer returns a `watcher` field (it was always an empty object), and `paparats groups --verbose` no longer prints "File changes processed".
   - The `paparats_watcher_events_total` Prometheus metric and its Grafana panel are gone; the metric never incremented.
   - `ProjectWatcher`, `WatcherManager`, their types and `WatcherConfig` are no longer exported from `@paparats/server`, and `ProjectConfig` has no `watcher` field. The server drops its `chokidar` dependency.
   - A `watcher:` section in `.paparats.yml` is now ignored rather than validated, so existing configs keep loading.
-  - @paparats/shared@2.10.0
 
 ## [2.9.1] - 2026-10-24
 
@@ -76,8 +76,6 @@
 
   - Returns a whole document rebuilt from its stored sections, in order and without the breadcrumb added for embedding, paged at about 40,000 characters (`from_section` continues). Keyed by project and file, which survive re-indexing.
   - Available on the knowledge and support endpoints; support's `search_docs` excerpts now point at it, since support users cannot open files. The coding endpoint is unchanged.
-
-### Patch Changes
 
 ## [2.8.0] - 2026-10-07
 
@@ -133,8 +131,6 @@
 
   simple-git 4, better-sqlite3 13 (prebuilt Node-API binaries), TypeScript 6, vitest 5, `@qdrant/js-client-rest` 1.19 (`search()` → `query()`), and `prom-client` replaced by its successor `@prometheus-io/client`.
 
-### Patch Changes
-
 ## [2.7.0] - 2026-09-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -179,8 +175,6 @@
 
   The project count in the overview is now taken from the registered project map
   rather than approximated from the indexer's repo list.
-
-### Patch Changes
 
 ## [2.6.2] - 2026-09-02
 
@@ -293,10 +287,6 @@
   say the intent needs an engineer. Without a stated destination the model fills the gap
   by inferring intent from search results and presenting it as the reason.
 
-### Patch Changes
-
-- @paparats/shared@2.6.0
-
 ## [2.5.0] - 2026-08-03
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -310,10 +300,6 @@
   Support mode gains `arch_record_component`, `arch_record_decision`, `arch_record_lesson`, `arch_list`, `arch_suggest_components` and `term_record`. Support is usually first to learn a non-obvious constraint — from an incident, an escalation, or customer vocabulary — and previously could not record it. The boundary is now reversibility rather than role: additive writes pass a similarity gate, while the destructive tools (`arch_delete`, `term_delete`, `delete_project`) remain coding-only.
 
   Both modes are also told that coverage differs per layer: only code is densely indexed, so a miss on docs, glossary or arch memory means "not recorded yet" rather than "does not exist".
-
-### Patch Changes
-
-- @paparats/shared@2.5.0
 
 ## [2.4.6] - 2026-08-03
 
@@ -330,7 +316,6 @@
   Glossary vector search embedded the query without the model's retrieval instruction. qwen3 pools on the last token, so that instruction is part of its trained query interface — applying it moved top-1 accuracy on paraphrase lookups from 61% to 91%, and put the right term in the top 8 for every query tested. Stored entries are unprefixed, so no re-index is needed.
 
   Both floors were re-swept against the new score distribution: the direct `term_search` floor drops to 0.55 (keeping 16 more correct answers at no cost in false positives) and the docs sidecar floor to 0.50 (answering every direct term question instead of 6 in 10).
-  - @paparats/shared@2.4.6
 
 ## [2.4.5] - 2026-07-31
 
@@ -382,7 +367,6 @@
   Retrieval quality is unaffected by glossary size either way — precision@1 held at
   85–87% and recall@5 at 97% from 1 term to 78 — because matched terms are reported
   beside the results rather than folded into the query.
-  - @paparats/shared@2.4.5
 
 ## [2.4.4] - 2026-07-31
 
@@ -419,7 +403,6 @@
 
   The margin is thin on both sides, so the calibration is worth repeating once the
   glossary grows substantially.
-  - @paparats/shared@2.4.4
 
 ## [2.4.3] - 2026-07-31
 
@@ -497,7 +480,6 @@
   A missing collection is now distinguished by status code and still reads as empty;
   everything else propagates. `deleteTerm` is unchanged — its `false` return already
   surfaces the failure.
-  - @paparats/shared@2.4.3
 
 ## [2.4.2] - 2026-10-24
 
@@ -541,8 +523,6 @@
   Overview-style files (README, CLAUDE.md, design notes) mention many topics in passing, so they score deceptively well against questions they do not answer. A single floor could not separate them: measured over 102 answerable and 30 absent-topic queries, one floor either let half the absent topics through or cost 11 points of precision@1. Per-kind floors (prose 0.45, code 0.60) blocked 29/30 absent topics without losing a single real answer. Classification is automatic — a repo with no detected code languages is prose — and overridable via `docs.kind` in `.paparats.yml`. `search_docs` gains `min_score_code`.
 
   Results also carry a `Last updated ... ago` line for documents untouched for over a year, so a stale page can be discounted instead of quoted as current. Age is disclosed only, never used for ranking.
-
-### Patch Changes
 
 ## [2.3.2] - 2026-07-30
 
@@ -603,7 +583,6 @@
   measured set the top hit is correct 89% of the time while the right document is in
   the top 3 for 96% — so stopping at the first result loses answers that were
   retrieved.
-  - @paparats/shared@2.3.2
 
 ## [2.3.1] - 2026-07-30
 
@@ -633,7 +612,6 @@
   Measured over a markdown corpus: largest chunk 4225 → 706 tokens, chunks over
   1024 tokens 1 → 0, with p50/p95 chunk size unchanged (405/1331 chars) — only the
   degenerate chunk is affected.
-  - @paparats/shared@2.3.1
 
 ## [2.3.0] - 2026-07-24
 
@@ -648,10 +626,6 @@
   - **Server-enforced ceiling.** `PAPARATS_DOCS_AUDIENCE` (comma-separated) sets a hard audience ceiling for the whole server, threaded through `createApp` → `McpHandler`. A request's own `audience` is intersected with the ceiling (`applyAudienceScope`) — it can only narrow within it, never widen past it; a disjoint request returns no results rather than silently widening. This is the mechanism a future client-facing endpoint uses to make internal docs physically unreachable, not merely filtered.
 
   Additive and backward-compatible in code. Note: existing docs chunks indexed before this change have no `audience` field and thus read back as `internal` and are excluded by any explicit `audience` filter — re-index the docs layer to populate the field.
-
-### Patch Changes
-
-- @paparats/shared@2.3.0
 
 ## [2.2.0] - 2026-07-21
 
@@ -678,6 +652,24 @@
     memory/CPU limit on the embed service (`EMBED_MEMORY`/`EMBED_CPUS`).
 
 ### Patch Changes
+
+- 9588d46: Harden indexing against non-source content and embed-server memory blow-ups.
+
+  - **Skip machine-generated / non-source content** — files with a source-file
+    extension but no source structure (base64 asset blobs, minified bundles, e.g.
+    `convex/export/pptx/assets/*.data.ts`) were being fed to the embedder as a
+    single multi-hundred-KB token wall, driving `llama-server` into 502s, 240s
+    timeouts, and OOM — indexing stalled at `0 chunks`. A new structural detector
+    (`detectNonSource` in `@paparats/shared`) judges content by line length,
+    whitespace ratio, and base64-alphabet dominance (name-independent). The indexer
+    skips such files before chunking and drops individual non-source chunks before
+    embedding, with telemetry. Known classes (`*.min.js`, `*.bundle.js`,
+    `*.data.ts`, …) are also added to the default TypeScript/JavaScript excludes.
+  - **Embed server memory** — the `paparats-embed` image now sizes the per-model
+    llama-server compute buffer via `LLAMA_BATCH` (default 2048, was a hardcoded
+    8192 that caused cgroup OOM with two resident models) and exposes
+    `LLAMA_THREADS`. The compose generator wires both through and sets an explicit
+    memory/CPU limit on the embed service (`EMBED_MEMORY`/`EMBED_CPUS`).
 
 ## [2.1.1] - 2026-07-18
 
@@ -718,15 +710,13 @@
   - **Indexer** — an opt-in `INDEX_DOCS` flag makes the indexer daemon walk each repo's
     markdown into the docs layer; off by default, so existing deployments are unaffected.
 
-### Patch Changes
-
 ## [2.0.3] - 2026-07-17
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
 ### Patch Changes
 
-- @paparats/shared@2.0.3
+- 333e964: Docker embed image now keeps both embedding models resident by default: `EMBED_TTL` defaults to `0` (never unload) in the image, entrypoint, compose generator and devcontainer — matching the native macOS config. With the previous default of `300`, llama-swap's idle-unload path stayed active out of the box, leaving the abort-mid-unload deadlock reachable in Docker deployments. Idle unload remains opt-in by setting a positive `EMBED_TTL`.
 
 ## [2.0.2] - 2026-10-24
 
@@ -734,7 +724,7 @@
 
 ### Patch Changes
 
-- @paparats/shared@2.0.2
+- 4e86036: Prevent llama-swap deadlock under concurrent load: generated llama-swap configs now keep both embedding models in a `swap: false` group so they never swap each other out. The native (macOS) config also drops per-model `ttl` — both models stay resident (~2.2 GB total). llama-swap's swap/unload state machine can wedge permanently when a client abort lands mid-swap; the proxy keeps answering `/v1/models` but never spawns an upstream again, so every embedding request hangs until restart. The Docker template keeps the `EMBED_TTL` idle-unload knob (set `EMBED_TTL=0` to remove the unload path entirely).
 
 ## [2.0.1] - 2026-07-17
 
@@ -779,7 +769,6 @@
 
   Note: the architectural-memory layer (`_arch` collections) is intentionally not
   suffixed — it does not participate in cross-group eviction.
-  - @paparats/shared@2.0.1
 
 ## [2.0.0] - 2026-07-16
 
@@ -802,8 +791,6 @@
   - **Instruction-aware queries.** Query-type detection (nl2code / code2code / techqa) maps to each model family's instruction template using **verbatim task strings from the model cards** (a paraphrased instruction measurably degrades retrieval). Documents are embedded unprefixed (asymmetric retrieval). Instructions auto-enable for instruction-tuned families and stay off for cloud providers.
 
   See `docs/replacing-embedding-models.md` for the full cutover checklist and the process for swapping models in the future.
-
-### Patch Changes
 
 ## [1.7.9] - 2026-07-15
 
@@ -863,7 +850,7 @@
 
 ### Patch Changes
 
-- @paparats/shared@1.7.7
+- 4080c83: Migrate the legacy `ollamaMode` field in `install.json` to `embedMode`. Ollama-era installs wrote `{"ollamaMode": "native"}`; the field was renamed to `embedMode` but the reader never migrated it, so `readInstallState` returned a state with an undefined `embedMode`. `paparats update` then took the "state present" path and regenerated the compose with no `EMBED_URL`, leaving the Dockerised server/indexer unable to reach the host embed. `readInstallState` now reads `embedMode` or the legacy `ollamaMode`, drops the old key, and returns null when neither names a valid mode so callers re-derive from the compose.
 
 ## [1.7.6] - 2026-07-15
 
@@ -875,7 +862,6 @@
 
   - **Heal legacy compose on update.** Installs that predate `install.json` (Ollama-era) had compose files generated before the `EMBED_URL` env existed, so the containers fell back to `127.0.0.1` — themselves — instead of `host.docker.internal`. Update previously _skipped_ compose regeneration when `install.json` was missing, so the stale file was never repaired. Update now derives the embed/qdrant config from the existing compose (`deriveRegenerateOptsFromCompose`, scoped to the `services:` block to avoid false positives from `volumes:`/`networks:`), regenerates so `EMBED_URL` is written, and records a fresh `install.json`. `paparats edit` reuses the same helper.
   - **Dedicated embed port 18434 (was 11434).** llama-swap no longer squats Ollama's default port, so a host running Ollama for other tools is unaffected and an embed call can't silently hit Ollama (which rejects the jina-code model). The port is updated consistently across the compose generator, all `EMBED_URL` defaults (server, indexer, CLI), the launchd/spawn listen address, and the doctor/status health checks.
-  - @paparats/shared@1.7.6
 
 ## [1.7.5] - 2026-07-15
 
@@ -883,7 +869,7 @@
 
 ### Patch Changes
 
-- @paparats/shared@1.7.5
+- a60fadc: Fix native embed unreachable from the Dockerised MCP server and indexer (`llama-server failed after 3 retries: fetch failed`). llama-swap was started with `--listen 127.0.0.1:11434` (loopback only), but the containers reach the host embed via `host.docker.internal`, which arrives on the host-gateway interface — a loopback bind refuses those connections. Bind to `0.0.0.0:11434` instead (in the launchd plist and the non-macOS detached spawn), matching Ollama's default. `paparats update` on macOS rewrites the launchd plist every run, so a single update repoints an existing 127.0.0.1 install to 0.0.0.0.
 
 ## [1.7.4] - 2026-07-15
 
@@ -891,7 +877,7 @@
 
 ### Patch Changes
 
-- @paparats/shared@1.7.4
+- 46c4c27: Fix `paparats update` skipping native embed setup on hosts that upgraded from the Ollama era. Those developer installs have a `docker-compose.yml` (Qdrant + server) but run embeddings natively and never wrote `install.json`, so the old detection ("macOS without docker-compose.yml") never fired and the host was left with no embed backend after the Ollama→llama-server migration. Detection now inspects the compose file: if it exists WITHOUT an `embed` service, the embed is native and gets refreshed. A truthy `install.json` with an unset `embedMode` also falls through to detection instead of silently skipping.
 
 ## [1.7.3] - 2026-07-15
 
@@ -899,7 +885,13 @@
 
 ### Patch Changes
 
-- @paparats/shared@1.7.3
+- 4cafcfe: Make `paparats update` reliably install/refresh the native embed server, and fail loudly when the CLI didn't actually upgrade
+
+  Two ways `paparats update` could leave a host with no running embed backend after the Ollama→llama-server migration — both fixed:
+
+  - **No install.json → embed step silently skipped.** The native-embed refresh was gated on `install.json` reporting `embedMode: native`. Installs from before that file existed (or hand-rolled ones) have no install.json, so the step was skipped without a word. `update` now detects native usage when install.json is absent — llama-swap/llama-server on PATH, a `~/.paparats/llama-swap.yaml`, or a macOS host with no `docker-compose.yml` — and installs/refreshes/starts the embed server anyway. When it does skip, it now logs the reason instead of staying silent.
+
+  - **CLI upgrade silently didn't take.** `npm install -g @paparats/cli@latest` can exit 0 without actually upgrading (a `paparats` on PATH from a different node/nvm than the `npm` that ran, or missing global-write perms), leaving the process on old code — every later step then ran the old logic while reporting success. `update` now verifies the installed global version against npm latest after the install and aborts with an actionable error (which node/nvm to fix) instead of a false "Update complete". Skipped gracefully when the registry is unreachable.
 
 ## [1.7.2] - 2026-07-15
 
@@ -907,7 +899,12 @@
 
 ### Patch Changes
 
-- @paparats/shared@1.7.2
+- 405ea7f: Fix native embed install and make `paparats update` refresh it
+
+  - Correct the llama-swap Homebrew formula: it lives at `mostlygeek/llama-swap/llama-swap` (tap repo `homebrew-llama-swap`), not the non-existent `mostlygeek/tap/llama-swap`. `brew install` of the old name failed with `Repository not found`, breaking native macOS installs.
+  - `brewInstall` now taps and trusts a third-party formula before installing it — recent Homebrew refuses to load formulae from untrusted taps (`Refusing to load formula ... from untrusted tap`).
+  - `paparats update` now also installs/refreshes/starts the native embed server (llama-server + llama-swap) for native installs, so a single `paparats update` brings the whole stack current. Previously it only touched the Docker services, leaving Ollama-era hosts without a running embed backend. Add `--skip-embed` to opt out.
+  - On macOS the native embed server now runs under a launchd LaunchAgent (`com.paparats.embed`) with `RunAtLoad` + `KeepAlive`, so it survives reboots and restarts on crash. Previously it was a detached process that died on reboot. llama-swap's Homebrew formula ships no `service` block, so `brew services` can't supervise it — this replaces that gap. Non-macOS still uses a detached spawn.
 
 ## [1.7.1] - 2026-10-24
 
@@ -926,7 +923,6 @@
 database is locked`, crashing server startup. Waiting up to 30s comfortably
   covers a full-table migration or a batch upsert, so the writers queue instead of
   erroring.
-  - @paparats/shared@1.7.1
 
 ## [1.7.0] - 2026-07-15
 
@@ -956,10 +952,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
     stats aggregate via an index range scan instead of a full-table `LIKE` scan.
     Existing databases are migrated in place (column added + backfilled from
     `from_chunk_id`); new and reindexed edges populate it directly.
-
-### Patch Changes
-
-- @paparats/shared@1.7.0
 
 ## [1.6.0] - 2026-07-14
 
@@ -991,8 +983,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
     accelerated) instead of Ollama; no Modelfile / `ollama create` step — llama-swap
     loads models by name on demand.
 
-### Patch Changes
-
 ## [1.5.0] - 2026-07-09
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1005,8 +995,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - `blockLabels` now resolves bare identifier block labels (`resource aws_instance web`), not just quoted string labels.
   - Reference resolution walks consecutive `get_attr` siblings instead of scanning all of a variable expression's parent's children, so unrelated sibling expressions (e.g. `concat(var.x, local.y)`) no longer leak into the attribute chain.
   - `readConfig`/`loadIndexerConfig` no longer crash on a malformed or comment-only config file — js-yaml 5 throws on empty-document input, now caught and surfaced as a clean `Invalid config at <path>` error.
-
-### Patch Changes
 
 ## [1.4.0] - 2026-10-24
 
@@ -1023,8 +1011,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Pinned the bundled Ollama Docker images to 0.24.0 (last 0.2x line; 0.30+ is incompatible).
 
   TypeScript stays on 5.9 and web-tree-sitter on 0.25 — TS 6/7 is blocked by typescript-eslint's peer range, and web-tree-sitter 0.26 breaks the tree-sitter grammar ABI.
-
-### Patch Changes
 
 ## [1.3.2] - 2026-06-10
 
@@ -1067,10 +1053,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - **Sanitise arch-card text before MCP render.** Cards may be authored by other agents (different conversation, different process). Their `name` / `title` / `summary` / `rule` / `why` / `when` / `files` are now stripped of ANSI escapes, C0 control bytes, and zero-width / bidi-override code points before landing in `arch_context` and `arch_list` output. Inline labels are additionally length-capped. Defends against prompt-injection through a card that survives across sessions.
   - **`arch_context` stays uncached on purpose.** Audited the read path: no in-memory cache sits between `buildArchContext` and the Qdrant store. Support mode has no file watcher and no cross-mode invalidation signal, so any cache here would serve stale cards after a coding-mode write. Locked this in with a comment in `arch/context.ts` and a regression test that asserts back-to-back identical calls hit the store both times — anyone adding a cache layer must also wire up cross-mode invalidation first.
 
-### Patch Changes
-
-- @paparats/shared@1.3.0
-
 ## [1.2.0] - 2026-05-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1086,10 +1068,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
   Tool-output and ranking change: callers that rely on a specific ordering of `arch_context` results when passing `project` will see project-scoped cards moved up. Use `arch_list` if you need a stable unranked view.
 
-### Patch Changes
-
-- @paparats/shared@1.2.0
-
 ## [1.1.0] - 2026-05-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1104,10 +1082,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
   Tool output format change: lessons now span up to three lines per card (rule, `why:`, `when:`) instead of one. Update any downstream consumer that parsed `arch_context` line-by-line.
 
-### Patch Changes
-
-- @paparats/shared@1.1.0
-
 ## [1.0.2] - 2026-05-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1117,7 +1091,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 - bfa9231: arch_context: surface card id in every result line
 
   The formatted `arch_context` tool output now includes the card id next to each component, decision, and lesson, e.g. `**file indexer** (id ` + "`" + `01926abc-...` + "`" + `, 4d ago, score 0.62) — Indexes files...`. Without this, a caller had no way to obtain ids from the tool output and could not invoke `arch_delete`. The renderer is extracted into `renderArchContextSection` so the contract is regression-tested.
-  - @paparats/shared@1.0.2
 
 ## [1.0.1] - 2026-05-24
 
@@ -1133,7 +1106,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Coding-mode only. Support mode stays strictly read-only.
 
   Programmatic API: `ArchStore.deletePoints(group, ids): Promise<{ deleted: string[]; notFound: string[] }>`. A missing collection is treated as "every id not found" so first-run-of-a-migration is safe to retry.
-  - @paparats/shared@1.0.1
 
 ## [1.0.0] - 2026-05-24
 
@@ -1164,10 +1136,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Filtering stays post-fetch (Qdrant's `match.value` / `match.any` can't express "hard for components, soft for non-components" in a single filter). When `project` is set the underlying Qdrant `limit` is overfetched 3× before filtering. Best-effort only: if the filter still leaves fewer than `limit` hits, the short list is returned — there is no recursive top-up.
   - `findByName(group, kind, name, project?)` now scopes the lookup by `project` when given, so `upsertComponent` no longer cross-overwrites a same-named component in another project of the same group.
 
-### Patch Changes
-
-- @paparats/shared@1.0.0
-
 ## [0.11.0] - 2026-05-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1186,10 +1154,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
   Backwards-compatible: when `path_prefixes` is omitted the tool behaves as before.
 
-### Patch Changes
-
-- @paparats/shared@0.11.0
-
 ## [0.10.2] - 2026-05-23
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1197,7 +1161,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 ### Patch Changes
 
 - 2e05623: Fix architectural-memory tool exposure per MCP mode. Coding mode now exposes the full arch toolkit (`arch_context` plus all three `arch_record_*` writers and the `init_arch_memory` / `record_lesson_from_correction` workflows), and support mode is strictly read-only (`arch_context` and the `audit_architecture` workflow). Previously the writers were wired into support and missing from coding, which is the opposite of how the modes are used: agents author memory while making changes (coding), while support consumers only read it.
-  - @paparats/shared@0.10.2
 
 ## [0.10.1] - 2026-05-23
 
@@ -1205,7 +1168,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-- @paparats/shared@0.10.1
+- 5cc9ada: `paparats update` now regenerates `docker-compose.yml` from `install.json` + `projects.yml` before pulling images and runs `docker compose up -d --remove-orphans`. Previously, when a new CLI version shipped new service fields, the on-disk compose stayed stale and `up -d` could fail with a container-name conflict (e.g. `paparats-mcp already in use`). The previous compose is preserved at `docker-compose.yml.bak` whenever the contents actually change.
 
 ## [0.10.0] - 2026-05-23
 
@@ -1276,8 +1239,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   Keywords: architectural memory, ADR memory, decision records, lessons learned,
   living architecture, Reflexion, agent memory, knowledge base, cross-session continuity,
   init prompt, /init, audit, observability, Prometheus metrics, min_score, threshold.
-
-### Patch Changes
 
 ## [0.9.2] - 2026-05-21
 
@@ -1374,8 +1335,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   `paparats.indexing.chunking_error`) with their attributes, plus honest
   caveats about what's not parented or auto-instrumented yet.
 
-### Patch Changes
-
 ## [0.8.1] - 2026-05-18
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1420,8 +1379,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   Docker Compose generator's "skip Ollama service when cloud provider is set"
   flow. Both will follow in a smaller CLI-focused PR.
 
-### Patch Changes
-
 ## [0.7.0] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1445,8 +1402,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
     now infers the group when the server has exactly one — keeps the demo
     flow (and ad-hoc explorers) usable without setup.
 
-### Patch Changes
-
 ## [0.6.0] - 2026-05-16
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1454,8 +1409,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 ### Minor Changes
 
 - [#56](https://github.com/IBazylchuk/paparats-mcp/pull/56) [`aafbfc2`](https://github.com/IBazylchuk/paparats-mcp/commit/aafbfc2e98679357f87b98b72f7c1a7155207e23) Add change-detection to the indexer. Two cron schedules now run side by side: a fast `CRON_FAST` tick (default `*/10 * * * *`) that fingerprints each repo and only re-indexes when it changed, and a slow `CRON` safety-net (default `0 */3 * * *`, was `0 */6 * * *`) that still does a full pass. Remote repos use `git ls-remote HEAD`; bind-mounted local repos use a file mtime/size hash. State persists in `STATE_DB_PATH` (default `/data/indexer-state.db`). Set `CHANGE_DETECTION=false` to opt out.
-
-### Patch Changes
 
 ## [0.5.1] - 2026-05-16
 
@@ -1476,8 +1429,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 ### Minor Changes
 
 - [#52](https://github.com/IBazylchuk/paparats-mcp/pull/52) [`a6b60b2`](https://github.com/IBazylchuk/paparats-mcp/commit/a6b60b2efe0b32513b319d34839cecc387e22e80) `paparats add <local-path>` now auto-detects the project language from marker files (Gemfile, package.json, Cargo.toml, go.mod, …) and writes a commented `exclude_extra:` starter block beside the entry, listing the language defaults already applied by the server. The `projects.yml` header now documents every supported per-entry field. Existing entries are left untouched.
-
-### Patch Changes
 
 ## [0.4.0] - 2026-05-15
 
@@ -1535,8 +1486,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   per-project groups continue to work — the eviction pass kicks in only
   when the project moves between groups.
 
-### Patch Changes
-
 ## [0.3.2] - 2026-05-14
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -1547,7 +1496,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - **`paparats --version` was hardcoded to `0.1.2`**: `packages/cli/src/index.ts` carried a literal version string that the release pipeline never touched, so the flag returned `0.1.2` regardless of what npm had actually installed. Version is now read from the package's own `package.json` at runtime, so it tracks the published version automatically.
   - **AST chunker emitted overlapping chunks for large single declarations**: when `splitNode` recursed into a named child that spanned only one line (e.g. the identifier of an `export const homeMarkdown = ...` with a long template literal body), the identifier produced its own (start, start) chunk while the body produced (start, end), leaving the identifier chunk as a redundant subset of the body chunk. Added a `dedupeContainedChunks` post-filter to drop chunks whose range is fully contained inside another chunk's range. Ties are broken by length, then by emission order.
   - **`.tsx` / `.jsx` files were parsed with the wrong tree-sitter grammar**: `detectLanguageByPath` returns `'typescript'` for `.tsx` (which keeps `LANGUAGE_PROFILES` simple), but `tree-sitter-typescript` does not understand JSX — tags parse as bogus type expressions and identifier usages inside `<Foo prop={x}/>` or `{value}` are lost. Added `resolveAstLanguage(language, relPath)` which upgrades to the `tsx` grammar for `.tsx`/`.jsx` paths at the AST boundary, leaving the higher-level language profile untouched.
-
 - [#44](https://github.com/IBazylchuk/paparats-mcp/pull/44) [`8544dc8`](https://github.com/IBazylchuk/paparats-mcp/commit/8544dc83bb91203efbc6f61ad1eaa9f19353901f) Security bump:
   - Patch GHSA-protobufjs prototype-pollution / code-generation gadget (CVSS 8.1 High) by forcing `protobufjs ≥ 8.0.2` via root `resolutions`. The vulnerable 8.0.1 was a transitive dep of `@opentelemetry/exporter-trace-otlp-http` 0.217.0 — the resolution lifts it to 8.3.0 across the workspace. Dependabot couldn't auto-update because protobufjs is not a direct dep.
 
@@ -1585,8 +1533,6 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   **Indexing-pipeline observability** — `failed_chunks` aggregates AST parse failures, regex fallbacks, zero-chunk files, and binary skips. `slowest_searches` ranks by latency.
 
   See README.md → "Analytics & Observability" for the full configuration matrix and PII guidance.
-
-### Patch Changes
 
 <!-- END AGGREGATED -->
 

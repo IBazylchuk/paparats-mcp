@@ -89,8 +89,13 @@ run "git push origin '$TAG'"
 # workflows trigger on the tag only, so publishing the release starts nothing twice.
 echo "==> Creating GitHub Release $TAG"
 NOTES=$(mktemp)
-awk -v heading="## $VERSION" '$0 == heading { found = 1; next } found && /^## / { exit } found' \
-  packages/server/CHANGELOG.md > "$NOTES"
+# The root CHANGELOG merges every package's entries; a single package changelog misses
+# changesets that bumped only other packages.
+awk -v heading="## [$VERSION]" '
+  index($0, heading) == 1 { found = 1; next }
+  found && /^## / { exit }
+  found && !/^\*\*Packages:\*\*/ && (started || NF) { started = 1; print }
+' CHANGELOG.md > "$NOTES"
 if ! command -v gh >/dev/null 2>&1; then
   echo "warning: gh not found — create the release by hand:" >&2
   echo "         gh release create $TAG --title $TAG --notes-file <changelog entry> --verify-tag" >&2
