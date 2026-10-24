@@ -994,7 +994,7 @@ __metadata:
   resolution: "@paparats/cli@workspace:packages/cli"
   dependencies:
     "@inquirer/prompts": "npm:^8.7.4"
-    "@paparats/shared": "npm:^2.9.1"
+    "@paparats/shared": "npm:^2.10.0"
     "@types/node": "npm:^26.6.5"
     chalk: "npm:^6.0.1"
     commander: "npm:^15.0.0"
@@ -1066,7 +1066,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@paparats/shared@npm:*, @paparats/shared@npm:^2.9.1, @paparats/shared@workspace:packages/shared":
+"@paparats/shared@npm:*, @paparats/shared@npm:^2.10.0, @paparats/shared@workspace:packages/shared":
   version: 0.0.0-use.local
   resolution: "@paparats/shared@workspace:packages/shared"
   dependencies:

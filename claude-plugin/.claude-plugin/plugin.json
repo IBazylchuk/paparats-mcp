@@ -3,7 +3,7 @@
   "name": "paparats",
   "displayName": "Paparats",
   "description": "Self-hosted semantic code search across all your repos. Search by meaning, follow callers through a symbol graph, and get exact chunks instead of whole files. Runs on your machine; your code never leaves it.",
-  "version": "2.9.1",
+  "version": "2.10.0",
   "author": {
     "name": "Ilya Bazylchuk",
     "url": "https://github.com/IBazylchuk"

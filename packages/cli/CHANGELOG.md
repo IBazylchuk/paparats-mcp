@@ -1,5 +1,12 @@
 # @paparats/cli
 
+## 2.10.0
+
+### Patch Changes
+
+- 7399d74: README and package metadata brought in line with the code. The README now describes index freshness as it works (a change check every 10 minutes plus a scheduled full pass and `POST /trigger`, no file watcher), lists the tools each MCP endpoint really has (architectural memory is coding-only; docs and glossary tools added), and corrects the embedding model (`bge-code-v1`, not Jina), the embed port (18434), the default group (`default`), chunking defaults and the projects.yml precedence. It gains an FAQ, a sourced comparison with claude-context, Serena, codebase-memory-mcp, claude-context-local and Sourcegraph, setup snippets for Codex, GitHub Copilot and Windsurf, and an environment-variable reference. Maintainer release notes moved to `docs/releasing.md` and the observability deep dive to `docs/observability.md`; `llms.txt` was added. The CLI README, `llms-install.md`, the npm description and keywords, `server.json` and the client plugin manifests use the same "self-hosted semantic code search" definition.
+  - @paparats/shared@2.10.0
+
 ## 2.9.1
 
 ### Patch Changes

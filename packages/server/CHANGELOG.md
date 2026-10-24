@@ -1,5 +1,21 @@
 # @paparats/server
 
+## 2.10.0
+
+### Minor Changes
+
+- 3ab36ab: Add a stdio transport: `node packages/server/dist/index.js --stdio` serves the coding endpoint over stdin/stdout instead of HTTP, for MCP clients and registry inspectors that spawn the server. Logging moves to stderr in this mode and the process exits when the client closes stdin.
+
+### Patch Changes
+
+- ed3f624: Remove the server's unused file watcher (never started since content-based indexing); index freshness comes from the indexer's change detection.
+
+  - `GET /api/stats` no longer returns a `watcher` field (it was always an empty object), and `paparats groups --verbose` no longer prints "File changes processed".
+  - The `paparats_watcher_events_total` Prometheus metric and its Grafana panel are gone; the metric never incremented.
+  - `ProjectWatcher`, `WatcherManager`, their types and `WatcherConfig` are no longer exported from `@paparats/server`, and `ProjectConfig` has no `watcher` field. The server drops its `chokidar` dependency.
+  - A `watcher:` section in `.paparats.yml` is now ignored rather than validated, so existing configs keep loading.
+  - @paparats/shared@2.10.0
+
 ## 2.9.1
 
 ### Patch Changes
