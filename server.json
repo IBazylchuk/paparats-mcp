@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.IBazylchuk/paparats-mcp",
-  "title": "Paparats – Local Semantic Code Search MCP",
-  "description": "Local-first semantic code search across all your repos. Private context for AI coding assistants.",
+  "title": "Paparats MCP: Self-Hosted Semantic Code Search",
+  "description": "Self-hosted semantic code search MCP for Claude Code & Cursor. Multi-repo, AST-aware, stays local.",
   "version": "2.9.1",
   "license": "MIT",
   "author": {
@@ -18,18 +18,18 @@
     "windsurf",
     "semantic-code-search",
     "code-search",
-    "vector-database",
+    "self-hosted",
     "qdrant",
     "llama-cpp",
     "local-first",
-    "privacy",
+    "tree-sitter",
     "multi-repo",
     "rag",
-    "openai",
-    "anthropic",
+    "codex",
+    "codebase-search",
     "ai-coding",
-    "embedding",
-    "ai"
+    "code-intelligence",
+    "vector-search"
   ],
   "repository": {
     "url": "https://github.com/IBazylchuk/paparats-mcp",

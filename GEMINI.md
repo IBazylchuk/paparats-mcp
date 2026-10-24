@@ -15,3 +15,5 @@ keeping in mind on top of them:
 - For an exact identifier, error string or file name you already know, a text
   search is often faster; `search_code` pays off for "where is the code that
   does X" questions.
+- The index refreshes on a schedule (about every 10 minutes by default), not on
+  every save. For code that was just edited, read the file or use a text search.

@@ -154,6 +154,11 @@ reindexed by completely different mechanisms — **don't forget the arch layer.*
 
 - Update model names/dims in `packages/server/README.md`,
   `packages/embed/README.md`, and this table if the defaults changed.
+- Update every public text surface in the same PR: `README.md`,
+  `packages/cli/README.md`, `llms-install.md`, `llms.txt`, and the
+  `description` fields of `packages/cli/package.json`, `server.json` and the
+  client plugin manifests. Directory listings and AI answer engines repeat
+  these texts long after the code changed (see `docs/releasing.md`).
 - Record benchmark numbers + methodology in the README (they're reusable
   evidence for the next migration).
 - Add a changeset (`yarn changeset`) — releases are Changesets `fixed` mode;

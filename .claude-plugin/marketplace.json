@@ -1,13 +1,13 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
   "name": "paparats",
-  "description": "Paparats: local semantic code search for coding agents.",
+  "description": "Paparats MCP: self-hosted semantic code search for coding agents.",
   "owner": { "name": "Ilya Bazylchuk", "url": "https://github.com/IBazylchuk" },
   "plugins": [
     {
       "name": "paparats",
       "source": "./claude-plugin",
-      "description": "Local semantic code search across all your repos, with a skill that tells the agent when to search and when to grep."
+      "description": "Self-hosted semantic code search across all your repos, with a skill that tells the agent when to search and when to grep."
     }
   ]
 }

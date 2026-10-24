@@ -1,7 +1,7 @@
 # Installing Paparats for an AI agent
 
-Paparats is a local MCP server for semantic code search. It runs as a small
-Docker stack (Qdrant, the MCP server, an indexer and an embedding server) and
+Paparats MCP is a self-hosted MCP server for semantic code search across many
+repositories. It runs as a small Docker stack (Qdrant, the MCP server, an indexer and an embedding server) and
 serves MCP over Streamable HTTP at `http://localhost:9876/mcp`. It is not
 started with `npx`; install the CLI and let it start the stack.
 
@@ -69,3 +69,6 @@ started with `npx`; install the CLI and let it start the stack.
 Call the `health_check` tool, then `search_code` with a question about the
 indexed project, for example "where is the HTTP server started". Indexing a
 large repository on CPU takes several minutes; `health_check` shows progress.
+After the first index, the indexer picks up code changes on its own within about
+10 minutes; there is no file watcher, so do not expect edits to be searchable
+within seconds.

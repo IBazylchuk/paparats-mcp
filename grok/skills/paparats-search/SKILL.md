@@ -32,6 +32,13 @@ Each result carries a relevance score. Treat 60% and above as a confident
 match; 40–59% as a lead to verify; below 40% as a sign the index has nothing
 close — rephrase once, then fall back to a text search.
 
+## Recent edits may not be indexed yet
+
+The index is refreshed on a schedule (by default the indexer checks for changes
+about every 10 minutes), not on every save. For code the user has just written
+or changed, read the file or use a text search instead of relying on
+`search_code`.
+
 ## When the tools are missing
 
 The tools come from a Paparats server running on the user's machine (default

@@ -1,16 +1,21 @@
 # @paparats/cli
 
-CLI for [Paparats MCP](https://github.com/IBazylchuk/paparats-mcp) - semantic code search across repositories with AST-based chunking, symbol graph, and vector search. Designed for AI coding assistants (Claude Code, Cursor).
+CLI for [Paparats MCP](https://github.com/IBazylchuk/paparats-mcp) — a self-hosted MCP
+server for semantic code search across many repositories, for Claude Code, Cursor, Codex
+and other MCP clients. The CLI installs and manages the whole stack on your machine:
+Qdrant, a local llama.cpp embedding server, the MCP server and an indexer. Your code never
+leaves your machine.
 
 ## Features
 
-- **AST-based code chunking** via tree-sitter (10 languages) with regex fallback
-- **Symbol graph** - cross-chunk call/reference relationships
-- **Vector search** powered by Qdrant + llama-server (Jina Code Embeddings)
+- **AST-based code chunking** via tree-sitter (11 languages, including Terraform/HCL) with a regex fallback for other file types
+- **Symbol graph** - cross-chunk call/reference relationships (`find_usages`)
+- **Vector search** powered by Qdrant + llama.cpp (`bge-code-v1` for code, `Qwen3-Embedding-0.6B` for docs)
 - **Git metadata** - commit history and ticket references per chunk
 - **Architectural memory** - agent-maintained components / decisions (ADRs) / lessons learned with server-side similarity-gate deduplication (see [main README](https://github.com/IBazylchuk/paparats-mcp#architectural-memory-agent-maintained-adrs-components-lessons))
-- **Dual MCP endpoints** - coding mode and support mode with different tool sets
-- **Docker-based deployment** - one command setup with Qdrant, embed server, and MCP server
+- **Three MCP endpoints** - coding (`/mcp`), support (`/support/mcp`) and an opt-in docs-only knowledge endpoint, each with its own tool set
+- **Automatic freshness** - the indexer checks every repo for changes every 10 minutes and runs a scheduled full pass; `POST /trigger` reindexes on demand
+- **Docker-based deployment** - one command sets up Qdrant, the embed server, the MCP server and the indexer
 
 ## Install
 
@@ -20,83 +25,94 @@ npm install -g @paparats/cli
 
 ## Prerequisites
 
-- **Docker** + **Docker Compose** - runs Qdrant, embed server, and MCP server
-- **Node.js** >= 18
+- **Docker** + **Docker Compose v2** - runs Qdrant, the embed server, the MCP server and the indexer
+- **Node.js** >= 24
+- **macOS only:** the native embed server (Metal-accelerated): `brew install llama.cpp mostlygeek/llama-swap/llama-swap`
 
 ## Quick Start
 
 ```bash
-# 1. One-time setup: starts Docker containers, downloads embedding model (~1.6 GB)
+# 1. One-time setup: writes ~/.paparats/, starts the Docker stack,
+#    downloads the embedding models (~2 GB), wires Cursor if it is installed
 paparats install
 
-# 2. In your project directory
-cd your-project
-paparats init    # creates .paparats.yml config
-paparats index   # index the codebase
+# 2. Add the projects you want indexed (local path or GitHub repo)
+paparats add ~/code/your-project
+paparats add your-org/your-repo
 
-# 3. Keep index in sync when files change
-paparats watch
+# 3. Check the stack and the indexing status
+paparats status
+paparats list
 
-# 4. Connect your IDE (Cursor, Claude Code) to the MCP server
+# 4. Connect Claude Code (Cursor is wired by step 1)
+claude mcp add --scope user --transport http paparats http://localhost:9876/mcp
 ```
+
+Indexing runs in the indexer container: there is no separate `index` or `watch` step.
+Changes are picked up by the indexer's change check (every 10 minutes by default).
 
 ## Install Modes
 
 ```bash
-# Developer mode (default) - Docker stack + local project indexing
-paparats install --mode developer
+# Default - full Docker stack on this machine
+paparats install
 
 # With external Qdrant (skip Qdrant Docker container)
-paparats install --qdrant-url http://your-qdrant:6333
+paparats install --qdrant-url https://qdrant.example.com
 
-# Server mode - full Docker stack with auto-indexer for multiple repos
-paparats install --mode server --repos owner/repo1,owner/repo2
+# With a cloud embedding provider instead of the local embed server
+paparats install --embeddings openai --embedding-api-key sk-...
 
-# Support mode - client-only setup, connects to existing server
-paparats install --mode support --server http://your-server:9876
+# Support mode - client-only setup, connects to an existing server
+paparats install --mode support --server http://paparats.example.com:9876
 ```
 
 ## Commands
 
-| Command                   | Description                                      |
-| ------------------------- | ------------------------------------------------ |
-| `paparats install`        | Set up Docker containers and configure IDE       |
-| `paparats init`           | Create `.paparats.yml` config in current project |
-| `paparats index`          | Index the codebase (or reindex after changes)    |
-| `paparats watch`          | Watch for file changes and auto-reindex          |
-| `paparats search <query>` | Search indexed code from terminal                |
-| `paparats doctor`         | Check health of all services                     |
-| `paparats status`         | Show indexing status for current project         |
+| Command                          | Description                                                   |
+| -------------------------------- | ------------------------------------------------------------- |
+| `paparats install`               | Set up the Docker stack, embedding server and MCP wiring      |
+| `paparats add <path-or-repo>`    | Add a project (local path or GitHub URL / `owner/repo`)       |
+| `paparats list`                  | Show indexed projects with status from the indexer            |
+| `paparats remove <name>`         | Remove a project and delete its indexed data                  |
+| `paparats start` / `stop` / `restart` | Manage the Docker stack                                  |
+| `paparats edit compose\|projects` | Edit the compose file or project list, then apply it         |
+| `paparats search <query>`        | Search indexed code from the terminal                         |
+| `paparats status`                | Stack health: Docker, embed server, server, indexer           |
+| `paparats groups`                | List groups and their projects                                |
+| `paparats doctor`                | Diagnostic checks                                             |
+| `paparats update`                | Update the CLI from npm and pull the latest Docker images     |
 
 ## MCP Tools
 
 Once connected, your AI assistant gets access to these tools:
 
-**Coding mode** (`/mcp`): `search_code`, `get_chunk`, `find_usages`, `health_check`, `reindex`
+**Coding mode** (`/mcp`): `search_code`, `get_chunk`, `find_usages`, `list_projects`, `delete_project`, `health_check`, `search_docs`, the architectural-memory tools (`arch_context`, `arch_list`, `arch_record_component`, `arch_record_decision`, `arch_record_lesson`, `arch_suggest_components`, `arch_delete`) and the glossary tools (`term_search`, `term_list`, `term_record`, `term_delete`)
 
-**Support mode** (`/support/mcp`): all coding tools plus `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`
+**Support mode** (`/support/mcp`): `search_code`, `get_chunk`, `find_usages`, `list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`, `search_docs`, `get_document`, `term_search`, `term_list`, `term_record` and six analytics tools
+
+The full reference is in the [main README](https://github.com/IBazylchuk/paparats-mcp#mcp-tools-reference).
 
 ## Configuration
 
-Project config lives in `.paparats.yml`:
+The project list lives in `~/.paparats/projects.yml` (edited by `paparats add` /
+`remove` or `paparats edit projects`). A repo can also carry its own `.paparats.yml`:
 
 ```yaml
-project: my-project
 group: my-group
-language: [typescript]
+language: typescript
 
 indexing:
   paths: [src, lib]
   exclude: [node_modules, dist, '**/*.test.ts']
 
-chunking:
-  max_lines: 60
-  overlap_lines: 5
-
 metadata:
   service: my-service
   tags: [backend, api]
 ```
+
+See the [configuration reference](https://github.com/IBazylchuk/paparats-mcp#configuration)
+for every option and how `projects.yml` overrides are layered on top.
 
 ## Related Packages
 
