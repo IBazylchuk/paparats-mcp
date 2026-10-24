@@ -1,5 +1,17 @@
 # @paparats/server
 
+## 2.9.1
+
+### Patch Changes
+
+- 94bcbe6: Update dependencies and close the open security advisories (body-parser,
+  undici, zod, fast-uri, ip-address, vite). OpenTelemetry moves to 3.0: the
+  deprecated `@opentelemetry/sdk-trace-node` is replaced by
+  `@opentelemetry/sdk-trace`. Also updates p-queue 10 and the
+  Qdrant client 1.20, and drops chokidar from the CLI, which never used it.
+- Updated dependencies [94bcbe6]
+  - @paparats/shared@2.9.1
+
 ## 2.9.0
 
 ### Minor Changes

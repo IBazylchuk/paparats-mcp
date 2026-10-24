@@ -4,6 +4,18 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.9.1] - 2026-10-24
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 94bcbe6: Update dependencies and close the open security advisories (body-parser,
+  undici, zod, fast-uri, ip-address, vite). OpenTelemetry moves to 3.0: the
+  deprecated `@opentelemetry/sdk-trace-node` is replaced by
+  `@opentelemetry/sdk-trace`. Also updates p-queue 10 and the
+  Qdrant client 1.20, and drops chokidar from the CLI, which never used it.
+
 ## [2.9.0] - 2026-10-13
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -457,7 +469,7 @@
   surfaces the failure.
   - @paparats/shared@2.4.3
 
-## [2.4.2] - 2026-10-13
+## [2.4.2] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -488,7 +500,7 @@
 
   Works in the `defaults` block as well as per repo.
 
-## [2.4.0] - 2026-10-13
+## [2.4.0] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -686,7 +698,7 @@
 
 - @paparats/shared@2.0.3
 
-## [2.0.2] - 2026-10-13
+## [2.0.2] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -867,7 +879,7 @@
 
 - @paparats/shared@1.7.2
 
-## [1.7.1] - 2026-10-13
+## [1.7.1] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -966,7 +978,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [1.4.0] - 2026-10-13
+## [1.4.0] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1380,7 +1392,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
 
 ### Patch Changes
 
-## [0.7.0] - 2026-10-13
+## [0.7.0] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1427,7 +1439,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-10-13
+## [0.5.0] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1520,7 +1532,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-10-13
+## [0.3.0] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
