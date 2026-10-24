@@ -20,8 +20,10 @@ export interface StoredFingerprint {
  * History:
  *  1 — symbol-graph AMBIGUOUS fan-out cap: rebuild edges to purge the millions
  *      of stale high-fanout edges from pre-cap indexes.
+ *  2 — AST chunker merges adjacent small chunks: re-chunk every file so existing
+ *      indexes lose their one-line and lone-`}` chunks.
  */
-const REINDEX_EPOCH = 1;
+const REINDEX_EPOCH = 2;
 
 /**
  * Persistent store of per-repo fingerprints used by the change-detection
