@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Local release: publish to npm + push downstream `vX.Y.Z` tag.
+# Local release: publish to npm, push the downstream `vX.Y.Z` tag, create the GitHub Release.
 #
 # Run this on `main` after the changesets release PR has been merged.
 # Prerequisites: `npm login` (or NPM_TOKEN in env) on this machine,
-# git remote `origin` writable, working tree clean.
+# git remote `origin` writable, working tree clean, `gh` authenticated (for the GitHub Release).
 #
 # Usage:
 #   yarn release:local           # publish + tag
@@ -84,4 +84,19 @@ echo "==> Tagging and pushing $TAG"
 run "git tag '$TAG'"
 run "git push origin '$TAG'"
 
-echo "==> Done. $TAG pushed; downstream workflows (docker, MCP registry) will pick it up."
+# 9. GitHub Release, with this version's changelog entry as notes. Directories such as
+# Glama build a new listing version on every GitHub Release. The docker and MCP Registry
+# workflows trigger on the tag only, so publishing the release starts nothing twice.
+echo "==> Creating GitHub Release $TAG"
+NOTES=$(mktemp)
+awk -v heading="## $VERSION" '$0 == heading { found = 1; next } found && /^## / { exit } found' \
+  packages/server/CHANGELOG.md > "$NOTES"
+if ! command -v gh >/dev/null 2>&1; then
+  echo "warning: gh not found — create the release by hand:" >&2
+  echo "         gh release create $TAG --title $TAG --notes-file <changelog entry> --verify-tag" >&2
+else
+  run "gh release create '$TAG' --title '$TAG' --notes-file '$NOTES' --verify-tag"
+fi
+rm -f "$NOTES"
+
+echo "==> Done. $TAG pushed and released; downstream workflows (docker, MCP registry) will pick it up."
