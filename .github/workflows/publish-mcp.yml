@@ -1,7 +1,7 @@
 # Publishes server.json to the MCP Registry when a version tag is pushed or a GitHub Release is published.
 # Prerequisites: server.json in repo root; @paparats/cli (and @paparats/shared) must already be published to npm —
 # the registry validates the package and returns 400 "NPM package not found" until it exists. Publish locally with
-# yarn publish:npm first, then push the tag (or re-run this workflow after publishing).
+# yarn release:local, which pushes the tag after publishing; the workflow waits for npm before publishing.
 name: Publish to MCP Registry
 
 on:
@@ -25,7 +25,30 @@ jobs:
           sudo mv mcp-publisher /usr/local/bin/
           mcp-publisher --version
 
+      # yarn release:local pushes the tag right after `npm publish`, and the registry
+      # rejects the server until npm serves that version ("version 'X' was not found").
+      # Wait for npm, then retry: the registry's own npm lookup can lag the runner's.
+      - name: Wait for the npm package version
+        run: |
+          version=$(jq -r '.packages[0].version' server.json)
+          package=$(jq -r '.packages[0].identifier' server.json)
+          for i in $(seq 1 30); do
+            if npm view "${package}@${version}" version >/dev/null 2>&1; then
+              echo "${package}@${version} is on npm"
+              exit 0
+            fi
+            echo "Waiting for ${package}@${version} on npm (${i}/30)..."
+            sleep 20
+          done
+          echo "::error::${package}@${version} did not appear on npm within 10 minutes"
+          exit 1
+
       - name: Publish to registry
         run: |
           mcp-publisher login github-oidc
-          mcp-publisher publish
+          for i in 1 2 3 4 5; do
+            mcp-publisher publish && exit 0
+            echo "Publish attempt ${i} failed; retrying in 30s"
+            sleep 30
+          done
+          exit 1
