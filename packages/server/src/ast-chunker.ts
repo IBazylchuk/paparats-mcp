@@ -9,6 +9,13 @@ export interface AstChunkerConfig {
 
 const MAX_RECURSIVE_DEPTH = 3;
 
+/**
+ * A chunk with less non-whitespace text than this (a lone `}`, one field, one
+ * statement) carries too little to be found or understood on its own, so it is
+ * merged into a neighbour even past `chunkSize` — up to `maxChunkSize`.
+ */
+const MIN_CHUNK_CHARS = 64;
+
 function hash(text: string): string {
   return crypto.createHash('sha256').update(text).digest('hex').slice(0, 16);
 }
@@ -314,7 +321,54 @@ export function chunkByAst(tree: Tree, content: string, config: AstChunkerConfig
   }
   flushGroup();
 
-  return enforceMaxChunkSize(dedupeContainedChunks(chunks), contentLines, config.maxChunkSize);
+  return enforceMaxChunkSize(
+    mergeSmallChunks(dedupeContainedChunks(chunks), contentLines, config),
+    contentLines,
+    config.maxChunkSize
+  );
+}
+
+/**
+ * Merge adjacent small chunks. {@link splitNode} emits every child of an oversized
+ * node on its own — each class field, each statement of a long function body, the
+ * closing `}` — so without this pass a quarter of all chunks were a single line.
+ * Neighbours separated only by blank lines are joined while the result stays within
+ * `chunkSize`, the same budget top-level grouping uses; a trivial chunk (under
+ * {@link MIN_CHUNK_CHARS}) may join up to `maxChunkSize`. Expects chunks in line order.
+ */
+export function mergeSmallChunks(
+  chunks: ChunkResult[],
+  contentLines: string[],
+  config: AstChunkerConfig
+): ChunkResult[] {
+  if (chunks.length <= 1) return chunks;
+
+  const isTrivial = (c: ChunkResult): boolean => c.content.trim().length < MIN_CHUNK_CHARS;
+  const adjacent = (a: ChunkResult, b: ChunkResult): boolean =>
+    b.startLine <= a.endLine + 1 ||
+    !textForRange(contentLines, a.endLine + 1, b.startLine - 1).trim();
+
+  const merged: ChunkResult[] = [];
+  let current = chunks[0]!;
+  for (const next of chunks.slice(1)) {
+    if (adjacent(current, next) && next.endLine >= current.endLine) {
+      const text = textForRange(contentLines, current.startLine, next.endLine);
+      const limit = isTrivial(current) || isTrivial(next) ? config.maxChunkSize : config.chunkSize;
+      if (text.length <= limit) {
+        current = {
+          content: text,
+          startLine: current.startLine,
+          endLine: next.endLine,
+          hash: hash(text),
+        };
+        continue;
+      }
+    }
+    merged.push(current);
+    current = next;
+  }
+  merged.push(current);
+  return merged;
 }
 
 /**

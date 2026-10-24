@@ -1,53 +1,41 @@
 # Retrieval bench — paparats
 
-> Tier-1 baseline: dense-only search as shipped at the dataset commit. Measured on Apple
+> Tier-1 baseline: dense-only search on `main`, over the corpus at the dataset commit. Measured on Apple
 > silicon with a native `llama-server` (bge-code-v1 Q8_0, Metal) and Qdrant in Docker;
 > latency includes the query embedding call. Absolute numbers shift with hardware, so
 > compare runs made on the same machine. The JSON report is not committed — regenerate it
 > with `yarn bench run --index --reset --label baseline` on the commit you compare against.
+>
+> History (file MRR@10 / chunk R@10): 0.767 / 0.825 at the dataset commit; 0.825 / 0.892
+> after the AST chunker started merging adjacent small chunks (2275 → 1513 chunks).
 
-Dataset commit `f5b2a75ef47e`, 57 queries; mode `search_code`, model `bge-code-v1`, group `bench-paparats`, limit 10, 2275 chunks, label `baseline`.
-Run at 2026-10-24T19:28:42.608Z.
+Dataset commit `f5b2a75ef47e`, 57 queries; mode `search_code`, model `bge-code-v1`, group `bench-paparats`, limit 10, 1513 chunks, label `merge-small`.
+Run at 2026-10-24T21:15:21.850Z.
 
 ## Overall
 
 | Level | R@1 | R@5 | R@10 | MRR@10 | nDCG@10 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| file | 0.579 | 0.880 | 0.901 | 0.767 | 0.779 |
-| chunk | 0.260 | 0.702 | 0.825 | 0.485 | 0.549 |
+| file | 0.658 | 0.915 | 0.944 | 0.825 | 0.838 |
+| chunk | 0.269 | 0.789 | 0.892 | 0.530 | 0.606 |
 
-Latency per query: p50 81 ms, p95 123 ms, mean 81 ms.
+Latency per query: p50 98 ms, p95 176 ms, mean 105 ms.
 
 ## By query type
 
 | Type | n | file R@1 | file R@5 | file MRR@10 | chunk R@10 | chunk nDCG@10 | p50 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| code | 5 | 0.567 | 0.567 | 0.800 | 0.633 | 0.650 | 74 ms |
-| config | 6 | 0.500 | 0.667 | 0.556 | 0.667 | 0.437 | 30 ms |
-| cross-package | 6 | 0.278 | 0.806 | 0.833 | 0.639 | 0.346 | 108 ms |
-| error | 8 | 0.875 | 1.000 | 0.900 | 1.000 | 0.790 | 72 ms |
-| identifier | 10 | 0.400 | 1.000 | 0.653 | 1.000 | 0.553 | 62 ms |
-| nl | 16 | 0.719 | 0.969 | 0.865 | 0.813 | 0.548 | 87 ms |
-| where | 6 | 0.500 | 0.833 | 0.639 | 0.833 | 0.458 | 77 ms |
+| code | 5 | 0.767 | 0.933 | 1.000 | 1.000 | 0.845 | 98 ms |
+| config | 6 | 0.333 | 0.667 | 0.444 | 0.667 | 0.412 | 38 ms |
+| cross-package | 6 | 0.528 | 0.750 | 1.000 | 0.639 | 0.414 | 122 ms |
+| error | 8 | 0.875 | 1.000 | 0.917 | 1.000 | 0.804 | 79 ms |
+| identifier | 10 | 0.500 | 1.000 | 0.725 | 1.000 | 0.596 | 60 ms |
+| nl | 16 | 0.781 | 1.000 | 0.896 | 0.938 | 0.637 | 124 ms |
+| where | 6 | 0.667 | 0.833 | 0.741 | 0.833 | 0.461 | 97 ms |
 
 ## Misses (no expected file in the top 10)
 
 | Query | Type | Text | Top hit |
 | --- | --- | --- | --- |
 | cfg-03 | config | INDEX_DOCS | `packages/server/src/indexer.ts:1283` |
-| cfg-06 | config | PAPARATS_PROJECT_SUFFIX | `packages/server/src/indexer.ts:271` |
-| where-01 | where | where is the default Qdrant URL configured | `packages/cli/src/commands/doctor.ts:50` |
-| code-03 | code | function overlaps(aStart: number, aEnd: number, bStart: number, bEn... | `packages/server/src/chunker.ts:33` |
-
-## Observations
-
-- **Exact identifiers and config keys rank low.** Every `identifier` query finds its file in
-  the top 5 (file R@5 1.000) but only 40% at rank 1 (file MRR@10 0.653), and two of the six
-  `config` queries (bare environment-variable names) miss entirely — the dense-only weakness
-  the hybrid BM25 work is meant to fix. These are the rows it should move.
-- **Trivial chunks crowd the results.** 577 of the 2275 chunks are a single line, 35 of them
-  a lone `}`. In `search_code` mode identical `}` chunks collapse under the content-hash
-  dedupe, so `code-03` returned 4 results instead of 10.
-- **Query expansion costs latency without a measurable gain here.** Against plain `search`
-  mode (`--mode search`), `search_code`'s expansion moves file MRR@10 by −0.012 and chunk
-  R@10 by +0.018 while raising p50 latency from 48 to 81 ms.
+| cfg-06 | config | PAPARATS_PROJECT_SUFFIX | `packages/server/tests/server.test.ts:52` |
