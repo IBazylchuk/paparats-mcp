@@ -1,5 +1,15 @@
 # @paparats/server
 
+## 2.11.0
+
+### Minor Changes
+
+- 8cefe58: Add an offline retrieval benchmark (Recall@k, MRR, nDCG) with a labelled query set over the paparats repository.
+
+### Patch Changes
+
+- @paparats/shared@2.11.0
+
 ## 2.10.0
 
 ### Minor Changes
