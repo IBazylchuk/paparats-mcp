@@ -7,6 +7,8 @@
 [![PulseMCP](https://img.shields.io/badge/PulseMCP-listed-01696f)](https://www.pulsemcp.com/servers/paparats-mcp)
 [![MCP Badge](https://lobehub.com/badge/mcp/ibazylchuk-paparats-mcp)](https://lobehub.com/mcp/ibazylchuk-paparats-mcp)
 
+[![Paparats: Local Semantic Code Search MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/IBazylchuk/paparats-mcp/badges/card.svg)](https://glama.ai/mcp/servers/IBazylchuk/paparats-mcp)
+
 [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp) &nbsp;<sub>← try the full stack in your own Codespace, no local install ([details](#try-it-in-the-browser-no-install))</sub>
 
 **Paparats MCP is an open-source, self-hosted MCP server that gives Claude Code, Cursor,
