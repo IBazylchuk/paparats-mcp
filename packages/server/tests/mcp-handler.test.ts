@@ -550,6 +550,41 @@ describe('McpHandler', () => {
     }
   });
 
+  it('health_check names an unreachable Qdrant instead of a bare "fetch failed"', async () => {
+    const indexer = createMockIndexer();
+    vi.mocked(indexer.listGroups).mockRejectedValue(
+      new TypeError('fetch failed', {
+        cause: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:6333'), {
+          code: 'ECONNREFUSED',
+        }),
+      })
+    );
+
+    const app = express();
+    app.use(express.json());
+    const handler2 = new McpHandler({
+      searcher: createMockSearcher(),
+      indexer,
+      getProjects: () => new Map(),
+      getGroupNames: () => [],
+    });
+    handler2.mount(app);
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      const { text, isError } = await callTool(port, 'health_check', {});
+      expect(isError).toBe(true);
+      const parsed = JSON.parse(text);
+      expect(parsed.status).toBe('error');
+      expect(parsed.error).toContain('Cannot reach Qdrant (ECONNREFUSED)');
+      expect(parsed.error).toContain('QDRANT_URL');
+    } finally {
+      server.close();
+      handler2.destroy();
+    }
+  });
+
   it('POST /mcp tools/call delete_project removes chunks and registry entry', async () => {
     const indexer = createMockIndexer();
     const projectsMap = new Map([['g1', [createProjectConfig()]]]);
