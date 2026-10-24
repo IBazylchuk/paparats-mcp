@@ -5,11 +5,7 @@
 // SqliteSink stores locally.
 
 import { trace, type Span, type Tracer } from '@opentelemetry/api';
-import {
-  BasicTracerProvider,
-  BatchSpanProcessor,
-  type SpanProcessor,
-} from '@opentelemetry/sdk-trace-node';
+import { TracerProvider, BatchSpanProcessor, type SpanProcessor } from '@opentelemetry/sdk-trace';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION } from '@opentelemetry/semantic-conventions';
@@ -37,7 +33,7 @@ export interface OtelSinkOptions {
 export class OtelSink implements TelemetrySink {
   private tracer: Tracer;
   private processor: SpanProcessor;
-  private provider: BasicTracerProvider;
+  private provider: TracerProvider;
   private closed = false;
 
   constructor(opts: OtelSinkOptions) {
@@ -45,11 +41,12 @@ export class OtelSink implements TelemetrySink {
       url: opts.endpoint,
       headers: opts.headers ?? {},
     });
-    this.processor = new BatchSpanProcessor(exporter, {
+    this.processor = new BatchSpanProcessor({
+      exporter,
       maxQueueSize: 2048,
       scheduledDelayMillis: 5000,
     });
-    this.provider = new BasicTracerProvider({
+    this.provider = new TracerProvider({
       resource: resourceFromAttributes({
         [ATTR_SERVICE_NAME]: opts.serviceName,
         [ATTR_SERVICE_VERSION]: opts.serviceVersion ?? 'dev',
