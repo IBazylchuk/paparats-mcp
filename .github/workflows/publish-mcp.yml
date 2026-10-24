@@ -1,4 +1,5 @@
-# Publishes server.json to the MCP Registry when a version tag is pushed or a GitHub Release is published.
+# Publishes server.json to the MCP Registry when a version tag is pushed (the GitHub Release that
+# yarn release:local creates afterwards deliberately does not trigger it again).
 # Prerequisites: server.json in repo root; @paparats/cli (and @paparats/shared) must already be published to npm —
 # the registry validates the package and returns 400 "NPM package not found" until it exists. Publish locally with
 # yarn release:local, which pushes the tag after publishing; the workflow waits for npm before publishing.
@@ -7,8 +8,6 @@ name: Publish to MCP Registry
 on:
   push:
     tags: ['v*']
-  release:
-    types: [published]
 
 jobs:
   publish:

@@ -45,11 +45,15 @@ yarn release:local         # or `--dry-run` to preview
   merged);
 - reads the new version from `packages/cli/package.json`;
 - builds, runs `yarn changeset publish` (skips already-published versions), then tags
-  `vX.Y.Z` and pushes the tag.
+  `vX.Y.Z` and pushes the tag;
+- creates the GitHub Release for the tag with the version's changelog entry as notes
+  (needs an authenticated `gh`). Directories such as Glama publish a new listing version on
+  every GitHub Release.
 
 **4. Downstream workflows fire on the tag.** Pushing `vX.Y.Z` triggers
 [docker-publish.yml](../.github/workflows/docker-publish.yml) and
-[publish-mcp.yml](../.github/workflows/publish-mcp.yml) automatically.
+[publish-mcp.yml](../.github/workflows/publish-mcp.yml) automatically. They trigger on the tag
+only, so the GitHub Release does not publish anything a second time.
 
 ## Required credentials
 
