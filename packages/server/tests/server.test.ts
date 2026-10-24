@@ -6,7 +6,6 @@ import type { Server } from 'http';
 import { createApp, parseCorsOrigins, withTimeout } from '../src/app.js';
 import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
-import type { WatcherManager } from '../src/watcher.js';
 import type { CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { MetadataStore } from '../src/metadata-db.js';
 import type { ProjectConfig } from '../src/types.js';
@@ -39,7 +38,6 @@ function createProjectConfig(overrides?: Partial<ProjectConfig>): ProjectConfig 
       concurrency: 2,
       batchSize: 50,
     },
-    watcher: { enabled: false, debounce: 1000, stabilityThreshold: 1000 },
     embeddings: { provider: 'llama', model: 'test', dimensions: 4 },
     metadata: {
       service: 'test-project',
@@ -101,18 +99,6 @@ function createMockMetadataStore(): MetadataStore {
   } as unknown as MetadataStore;
 }
 
-function createMockWatcherManager(): WatcherManager {
-  return {
-    watch: vi.fn(),
-    unwatch: vi.fn().mockResolvedValue(undefined),
-    stopAll: vi.fn().mockResolvedValue(undefined),
-    getStats: vi.fn().mockReturnValue({}),
-    get size() {
-      return 0;
-    },
-  } as unknown as WatcherManager;
-}
-
 function createMockEmbeddingProvider(): CachedEmbeddingProvider {
   return {
     getCacheStats: vi.fn().mockReturnValue({
@@ -157,7 +143,6 @@ describe('Server API', () => {
   let port: number;
   let mockSearcher: Searcher;
   let mockIndexer: Indexer;
-  let mockWatcher: WatcherManager;
   let mockEmbedding: CachedEmbeddingProvider;
   let projectsByGroup: Map<string, ProjectConfig[]>;
   let tmpDir: string;
@@ -171,13 +156,11 @@ describe('Server API', () => {
     projectsByGroup = new Map();
     mockSearcher = createMockSearcher();
     mockIndexer = createMockIndexer();
-    mockWatcher = createMockWatcherManager();
     mockEmbedding = createMockEmbeddingProvider();
 
     const { app } = createApp({
       searcher: mockSearcher,
       indexer: mockIndexer,
-      watcherManager: mockWatcher,
       embeddingProvider: mockEmbedding,
       projectsByGroup,
     });
@@ -506,7 +489,6 @@ describe('Server API', () => {
       const { app } = createApp({
         searcher,
         indexer,
-        watcherManager: createMockWatcherManager(),
         embeddingProvider: createMockEmbeddingProvider(),
         projectsByGroup: new Map([['g1', [createProjectConfig()]]]),
         metadataStore,
@@ -549,7 +531,6 @@ describe('Server API', () => {
       const { app } = createApp({
         searcher: opts.searcher ?? createMockSearcher(),
         indexer: opts.indexer ?? createMockIndexer(),
-        watcherManager: createMockWatcherManager(),
         embeddingProvider: createMockEmbeddingProvider(),
         projectsByGroup: opts.projects ?? new Map(),
         metadataStore: createMockMetadataStore(),
@@ -642,14 +623,14 @@ describe('Server API', () => {
   });
 
   describe('GET /api/stats', () => {
-    it('returns 200 with groups, cache, watcher, usage', async () => {
+    it('returns 200 with groups, cache, usage', async () => {
       const res = await fetchApi('/api/stats');
       expect(res.status).toBe(200);
       const body = await res.json();
       expect(body.groups).toBeDefined();
       expect(body.registeredProjects).toBeDefined();
       expect(body.cache).toBeDefined();
-      expect(body.watcher).toBeDefined();
+      expect(body.watcher).toBeUndefined();
       expect(body.usage).toBeDefined();
       expect(body.memory).toBeDefined();
     });
@@ -661,7 +642,6 @@ describe('Server API', () => {
       const { app: app2, setShuttingDown: setShuttingDown2 } = createApp({
         searcher: createMockSearcher(),
         indexer: createMockIndexer(),
-        watcherManager: createMockWatcherManager(),
         embeddingProvider: createMockEmbeddingProvider(),
         projectsByGroup: projects2,
       });
@@ -698,7 +678,6 @@ describe('cross-origin requests', () => {
     const { app, mcpHandler } = createApp({
       searcher,
       indexer: createMockIndexer(),
-      watcherManager: createMockWatcherManager(),
       embeddingProvider: createMockEmbeddingProvider(),
       projectsByGroup: new Map(),
     });
@@ -819,7 +798,6 @@ describe('PAPARATS_UI_BASIC_AUTH', () => {
     return createApp({
       searcher: createMockSearcher(),
       indexer: createMockIndexer(),
-      watcherManager: createMockWatcherManager(),
       embeddingProvider: createMockEmbeddingProvider(),
       projectsByGroup: new Map(),
     });

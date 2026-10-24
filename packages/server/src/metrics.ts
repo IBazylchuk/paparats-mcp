@@ -11,7 +11,6 @@ export interface MetricsRegistry {
   incIndexChunksTotal(group: string, count?: number): void;
   incIndexErrorsTotal(group: string, count?: number): void;
   observeEmbeddingDuration(durationSec: number): void;
-  incWatcherEventsTotal(group: string, eventType: string): void;
 
   setEmbeddingCacheSize(value: number): void;
   setEmbeddingCacheHitRate(value: number): void;
@@ -43,7 +42,6 @@ class NoOpMetrics implements MetricsRegistry {
   incIndexChunksTotal(_group: string, _count?: number): void {}
   incIndexErrorsTotal(_group: string, _count?: number): void {}
   observeEmbeddingDuration(_durationSec: number): void {}
-  incWatcherEventsTotal(_group: string, _eventType: string): void {}
   setEmbeddingCacheSize(_value: number): void {}
   setEmbeddingCacheHitRate(_value: number): void {}
   setQueryCacheSize(_value: number): void {}
@@ -109,13 +107,6 @@ async function createPrometheusMetrics(): Promise<MetricsRegistry> {
     name: 'paparats_embedding_duration_seconds',
     help: 'Embedding generation duration in seconds',
     buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5],
-    registers: [registry],
-  });
-
-  const watcherEventsTotal = new prom.Counter({
-    name: 'paparats_watcher_events_total',
-    help: 'Total number of watcher events',
-    labelNames: ['group', 'event_type'] as const,
     registers: [registry],
   });
 
@@ -197,9 +188,6 @@ async function createPrometheusMetrics(): Promise<MetricsRegistry> {
     },
     observeEmbeddingDuration(durationSec: number) {
       embeddingDuration.observe(durationSec);
-    },
-    incWatcherEventsTotal(group: string, eventType: string) {
-      watcherEventsTotal.inc({ group, event_type: eventType });
     },
     setEmbeddingCacheSize(value: number) {
       embeddingCacheSize.set(value);

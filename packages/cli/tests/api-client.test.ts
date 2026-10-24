@@ -84,7 +84,7 @@ describe('ApiClient', () => {
           res.end(JSON.stringify({ status: 'ok', message: 'File removed from index' }));
         } else if (req.url === '/api/stats') {
           res.writeHead(200);
-          res.end(JSON.stringify({ groups: {}, cache: {}, watcher: {}, usage: {} }));
+          res.end(JSON.stringify({ groups: {}, cache: {}, usage: {} }));
         } else if (req.url === '/error-400') {
           res.writeHead(400);
           res.end(JSON.stringify({ error: 'Bad request' }));

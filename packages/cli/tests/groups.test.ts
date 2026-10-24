@@ -205,7 +205,6 @@ describe('groups', () => {
       const dataWithExtra: StatsResponse = {
         ...validData,
         cache: { size: 100, hitCount: 50, maxSize: 1000, hitRate: 0.5 },
-        watcher: { 'g/p': { eventsProcessed: 10 } },
         memory: { heapUsed: 100 * 1024 * 1024, heapTotal: 200 * 1024 * 1024 },
       };
       const client = mockStats({ status: 200, data: dataWithExtra });
@@ -216,7 +215,6 @@ describe('groups', () => {
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Statistics:'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Searches:'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Cache hit rate:'));
-      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('File changes processed:'));
       expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Memory usage:'));
     });
 

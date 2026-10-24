@@ -48,9 +48,6 @@ indexing:
   overlap: 64
   concurrency: 4
   batchSize: 100
-watcher:
-  enabled: true
-  debounce: 500
 embeddings:
   provider: llama
   model: bge-code-v1
@@ -139,7 +136,6 @@ injection: !!js/function >
       expect(config.languages).toEqual(['ruby']);
       expect(config.indexing.chunkSize).toBe(1024);
       expect(config.indexing.overlap).toBe(128);
-      expect(config.watcher.debounce).toBe(1000);
       expect(config.embeddings.provider).toBe('llama');
       expect(config.patterns).toContain('**/*.rb');
     });
@@ -275,37 +271,15 @@ injection: !!js/function >
         );
       });
 
-      it('rejects watcher.debounce too small', () => {
-        const raw = { group: 'g', language: 'ruby', watcher: { debounce: 50 } };
-        expect(() => resolveProject(projectDir, raw)).toThrow(
-          'watcher.debounce must be between 100 and 10000ms'
-        );
-      });
-
-      it('rejects watcher.debounce too large', () => {
-        const raw = { group: 'g', language: 'ruby', watcher: { debounce: 50000 } };
-        expect(() => resolveProject(projectDir, raw)).toThrow(
-          'watcher.debounce must be between 100 and 10000ms'
-        );
-      });
-
-      it('rejects watcher.stabilityThreshold too small', () => {
-        const raw = { group: 'g', language: 'ruby', watcher: { stabilityThreshold: 50 } };
-        expect(() => resolveProject(projectDir, raw)).toThrow(
-          'watcher.stabilityThreshold must be between 100 and 10000ms'
-        );
-      });
-
-      it('rejects watcher.stabilityThreshold too large', () => {
-        const raw = { group: 'g', language: 'ruby', watcher: { stabilityThreshold: 20000 } };
-        expect(() => resolveProject(projectDir, raw)).toThrow(
-          'watcher.stabilityThreshold must be between 100 and 10000ms'
-        );
-      });
-
-      it('accepts watcher.stabilityThreshold in range', () => {
-        const raw = { group: 'g', language: 'ruby', watcher: { stabilityThreshold: 2000 } };
-        expect(resolveProject(projectDir, raw).watcher.stabilityThreshold).toBe(2000);
+      it('ignores a legacy watcher section, even with values that used to be rejected', () => {
+        const raw = {
+          group: 'g',
+          language: 'ruby',
+          watcher: { enabled: true, debounce: 50, stabilityThreshold: 20000 },
+        };
+        const config = resolveProject(projectDir, raw);
+        expect(config.group).toBe('g');
+        expect('watcher' in config).toBe(false);
       });
     });
 
@@ -360,7 +334,6 @@ injection: !!js/function >
       expect(config.languages).toEqual(['ruby', 'typescript']);
       expect(config.indexing.chunkSize).toBe(512);
       expect(config.indexing.paths).toEqual(['src']);
-      expect(config.watcher.debounce).toBe(500);
     });
   });
 

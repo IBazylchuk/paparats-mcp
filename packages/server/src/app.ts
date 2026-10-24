@@ -7,7 +7,6 @@ import { buildProjectConfigFromContent, validateGroupName } from './config.js';
 import { Indexer, parseChunkId } from './indexer.js';
 import { Searcher } from './searcher.js';
 import { McpHandler, createProjectScopeGuard } from './mcp-handler.js';
-import { WatcherManager } from './watcher.js';
 import type { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
@@ -211,7 +210,6 @@ const GROUP_POLL_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 export interface CreateAppOptions {
   searcher: Searcher;
   indexer: Indexer;
-  watcherManager: WatcherManager;
   embeddingProvider: CachedEmbeddingProvider;
   /** Projects map - mutated by registerProject */
   projectsByGroup: Map<string, ProjectConfig[]>;
@@ -256,7 +254,6 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   const {
     searcher,
     indexer,
-    watcherManager,
     embeddingProvider,
     projectsByGroup,
     metadataStore,
@@ -309,7 +306,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
         // Preserve any projects registered explicitly via POST /api/index that
         // happen to share the group — explicit registration wins over the
-        // auto-built config (it has real paths, watchers, etc.).
+        // auto-built config (it has real paths, etc.).
         for (const existing of knownProjects ?? []) {
           desired.set(existing.name, existing);
         }
@@ -787,7 +784,6 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
   app.get('/api/stats', async (_req, res) => {
     try {
-      const watcherStats = watcherManager.getStats();
       const usage = searcher.getUsageStats();
 
       let groups: Record<string, number>;
@@ -826,7 +822,6 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
         ),
         cache: cacheStats,
         queryCache: queryCacheStats,
-        watcher: watcherStats,
         memory: process.memoryUsage(),
         usage,
       });

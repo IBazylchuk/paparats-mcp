@@ -137,17 +137,26 @@ language: ruby
 indexing:
   chunkSize: 512
   overlap: 64
-watcher:
-  enabled: true
-  debounce: 300
 embeddings:
   provider: llama
   dimensions: 1536`
       );
       const { config } = readConfig(tmpDir);
       expect(config.indexing?.chunkSize).toBe(512);
-      expect(config.watcher?.enabled).toBe(true);
       expect(config.embeddings?.provider).toBe('llama');
+    });
+
+    it('ignores a legacy watcher section, even with values that used to be rejected', () => {
+      fs.writeFileSync(
+        path.join(tmpDir, CONFIG_FILE),
+        `group: g
+language: ruby
+watcher:
+  enabled: "yes"
+  debounce: 50000`
+      );
+      const { config } = readConfig(tmpDir);
+      expect(config.group).toBe('g');
     });
   });
 

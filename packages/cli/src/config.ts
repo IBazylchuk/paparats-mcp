@@ -45,11 +45,6 @@ export interface PaparatsConfig {
     concurrency?: number;
     batchSize?: number;
   };
-  watcher?: {
-    enabled?: boolean;
-    debounce?: number;
-    stabilityThreshold?: number;
-  };
   embeddings?: {
     provider?: 'llama' | 'openai' | 'voyage';
     model?: string;
@@ -134,18 +129,6 @@ function validateConfig(config: PaparatsConfig, configPath: string): void {
     if (idx.concurrency !== undefined) {
       if (typeof idx.concurrency !== 'number' || idx.concurrency < 1 || idx.concurrency > 100) {
         throw new Error(`Invalid concurrency in ${configPath}: expected number between 1-100`);
-      }
-    }
-  }
-
-  if (config.watcher) {
-    const w = config.watcher;
-    if (w.enabled !== undefined && typeof w.enabled !== 'boolean') {
-      throw new Error(`Invalid watcher.enabled in ${configPath}: expected boolean`);
-    }
-    if (w.debounce !== undefined) {
-      if (typeof w.debounce !== 'number' || w.debounce < 0 || w.debounce > 10000) {
-        throw new Error(`Invalid watcher.debounce in ${configPath}: expected 0-10000ms`);
       }
     }
   }

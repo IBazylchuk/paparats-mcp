@@ -54,8 +54,6 @@ export function resolveRepoProject(
   if (opts.sharedGroup) raw.group = opts.sharedGroup;
 
   const project = resolveProject(localPath, raw);
-  // The indexer runs on cron, not filesystem events.
-  project.watcher.enabled = false;
   return { project, source };
 }
 

@@ -160,9 +160,6 @@ export {
 } from './git-metadata.js';
 export type { ExtractGitMetadataOptions, ExtractGitMetadataResult } from './git-metadata.js';
 
-export { ProjectWatcher, WatcherManager } from './watcher.js';
-export type { WatcherCallbacks, ProjectWatcherOptions, WatcherStats } from './watcher.js';
-
 export { createApp, withTimeout, refreshGaugeMetrics } from './app.js';
 export type {
   CreateAppOptions,
@@ -220,7 +217,6 @@ export type {
   IndexerStats,
   IndexProjectReport,
   IndexingConfig,
-  WatcherConfig,
   EmbeddingsConfig,
   ResolvedIndexingConfig,
   RelationType,

@@ -46,7 +46,6 @@ export interface PaparatsConfig {
   group: string;
   language: string | string[];
   indexing?: IndexingConfig;
-  watcher?: WatcherConfig;
   embeddings?: EmbeddingsConfig;
   metadata?: MetadataConfig;
   docs?: DocsConfig;
@@ -81,13 +80,6 @@ export interface IndexingConfig {
   batchSize?: number;
 }
 
-export interface WatcherConfig {
-  enabled?: boolean;
-  debounce?: number;
-  /** awaitWriteFinish: ms to wait for file write to stabilize (default: 1000) */
-  stabilityThreshold?: number;
-}
-
 export interface EmbeddingsConfig {
   provider?: 'llama' | 'openai' | 'voyage';
   model?: string;
@@ -104,7 +96,6 @@ export interface ProjectConfig {
   patterns: string[];
   exclude: string[];
   indexing: ResolvedIndexingConfig;
-  watcher: Required<WatcherConfig>;
   embeddings: Required<EmbeddingsConfig>;
   metadata: ResolvedMetadataConfig;
   /**

@@ -14,7 +14,6 @@ describe('NoOpMetrics', () => {
     noop.incIndexChunksTotal('group', 10);
     noop.incIndexErrorsTotal('group', 1);
     noop.observeEmbeddingDuration(0.1);
-    noop.incWatcherEventsTotal('group', 'changed');
     noop.setEmbeddingCacheSize(100);
     noop.setEmbeddingCacheHitRate(0.5);
     noop.setQueryCacheSize(50);
@@ -80,7 +79,6 @@ describe('PrometheusMetrics', () => {
     metrics.incIndexChunksTotal('test-group', 20);
     metrics.incIndexErrorsTotal('test-group');
     metrics.observeEmbeddingDuration(0.05);
-    metrics.incWatcherEventsTotal('test-group', 'changed');
   });
 
   it('gauges work without throwing', () => {

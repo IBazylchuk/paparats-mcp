@@ -99,10 +99,11 @@ async function searchOneKind(
  * `buildArchContext` and `buildArchContextWithVector` intentionally hit Qdrant
  * on every call — no in-memory cache layer sits between them and the store.
  *
- * Why this matters: support mode is read-only and has no file watcher. The
- * `Searcher` query cache (which does have invalidation hooks driven by the
- * indexer/watcher) can serve stale snippets when a watcher isn't running, so
- * any equivalent cache on top of arch_context would behave the same way —
+ * Why this matters: support mode is read-only and sees no write events. The
+ * `Searcher` query cache is invalidated only by write paths inside this
+ * process and otherwise waits out its TTL, so it can serve stale snippets
+ * after an out-of-process write. Any equivalent cache on top of arch_context
+ * would behave the same way —
  * support agents would see arch cards their colleagues just wrote or deleted
  * from coding mode only after a TTL expires. Until there is a cross-mode
  * invalidation signal (collection version stamp, change-feed, etc.), keep
