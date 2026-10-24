@@ -16,8 +16,9 @@ COPY tsconfig.base.json ./
 COPY packages/shared/package.json packages/shared/
 COPY packages/server/package.json packages/server/
 COPY packages/indexer/package.json packages/indexer/
-# packages/cli required for yarn workspaces resolution (root has "packages/*")
+# packages/cli and packages/bench required for yarn workspaces resolution (root has "packages/*")
 COPY packages/cli/package.json packages/cli/
+COPY packages/bench/package.json packages/bench/
 
 # Install all dependencies (including dev)
 RUN yarn install --immutable

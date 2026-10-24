@@ -1,0 +1,21 @@
+{
+  "name": "@paparats/bench",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Offline retrieval benchmark for paparats search (not published)",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "bench": "tsc && node dist/cli.js"
+  },
+  "dependencies": {
+    "@paparats/server": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "typescript": "^6.0.3",
+    "vitest": "^5.0.5"
+  }
+}

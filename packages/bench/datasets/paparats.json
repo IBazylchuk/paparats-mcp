@@ -1,0 +1,913 @@
+{
+  "name": "paparats",
+  "description": "Hand-labelled queries over the paparats-mcp repository itself. Lines are 1-indexed and inclusive, taken at the pinned commit.",
+  "commit": "f5b2a75ef47e52a621d8872a69abb7272a5be9a6",
+  "projects": [
+    {
+      "name": "paparats-mcp",
+      "path": "."
+    }
+  ],
+  "queries": [
+    {
+      "id": "nl-01",
+      "type": "nl",
+      "query": "how are cached search results invalidated for a group",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/query-cache.ts",
+          "startLine": 99,
+          "endLine": 105,
+          "symbol": "invalidateGroup"
+        },
+        {
+          "file": "packages/server/src/searcher.ts",
+          "startLine": 704,
+          "endLine": 706,
+          "symbol": "invalidateGroupCache"
+        }
+      ]
+    },
+    {
+      "id": "nl-02",
+      "type": "nl",
+      "query": "split a camelCase identifier into separate words",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/query-expansion.ts",
+          "startLine": 105,
+          "endLine": 112,
+          "symbol": "splitCamelCase"
+        }
+      ]
+    },
+    {
+      "id": "nl-03",
+      "type": "nl",
+      "query": "store embedding vectors in SQLite and evict old entries when the cache is full",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/embeddings.ts",
+          "startLine": 85,
+          "endLine": 100,
+          "symbol": "cleanupStmt"
+        }
+      ]
+    },
+    {
+      "id": "nl-04",
+      "type": "nl",
+      "query": "decide whether a search query is a code snippet or a natural language question",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/task-prefixes.ts",
+          "startLine": 127,
+          "endLine": 142,
+          "symbol": "detectQueryType"
+        }
+      ]
+    },
+    {
+      "id": "nl-05",
+      "type": "nl",
+      "query": "compare bearer tokens in constant time without leaking their length",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/knowledge-mode.ts",
+          "startLine": 186,
+          "endLine": 193,
+          "symbol": "tokenMatches"
+        }
+      ]
+    },
+    {
+      "id": "nl-06",
+      "type": "nl",
+      "query": "recursively split an oversized syntax tree node into smaller chunks",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/ast-chunker.ts",
+          "startLine": 102,
+          "endLine": 177,
+          "symbol": "splitNode"
+        }
+      ]
+    },
+    {
+      "id": "nl-07",
+      "type": "nl",
+      "query": "drop symlinks that resolve outside the project directory before indexing",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/shared/src/path-validation.ts",
+          "startLine": 55,
+          "endLine": 63,
+          "symbol": "filterFilesWithinRoot"
+        }
+      ]
+    },
+    {
+      "id": "nl-08",
+      "type": "nl",
+      "query": "merge reindex requests that arrive while an index cycle is already running",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/trigger-queue.ts",
+          "startLine": 25,
+          "endLine": 66,
+          "symbol": "TriggerQueue"
+        }
+      ]
+    },
+    {
+      "id": "nl-09",
+      "type": "nl",
+      "query": "mask access tokens embedded in git remote URLs before logging errors",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/repo-manager.ts",
+          "startLine": 45,
+          "endLine": 47,
+          "symbol": "redactCredentials"
+        }
+      ]
+    },
+    {
+      "id": "nl-10",
+      "type": "nl",
+      "query": "build a BM25 sparse vector for a document",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/docs/bm25.ts",
+          "startLine": 124,
+          "endLine": 153,
+          "symbol": "buildDocumentSparseVector"
+        }
+      ]
+    },
+    {
+      "id": "nl-11",
+      "type": "nl",
+      "query": "attribute git commits to code chunks by diff hunk line overlap",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/git-metadata.ts",
+          "startLine": 209,
+          "endLine": 230,
+          "symbol": "getChunksForCommit"
+        }
+      ]
+    },
+    {
+      "id": "nl-12",
+      "type": "nl",
+      "query": "detect minified bundles or base64 blobs that should not be embedded",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/shared/src/non-source-detect.ts",
+          "startLine": 55,
+          "endLine": 104,
+          "symbol": "detectNonSource"
+        }
+      ]
+    },
+    {
+      "id": "nl-13",
+      "type": "nl",
+      "query": "build the heading breadcrumb prefix prepended to each markdown chunk",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/docs/chunker.ts",
+          "startLine": 213,
+          "endLine": 216,
+          "symbol": "renderBreadcrumb"
+        }
+      ]
+    },
+    {
+      "id": "nl-14",
+      "type": "nl",
+      "query": "run async tasks one at a time per repository while different repositories run concurrently",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/keyed-serializer.ts",
+          "startLine": 10,
+          "endLine": 27,
+          "symbol": "KeyedSerializer"
+        }
+      ]
+    },
+    {
+      "id": "nl-15",
+      "type": "nl",
+      "query": "delete chunks of files that no longer exist after reindexing a project",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 573,
+          "endLine": 604,
+          "symbol": "cleanupOrphanedChunks"
+        }
+      ]
+    },
+    {
+      "id": "nl-16",
+      "type": "nl",
+      "query": "fingerprint a local checkout by hashing file modification times and sizes",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/change-detector.ts",
+          "startLine": 65,
+          "endLine": 121,
+          "symbol": "MtimeDetector"
+        }
+      ]
+    },
+    {
+      "id": "id-01",
+      "type": "identifier",
+      "query": "validateGroupName",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 55,
+          "endLine": 67,
+          "symbol": "validateGroupName"
+        }
+      ]
+    },
+    {
+      "id": "id-02",
+      "type": "identifier",
+      "query": "normalizeExcludePatterns",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/shared/src/exclude-patterns.ts",
+          "startLine": 17,
+          "endLine": 37,
+          "symbol": "normalizeExcludePatterns"
+        }
+      ]
+    },
+    {
+      "id": "id-03",
+      "type": "identifier",
+      "query": "resolveDocumentAudience",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/docs/store.ts",
+          "startLine": 1017,
+          "endLine": 1038,
+          "symbol": "resolveDocumentAudience"
+        }
+      ]
+    },
+    {
+      "id": "id-04",
+      "type": "identifier",
+      "query": "runChangeCheckCycle",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/orchestrator.ts",
+          "startLine": 205,
+          "endLine": 263,
+          "symbol": "runChangeCheckCycle"
+        }
+      ]
+    },
+    {
+      "id": "id-05",
+      "type": "identifier",
+      "query": "buildSymbolEdges",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/symbol-graph.ts",
+          "startLine": 50,
+          "endLine": 127,
+          "symbol": "buildSymbolEdges"
+        }
+      ]
+    },
+    {
+      "id": "id-06",
+      "type": "identifier",
+      "query": "dedupeContainedChunks",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/ast-chunker.ts",
+          "startLine": 351,
+          "endLine": 367,
+          "symbol": "dedupeContainedChunks"
+        }
+      ]
+    },
+    {
+      "id": "id-07",
+      "type": "identifier",
+      "query": "upsertMcpServer",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/cli/src/commands/install.ts",
+          "startLine": 176,
+          "endLine": 233,
+          "symbol": "upsertMcpServer"
+        }
+      ]
+    },
+    {
+      "id": "id-08",
+      "type": "identifier",
+      "query": "MAX_DEFINITION_FANOUT",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/symbol-graph.ts",
+          "startLine": 14,
+          "endLine": 14,
+          "symbol": "MAX_DEFINITION_FANOUT"
+        }
+      ]
+    },
+    {
+      "id": "id-09",
+      "type": "identifier",
+      "query": "CollectionMetaMismatchError",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 233,
+          "endLine": 254,
+          "symbol": "CollectionMetaMismatchError"
+        }
+      ]
+    },
+    {
+      "id": "id-10",
+      "type": "identifier",
+      "query": "parseLsRemoteHead",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/change-detector.ts",
+          "startLine": 130,
+          "endLine": 140,
+          "symbol": "parseLsRemoteHead"
+        }
+      ]
+    },
+    {
+      "id": "err-01",
+      "type": "error",
+      "query": "Qdrant failed after 3 retries",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 343,
+          "endLine": 365,
+          "symbol": "Qdrant failed after"
+        }
+      ]
+    },
+    {
+      "id": "err-02",
+      "type": "error",
+      "query": "chunkSize must be between 128 and 8192",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/config.ts",
+          "startLine": 184,
+          "endLine": 212,
+          "symbol": "chunkSize must be between 128 and 8192"
+        }
+      ]
+    },
+    {
+      "id": "err-03",
+      "type": "error",
+      "query": "PAPARATS_KNOWLEDGE_TOKENS is set but lists no tokens.",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/knowledge-mode.ts",
+          "startLine": 104,
+          "endLine": 108,
+          "symbol": "PAPARATS_KNOWLEDGE_TOKENS is set but lists no tokens."
+        }
+      ]
+    },
+    {
+      "id": "err-04",
+      "type": "error",
+      "query": "Invalid repo entry: must set exactly one of \"url\" or \"path\"",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/config-loader.ts",
+          "startLine": 84,
+          "endLine": 91,
+          "symbol": "must set exactly one of"
+        }
+      ]
+    },
+    {
+      "id": "err-05",
+      "type": "error",
+      "query": "llama-server returned no embeddings",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/embeddings.ts",
+          "startLine": 236,
+          "endLine": 240,
+          "symbol": "llama-server returned no embeddings"
+        }
+      ]
+    },
+    {
+      "id": "err-06",
+      "type": "error",
+      "query": "generateCompose: embedMode=\"external\" requires embedUrl",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/cli/src/docker-compose-generator.ts",
+          "startLine": 324,
+          "endLine": 336,
+          "symbol": "requires embedUrl"
+        }
+      ]
+    },
+    {
+      "id": "err-07",
+      "type": "error",
+      "query": "GitDetector requires a remote url; got empty",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/change-detector.ts",
+          "startLine": 25,
+          "endLine": 44,
+          "symbol": "GitDetector requires a remote url"
+        }
+      ]
+    },
+    {
+      "id": "err-08",
+      "type": "error",
+      "query": "Search request timed out after 30s",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/app.ts",
+          "startLine": 410,
+          "endLine": 437,
+          "symbol": "Search request timed out after 30s"
+        }
+      ]
+    },
+    {
+      "id": "cfg-01",
+      "type": "config",
+      "query": "EMBED_BATCH_CHARS",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/embeddings.ts",
+          "startLine": 139,
+          "endLine": 143,
+          "symbol": "EMBED_BATCH_CHARS"
+        }
+      ]
+    },
+    {
+      "id": "cfg-02",
+      "type": "config",
+      "query": "CRON_FAST",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/index.ts",
+          "startLine": 36,
+          "endLine": 37,
+          "symbol": "CRON_FAST"
+        }
+      ]
+    },
+    {
+      "id": "cfg-03",
+      "type": "config",
+      "query": "INDEX_DOCS",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/index.ts",
+          "startLine": 41,
+          "endLine": 42,
+          "symbol": "INDEX_DOCS"
+        },
+        {
+          "file": "packages/indexer/src/index.ts",
+          "startLine": 109,
+          "endLine": 112,
+          "symbol": "INDEX_DOCS"
+        }
+      ]
+    },
+    {
+      "id": "cfg-04",
+      "type": "config",
+      "query": "STATE_DB_PATH",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/index.ts",
+          "startLine": 47,
+          "endLine": 48,
+          "symbol": "STATE_DB_PATH"
+        }
+      ]
+    },
+    {
+      "id": "cfg-05",
+      "type": "config",
+      "query": "indexing.respectGitignore default",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/config.ts",
+          "startLine": 107,
+          "endLine": 116,
+          "symbol": "respectGitignore"
+        },
+        {
+          "file": "packages/server/src/config.ts",
+          "startLine": 316,
+          "endLine": 316,
+          "symbol": "respectGitignore"
+        }
+      ]
+    },
+    {
+      "id": "cfg-06",
+      "type": "config",
+      "query": "PAPARATS_PROJECT_SUFFIX",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/index.ts",
+          "startLine": 84,
+          "endLine": 84,
+          "symbol": "PAPARATS_PROJECT_SUFFIX"
+        },
+        {
+          "file": "packages/indexer/src/index.ts",
+          "startLine": 56,
+          "endLine": 56,
+          "symbol": "PAPARATS_PROJECT_SUFFIX"
+        }
+      ]
+    },
+    {
+      "id": "where-01",
+      "type": "where",
+      "query": "where is the default Qdrant URL configured",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/index.ts",
+          "startLine": 46,
+          "endLine": 46,
+          "symbol": "QDRANT_URL"
+        },
+        {
+          "file": "packages/indexer/src/index.ts",
+          "startLine": 43,
+          "endLine": 43,
+          "symbol": "QDRANT_URL"
+        }
+      ]
+    },
+    {
+      "id": "where-02",
+      "type": "where",
+      "query": "where are the default exclude patterns for TypeScript projects defined",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/shared/src/language-excludes.ts",
+          "startLine": 24,
+          "endLine": 45,
+          "symbol": "typescript"
+        }
+      ]
+    },
+    {
+      "id": "where-03",
+      "type": "where",
+      "query": "where is the search request timeout configured",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/app.ts",
+          "startLine": 42,
+          "endLine": 42,
+          "symbol": "SEARCH_TIMEOUT_MS"
+        },
+        {
+          "file": "packages/server/src/app.ts",
+          "startLine": 423,
+          "endLine": 427,
+          "symbol": "SEARCH_TIMEOUT_MS"
+        }
+      ]
+    },
+    {
+      "id": "where-04",
+      "type": "where",
+      "query": "where are the instruction strings for embedding query prefixes defined",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/task-prefixes.ts",
+          "startLine": 54,
+          "endLine": 72,
+          "symbol": "TASK_INSTRUCTION"
+        }
+      ]
+    },
+    {
+      "id": "where-05",
+      "type": "where",
+      "query": "where is the llama-swap config for the native embed server generated",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/cli/src/commands/install.ts",
+          "startLine": 414,
+          "endLine": 449,
+          "symbol": "renderLlamaSwapConfig"
+        }
+      ]
+    },
+    {
+      "id": "where-06",
+      "type": "where",
+      "query": "where is the set of tools exposed in support mode defined",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/mcp-handler.ts",
+          "startLine": 969,
+          "endLine": 998,
+          "symbol": "SUPPORT_TOOLS"
+        }
+      ]
+    },
+    {
+      "id": "code-01",
+      "type": "code",
+      "query": "const delay = delayMs * Math.pow(2, attempt);\nawait new Promise((resolve) => setTimeout(resolve, delay));",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/searcher.ts",
+          "startLine": 651,
+          "endLine": 671,
+          "symbol": "retryQdrant"
+        },
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 343,
+          "endLine": 365,
+          "symbol": "retryQdrant"
+        }
+      ]
+    },
+    {
+      "id": "code-02",
+      "type": "code",
+      "query": "for (const pattern of patterns) {\n  const found = await glob(pattern, { cwd: dir, absolute: true, ignore: exclude, nodir: true });\n  found.forEach((f) => fileSet.add(f));\n}\nlet files = filterFilesWithinRoot(Array.from(fileSet), dir);",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 1119,
+          "endLine": 1136,
+          "symbol": "filterFilesWithinRoot"
+        },
+        {
+          "file": "packages/indexer/src/change-detector.ts",
+          "startLine": 76,
+          "endLine": 90,
+          "symbol": "filterFilesWithinRoot"
+        },
+        {
+          "file": "packages/cli/src/config.ts",
+          "startLine": 299,
+          "endLine": 324,
+          "symbol": "filterFilesWithinRoot"
+        }
+      ]
+    },
+    {
+      "id": "code-03",
+      "type": "code",
+      "query": "function overlaps(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {\n  return aStart <= bEnd && aEnd >= bStart;\n}",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/git-metadata.ts",
+          "startLine": 209,
+          "endLine": 211,
+          "symbol": "rangesOverlap"
+        }
+      ]
+    },
+    {
+      "id": "code-04",
+      "type": "code",
+      "query": "const parsed = new URL(opts.url);\nconst port = parsed.port ? Number(parsed.port) : parsed.protocol === 'https:' ? 443 : 6333;",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 81,
+          "endLine": 95,
+          "symbol": "createQdrantClient"
+        }
+      ]
+    },
+    {
+      "id": "code-05",
+      "type": "code",
+      "query": "const prior = this.tails.get(key) ?? Promise.resolve();\nconst result = prior.then(task);",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/keyed-serializer.ts",
+          "startLine": 13,
+          "endLine": 26,
+          "symbol": "prior.then(task)"
+        }
+      ]
+    },
+    {
+      "id": "x-01",
+      "type": "cross-package",
+      "query": "how does the CLI search command reach the server's search API",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/cli/src/commands/search.ts",
+          "startLine": 87,
+          "endLine": 213,
+          "symbol": "runSearch"
+        },
+        {
+          "file": "packages/cli/src/api-client.ts",
+          "startLine": 201,
+          "endLine": 213,
+          "symbol": "search"
+        },
+        {
+          "file": "packages/server/src/app.ts",
+          "startLine": 410,
+          "endLine": 437,
+          "symbol": "/api/search"
+        }
+      ]
+    },
+    {
+      "id": "x-02",
+      "type": "cross-package",
+      "query": "how is the group chosen for a repository between PAPARATS_GROUP, projects.yml overrides and .paparats.yml",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/project-resolver.ts",
+          "startLine": 31,
+          "endLine": 58,
+          "symbol": "resolveRepoProject"
+        },
+        {
+          "file": "packages/indexer/src/index.ts",
+          "startLine": 50,
+          "endLine": 51,
+          "symbol": "PAPARATS_GROUP"
+        }
+      ]
+    },
+    {
+      "id": "x-03",
+      "type": "cross-package",
+      "query": "what happens to indexed chunks when a repository is removed from projects.yml",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/orchestrator.ts",
+          "startLine": 311,
+          "endLine": 329,
+          "symbol": "removeRepo"
+        },
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 1768,
+          "endLine": 1774,
+          "symbol": "purgeProject"
+        }
+      ]
+    },
+    {
+      "id": "x-04",
+      "type": "cross-package",
+      "query": "gitignore filtering shared by the CLI file collection and the server indexer",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/shared/src/gitignore.ts",
+          "startLine": 40,
+          "endLine": 44,
+          "symbol": "filterFilesByGitignore"
+        },
+        {
+          "file": "packages/cli/src/config.ts",
+          "startLine": 299,
+          "endLine": 324,
+          "symbol": "filterFilesByGitignore"
+        },
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 1119,
+          "endLine": 1136,
+          "symbol": "filterFilesByGitignore"
+        }
+      ]
+    },
+    {
+      "id": "x-05",
+      "type": "cross-package",
+      "query": "which embedding server URL does the generated docker compose pass to the server container",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/cli/src/docker-compose-generator.ts",
+          "startLine": 324,
+          "endLine": 336,
+          "symbol": "resolveEmbedUrl"
+        },
+        {
+          "file": "packages/cli/src/docker-compose-generator.ts",
+          "startLine": 139,
+          "endLine": 204,
+          "symbol": "EMBED_URL"
+        }
+      ]
+    },
+    {
+      "id": "x-06",
+      "type": "cross-package",
+      "query": "how does the indexer container construct the server's Indexer library",
+      "project": "paparats-mcp",
+      "expected": [
+        {
+          "file": "packages/indexer/src/index.ts",
+          "startLine": 133,
+          "endLine": 144,
+          "symbol": "new Indexer"
+        },
+        {
+          "file": "packages/server/src/indexer.ts",
+          "startLine": 276,
+          "endLine": 295,
+          "symbol": "constructor"
+        }
+      ]
+    }
+  ]
+}

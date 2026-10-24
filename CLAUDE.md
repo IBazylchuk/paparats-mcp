@@ -1,6 +1,6 @@
 # paparats-mcp
 
-Semantic code search MCP server. Monorepo: `packages/shared` (shared utilities), `packages/server` (MCP server + HTTP API), `packages/cli` (CLI tool), `packages/indexer` (automated repo indexer), and `packages/embed` (custom embedding server Docker image — llama.cpp llama-server + llama-swap).
+Semantic code search MCP server. Monorepo: `packages/shared` (shared utilities), `packages/server` (MCP server + HTTP API), `packages/cli` (CLI tool), `packages/indexer` (automated repo indexer), `packages/embed` (custom embedding server Docker image — llama.cpp llama-server + llama-swap), and `packages/bench` (private, unpublished offline retrieval benchmark — see `docs/benchmarking.md`).
 
 ## This is a public repository
 
@@ -144,7 +144,10 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 ```bash
 yarn test              # vitest
 yarn typecheck         # tsc --noEmit
+yarn bench run         # opt-in retrieval benchmark; needs Qdrant + embed server (docs/benchmarking.md)
 ```
+
+Retrieval changes (ranking, chunking, models, prefixes) should come with a `yarn bench compare` diff against main.
 
 ## Versioning
 
