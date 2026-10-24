@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "paparats": {
+      "url": "http://localhost:9876/mcp"
+    }
+  }
+}

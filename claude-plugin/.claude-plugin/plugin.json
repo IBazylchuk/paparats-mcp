@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "paparats",
+  "displayName": "Paparats",
+  "description": "Local semantic code search across all your repos. Search by meaning, follow callers through a symbol graph, and get exact chunks instead of whole files. Runs on your machine; your code never leaves it.",
+  "version": "2.9.0",
+  "author": {
+    "name": "Ilya Bazylchuk",
+    "url": "https://github.com/IBazylchuk"
+  },
+  "homepage": "https://github.com/IBazylchuk/paparats-mcp",
+  "repository": "https://github.com/IBazylchuk/paparats-mcp",
+  "documentationUrl": "https://github.com/IBazylchuk/paparats-mcp#readme",
+  "supportUrl": "https://github.com/IBazylchuk/paparats-mcp/issues",
+  "privacyPolicyUrl": "https://github.com/IBazylchuk/paparats-mcp/blob/main/PRIVACY.md",
+  "license": "MIT",
+  "icon": "icon.png",
+  "keywords": ["semantic-search", "code-search", "local-first", "qdrant", "multi-repo"],
+  "userConfig": {
+    "server_url": {
+      "type": "string",
+      "title": "Paparats server URL",
+      "description": "MCP endpoint of your Paparats server. Keep the default for a local install; use /support/mcp for the support endpoint, or the address of a shared server.",
+      "default": "http://localhost:9876/mcp",
+      "required": false
+    }
+  }
+}

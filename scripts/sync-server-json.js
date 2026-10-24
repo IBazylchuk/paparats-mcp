@@ -3,8 +3,9 @@
  * Post-version hook for Changesets: read the bumped version from
  * packages/cli/package.json (the published source of truth that ends up on
  * npm — Changesets does not touch the root package.json) and write it to
- * server.json. Keeps the MCP registry server.json in sync with the npm
- * package version. Run automatically by the Changesets workflow after
+ * server.json and the client plugin manifests (Gemini, Cursor, Claude Code,
+ * Grok). Keeps the MCP registry server.json and the manifests in sync with the
+ * npm package version. Run automatically by the Changesets workflow after
  * `changeset version`.
  *
  * Why packages/cli, not root: Changesets bumps versions inside workspace
@@ -43,3 +44,19 @@ if (Array.isArray(serverData.packages) && serverData.packages[0]) {
 }
 writeFileSync(serverPath, JSON.stringify(serverData, null, 2) + '\n');
 console.log(`Updated server.json to ${version}`);
+
+// Client manifests that carry their own version field.
+for (const rel of [
+  'gemini-extension.json',
+  '.cursor-plugin/plugin.json',
+  'claude-plugin/.claude-plugin/plugin.json',
+  'grok/.grok-plugin/plugin.json',
+]) {
+  const path = join(rootDir, rel);
+  const manifest = JSON.parse(readFileSync(path, 'utf8'));
+  if (manifest.version !== version) {
+    manifest.version = version;
+    writeFileSync(path, JSON.stringify(manifest, null, 2) + '\n');
+    console.log(`Updated ${rel} to ${version}`);
+  }
+}
