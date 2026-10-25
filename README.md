@@ -101,7 +101,7 @@ AI coding assistants are smart, but they can only see files you open. They don't
 
 - **Semantic code search** — ask "where is the rate limiting logic?" and get exact code ranked by meaning, not grep matches
 - **Automatic freshness** — the indexer notices changed repos within about 10 minutes and reindexes only the changed files; trigger a reindex over HTTP when you need it sooner
-- **Cross-chunk symbol graph** — `find_usages` walks AST-derived edges (calls, called_by, references, referenced_by) so the agent can trace dependencies without re-grepping
+- **Cross-chunk symbol graph** — `find_usages` walks AST-derived edges (calls, called_by, references, referenced_by) so the agent can trace dependencies without re-grepping; `change_impact` follows callers a few steps out before a change, tests listed apart
 - **Token savings** — return only relevant chunks instead of full files to reduce context size
 - **Multi-project workspaces** — search across backend, frontend, infra repos in one query
 - **100% local & private** — Qdrant vector database + local llama-server embeddings. Nothing leaves your laptop
@@ -663,6 +663,7 @@ Connect via the **coding endpoint** (`/mcp`):
 | **Navigate unfamiliar code**   | `search_code "authentication middleware"` → exact locations            |
 | **Find similar patterns**      | `search_code "retry with exponential backoff"` → examples              |
 | **Trace dependencies**         | `find_usages {chunk_id, direction: "incoming"}` → callers via the graph |
+| **Check before changing**      | `change_impact {chunk_id}` → callers up to 3 steps out, and the tests that reach the code |
 | **Explore context**            | `get_chunk <chunk_id> --radius_lines 50` → expand around               |
 | **Manage projects**            | `list_projects` and `delete_project` for index hygiene                 |
 | **Architectural Q&A**          | `arch_context "why X"` → components / decisions / lessons (with age)   |
@@ -866,6 +867,7 @@ projects.
 | `search_code`             | Semantic search across indexed projects. Returns chunks with symbol info and confidence scores.                              |
 | `get_chunk`               | Retrieve a chunk by ID with optional surrounding context.                                                                    |
 | `find_usages`             | Walk the symbol graph from a `chunk_id` — `incoming` (callers/references in), `outgoing` (calls/references out), or `both`.  |
+| `change_impact`           | What depends on a chunk you are about to change: callers, their callers (up to 3 steps) and the tests that reach it, with `[maybe]` on links through a name defined in several places. `symbol` narrows to one name, `whole_file` takes the whole file. |
 | `list_projects`           | List indexed projects with chunk counts and detected languages.                                                              |
 | `delete_project`          | Wipe Qdrant chunks + SQLite metadata for a project (`paparats remove` uses the equivalent HTTP endpoint).                    |
 | `health_check`            | Indexing status, chunks per group, running jobs.                                                                             |

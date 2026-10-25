@@ -80,6 +80,7 @@ function createMockMetadataStore(): MetadataStore {
     getTickets: vi.fn().mockReturnValue([]),
     getEdgesTo: vi.fn().mockReturnValue([]),
     getEdgesFrom: vi.fn().mockReturnValue([]),
+    getGroupDegreeSnapshot: vi.fn().mockReturnValue({ hubChunkIds: new Set() }),
     deleteByProject: vi.fn(),
   } as unknown as MetadataStore;
 }
@@ -1288,6 +1289,121 @@ describe('McpHandler', () => {
     }
   });
 
+  describe('change_impact', () => {
+    const SEED = 'g1//p1//src/auth.ts//10-20//h1';
+    const CALLER = 'g1//p1//src/login.ts//5-15//h2';
+    const CALLER_OF_CALLER = 'g1//p1//src/routes.ts//0-30//h3';
+    const MAYBE = 'g1//p1//src/legacy.ts//0-9//h4';
+    const TEST = 'g1//p1//tests/auth.test.ts//0-40//h5';
+    const BEHIND_TEST = 'g1//p1//tests/helpers.ts//0-5//h6';
+    const SIBLING = 'g1//p1//src/auth.ts//22-30//h7';
+    const SIBLING_CALLER = 'g1//p1//src/admin.ts//1-8//h8';
+
+    const edge = (from: string, to: string, symbol: string, confidence?: string) => ({
+      from_chunk_id: from,
+      to_chunk_id: to,
+      relation_type: 'calls' as const,
+      symbol_name: symbol,
+      ...(confidence ? { confidence } : {}),
+    });
+    const EDGES = [
+      edge(CALLER, SEED, 'authenticate'),
+      edge(MAYBE, SEED, 'authenticate', 'AMBIGUOUS'),
+      edge(TEST, SEED, 'authenticate'),
+      edge(CALLER_OF_CALLER, CALLER, 'handleLogin'),
+      edge(BEHIND_TEST, TEST, 'setup'),
+      edge(SIBLING_CALLER, SIBLING, 'refresh'),
+    ];
+
+    function mocks() {
+      const metadataStore = createMockMetadataStore();
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => EDGES.filter((e) => e.to_chunk_id === id) as never
+      );
+      const indexer = createMockIndexer();
+      vi.mocked(indexer.getChunkById).mockImplementation(async (id: string) => {
+        const [, project, file, lines] = id.split('//');
+        return {
+          chunk_id: id,
+          project,
+          file,
+          startLine: Number(lines!.split('-')[0]),
+          symbol_name: id === SEED ? 'authenticate' : null,
+          defines_symbols: id === SEED ? ['authenticate', 'logout'] : [],
+        };
+      });
+      vi.mocked(indexer.getAdjacentChunks).mockResolvedValue([
+        { chunk_id: SEED },
+        { chunk_id: SIBLING },
+      ]);
+      return { metadataStore, indexer };
+    }
+
+    it('lists direct and further callers, tests apart, uncertain links marked', async () => {
+      const { metadataStore, indexer } = mocks();
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text, isError } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(isError).toBe(false);
+        expect(text).toContain('## Change impact of [p1] src/auth.ts:10-20 `authenticate`');
+        expect(text).toContain(
+          '4 chunks in 4 files depend on it: 3 directly, 1 through other code. 1 of them are tests.'
+        );
+        expect(text).toContain('### Uses it directly (2)');
+        expect(text).toContain('**[p1] src/login.ts:5** — uses `authenticate`');
+        expect(text).toContain('src/legacy.ts:0** — uses `authenticate` [maybe]');
+        expect(text).toContain('### 2 steps away (1)');
+        expect(text).toContain('src/routes.ts:0** — uses `handleLogin`');
+        expect(text).toContain('### Tests (1)');
+        expect(text).toContain('tests/auth.test.ts:0** — uses `authenticate`, 1 step away');
+        // Nothing meaningful depends on a test, so its callers are not followed.
+        expect(text).not.toContain('tests/helpers.ts');
+        // The sibling chunk of the same file is not part of a chunk-level change.
+        expect(text).not.toContain('src/admin.ts');
+        expect(text).toContain('`[maybe]`');
+        expect(text).not.toContain('```');
+      });
+    });
+
+    it('stops at depth and says more is there', async () => {
+      const { metadataStore, indexer } = mocks();
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED, depth: 1 });
+        expect(text).not.toContain('src/routes.ts');
+        expect(text).toContain('raise `depth`');
+      });
+    });
+
+    it('takes the whole file as the change and narrows by symbol', async () => {
+      const { metadataStore, indexer } = mocks();
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const file = await callTool(port, 'change_impact', { chunk_id: SEED, whole_file: true });
+        expect(file.text).toContain('[p1] src/auth.ts (whole file, 2 chunks)');
+        expect(file.text).toContain('src/admin.ts');
+
+        const narrowed = await callTool(port, 'change_impact', {
+          chunk_id: SEED,
+          symbol: 'logout',
+        });
+        expect(narrowed.text).toContain(
+          'Nothing in the indexed code depends on it through `logout`'
+        );
+
+        const wrong = await callTool(port, 'change_impact', { chunk_id: SEED, symbol: 'nope' });
+        expect(wrong.text).toContain(
+          'This chunk does not define `nope`; it defines `authenticate`, `logout`.'
+        );
+      });
+    });
+
+    it('is a coding tool only', async () => {
+      const { metadataStore, indexer } = mocks();
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED }, '/support/mcp');
+        expect(text).not.toContain('Change impact of');
+      });
+    });
+  });
+
   it('rejects reuse of a coding session id on the support endpoint', async () => {
     const app = express();
     app.use(express.json());
@@ -1632,6 +1748,39 @@ describe('McpHandler', () => {
       expect(text).toContain('src/checkout.ts');
       expect(text).not.toContain('handbook');
       expect(text).toContain('Incoming (1)');
+    });
+  });
+
+  it('change_impact refuses an out-of-scope seed and hides out-of-scope callers', async () => {
+    const { searcher, indexer } = scopedMocks();
+    const metadataStore = createMockMetadataStore();
+    vi.mocked(metadataStore.getEdgesTo).mockImplementation((id: string) =>
+      id === IN_SCOPE_CHUNK
+        ? ([
+            {
+              from_chunk_id: 'g1//billing-v3//src/checkout.ts//5-9//h3',
+              to_chunk_id: IN_SCOPE_CHUNK,
+              relation_type: 'calls',
+              symbol_name: 'charge',
+            },
+            {
+              from_chunk_id: OUT_OF_SCOPE_CHUNK,
+              to_chunk_id: IN_SCOPE_CHUNK,
+              relation_type: 'calls',
+              symbol_name: 'charge',
+            },
+          ] as never)
+        : []
+    );
+
+    await withHandler({ searcher, indexer, metadataStore }, async (port) => {
+      const hidden = await callTool(port, 'change_impact', { chunk_id: OUT_OF_SCOPE_CHUNK });
+      expect(hidden.text).toContain('Chunk not found');
+
+      const { text } = await callTool(port, 'change_impact', { chunk_id: IN_SCOPE_CHUNK });
+      expect(text).toContain('src/checkout.ts');
+      expect(text).not.toContain('handbook');
+      expect(text).toContain('1 chunks in 1 files depend on it');
     });
   });
 
@@ -2170,6 +2319,7 @@ describe('tool annotations', () => {
     'search_docs',
     'get_chunk',
     'find_usages',
+    'change_impact',
     'list_projects',
     'health_check',
     'term_search',
