@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { TEST_FILE_DEMOTION, isTestPath, mentionsTests, rankKey } from '../src/ranking.js';
+import {
+  DEFINES_IDENTIFIER_BOOST,
+  FILE_NAMED_AFTER_IDENTIFIER_BOOST,
+  TEST_FILE_DEMOTION,
+  definitionCandidatesFilter,
+  identifierTokens,
+  isTestPath,
+  mentionsTests,
+  rankKey,
+  rankQuery,
+} from '../src/ranking.js';
 
 describe('isTestPath', () => {
   it('recognises test files and directories across languages', () => {
@@ -54,5 +64,71 @@ describe('rankKey', () => {
     expect(rankKey('tests for buildSymbolEdges', { score: 0.52, file: 'tests/a.test.ts' })).toBe(
       0.52
     );
+  });
+});
+
+describe('identifierTokens', () => {
+  it('picks code-shaped tokens and the parts of qualified names', () => {
+    expect(
+      identifierTokens('Billing::InvoiceTotal charge_card retry logic in buildSymbolEdges')
+    ).toEqual([
+      'Billing::InvoiceTotal',
+      'Billing',
+      'InvoiceTotal',
+      'charge_card',
+      'buildSymbolEdges',
+    ]);
+  });
+
+  it('ignores plain words, capitalised or not', () => {
+    expect(identifierTokens('Where is the Invoice total computed')).toEqual([]);
+    expect(identifierTokens('id of a user')).toEqual([]);
+  });
+});
+
+describe('definitionCandidatesFilter', () => {
+  it('matches chunks that define any of the identifiers', () => {
+    expect(definitionCandidatesFilter(['InvoiceTotal', 'charge_card'])).toEqual({
+      must: [{ key: 'defines_symbols', match: { any: ['InvoiceTotal', 'charge_card'] } }],
+    });
+  });
+});
+
+describe('rankKey for identifier queries', () => {
+  const query = rankQuery('where is InvoiceTotal computed');
+
+  it('lifts a chunk that defines a named identifier above one that only uses it', () => {
+    const user = { score: 0.52, file: 'app/services/report.rb', defines_symbols: ['render'] };
+    const definition = {
+      score: 0.5,
+      file: 'app/models/total.rb',
+      defines_symbols: ['InvoiceTotal'],
+    };
+    expect(rankKey(query, definition)).toBeCloseTo(0.5 * DEFINES_IDENTIFIER_BOOST);
+    expect(rankKey(query, definition)).toBeGreaterThan(rankKey(query, user));
+  });
+
+  it('lifts a file named after the identifier, in either naming style', () => {
+    expect(rankKey(query, { score: 0.5, file: 'app/models/invoice_total.rb' })).toBeCloseTo(
+      0.5 * FILE_NAMED_AFTER_IDENTIFIER_BOOST
+    );
+    expect(rankKey(query, { score: 0.5, file: 'src/InvoiceTotal.ts' })).toBeCloseTo(
+      0.5 * FILE_NAMED_AFTER_IDENTIFIER_BOOST
+    );
+  });
+
+  it('leaves queries without identifiers to similarity and test demotion', () => {
+    const plain = rankQuery('where is the invoice total computed');
+    const r = {
+      score: 0.5,
+      file: 'app/models/invoice_total.rb',
+      defines_symbols: ['InvoiceTotal'],
+    };
+    expect(rankKey(plain, r)).toBe(0.5);
+  });
+
+  it('accepts the raw query string too', () => {
+    const r = { score: 0.5, file: 'a.rb', defines_symbols: ['InvoiceTotal'] };
+    expect(rankKey('InvoiceTotal', r)).toBe(rankKey(rankQuery('InvoiceTotal'), r));
   });
 });

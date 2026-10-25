@@ -50,7 +50,19 @@ export type { SearcherConfig } from './searcher.js';
 
 export { expandQuery } from './query-expansion.js';
 
-export { rankKey, isTestPath, mentionsTests, TEST_FILE_DEMOTION } from './ranking.js';
+export {
+  rankKey,
+  rankQuery,
+  isTestPath,
+  mentionsTests,
+  identifierTokens,
+  definitionCandidatesFilter,
+  DEFINITION_CANDIDATES,
+  DEFINES_IDENTIFIER_BOOST,
+  FILE_NAMED_AFTER_IDENTIFIER_BOOST,
+  TEST_FILE_DEMOTION,
+} from './ranking.js';
+export type { RankQuery, RankedFields } from './ranking.js';
 
 export { detectQueryType, prefixQuery, prefixPassage, modelFamily } from './task-prefixes.js';
 export type { QueryType, TaskPrefixConfig, ModelFamily } from './task-prefixes.js';

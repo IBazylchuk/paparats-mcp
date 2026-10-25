@@ -11,8 +11,12 @@ import {
   createQdrantClient,
   createTreeSitterManager,
   loadProject,
+  DEFINITION_CANDIDATES,
+  definitionCandidatesFilter,
+  identifierTokens,
   modelFamily,
   rankKey,
+  rankQuery,
   toCollectionName,
 } from '@paparats/server';
 import type { ProjectConfig, SearchResult } from '@paparats/server';
@@ -89,8 +93,9 @@ function makeProvider(opts: RunOptions, cache: EmbeddingCache): CachedEmbeddingP
 }
 
 /**
- * The ranking `search_code` returns: a search at twice the limit,
- * duplicates by content hash dropped, ranked (test files demoted), cut to the limit.
+ * The ranking `search_code` returns: a search at twice the limit plus, for a
+ * query naming identifiers, the chunks that define them; duplicates by content
+ * hash dropped, ranked (test files demoted, definitions up), cut to the limit.
  * Mirrors the tool handler in mcp-handler.ts for a single group.
  */
 export async function searchLikeTool(
@@ -109,14 +114,26 @@ export async function searchLikeTool(
     limit: limit * 2,
     tool: 'bench',
   });
+  const results = [...res.results];
+  const identifiers = identifierTokens(q.query);
+  if (identifiers.length > 0) {
+    const definitions = await searcher.searchWithFilter(
+      group,
+      q.query,
+      definitionCandidatesFilter(identifiers),
+      { project: q.project, limit: DEFINITION_CANDIDATES, tool: 'bench' }
+    );
+    results.push(...definitions.results);
+  }
+  const ranked = rankQuery(q.query);
   const seen = new Set<string>();
-  return res.results
+  return results
     .filter((r) => {
       if (seen.has(r.hash)) return false;
       seen.add(r.hash);
       return true;
     })
-    .sort((a, b) => rankKey(q.query, b) - rankKey(q.query, a))
+    .sort((a, b) => rankKey(ranked, b) - rankKey(ranked, a))
     .slice(0, limit);
 }
 
