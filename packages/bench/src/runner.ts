@@ -29,6 +29,15 @@ export const BENCH_GROUP_PREFIX = 'bench-';
  */
 const BENCH_EXCLUDE = 'packages/bench/**';
 
+/**
+ * Stored project names carry the group, so the indexer's eviction of a project
+ * from "other" groups (it moves a project between groups by name) never reaches
+ * another bench group or a real index on the same Qdrant.
+ */
+export function benchProjectSuffix(group: string): string {
+  return `@${group}`;
+}
+
 export type SearchMode = 'search_code' | 'search';
 
 export interface RunOptions {
@@ -178,6 +187,7 @@ async function indexDataset(
       embeddingProviderId: 'llama',
       embeddingModelId: opts.embedModel,
       treeSitter,
+      projectSuffix: benchProjectSuffix(opts.group),
     });
     for (const p of opts.dataset.projects) {
       const dir = path.join(sourceRoot, p.path ?? '.');
@@ -219,6 +229,7 @@ export async function runBench(opts: RunOptions): Promise<Report> {
     qdrantApiKey: opts.qdrantApiKey,
     qdrantClient: qdrant,
     embeddingProvider: provider,
+    projectSuffix: benchProjectSuffix(opts.group),
   });
 
   const queries = opts.types
