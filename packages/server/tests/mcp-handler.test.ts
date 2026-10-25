@@ -1788,6 +1788,93 @@ describe('McpHandler', () => {
     });
   });
 
+  it('write tools refuse a project the server is scoped away from', async () => {
+    const { searcher, indexer } = scopedMocks();
+    const archStore = {
+      upsertComponent: vi.fn(),
+      upsertDecision: vi.fn(),
+      upsertLesson: vi.fn(),
+    };
+    const terminologyStore = { recordTerm: vi.fn() };
+    await withHandler(
+      {
+        searcher,
+        indexer,
+        archStore: archStore as never,
+        terminologyStore: terminologyStore as never,
+      },
+      async (port) => {
+        const calls: Array<[string, Record<string, unknown>]> = [
+          ['arch_record_component', { name: 'n', summary: 's' }],
+          ['arch_record_decision', { title: 't', context: 'c', decision: 'd', consequences: 'q' }],
+          ['arch_record_lesson', { rule: 'r', why: 'w', when: 'w' }],
+          ['term_record', { term: 't', definition: 'd' }],
+        ];
+        for (const [tool, args] of calls) {
+          const res = await callTool(port, tool, { group: 'g1', project: 'handbook', ...args });
+          expect(res.isError).toBe(true);
+          expect(res.text).toContain('Project "handbook" is not available on this server');
+        }
+        expect(archStore.upsertComponent).not.toHaveBeenCalled();
+        expect(archStore.upsertDecision).not.toHaveBeenCalled();
+        expect(archStore.upsertLesson).not.toHaveBeenCalled();
+        expect(terminologyStore.recordTerm).not.toHaveBeenCalled();
+      }
+    );
+  });
+
+  it('arch_list, arch_delete and term_delete pass the project scope to the store', async () => {
+    const { searcher, indexer } = scopedMocks();
+    const archStore = {
+      listPoints: vi.fn().mockResolvedValue({ points: [], nextOffset: null }),
+      deletePoints: vi.fn().mockResolvedValue({ deleted: [], notFound: ['x'] }),
+    };
+    const terminologyStore = { deleteTerm: vi.fn().mockResolvedValue('not_found') };
+    await withHandler(
+      {
+        searcher,
+        indexer,
+        archStore: archStore as never,
+        terminologyStore: terminologyStore as never,
+      },
+      async (port) => {
+        await callTool(port, 'arch_list', { group: 'g1' });
+        const listAllow = archStore.listPoints.mock.calls[0]![1].allowProject as (
+          p: string
+        ) => boolean;
+        await callTool(port, 'arch_delete', { group: 'g1', ids: ['x'] });
+        const deleteAllow = archStore.deletePoints.mock.calls[0]![2] as (p: string) => boolean;
+        const { text } = await callTool(port, 'term_delete', { group: 'g1', id: 'x' });
+        const termAllow = terminologyStore.deleteTerm.mock.calls[0]![2] as (p: string) => boolean;
+        for (const allow of [listAllow, deleteAllow, termAllow]) {
+          expect(allow('billing')).toBe(true);
+          expect(allow('handbook')).toBe(false);
+        }
+        expect(text).toContain('No term with id x');
+      }
+    );
+  });
+
+  it('term_list shows each term id, so term_delete can be used', async () => {
+    const terminologyStore = {
+      list: vi.fn().mockResolvedValue([
+        {
+          id: '0190c2a0-0000-7000-8000-000000000001',
+          term: 'ledger',
+          definition: 'd',
+          aliases: [],
+          project: 'billing',
+          createdAt: 0,
+          updatedAt: 0,
+        },
+      ]),
+    };
+    await withHandler({ terminologyStore: terminologyStore as never }, async (port) => {
+      const { text } = await callTool(port, 'term_list', { group: 'g1' });
+      expect(text).toContain('id 0190c2a0-0000-7000-8000-000000000001, project billing');
+    });
+  });
+
   // ── explain_feature fan-out ───────────────────────────────────────────────
 
   it('explain_feature caps edges per seed and says the list was truncated', async () => {

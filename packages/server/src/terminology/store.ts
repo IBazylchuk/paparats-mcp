@@ -232,13 +232,40 @@ export class TerminologyStore {
     return out.slice(0, limit);
   }
 
-  /** Delete a term by id. Idempotent. */
-  async deleteTerm(group: string, id: string): Promise<boolean> {
+  /**
+   * Delete a term by id. `not_found` when the group has no term with that id
+   * (Qdrant reports a delete of a missing point as done, so it is looked up
+   * first); other failures propagate.
+   */
+  async deleteTerm(
+    group: string,
+    id: string,
+    /** A term of a project this rejects counts as not found (a scoped server). */
+    allowProject?: (project: string) => boolean
+  ): Promise<'deleted' | 'not_found'> {
+    const term = await this.get(group, id);
+    if (!term) return 'not_found';
+    if (term.project !== undefined && allowProject && !allowProject(term.project)) {
+      return 'not_found';
+    }
+    await this.qdrant.delete(toTermsCollectionName(group), { points: [id], wait: true });
+    return 'deleted';
+  }
+
+  /** One term by id, or null when the group has none with it. */
+  async get(group: string, id: string): Promise<Term | null> {
     try {
-      await this.qdrant.delete(toTermsCollectionName(group), { points: [id], wait: true });
-      return true;
-    } catch {
-      return false;
+      const points = await this.qdrant.retrieve(toTermsCollectionName(group), {
+        ids: [id],
+        with_payload: true,
+        with_vector: false,
+      });
+      return toTerm(points[0]?.payload);
+    } catch (err) {
+      // A missing collection holds no terms; a malformed id is a 400.
+      const status = (err as { status?: unknown }).status;
+      if (isMissingCollection(err) || status === 400) return null;
+      throw err;
     }
   }
 
@@ -262,7 +289,11 @@ export class TerminologyStore {
     const wanted = normalizeLookupKey(query);
     if (wanted === '') return [];
 
-    const all = await this.list(group, { ...(project !== undefined ? { project } : {}) });
+    // No cap: a term past list()'s default page would never match exactly.
+    const all = await this.list(group, {
+      ...(project !== undefined ? { project } : {}),
+      limit: Number.POSITIVE_INFINITY,
+    });
     const byName: Term[] = [];
     const byAlias: Term[] = [];
     for (const term of all) {
@@ -281,8 +312,14 @@ export class TerminologyStore {
     project?: string
   ): Promise<{ id: string; createdAt?: number } | null> {
     try {
-      const must: unknown[] = [{ key: 'term', match: { value: term } }];
-      if (project !== undefined) must.push({ key: 'project', match: { value: project } });
+      // A group-wide term must only find group-wide terms: matching a
+      // project-scoped one would overwrite it and drop its project.
+      const must: unknown[] = [
+        { key: 'term', match: { value: term } },
+        project !== undefined
+          ? { key: 'project', match: { value: project } }
+          : { is_empty: { key: 'project' } },
+      ];
       const res = await this.qdrant.scroll(toTermsCollectionName(group), {
         filter: { must },
         with_payload: true,
@@ -392,8 +429,10 @@ export class TerminologyStore {
       const info = await this.qdrant.getCollection(collection);
       const size = (info.config?.params?.vectors as { size?: number } | undefined)?.size;
       dimensionChanged = typeof size === 'number' && size !== this.provider.dimensions;
-    } catch {
-      dimensionChanged = true;
+    } catch (err) {
+      // See ArchStore.reindexArch: an unknown size must not drop the glossary.
+      if (!isMissingCollection(err)) throw err;
+      dimensionChanged = false;
     }
     if (dimensionChanged) {
       await dropTermsCollection(this.qdrant, group);

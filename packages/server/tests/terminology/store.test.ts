@@ -320,3 +320,67 @@ describe('TerminologyStore.reindexTerms', () => {
     expect(qdrant.upsert).not.toHaveBeenCalled();
   });
 });
+
+describe('TerminologyStore scope and ids', () => {
+  let qdrant: ReturnType<typeof fakeQdrant>;
+  let store: TerminologyStore;
+  const stored = (id: string, project?: string) => ({
+    id,
+    payload: { id, term: 't', definition: 'd', aliases: [], ...(project ? { project } : {}) },
+  });
+
+  beforeEach(() => {
+    qdrant = fakeQdrant();
+    store = new TerminologyStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+  });
+
+  it('a group-wide record only looks for group-wide terms of that name', async () => {
+    await store.recordTerm('g', { term: 'ledger', definition: 'd' });
+    const filter = (qdrant.scroll.mock.calls[0]![1] as { filter: { must: unknown[] } }).filter;
+    expect(filter.must).toContainEqual({ is_empty: { key: 'project' } });
+  });
+
+  it('a project record looks for that project only', async () => {
+    await store.recordTerm('g', { term: 'ledger', definition: 'd', project: 'billing' });
+    const filter = (qdrant.scroll.mock.calls[0]![1] as { filter: { must: unknown[] } }).filter;
+    expect(filter.must).toContainEqual({ key: 'project', match: { value: 'billing' } });
+  });
+
+  it('finds an exact name past the first 200 terms', async () => {
+    const terms = Array.from({ length: 300 }, (_, i) => ({
+      id: `id-${i}`,
+      payload: { id: `id-${i}`, term: `term ${i}`, definition: 'd', aliases: [] },
+    }));
+    qdrant.scroll
+      .mockResolvedValueOnce({ points: terms.slice(0, 256), next_page_offset: 'next' })
+      .mockResolvedValueOnce({ points: terms.slice(256), next_page_offset: null });
+    const hits = await store.search('g', 'term 299');
+    expect(hits.map((h) => h.id)).toEqual(['id-299']);
+  });
+
+  it('deleteTerm reports an unknown id as not found and deletes nothing', async () => {
+    qdrant.retrieve.mockResolvedValue([]);
+    expect(await store.deleteTerm('g', 'missing')).toBe('not_found');
+    expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+
+  it('deleteTerm treats a term of a hidden project as not found', async () => {
+    qdrant.retrieve.mockResolvedValue([stored('x', 'handbook')]);
+    expect(await store.deleteTerm('g', 'x', (p) => p === 'billing')).toBe('not_found');
+    expect(qdrant.delete).not.toHaveBeenCalled();
+  });
+
+  it('deleteTerm deletes a visible term', async () => {
+    qdrant.retrieve.mockResolvedValue([stored('x')]);
+    expect(await store.deleteTerm('g', 'x', (p) => p === 'billing')).toBe('deleted');
+    expect(qdrant.delete).toHaveBeenCalledWith('paparats_g_terms', { points: ['x'], wait: true });
+  });
+
+  it('deleteTerm propagates an outage instead of reporting a result', async () => {
+    qdrant.retrieve.mockRejectedValue(new Error('fetch failed'));
+    await expect(store.deleteTerm('g', 'x')).rejects.toThrow('fetch failed');
+  });
+});
