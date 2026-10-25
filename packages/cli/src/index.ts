@@ -11,6 +11,7 @@ import { groupsCommand } from './commands/groups.js';
 import { addCommand, listCommand, removeCommand } from './commands/projects.js';
 import { startCommand, stopCommand, restartCommand } from './commands/lifecycle.js';
 import { editCommand } from './commands/edit.js';
+import { instructionsCommand } from './commands/instructions.js';
 
 // Read version from the package's own package.json so `paparats --version`
 // stays in sync with the published npm version automatically. The compiled
@@ -35,5 +36,6 @@ program.addCommand(searchCommand);
 program.addCommand(statusCommand);
 program.addCommand(doctorCommand);
 program.addCommand(groupsCommand);
+program.addCommand(instructionsCommand);
 
 program.parse();

@@ -217,6 +217,14 @@ export async function runAdd(
     }
   }
 
+  if (kind === 'local') {
+    console.log(
+      chalk.dim(
+        `  To tell agents in this repo when to use paparats: paparats instructions "${entry.path}"`
+      )
+    );
+  }
+
   return kind === 'local' ? { kind, entry, restarted, reindexed } : { kind, entry, reindexed };
 }
 

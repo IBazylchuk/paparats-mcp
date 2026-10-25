@@ -82,6 +82,7 @@ paparats install --mode support --server http://paparats.example.com:9876
 | `paparats groups`                | List groups and their projects                                |
 | `paparats doctor`                | Diagnostic checks                                             |
 | `paparats update`                | Update the CLI from npm and pull the latest Docker images     |
+| `paparats instructions [dir]`    | Write a "when to use paparats, when grep" block into the repo's CLAUDE.md / AGENTS.md |
 
 ## MCP Tools
 
