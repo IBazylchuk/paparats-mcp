@@ -4,6 +4,35 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.12.0] - 2026-10-25
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- 3790ccb: Code chunks are embedded with their file path. A method chunk used to be embedded on its own, with nothing saying which file it belongs to; the embedded text is now `Filepath: <path>`, `---` and the chunk. What search returns is unchanged: results still show the plain chunk.
+
+  On the retrieval bench this helps most for questions asked in plain language. On support-style questions over a private Ruby codebase, the right file came first for 38% of queries instead of 21% in plain similarity order (as the support tools rank), and for 33% instead of 21% with `search_code`'s ranking. On this repository's support-style questions it was 55% instead of 45% with the ranking and unchanged without it. On three sets of real agent queries over the private codebase, with the ranking, it was as good or slightly better (71% vs 66%, 61% vs 58%, 82% vs 82%). Also adding the enclosing class and module lines won about as many queries as it lost, so the header carries the path only.
+
+  Every file is re-embedded once. Each code point now stores `embed_format`, which the indexer compares like the chunk ranges, so even unchanged files are rewritten, and the indexer's reindex epoch is bumped so the first run after the upgrade does a full pass.
+
+- 436b542: `search_code` ranks files that change often slightly higher. After a project is indexed, each file's number of commits is turned into its percentile within the project and stored on its chunks as `file_churn`; the rank key grows by up to 5% with it. Projects without git history rank as before, and a file indexed on its own between project passes counts as unchanged until the next pass. Only the order changes: the similarity percentage stays the cosine similarity.
+
+  The effect is small: on the retrieval bench it put the right file first for one more query of a hold-out set over a private Ruby codebase (58% instead of 55%) and changed nothing on the other query sets.
+
+- 9548792: `search_code` puts the definition first when the query names a class or function. A query like `where is InvoiceTotal computed`, `charge_card retry` or `Billing::Invoice` now also fetches the chunks that define those names, so a definition that dense search left out of its candidates still gets ranked, and moves chunks that define a named identifier (×1.1) and files named after one (×1.05, `invoice_total.rb` for `InvoiceTotal`) up. Queries without code-shaped names are ranked as before. As with the test-file demotion, only the order changes: the similarity percentage and the confidence guidance stay the cosine similarity.
+
+  Together with ordering by how often a file changes (a separate entry in this release), on real agent queries over a Ruby codebase that no setting was chosen on, the right file came first for 82% of queries instead of 64%; on two other sets of real queries over that codebase, 66% instead of 54% and 58% instead of 48%. On this repository's own bench nothing changed (82% before and after).
+
+### Patch Changes
+
+- 3ed8e38: The embedding server no longer grows its memory during long indexing runs. Two caches that never pay off for embeddings are now off, in both the native config written by `paparats install` / `paparats update` and the `ibaz/paparats-embed` image:
+
+  - llama-server's prompt cache (`--cache-ram 0`). It keeps up to 8 GiB per model of saved state for prompts that come back, and embedding inputs never repeat.
+  - llama-swap's request/response captures (`captureBuffer: 0`). They are a debugging aid and grow llama-swap's memory under a steady stream of embedding calls.
+
+  Native installs pick the change up with `paparats update`, which rewrites `~/.paparats/llama-swap.yaml`.
+
 ## [2.11.3] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
