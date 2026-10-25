@@ -21,6 +21,16 @@ function fakeProvider(): CachedEmbeddingProvider {
   } as unknown as CachedEmbeddingProvider;
 }
 
+/** The error Qdrant's client throws for a missing collection or point. */
+function notFound(): Error {
+  return Object.assign(new Error('Not found: Collection does not exist'), { status: 404 });
+}
+
+/** A failure that is not "missing": Qdrant down, auth rejected, timeout. */
+function outage(): Error {
+  return Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+}
+
 function fakeQdrant() {
   return {
     getCollection: vi.fn().mockResolvedValue({}),
@@ -228,6 +238,7 @@ describe('ArchStore.upsertDecision', () => {
 
   it('bypasses similarity gate when supersedes is explicit', async () => {
     const qdrant = fakeQdrant();
+    qdrant.retrieve.mockResolvedValue([{ id: 'old-id', payload: { arch_kind: 'decision' } }]);
     qdrant.query = vi.fn().mockResolvedValue({
       points: [
         { id: 'prior-uuid', score: 0.95, payload: { arch_kind: 'decision', title: 'Prior' } },
@@ -955,7 +966,7 @@ describe('ArchStore.deletePoints', () => {
     // We detect that via getCollection rather than catching retrieve, so
     // transient retrieve failures aren't silently swallowed.
     const qdrant = fakeQdrant();
-    qdrant.getCollection = vi.fn().mockRejectedValue(new Error('collection not found'));
+    qdrant.getCollection = vi.fn().mockRejectedValue(notFound());
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -1119,9 +1130,9 @@ describe('ArchStore.listPoints', () => {
     expect(nextOffset).toBe('cursor-token');
   });
 
-  it('returns an empty page when the underlying scroll fails (e.g. collection missing)', async () => {
+  it('returns an empty page when the collection is missing', async () => {
     const qdrant = fakeQdrant();
-    qdrant.scroll.mockRejectedValueOnce(new Error('Not found: Collection ... does not exist'));
+    qdrant.scroll.mockRejectedValueOnce(notFound());
     const store = new ArchStore({
       qdrant: qdrant as unknown as QdrantClient,
       provider: fakeProvider(),
@@ -1556,5 +1567,125 @@ describe('ArchStore.healAllArchModels', () => {
     await store.healAllArchModels();
     // Only the arch collection triggered a meta read.
     expect(qdrant.retrieve).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ArchStore failures are not read as empty', () => {
+  const decision = {
+    title: 'new',
+    context: 'c',
+    decision: 'd',
+    alternativesRejected: '',
+    consequences: 'q',
+    scope: 'global' as const,
+  };
+  function storeWith(qdrant: ReturnType<typeof fakeQdrant>): ArchStore {
+    return new ArchStore({ qdrant: qdrant as unknown as QdrantClient, provider: fakeProvider() });
+  }
+
+  it('upsertComponent fails instead of writing a second card when the name lookup fails', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockRejectedValue(outage());
+    await expect(
+      storeWith(qdrant).upsertComponent('g', {
+        project: 'p',
+        name: 'n',
+        summary: 's',
+        files: [],
+        neighbours: [],
+        anchors: [],
+      })
+    ).rejects.toThrow('fetch failed');
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+
+  it('upsertDecision fails instead of skipping the duplicate gate when the search fails', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.query = vi.fn().mockRejectedValue(outage());
+    await expect(storeWith(qdrant).upsertDecision('g', decision)).rejects.toThrow('fetch failed');
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+
+  it('upsertDecision refuses an unknown supersedes id before writing anything', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.retrieve.mockResolvedValue([]);
+    await expect(
+      storeWith(qdrant).upsertDecision('g', { ...decision, supersedes: 'missing-id' })
+    ).rejects.toThrow('no decision with id "missing-id"');
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+    expect(qdrant.setPayload).not.toHaveBeenCalled();
+  });
+
+  it('upsertDecision refuses a supersedes id that is not a decision', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.retrieve.mockResolvedValue([{ id: 'l', payload: { arch_kind: 'lesson' } }]);
+    await expect(
+      storeWith(qdrant).upsertDecision('g', { ...decision, supersedes: 'l' })
+    ).rejects.toThrow('no decision');
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+
+  it('search, list and delete propagate an outage', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.query = vi.fn().mockRejectedValue(outage());
+    qdrant.scroll.mockRejectedValue(outage());
+    qdrant.getCollection = vi.fn().mockRejectedValue(outage());
+    const store = storeWith(qdrant);
+    await expect(store.searchWithVector('g', [0.1])).rejects.toThrow('fetch failed');
+    await expect(store.listPoints('g')).rejects.toThrow('fetch failed');
+    await expect(store.deletePoints('g', ['a'])).rejects.toThrow('fetch failed');
+  });
+
+  it('reindexArch keeps the collection when its size cannot be read', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValue({
+      points: [{ id: 'a', payload: { arch_kind: 'lesson', rule: 'r', why: 'w', when: 'w' } }],
+      next_page_offset: null,
+    });
+    qdrant.getCollection = vi.fn().mockRejectedValue(outage());
+    await expect(storeWith(qdrant).reindexArch('g')).rejects.toThrow('fetch failed');
+    expect(qdrant.deleteCollection).not.toHaveBeenCalled();
+  });
+});
+
+describe('ArchStore project scope (allowProject)', () => {
+  const allowProject = (p: string) => p === 'billing';
+  const card = (id: string, project?: string) => ({
+    id,
+    score: 0.9,
+    payload: { arch_kind: 'lesson', kind: 'lesson', id, rule: id, ...(project ? { project } : {}) },
+  });
+
+  it('search and list drop cards of hidden projects and keep group-wide ones', async () => {
+    const qdrant = fakeQdrant();
+    const hits = [card('global'), card('visible', 'billing'), card('hidden', 'handbook')];
+    qdrant.query = vi.fn().mockResolvedValue({ points: hits });
+    qdrant.scroll.mockResolvedValue({ points: hits, next_page_offset: null });
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const searched = await store.searchWithVector('g', [0.1], { allowProject });
+    expect(searched.map((h) => h.id)).toEqual(['global', 'visible']);
+    const listed = await store.listPoints('g', { allowProject });
+    expect(listed.points.map((p) => p.id)).toEqual(['global', 'visible']);
+  });
+
+  it('deletePoints reports a hidden project card as not found and leaves it', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.retrieve.mockResolvedValue([
+      { id: 'visible', payload: { project: 'billing' } },
+      { id: 'hidden', payload: { project: 'handbook' } },
+    ]);
+    const store = new ArchStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const res = await store.deletePoints('g', ['visible', 'hidden'], allowProject);
+    expect(res).toEqual({ deleted: ['visible'], notFound: ['hidden'] });
+    expect(qdrant.delete).toHaveBeenCalledWith('paparats_g_arch', {
+      points: ['visible'],
+      wait: true,
+    });
   });
 });

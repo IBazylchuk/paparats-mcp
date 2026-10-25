@@ -68,6 +68,8 @@ export interface BuildArchContextOpts {
    * of the result. Defaults to DEFAULT_PER_KIND_LIMIT per kind.
    */
   limits?: PerKindLimits;
+  /** Projects the caller may see; see SearchOpts.allowProject. */
+  allowProject?: (project: string) => boolean;
 }
 
 /**
@@ -84,7 +86,8 @@ async function searchOneKind(
   kind: ArchKind,
   limit: number,
   minScore: number,
-  project: string | undefined
+  project: string | undefined,
+  allowProject: ((project: string) => boolean) | undefined
 ): Promise<ArchSearchHit[]> {
   if (limit <= 0) return [];
   return store.searchWithVector(group, vector, {
@@ -92,6 +95,7 @@ async function searchOneKind(
     limit,
     minScore,
     ...(project !== undefined ? { project } : {}),
+    ...(allowProject ? { allowProject } : {}),
   });
 }
 
@@ -136,11 +140,13 @@ export async function buildArchContextWithVector(
 ): Promise<ArchContextResult> {
   const minScore = opts.minScore ?? DEFAULT_MIN_SCORE;
   const limits = resolveLimits(opts.limits);
-  const project = opts.project;
+  const { project, allowProject } = opts;
+  const search = (kind: ArchKind, limit: number) =>
+    searchOneKind(store, group, vector, kind, limit, minScore, project, allowProject);
   const [components, decisions, lessons] = await Promise.all([
-    searchOneKind(store, group, vector, 'component', limits.component, minScore, project),
-    searchOneKind(store, group, vector, 'decision', limits.decision, minScore, project),
-    searchOneKind(store, group, vector, 'lesson', limits.lesson, minScore, project),
+    search('component', limits.component),
+    search('decision', limits.decision),
+    search('lesson', limits.lesson),
   ]);
   const totalHits = components.length + decisions.length + lessons.length;
   const hasAnyCards = totalHits > 0 || (await groupHasAnyCards(store, group));

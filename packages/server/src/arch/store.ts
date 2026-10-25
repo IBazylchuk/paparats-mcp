@@ -1,6 +1,7 @@
 import type { QdrantClient } from '@qdrant/js-client-rest';
 import { v7 as uuidv7 } from 'uuid';
 import type { CachedEmbeddingProvider } from '../embeddings.js';
+import { isMissingCollection } from '../qdrant-errors.js';
 import {
   dropArchCollection,
   ensureArchCollection,
@@ -76,6 +77,11 @@ export interface SearchOpts {
    * Omit to query the whole group.
    */
   project?: string;
+  /**
+   * Which projects the caller may see (a server scoped by PAPARATS_PROJECTS).
+   * Cards of other projects are dropped; cards without a project stay.
+   */
+  allowProject?: (project: string) => boolean;
 }
 
 /** Search hit — the stored card payload plus the cosine similarity from the vector search. */
@@ -177,7 +183,11 @@ export class ArchStore {
     const text = renderDecisionForEmbedding(input);
     const vector = await this.provider.embed(text);
 
-    if (!input.supersedes) {
+    if (input.supersedes) {
+      // Checked before writing: marking a missing id superseded fails after the
+      // new card is in, so a retry of the "failed" call wrote it a second time.
+      await this.assertSupersedable(group, input.supersedes);
+    } else {
       const match = await this.findNearest(group, 'decision', vector, input.project);
       if (match && match.score >= DUPLICATE_THRESHOLD) {
         return {
@@ -293,6 +303,30 @@ export class ArchStore {
     return { status: 'created', id };
   }
 
+  /** Throws unless `id` is a decision card in `group`. */
+  private async assertSupersedable(group: string, id: string): Promise<void> {
+    let points: Array<{ payload?: Record<string, unknown> | null }>;
+    try {
+      points = await this.qdrant.retrieve(toArchCollectionName(group), {
+        ids: [id],
+        with_payload: true,
+        with_vector: false,
+      });
+    } catch (err) {
+      // A missing collection holds no decision; a malformed id is a 400.
+      const status = (err as { status?: unknown }).status;
+      if (!isMissingCollection(err) && status !== 400) throw err;
+      points = [];
+    }
+    const kind = points[0]?.payload?.['arch_kind'];
+    if (kind !== 'decision') {
+      throw new Error(
+        `supersedes: no decision with id "${id}" in group "${group}". Nothing was written. ` +
+          'Find the id with arch_list or arch_context, or omit supersedes.'
+      );
+    }
+  }
+
   async markSuperseded(group: string, pointId: string): Promise<void> {
     await this.qdrant.setPayload(toArchCollectionName(group), {
       payload: { status: 'superseded' },
@@ -327,24 +361,28 @@ export class ArchStore {
    */
   async deletePoints(
     group: string,
-    ids: string[]
+    ids: string[],
+    /** Cards of projects this rejects count as not found (see SearchOpts.allowProject). */
+    allowProject?: (project: string) => boolean
   ): Promise<{ deleted: string[]; notFound: string[] }> {
     if (ids.length === 0) return { deleted: [], notFound: [] };
     const collection = toArchCollectionName(group);
     try {
       await this.qdrant.getCollection(collection);
-    } catch {
+    } catch (err) {
       // Collection doesn't exist yet — first run of a migration. Treat every
       // requested id as not-found so the call is safe to retry.
-      return { deleted: [], notFound: [...ids] };
+      if (isMissingCollection(err)) return { deleted: [], notFound: [...ids] };
+      throw err;
     }
     const points = await this.qdrant.retrieve(collection, {
       ids,
-      with_payload: false,
+      with_payload: ['project'],
       with_vector: false,
     });
     const foundSet = new Set<string>();
     for (const p of points) {
+      if (!isVisible(p.payload, allowProject)) continue;
       const raw = p.id;
       const asStr = typeof raw === 'string' ? raw : typeof raw === 'number' ? String(raw) : null;
       if (asStr) foundSet.add(asStr);
@@ -386,6 +424,7 @@ export class ArchStore {
       includeHistory?: boolean;
       limit?: number;
       offset?: string | number | Record<string, unknown>;
+      allowProject?: (project: string) => boolean;
     } = {}
   ): Promise<{
     points: ArchPoint[];
@@ -411,7 +450,7 @@ export class ArchStore {
     if (must_not.length > 0) filter['must_not'] = must_not;
 
     const matchesProject = makeProjectPredicate(opts.project);
-    const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
+    const fetchLimit = opts.project !== undefined || opts.allowProject ? limit * 3 : limit;
     try {
       const page = await this.qdrant.scroll(collection, {
         limit: fetchLimit,
@@ -435,7 +474,7 @@ export class ArchStore {
         }
         if (!p.payload) continue;
         const point = p.payload as unknown as ArchPoint;
-        if (!matchesProject(point)) continue;
+        if (!matchesProject(point) || !isVisible(p.payload, opts.allowProject)) continue;
         filtered.push(point);
         if (filtered.length >= limit) break;
       }
@@ -456,8 +495,11 @@ export class ArchStore {
         nextOffset = null;
       }
       return { points: filtered, nextOffset };
-    } catch {
-      return { points: [], nextOffset: null };
+    } catch (err) {
+      // Only a missing collection is an empty group. Reading an outage as "no
+      // cards" invites the agent to record them all again.
+      if (isMissingCollection(err)) return { points: [], nextOffset: null };
+      throw err;
     }
   }
 
@@ -492,8 +534,11 @@ export class ArchStore {
       if (!id) return null;
       const createdAt = (point.payload as { createdAt?: unknown } | undefined)?.createdAt;
       return typeof createdAt === 'number' ? { id, createdAt } : { id };
-    } catch {
-      return null;
+    } catch (err) {
+      // Null reads as "no such component yet" and mints a fresh id, so a
+      // transient error would write a second card and reset createdAt.
+      if (isMissingCollection(err)) return null;
+      throw err;
     }
   }
 
@@ -556,8 +601,11 @@ export class ArchStore {
         return { id, score: hit.score, label: labelFromPayload(hit.payload) };
       }
       return null;
-    } catch {
-      return null;
+    } catch (err) {
+      // Null means "nothing similar" and lets the write through; on a real
+      // failure that would silently switch the duplicate gate off.
+      if (isMissingCollection(err)) return null;
+      throw err;
     }
   }
 
@@ -597,7 +645,7 @@ export class ArchStore {
     // lessons" in a single filter cleanly). Overfetch so the post-filter
     // doesn't return an artificially short list. Arch collections are tiny
     // (low thousands), so 3x is cheap and bounded.
-    const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
+    const fetchLimit = opts.project !== undefined || opts.allowProject ? limit * 3 : limit;
     try {
       const { points: hits } = await this.qdrant.query(toArchCollectionName(group), {
         query: vector,
@@ -642,11 +690,12 @@ export class ArchStore {
       boosted.sort((a, b) => b.score - a.score);
       const filtered = boosted
         .filter((h) => h.score >= minScore)
-        .filter((h) => matchesProject(h.point))
+        .filter((h) => matchesProject(h.point) && isVisible(h.point, opts.allowProject))
         .map((h) => ({ ...h.point, score: h.score }));
       return filtered.slice(0, limit);
-    } catch {
-      return [];
+    } catch (err) {
+      if (isMissingCollection(err)) return [];
+      throw err;
     }
   }
 
@@ -776,9 +825,11 @@ export class ArchStore {
       const info = await this.qdrant.getCollection(collection);
       const size = (info.config?.params?.vectors as { size?: number } | undefined)?.size;
       dimensionChanged = typeof size === 'number' && size !== this.provider.dimensions;
-    } catch {
-      // Can't read config — assume a rebuild is safest.
-      dimensionChanged = true;
+    } catch (err) {
+      // Not knowing the size is no reason to drop the collection: on an outage
+      // the drop could succeed and the rewrite fail, losing every card.
+      if (!isMissingCollection(err)) throw err;
+      dimensionChanged = false;
     }
     if (dimensionChanged) {
       await dropArchCollection(this.qdrant, group);
@@ -966,6 +1017,16 @@ export function makeProjectPredicate(project: string | undefined): (point: ArchP
     if (cardProject === undefined || cardProject === null) return true;
     return typeof cardProject === 'string' && cardProject === project;
   };
+}
+
+/** Whether a card is visible under `allowProject`: cards without a project always are. */
+function isVisible(
+  payload: unknown,
+  allowProject: ((project: string) => boolean) | undefined
+): boolean {
+  if (!allowProject) return true;
+  const project = (payload as { project?: unknown } | null | undefined)?.project;
+  return typeof project !== 'string' || allowProject(project);
 }
 
 function labelFromPayload(payload: unknown): string {

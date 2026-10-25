@@ -224,6 +224,26 @@ function invalidGroupResult(
   }
 }
 
+/**
+ * Error result for a write naming a project this server is scoped away from,
+ * or null when the project is visible (or the write is group-wide).
+ */
+function outOfScopeProjectResult(
+  scope: ProjectScopeGuard,
+  project: string | undefined
+): { content: Array<{ type: 'text'; text: string }>; isError: true } | null {
+  if (project === undefined || scope.allowsProject(project)) return null;
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text: `Project "${project}" is not available on this server. Nothing was written.`,
+      },
+    ],
+    isError: true,
+  };
+}
+
 /** Same text as a genuinely missing chunk, so an out-of-scope id is indistinguishable from one. */
 function chunkNotFoundText(chunkId: string): string {
   return `Chunk not found: ${chunkId}\n\nThe chunk may have been removed during reindexing. Try searching again.`;
@@ -690,6 +710,11 @@ function knowledgeUnavailable(tool: string, err: unknown): Error {
  *                            same key) and "replace it" (decision: pass
  *                            `supersedes`; lesson: refine and re-call).
  */
+/** Where a glossary entry lives, for tools that act on it by id (`term_delete`). */
+function termRef(t: { id: string; project?: string }): string {
+  return `id ${t.id}${t.project !== undefined ? `, project ${t.project}` : ''}`;
+}
+
 function formatWriteResult(
   kind: 'decision' | 'lesson',
   label: string,
@@ -3414,6 +3439,7 @@ export class McpHandler {
                   ...(typeof min_score === 'number' ? { minScore: min_score } : {}),
                   ...(project !== undefined ? { project } : {}),
                   ...(limits !== undefined ? { limits } : {}),
+                  ...(scope.projects ? { allowProject: scope.allowsProject } : {}),
                 }),
               };
             })
@@ -3499,7 +3525,7 @@ export class McpHandler {
           annotations: ADDITIVE_WRITE,
         },
         async ({ group, project, name, summary, files, neighbours, anchors }) => {
-          const invalid = invalidGroupResult(group);
+          const invalid = invalidGroupResult(group) ?? outOfScopeProjectResult(scope, project);
           if (invalid) return invalid;
           const result = await archStore.upsertComponent(group, {
             project,
@@ -3584,10 +3610,10 @@ export class McpHandler {
           decision,
           alternatives_rejected,
           consequences,
-          scope,
+          scope: decisionScope,
           supersedes,
         }) => {
-          const invalid = invalidGroupResult(group);
+          const invalid = invalidGroupResult(group) ?? outOfScopeProjectResult(scope, project);
           if (invalid) return invalid;
           const result = await archStore.upsertDecision(group, {
             ...(project !== undefined ? { project } : {}),
@@ -3596,7 +3622,7 @@ export class McpHandler {
             decision,
             alternativesRejected: alternatives_rejected,
             consequences,
-            scope,
+            scope: decisionScope,
             supersedes: supersedes ?? null,
           });
           metrics.incArchWriteTotal('decision', result.status);
@@ -3652,15 +3678,15 @@ export class McpHandler {
           },
           annotations: ADDITIVE_WRITE,
         },
-        async ({ group, project, rule, why, when, scope, severity, evidence }) => {
-          const invalid = invalidGroupResult(group);
+        async ({ group, project, rule, why, when, scope: lessonScope, severity, evidence }) => {
+          const invalid = invalidGroupResult(group) ?? outOfScopeProjectResult(scope, project);
           if (invalid) return invalid;
           const result = await archStore.upsertLesson(group, {
             ...(project !== undefined ? { project } : {}),
             rule,
             why,
             when,
-            scope,
+            scope: lessonScope,
             severity,
             evidence: evidence ?? null,
           });
@@ -3727,6 +3753,7 @@ export class McpHandler {
             includeHistory: include_history,
             limit,
             ...(decodedOffset !== undefined ? { offset: decodedOffset } : {}),
+            ...(scope.projects ? { allowProject: scope.allowsProject } : {}),
           });
           if (points.length === 0) {
             return {
@@ -3944,7 +3971,13 @@ export class McpHandler {
           annotations: DESTRUCTIVE,
         },
         async ({ group, ids }) => {
-          const { deleted, notFound } = await archStore.deletePoints(group, ids);
+          const invalid = invalidGroupResult(group);
+          if (invalid) return invalid;
+          const { deleted, notFound } = await archStore.deletePoints(
+            group,
+            ids,
+            scope.projects ? scope.allowsProject : undefined
+          );
           const lines: string[] = [`Deleted ${deleted.length} card(s) from group \`${group}\`.`];
           if (notFound.length > 0) {
             lines.push(`Not found (already removed?): ${notFound.join(', ')}.`);
@@ -4153,7 +4186,7 @@ export class McpHandler {
             .map((t) => {
               const aliases = t.aliases.length > 0 ? ` _(aka: ${t.aliases.join(', ')})_` : '';
               const how = t.score >= 1 ? 'exact match' : `similar, ${t.score.toFixed(3)}`;
-              return `**${t.term}**${aliases} _(${how})_\n${t.definition}`;
+              return `**${t.term}**${aliases} _(${how}; ${termRef(t)})_\n${t.definition}`;
             })
             .join('\n\n');
           return { content: [{ type: 'text' as const, text: md }] };
@@ -4195,7 +4228,7 @@ export class McpHandler {
           }
           const md = all
             .sort((a, b) => a.term.localeCompare(b.term))
-            .map((t) => `- **${t.term}**: ${t.definition}`)
+            .map((t) => `- **${t.term}** _(${termRef(t)})_: ${t.definition}`)
             .join('\n');
           return { content: [{ type: 'text' as const, text: md }] };
         }
@@ -4227,7 +4260,7 @@ export class McpHandler {
           annotations: ADDITIVE_WRITE,
         },
         async ({ group, term, definition, aliases, project }) => {
-          const invalid = invalidGroupResult(group);
+          const invalid = invalidGroupResult(group) ?? outOfScopeProjectResult(scope, project);
           if (invalid) return invalid;
           const res = await termStore.recordTerm(group, {
             term,
@@ -4262,12 +4295,21 @@ export class McpHandler {
           annotations: DESTRUCTIVE,
         },
         async ({ group, id }) => {
-          const ok = await termStore.deleteTerm(group, id);
+          const invalid = invalidGroupResult(group);
+          if (invalid) return invalid;
+          const res = await termStore.deleteTerm(
+            group,
+            id,
+            scope.projects ? scope.allowsProject : undefined
+          );
           return {
             content: [
               {
                 type: 'text' as const,
-                text: ok ? `Deleted term ${id} from \`${group}\`.` : `Could not delete term ${id}.`,
+                text:
+                  res === 'deleted'
+                    ? `Deleted term ${id} from \`${group}\`.`
+                    : `No term with id ${id} in \`${group}\`. Nothing was deleted; find the id with term_list.`,
               },
             ],
           };

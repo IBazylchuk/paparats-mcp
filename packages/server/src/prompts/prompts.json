@@ -97,7 +97,7 @@
     },
     "term_delete": {
       "title": "Delete Glossary Term",
-      "description": "Hard-delete a glossary term by id. No undo. Use to remove obsolete or wrong terms."
+      "description": "Hard-delete a glossary term by id (shown by term_list and term_search). No undo. Use to remove obsolete or wrong terms; an id the group does not have is reported as not found."
     },
     "get_document": {
       "title": "Get Document",
