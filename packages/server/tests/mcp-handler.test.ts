@@ -46,7 +46,7 @@ function createMockSearcher(): Searcher {
   const searchMock = vi.fn().mockResolvedValue(emptyResponse);
   return {
     search: searchMock,
-    expandedSearch: searchMock,
+    expandedSearch: vi.fn().mockResolvedValue(emptyResponse),
     searchWithFilter: vi.fn().mockResolvedValue(emptyResponse),
     formatResults: vi.fn().mockReturnValue('No results found.'),
     getUsageStats: vi.fn().mockReturnValue({
@@ -373,7 +373,7 @@ describe('McpHandler', () => {
 
   it('POST /mcp tools/call search_code returns results', async () => {
     const searcher = createMockSearcher();
-    vi.mocked(searcher.expandedSearch).mockResolvedValue({
+    vi.mocked(searcher.search).mockResolvedValue({
       results: [
         {
           project: 'p1',
@@ -467,13 +467,15 @@ describe('McpHandler', () => {
       expect(callBody.result.content[0]?.text).toContain('src/foo.ts');
       expect(callBody.result.content[0]?.text).toContain('const x = 1;');
 
-      expect(searcher.expandedSearch).toHaveBeenCalledWith('g1', 'authentication', {
+      expect(searcher.search).toHaveBeenCalledWith('g1', 'authentication', {
         project: 'all',
         limit: 10,
         // Labels the search event so search_code is distinguishable from the
-        // other tools that reach expandedSearch.
+        // other tools that reach the searcher.
         tool: 'search_code',
       });
+      // search_code runs the query once; query expansion stays with the support tools.
+      expect(searcher.expandedSearch).not.toHaveBeenCalled();
     } finally {
       server.close();
       handler2.destroy();

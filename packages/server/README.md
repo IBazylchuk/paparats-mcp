@@ -17,7 +17,7 @@ Three jobs in one process:
   Qdrant upsert. Post-index passes attach git history, ticket references, and
   cross-chunk symbol edges (calls / called_by / references / referenced_by).
 - **Searcher.** Task-prefixed embedding (`nl2code` / `code2code` / `techqa`), query
-  expansion (abbreviations, case variants, plurals, filler removal), in-memory LRU
+  expansion for the support tools (abbreviations, case variants, plurals, filler removal), in-memory LRU
   query cache with per-group invalidation, confidence scoring, token-savings
   telemetry.
 - **MCP server.** Three endpoints — `/mcp` (coding), `/support/mcp` (support) and the

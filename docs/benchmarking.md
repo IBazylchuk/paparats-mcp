@@ -8,7 +8,7 @@ before/after in the PR.
 
 The embedding-model numbers in the README ("Model benchmarks & methodology") come from
 public BEIR datasets (CoIR CosQA, SciFact, FiQA) and compare models in isolation. This
-bench measures the whole search path — chunking, instruction prefixes, query expansion,
+bench measures the whole search path — chunking, instruction prefixes,
 project filtering, dedupe — on a real repository.
 
 ## What it measures
@@ -86,7 +86,7 @@ What `--index` does:
 
 Each run writes `packages/bench/reports/<dataset>-<timestamp>.json` and a markdown summary
 next to it (both git-ignored), and prints the summary. `--mode search` scores the plain
-`/api/search` path (no query expansion) instead of `search_code`.
+`/api/search` path (the limit as given, no dedupe) instead of `search_code`.
 
 ## Comparing runs
 

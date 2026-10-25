@@ -88,7 +88,7 @@ function makeProvider(opts: RunOptions, cache: EmbeddingCache): CachedEmbeddingP
 }
 
 /**
- * The ranking `search_code` returns: expanded search at twice the limit,
+ * The ranking `search_code` returns: a search at twice the limit,
  * duplicates by content hash dropped, best score first, cut to the limit.
  * Mirrors the tool handler in mcp-handler.ts for a single group.
  */
@@ -103,7 +103,7 @@ export async function searchLikeTool(
     const res = await searcher.search(group, q.query, { project: q.project, limit, tool: 'bench' });
     return res.results;
   }
-  const res = await searcher.expandedSearch(group, q.query, {
+  const res = await searcher.search(group, q.query, {
     project: q.project,
     limit: limit * 2,
     tool: 'bench',
