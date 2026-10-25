@@ -33,6 +33,7 @@ import { isArchCollection } from './arch/collection.js';
 import { isDocsCollection } from './docs/collection.js';
 import { isMissingCollection } from './qdrant-errors.js';
 import { isTermsCollection } from './terminology/collection.js';
+import { EMBED_TEXT_FORMAT, chunkEmbedText } from './embed-text.js';
 
 // ── Collection name helpers ──────────────────────────────────────────────────
 
@@ -389,7 +390,15 @@ export class Indexer {
               ],
             },
             with_payload: {
-              include: ['hash', 'startLine', 'endLine', 'service', 'bounded_context', 'tags'],
+              include: [
+                'hash',
+                'startLine',
+                'endLine',
+                'service',
+                'bounded_context',
+                'tags',
+                'embed_format',
+              ],
             },
             with_vector: false,
             limit: 1000,
@@ -405,7 +414,8 @@ export class Indexer {
               p['endLine'],
               p['service'],
               p['bounded_context'],
-              p['tags']
+              p['tags'],
+              p['embed_format']
             )
           );
         }
@@ -442,7 +452,8 @@ export class Indexer {
         c.endLine,
         project.metadata.service,
         project.metadata.bounded_context,
-        tags
+        tags,
+        EMBED_TEXT_FORMAT
       )
     );
     stored.sort();
@@ -502,7 +513,9 @@ export class Indexer {
     chunks: ChunkResult[],
     symbolResults: SymbolExtractionResult[] | null
   ): Promise<Array<{ id: string; vector: number[]; payload: Record<string, unknown> }>> {
-    const embeddings = await this.provider.embedBatchPassage(chunks.map((c) => c.content));
+    const embeddings = await this.provider.embedBatchPassage(
+      chunks.map((c) => chunkEmbedText(relPath, c.content))
+    );
     if (embeddings.length !== chunks.length) {
       throw new Error(
         `Embedding mismatch: got ${embeddings.length} embeddings for ${chunks.length} chunks in ${relPath}`
@@ -800,6 +813,7 @@ export class Indexer {
         tags,
         defines_symbols: symbolResults?.[i]?.defines_symbols ?? [],
         uses_symbols: symbolResults?.[i]?.uses_symbols ?? [],
+        embed_format: EMBED_TEXT_FORMAT,
       },
     }));
   }
@@ -1988,7 +2002,8 @@ function chunkStateKey(
   endLine: unknown,
   service: unknown,
   boundedContext: unknown,
-  tags: unknown
+  tags: unknown,
+  embedFormat: unknown
 ): string {
   const sortedTags = Array.isArray(tags) ? tags.map(String).sort() : [];
   return JSON.stringify([
@@ -1998,6 +2013,7 @@ function chunkStateKey(
     service ?? null,
     boundedContext ?? null,
     sortedTags,
+    embedFormat ?? null,
   ]);
 }
 

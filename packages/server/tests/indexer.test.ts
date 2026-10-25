@@ -7,6 +7,7 @@ import { toArchCollectionName } from '../src/arch/collection.js';
 import { toDocsCollectionName } from '../src/docs/collection.js';
 import { toTermsCollectionName } from '../src/terminology/collection.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
+import { EMBED_TEXT_FORMAT } from '../src/embed-text.js';
 import type { EmbeddingProvider, ProjectConfig } from '../src/types.js';
 
 function createTempDir(): string {
@@ -688,6 +689,37 @@ describe('Indexer', () => {
       for (const p of stored('src/svc.ts')) expect(p.payload['service']).toBe('billing');
       // And once applied, the file is unchanged again.
       expect(await indexer.indexFile('test-group', renamed, tsPath)).toBe(0);
+    });
+
+    it('embeds each chunk with its path, storing the plain chunk', async () => {
+      const tsPath = writeSrc(
+        'invoice.ts',
+        'export class Invoice {\n  total(): number {\n    return 1;\n  }\n}\n'
+      );
+      const spy = vi.spyOn(embeddingProvider, 'embedBatchPassage');
+      await makeIndexer().indexFile('test-group', createProjectConfig(projectDir), tsPath);
+
+      const texts = spy.mock.calls.flatMap((c) => c[0]);
+      expect(texts.length).toBeGreaterThan(0);
+      for (const t of texts) expect(t.startsWith('Filepath: src/invoice.ts\n')).toBe(true);
+      for (const p of stored('src/invoice.ts')) {
+        expect(String(p.payload['content'])).not.toContain('Filepath:');
+        expect(p.payload['embed_format']).toBe(EMBED_TEXT_FORMAT);
+      }
+    });
+
+    it('re-embeds an unchanged file stored under an older embed format', async () => {
+      const tsPath = writeSrc('old.ts', 'export const x = 1;\n');
+      const project = createProjectConfig(projectDir);
+      const indexer = makeIndexer();
+      const n = await indexer.indexFile('test-group', project, tsPath);
+      // Points written before the format existed carry no embed_format.
+      for (const p of stored('src/old.ts')) delete p.payload['embed_format'];
+
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBe(n);
+      for (const p of stored('src/old.ts'))
+        expect(p.payload['embed_format']).toBe(EMBED_TEXT_FORMAT);
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBe(0);
     });
 
     it('fails the file, without writing, when its stored state cannot be read', async () => {
