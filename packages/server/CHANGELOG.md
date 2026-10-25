@@ -1,5 +1,19 @@
 # @paparats/server
 
+## 2.11.3
+
+### Patch Changes
+
+- bbe84cf: The AST chunker now merges adjacent small chunks. Splitting an oversized class or function used to emit every field, statement and closing `}` as its own chunk, so about a quarter of all chunks were a single line. Search filled its result slots with these fragments and, after deduplication, sometimes returned fewer results than requested. Neighbours separated only by blank lines are now joined up to `chunkSize`, and a fragment under 64 characters may join up to `maxChunkSize`.
+
+  On the retrieval benchmark the chunk count drops from 2275 to 1513. File-level MRR@10 goes from 0.767 to 0.825 and chunk-level Recall@5 from 0.702 to 0.789.
+
+  Existing indexes are re-chunked automatically. The indexer's reindex epoch is bumped, so the first run after the upgrade does a full pass. The server re-chunks a file on its next index because the stored chunk ranges no longer match.
+
+- a7ade8b: `search_code` ranks test files below implementation code unless the query asks about tests. A test that names a symbol tends to mention it more often than the code that defines it, so identifier queries returned `symbol-graph.test.ts` above `symbol-graph.ts`. On the retrieval bench this moves file MRR 0.825 → 0.881 and file R@1 0.66 → 0.75 with no query worse. Only the order changes: the similarity percentage and the confidence guidance still use the cosine similarity, and the guidance now reads the best similarity in the results rather than the first one.
+- f8e5526: `search_code` no longer expands the query into abbreviation, case and plural variants. On the retrieval bench the variants added no quality there (file MRR unchanged, chunk R@10 +0.003) while costing up to three embedding calls and three Qdrant queries per search; `search_code` now answers in about half the time (bench p50 90 → 48 ms). The support-mode `explain_feature` and `impact_analysis` keep query expansion, since their natural-language questions were not measured.
+  - @paparats/shared@2.11.3
+
 ## 2.11.2
 
 ### Patch Changes

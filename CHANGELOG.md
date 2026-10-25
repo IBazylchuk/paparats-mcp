@@ -4,6 +4,21 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.11.3] - 2026-10-25
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- bbe84cf: The AST chunker now merges adjacent small chunks. Splitting an oversized class or function used to emit every field, statement and closing `}` as its own chunk, so about a quarter of all chunks were a single line. Search filled its result slots with these fragments and, after deduplication, sometimes returned fewer results than requested. Neighbours separated only by blank lines are now joined up to `chunkSize`, and a fragment under 64 characters may join up to `maxChunkSize`.
+
+  On the retrieval benchmark the chunk count drops from 2275 to 1513. File-level MRR@10 goes from 0.767 to 0.825 and chunk-level Recall@5 from 0.702 to 0.789.
+
+  Existing indexes are re-chunked automatically. The indexer's reindex epoch is bumped, so the first run after the upgrade does a full pass. The server re-chunks a file on its next index because the stored chunk ranges no longer match.
+
+- a7ade8b: `search_code` ranks test files below implementation code unless the query asks about tests. A test that names a symbol tends to mention it more often than the code that defines it, so identifier queries returned `symbol-graph.test.ts` above `symbol-graph.ts`. On the retrieval bench this moves file MRR 0.825 → 0.881 and file R@1 0.66 → 0.75 with no query worse. Only the order changes: the similarity percentage and the confidence guidance still use the cosine similarity, and the guidance now reads the best similarity in the results rather than the first one.
+- f8e5526: `search_code` no longer expands the query into abbreviation, case and plural variants. On the retrieval bench the variants added no quality there (file MRR unchanged, chunk R@10 +0.003) while costing up to three embedding calls and three Qdrant queries per search; `search_code` now answers in about half the time (bench p50 90 → 48 ms). The support-mode `explain_feature` and `impact_analysis` keep query expansion, since their natural-language questions were not measured.
+
 ## [2.11.2] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
@@ -498,7 +513,7 @@
   everything else propagates. `deleteTerm` is unchanged — its `false` return already
   surfaces the failure.
 
-## [2.4.2] - 2026-10-24
+## [2.4.2] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -529,7 +544,7 @@
 
   Works in the `defaults` block as well as per repo.
 
-## [2.4.0] - 2026-10-24
+## [2.4.0] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -735,7 +750,7 @@
 
 - 333e964: Docker embed image now keeps both embedding models resident by default: `EMBED_TTL` defaults to `0` (never unload) in the image, entrypoint, compose generator and devcontainer — matching the native macOS config. With the previous default of `300`, llama-swap's idle-unload path stayed active out of the box, leaving the abort-mid-unload deadlock reachable in Docker deployments. Idle unload remains opt-in by setting a positive `EMBED_TTL`.
 
-## [2.0.2] - 2026-10-24
+## [2.0.2] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -923,7 +938,7 @@
   - `paparats update` now also installs/refreshes/starts the native embed server (llama-server + llama-swap) for native installs, so a single `paparats update` brings the whole stack current. Previously it only touched the Docker services, leaving Ollama-era hosts without a running embed backend. Add `--skip-embed` to opt out.
   - On macOS the native embed server now runs under a launchd LaunchAgent (`com.paparats.embed`) with `RunAtLoad` + `KeepAlive`, so it survives reboots and restarts on crash. Previously it was a detached process that died on reboot. llama-swap's Homebrew formula ships no `service` block, so `brew services` can't supervise it — this replaces that gap. Non-macOS still uses a detached spawn.
 
-## [1.7.1] - 2026-10-24
+## [1.7.1] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1013,7 +1028,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Reference resolution walks consecutive `get_attr` siblings instead of scanning all of a variable expression's parent's children, so unrelated sibling expressions (e.g. `concat(var.x, local.y)`) no longer leak into the attribute chain.
   - `readConfig`/`loadIndexerConfig` no longer crash on a malformed or comment-only config file — js-yaml 5 throws on empty-document input, now caught and surfaced as a clean `Invalid config at <path>` error.
 
-## [1.4.0] - 2026-10-24
+## [1.4.0] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1396,7 +1411,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   Docker Compose generator's "skip Ollama service when cloud provider is set"
   flow. Both will follow in a smaller CLI-focused PR.
 
-## [0.7.0] - 2026-10-24
+## [0.7.0] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1439,7 +1454,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   `/support/mcp` so a coding session id cannot be replayed on the support
   endpoint.
 
-## [0.5.0] - 2026-10-24
+## [0.5.0] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -1527,7 +1542,7 @@ database is locked`, crashing server startup. Waiting up to 30s comfortably
   - Bump Yarn to 4.14.1, @inquirer/prompts to ^8.4.3.
   - Fix flaky `ApiClient.abort` test: aborted requests were being retried with exponential backoff, blowing past the 5s test timeout. Abort errors now short-circuit retry like 4xx and parse errors.
 
-## [0.3.0] - 2026-10-24
+## [0.3.0] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
