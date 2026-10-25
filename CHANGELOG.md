@@ -513,7 +513,7 @@
   everything else propagates. `deleteTerm` is unchanged — its `false` return already
   surfaces the failure.
 
-## [2.4.2] - 2026-10-25
+## [2.4.2] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -544,7 +544,7 @@
 
   Works in the `defaults` block as well as per repo.
 
-## [2.4.0] - 2026-10-25
+## [2.4.0] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -750,7 +750,7 @@
 
 - 333e964: Docker embed image now keeps both embedding models resident by default: `EMBED_TTL` defaults to `0` (never unload) in the image, entrypoint, compose generator and devcontainer — matching the native macOS config. With the previous default of `300`, llama-swap's idle-unload path stayed active out of the box, leaving the abort-mid-unload deadlock reachable in Docker deployments. Idle unload remains opt-in by setting a positive `EMBED_TTL`.
 
-## [2.0.2] - 2026-10-25
+## [2.0.2] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
@@ -938,7 +938,7 @@
   - `paparats update` now also installs/refreshes/starts the native embed server (llama-server + llama-swap) for native installs, so a single `paparats update` brings the whole stack current. Previously it only touched the Docker services, leaving Ollama-era hosts without a running embed backend. Add `--skip-embed` to opt out.
   - On macOS the native embed server now runs under a launchd LaunchAgent (`com.paparats.embed`) with `RunAtLoad` + `KeepAlive`, so it survives reboots and restarts on crash. Previously it was a detached process that died on reboot. llama-swap's Homebrew formula ships no `service` block, so `brew services` can't supervise it — this replaces that gap. Non-macOS still uses a detached spawn.
 
-## [1.7.1] - 2026-10-25
+## [1.7.1] - 2026-10-24
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 

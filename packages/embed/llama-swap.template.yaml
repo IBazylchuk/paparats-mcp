@@ -16,6 +16,10 @@
 healthCheckTimeout: 300
 startPort: 10001
 
+# Request/response captures are for debugging; under a steady stream of
+# embedding calls they grow llama-swap's memory to gigabytes.
+captureBuffer: 0
+
 macros:
   # --batch-size / --ubatch-size gate the compute + KV buffers llama-server
   # allocates PER MODEL up front, regardless of the real payload. Embedding
@@ -24,6 +28,9 @@ macros:
   # cgroup OOM (two resident models each holding an 8k-batch buffer). 2048 covers
   # any single chunk with headroom at a fraction of the memory. Tune via
   # LLAMA_BATCH; LLAMA_THREADS caps CPU threads per model (default: llama picks).
+  # --cache-ram 0: llama-server's prompt cache keeps up to 8 GiB per model of KV
+  # state for prompts that come back. Embedding inputs never repeat, so it only
+  # grows memory.
   llama-embed: >
     llama-server
     --host 127.0.0.1 --port ${PORT}
@@ -32,6 +39,7 @@ macros:
     --batch-size ${LLAMA_BATCH}
     --ubatch-size ${LLAMA_BATCH}
     --threads ${LLAMA_THREADS}
+    --cache-ram 0
 
 models:
   # Code embeddings — bge-code-v1 (1536d, Apache-2.0). qwen2-based → --pooling

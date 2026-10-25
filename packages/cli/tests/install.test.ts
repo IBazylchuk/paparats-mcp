@@ -418,6 +418,22 @@ describe('ensureLocalEmbed launcher', () => {
     expect(plist).toMatch(/<string>\/custom\/bin:[^<]*<\/string>/);
   });
 
+  it('writes a llama-swap config without prompt cache or request captures', async () => {
+    const written: Record<string, string> = {};
+    const deps = makeEmbedDeps({
+      writeFileSync: vi.fn((p: string, data: string) => {
+        written[p] = data;
+      }),
+    });
+    await ensureLocalEmbed(deps, []);
+    const config = Object.entries(written).find(([p]) => p.endsWith('llama-swap.yaml'))?.[1];
+    // Both grow memory under a steady stream of embedding calls and never pay off:
+    // embedding inputs don't repeat, and captures are a debugging aid.
+    expect(config).toMatch(/^captureBuffer: 0$/m);
+    expect(config).toContain('--cache-ram 0');
+    expect(config).toContain('swap: false');
+  });
+
   it('uses a detached spawn on non-macOS (no launchctl)', async () => {
     const deps = makeEmbedDeps({
       platform: vi.fn().mockReturnValue('linux'),
