@@ -80,6 +80,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 | `searcher.ts`             | Vector search with project filtering, query expansion (support tools only), query cache, metrics instrumentation                                                                                      |
 | `query-expansion.ts`      | Abbreviation, case variant, plural, filler word expansion for search queries                                                                                                     |
 | `task-prefixes.ts`        | Query-type detection (nl2code / code2code / techqa) mapped to verbatim bge-code-v1 / Qwen3 query instructions                                                                    |
+| `ranking.ts`              | `rankKey()` — rank-time order for `search_code`: test files ×0.9 unless the query mentions tests; the shown score stays the similarity |
 | `query-cache.ts`          | In-memory LRU cache with TTL and group-level invalidation for search results                                                                                                     |
 | `qdrant-errors.ts`        | `isMissingCollection()` — tells a missing collection (nothing indexed yet) apart from a Qdrant failure; `describeQdrantError()` — names a connection failure (`ECONNREFUSED`, ...) behind Node's bare `fetch failed` |
 | `metrics.ts`              | Prometheus metrics (`@prometheus-io/client`) with `NoOpMetrics` fallback. Opt-in via `PAPARATS_METRICS=true`                                                                     |
