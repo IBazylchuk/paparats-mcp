@@ -810,6 +810,56 @@ describe('McpHandler', () => {
     };
   }
 
+  it('search_code puts test files below code but shows their real similarity', async () => {
+    const searcher = createMockSearcher();
+    vi.mocked(searcher.search).mockResolvedValue({
+      results: [
+        makeSearchResult({ file: 'tests/symbol-graph.test.ts', score: 0.43, hash: 'ht' }),
+        makeSearchResult({ file: 'src/symbol-graph.ts', score: 0.39, hash: 'hc' }),
+      ],
+      total: 2,
+      metrics: {
+        tokensReturned: 10,
+        estimatedFullFileTokens: 100,
+        tokensSaved: 90,
+        savingsPercent: 90,
+      },
+    });
+
+    const app = express();
+    app.use(express.json());
+    const handler2 = new McpHandler({
+      searcher,
+      indexer: createMockIndexer(),
+      getProjects: () => new Map([['g1', [createProjectConfig()]]]),
+      getGroupNames: () => ['g1'],
+    });
+    handler2.mount(app);
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      const { text } = await callTool(port, 'search_code', { query: 'buildSymbolEdges' });
+      expect(text.indexOf('src/symbol-graph.ts')).toBeLessThan(
+        text.indexOf('tests/symbol-graph.test.ts')
+      );
+      // The percentage is the similarity, not the demoted rank key.
+      expect(text).toContain('(43.0%');
+      expect(text).toContain('(39.0%');
+      // Guidance reads the best similarity (0.43, partial), not the first result (0.39, low).
+      expect(text).toContain('Partial match results');
+      expect(text).not.toContain('Low confidence results');
+
+      const asked = await callTool(port, 'search_code', { query: 'tests for buildSymbolEdges' });
+      expect(asked.text.indexOf('tests/symbol-graph.test.ts')).toBeLessThan(
+        asked.text.indexOf('src/symbol-graph.ts')
+      );
+    } finally {
+      server.close();
+      handler2.destroy();
+    }
+  });
+
   it('explain_feature returns code locations table', async () => {
     const searcher = createMockSearcher();
     vi.mocked(searcher.expandedSearch).mockResolvedValue({

@@ -59,6 +59,7 @@ import type { ArchContextResult, ArchWriteResult } from './arch/types.js';
 import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
 import { validateGroupName } from './config.js';
 import { describeQdrantError } from './qdrant-errors.js';
+import { rankKey } from './ranking.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -1580,7 +1581,8 @@ export class McpHandler {
               return true;
             });
 
-            deduped.sort((a, b) => b.score - a.score);
+            // Order by rank (tests below code); show and threshold on similarity.
+            deduped.sort((a, b) => rankKey(query, b) - rankKey(query, a));
             const top = deduped.slice(0, limit);
 
             if (top.length === 0) {
@@ -1608,7 +1610,7 @@ export class McpHandler {
 
             const highCount = top.filter((r) => r.score >= HIGH_CONFIDENCE_THRESHOLD).length;
             const lowCount = top.filter((r) => r.score < LOW_CONFIDENCE_THRESHOLD).length;
-            const bestScore = top[0]?.score ?? 0;
+            const bestScore = Math.max(0, ...top.map((r) => r.score));
 
             let guidance = '';
             if (bestScore < LOW_CONFIDENCE_THRESHOLD) {

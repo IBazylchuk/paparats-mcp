@@ -12,6 +12,7 @@ import {
   createTreeSitterManager,
   loadProject,
   modelFamily,
+  rankKey,
   toCollectionName,
 } from '@paparats/server';
 import type { ProjectConfig, SearchResult } from '@paparats/server';
@@ -89,7 +90,7 @@ function makeProvider(opts: RunOptions, cache: EmbeddingCache): CachedEmbeddingP
 
 /**
  * The ranking `search_code` returns: a search at twice the limit,
- * duplicates by content hash dropped, best score first, cut to the limit.
+ * duplicates by content hash dropped, ranked (test files demoted), cut to the limit.
  * Mirrors the tool handler in mcp-handler.ts for a single group.
  */
 export async function searchLikeTool(
@@ -115,7 +116,7 @@ export async function searchLikeTool(
       seen.add(r.hash);
       return true;
     })
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => rankKey(q.query, b) - rankKey(q.query, a))
     .slice(0, limit);
 }
 
