@@ -4,6 +4,14 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.13.0] - 2026-10-25
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- 03127a2: Add `change_impact` to the coding endpoint: given the chunk you are about to change, it lists the code that depends on it — direct callers, their callers up to three steps out, and the tests that reach it — with file:line and chunk ids. Links that go only through a name defined in several places are marked `[maybe]`, widely-called chunks are listed but not followed, and the output says when it stopped early. `symbol` narrows the walk to one name, `whole_file` treats the chunk's whole file as changed. The coding instructions and the `trace_callers` workflow now point to it before signature changes, renames and deletions.
+
 ## [2.12.1] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
