@@ -77,7 +77,10 @@ What `--index` does:
   `--source <dir>` indexes a directory instead and warns if it is not at the pinned commit.
 - It only ever writes to groups named `bench-*` (default `bench-<dataset name>`, i.e.
   collection `paparats_bench-paparats`), so it cannot touch a real index. `--reset` drops
-  that collection first.
+  that collection first. Project names are stored with the group appended
+  (`paparats-mcp@bench-paparats`), because indexing a project removes it from every other
+  group: without the suffix, indexing one bench group would empty another, or a real index
+  of the same project on the same Qdrant.
 - Indexing embeddings are cached in `packages/bench/.cache/embeddings.db`; re-indexing an
   unchanged corpus is fast.
 
