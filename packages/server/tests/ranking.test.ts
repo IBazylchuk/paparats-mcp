@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CHURN_WEIGHT,
   DEFINES_IDENTIFIER_BOOST,
   FILE_NAMED_AFTER_IDENTIFIER_BOOST,
   TEST_FILE_DEMOTION,
@@ -130,5 +131,23 @@ describe('rankKey for identifier queries', () => {
   it('accepts the raw query string too', () => {
     const r = { score: 0.5, file: 'a.rb', defines_symbols: ['InvoiceTotal'] };
     expect(rankKey('InvoiceTotal', r)).toBe(rankKey(rankQuery('InvoiceTotal'), r));
+  });
+});
+
+describe('rankKey with file churn', () => {
+  it('lifts files that change often, by up to CHURN_WEIGHT', () => {
+    const q = rankQuery('where are invoices totalled');
+    expect(rankKey(q, { score: 0.5, file: 'a.rb', file_churn: 1 })).toBeCloseTo(
+      0.5 * (1 + CHURN_WEIGHT)
+    );
+    expect(rankKey(q, { score: 0.5, file: 'a.rb', file_churn: 0 })).toBe(0.5);
+    expect(rankKey(q, { score: 0.5, file: 'a.rb', file_churn: null })).toBe(0.5);
+  });
+
+  it('does not outweigh a clearly closer match', () => {
+    const q = rankQuery('where are invoices totalled');
+    expect(rankKey(q, { score: 0.6, file: 'a.rb', file_churn: 0 })).toBeGreaterThan(
+      rankKey(q, { score: 0.55, file: 'b.rb', file_churn: 1 })
+    );
   });
 });

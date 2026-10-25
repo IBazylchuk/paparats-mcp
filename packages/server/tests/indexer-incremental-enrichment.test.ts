@@ -130,13 +130,17 @@ function git(dir: string, cmd: string): void {
   execSync(`git ${cmd}`, { cwd: dir, stdio: 'ignore' });
 }
 
-/** Extract the chunk_id filter values from recorded setPayload calls */
+/**
+ * Extract the chunk_id filter values from recorded setPayload calls (the
+ * per-file `file_churn` updates filter by file, not chunk_id, and are skipped).
+ */
 function setPayloadChunkIds(client: ReturnType<typeof createMockQdrant>['client']): string[] {
-  return client.setPayload.mock.calls.map((call) => {
+  return client.setPayload.mock.calls.flatMap((call) => {
     const opts = call[1] as {
       filter: { must: Array<{ key: string; match: { value: string } }> };
     };
-    return opts.filter.must.find((m) => m.key === 'chunk_id')!.match.value;
+    const chunkId = opts.filter.must.find((m) => m.key === 'chunk_id');
+    return chunkId ? [chunkId.match.value] : [];
   });
 }
 

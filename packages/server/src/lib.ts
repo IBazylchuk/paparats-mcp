@@ -50,9 +50,12 @@ export type { SearcherConfig } from './searcher.js';
 
 export { expandQuery } from './query-expansion.js';
 
+export { readFileCommitCounts, churnPercentiles, CHURN_STEPS } from './file-churn.js';
+
 export {
   rankKey,
   rankQuery,
+  CHURN_WEIGHT,
   isTestPath,
   mentionsTests,
   identifierTokens,

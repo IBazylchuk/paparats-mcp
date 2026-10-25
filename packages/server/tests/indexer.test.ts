@@ -127,6 +127,27 @@ function createMockQdrant() {
       })
     ),
 
+    setPayload: vi.fn().mockImplementation(
+      (
+        groupName: string,
+        opts: {
+          payload: Record<string, unknown>;
+          filter: { must: { key: string; match: { value?: string; any?: string[] } }[] };
+        }
+      ) => {
+        for (const point of collections.get(groupName)?.values() ?? []) {
+          const payload = (point as { payload: Record<string, unknown> }).payload;
+          const matches = opts.filter.must.every((m) =>
+            m.match.any
+              ? m.match.any.includes(String(payload[m.key]))
+              : payload[m.key] === m.match.value
+          );
+          if (matches) Object.assign(payload, opts.payload);
+        }
+        return Promise.resolve(true);
+      }
+    ),
+
     retrieve: vi.fn().mockImplementation((groupName: string, opts: { ids: string[] }) => {
       const points = collections.get(groupName);
       if (!points) return Promise.resolve([]);
@@ -720,6 +741,30 @@ describe('Indexer', () => {
       for (const p of stored('src/old.ts'))
         expect(p.payload['embed_format']).toBe(EMBED_TEXT_FORMAT);
       expect(await indexer.indexFile('test-group', project, tsPath)).toBe(0);
+    });
+
+    it("stores each file's commit-count percentile after a project pass", async () => {
+      writeSrc('hot.ts', 'export const hot = 1;\n');
+      writeSrc('cold.ts', 'export const cold = 1;\n');
+      const indexer = new Indexer({
+        qdrantUrl: 'http://localhost:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        fileCommitCounts: async () => new Map([['src/hot.ts', 7]]),
+      });
+      await indexer.indexProject(createProjectConfig(projectDir, { patterns: ['**/*.ts'] }));
+
+      for (const p of stored('src/hot.ts')) expect(p.payload['file_churn']).toBe(0.75);
+      for (const p of stored('src/cold.ts')) expect(p.payload['file_churn']).toBe(0.25);
+      expect(mockQdrant.client.setPayload).toHaveBeenCalledTimes(2);
+    });
+
+    it('leaves file_churn unset without git history', async () => {
+      writeSrc('plain.ts', 'export const plain = 1;\n');
+      await makeIndexer().indexProject(createProjectConfig(projectDir, { patterns: ['**/*.ts'] }));
+      for (const p of stored('src/plain.ts')) expect(p.payload['file_churn']).toBeUndefined();
+      expect(mockQdrant.client.setPayload).not.toHaveBeenCalled();
     });
 
     it('fails the file, without writing, when its stored state cannot be read', async () => {

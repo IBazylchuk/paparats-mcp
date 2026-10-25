@@ -26,6 +26,15 @@ export const TEST_FILE_DEMOTION = 0.9;
 export const DEFINES_IDENTIFIER_BOOST = 1.1;
 export const FILE_NAMED_AFTER_IDENTIFIER_BOOST = 1.05;
 
+/**
+ * Files that change often are where the code people ask about tends to live.
+ * The key grows by up to 5% with the file's commit-count percentile in its
+ * project (`file_churn`, written at index time). On the bench it put the right
+ * file first for one more hold-out query (58% instead of 55%) and changed
+ * nothing on the other query sets.
+ */
+export const CHURN_WEIGHT = 0.05;
+
 const TEST_PATH_RE = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[^/]+$|_(test|spec)\.[^/]+$/i;
 const TEST_QUERY_RE = /(^|[^a-z])(tests?|testing|specs?|rspec|vitest|jest)([^a-z]|$)/i;
 const IDENTIFIER_RE = /[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|#)[A-Za-z_][A-Za-z0-9_]*)*/g;
@@ -90,6 +99,7 @@ export interface RankedFields {
   score: number;
   file: string;
   defines_symbols?: string[];
+  file_churn?: number | null;
 }
 
 /** The query-side inputs of {@link rankKey}, computed once per query. */
@@ -121,5 +131,6 @@ export function rankKey(query: string | RankQuery, result: RankedFields): number
       key *= FILE_NAMED_AFTER_IDENTIFIER_BOOST;
     }
   }
+  key *= 1 + CHURN_WEIGHT * (result.file_churn ?? 0);
   return key;
 }

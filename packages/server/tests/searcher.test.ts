@@ -117,6 +117,7 @@ describe('Searcher', () => {
       last_commit_at: null,
       defines_symbols: [],
       uses_symbols: [],
+      file_churn: null,
     });
     expect(response.total).toBe(1);
     expect(response.metrics.tokensReturned).toBeGreaterThan(0);

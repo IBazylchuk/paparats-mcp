@@ -191,6 +191,8 @@ export interface SearchResult {
   last_commit_at: string | null;
   defines_symbols: string[];
   uses_symbols: string[];
+  /** Commit-count percentile of the file within its project (see file-churn.ts). */
+  file_churn: number | null;
 }
 
 export interface SearchMetrics {

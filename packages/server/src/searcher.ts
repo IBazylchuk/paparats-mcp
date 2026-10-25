@@ -83,6 +83,7 @@ interface QdrantPayload {
   ticket_keys?: string[];
   defines_symbols?: string[];
   uses_symbols?: string[];
+  file_churn?: number;
 }
 
 export class Searcher {
@@ -645,6 +646,7 @@ export class Searcher {
       last_commit_at: (p.last_commit_at as string | null) ?? null,
       defines_symbols: p.defines_symbols ?? [],
       uses_symbols: p.uses_symbols ?? [],
+      file_churn: p.file_churn ?? null,
     };
   }
 

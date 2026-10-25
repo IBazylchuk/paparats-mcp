@@ -17,6 +17,7 @@ import {
   modelFamily,
   rankKey,
   rankQuery,
+  readFileCommitCounts,
   toCollectionName,
 } from '@paparats/server';
 import type { ProjectConfig, SearchResult } from '@paparats/server';
@@ -63,6 +64,12 @@ export interface RunOptions {
   source?: string;
   /** Git repository the dataset commit is exported from. */
   repoRoot: string;
+  /**
+   * Git repository whose history up to `dataset.commit` gives each file's
+   * churn. Defaults to `repoRoot` when indexing an export; with `source` and
+   * no `historyRoot`, files carry no churn.
+   */
+  historyRoot?: string;
   /** Where exports and the indexing embedding cache live (git-ignored). */
   cacheDir: string;
   /** Run only queries of these types. */
@@ -206,6 +213,13 @@ async function indexDataset(
       embeddingModelId: opts.embedModel,
       treeSitter,
       projectSuffix: benchProjectSuffix(opts.group),
+      // The index is an export without .git: read the churn from the history.
+      fileCommitCounts: async (project) => {
+        const historyRoot = opts.historyRoot ?? (opts.source ? undefined : opts.repoRoot);
+        const p = opts.dataset.projects.find((d) => d.name === project.name);
+        if (!historyRoot || !p) return null;
+        return readFileCommitCounts(path.join(historyRoot, p.path ?? '.'), opts.dataset.commit);
+      },
     });
     for (const p of opts.dataset.projects) {
       const dir = path.join(sourceRoot, p.path ?? '.');
