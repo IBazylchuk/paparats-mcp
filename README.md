@@ -448,7 +448,7 @@ separate docs pass into the documentation layer (see
 
 ### Search Flow
 
-AI assistant queries via MCP → server detects query type (natural language → code, code → code, technical question) → wraps the query in the matching `bge-code-v1` instruction → expands query (abbreviations, case variants, plurals) → all variants searched in parallel against Qdrant → results merged by max score → only relevant chunks returned with confidence scores and symbol info.
+AI assistant queries via MCP → server detects query type (natural language → code, code → code, technical question) → wraps the query in the matching `bge-code-v1` instruction → searches Qdrant once, adding the chunks that define any class or function the query names → re-ranks (definitions of named identifiers up, test files down unless the query asks about tests, often-changed files slightly up) → only relevant chunks returned with confidence scores and symbol info. Code chunks are embedded with their file path (`Filepath: <path>` above the chunk); results show the plain chunk.
 
 ### Keeping the index fresh
 
@@ -500,6 +500,8 @@ retrieval instruction:
 - Filler removal: `"how does auth work"` → `"auth"`
 
 All variants searched in parallel, results merged by max score. `search_code` searches the query once: on the [retrieval bench](docs/benchmarking.md) the variants added no quality there and cost up to three embedding calls and Qdrant queries per search.
+
+**Ranking** (`search_code`) — when the query names a class or function (`InvoiceTotal`, `charge_card`, `Billing::Invoice`), the chunks that define it join the candidates and rank higher, as do files named after it. Test files rank slightly lower unless the query mentions tests, and files with more commits slightly higher. Only the order changes: the confidence score stays the similarity.
 
 **Confidence scores** — each result includes a percentage score (≥60% high, 40–60% partial, <40% low) to guide AI next steps.
 
@@ -1360,7 +1362,7 @@ paparats-mcp/
 │   │   │   ├── index.ts              # HTTP server bootstrap + graceful shutdown
 │   │   │   ├── app.ts                # Express app + HTTP API routes
 │   │   │   ├── indexer.ts            # Group-aware indexing, single-parse chunkFile()
-│   │   │   ├── searcher.ts           # Search with query expansion, cache, metrics
+│   │   │   ├── searcher.ts           # Vector search, query cache, metrics
 │   │   │   ├── query-expansion.ts    # Abbreviation, case, plural expansion
 │   │   │   ├── task-prefixes.ts      # Query-type detection + bge-code-v1 / Qwen3 instructions
 │   │   │   ├── query-cache.ts        # In-memory LRU search result cache
@@ -1630,10 +1632,10 @@ top-K, so recall matters more than exact ordering.
 > between models is what drives model selection here.
 
 **End-to-end retrieval.** The tables above compare embedders in isolation. `yarn bench`
-scores the whole search path — chunking, instruction prefixes, query expansion — on a
+scores the whole search path — chunking, instruction prefixes, ranking — on a
 hand-labelled query set over this repository, broken down by query type (natural language,
 exact identifiers, error strings, config keys, code snippets, cross-package questions).
-Current dense-only baseline: file-level MRR@10 0.825, chunk-level Recall@10 0.892
+Current baseline (2.12.0): file-level MRR@10 0.900, chunk-level Recall@10 0.942
 ([summary](packages/bench/baselines/paparats-f5b2a75-bge-code-v1.md)). How to run it and
 compare two runs: [docs/benchmarking.md](docs/benchmarking.md).
 
@@ -1760,7 +1762,7 @@ it. Corrections are welcome.
 | Runs locally by default           | ✅ Docker stack                              | ❌ OpenAI + Zilliz Cloud (local setup possible) | ✅                                             | ✅ native binary                                 | ✅                            | ❌ needs a Sourcegraph Enterprise instance |
 | Many repos in one query           | ✅ groups                                    | ❌ one codebase path per search                 | ⚠️ active project; can query other projects    | ⚠️ per project; cross-repo service links         | —                             | ✅                                   |
 | Callers / references              | ✅ AST-derived edges                         | —                                               | ✅ via language server (most precise)          | ✅ call graph with type resolution               | —                             | ✅                                   |
-| Keyword (BM25) search on code     | ❌ dense vectors + query expansion           | ✅                                              | regex search tool                              | ✅                                               | —                             | ✅ keyword search                    |
+| Keyword (BM25) search on code     | ❌ dense vectors + identifier-aware ranking  | ✅                                              | regex search tool                              | ✅                                               | —                             | ✅ keyword search                    |
 | Git history per result            | ✅ commits + ticket refs per chunk           | —                                               | —                                              | ⚠️ git diff → affected symbols                   | —                             | ✅ commit and diff search            |
 | Keeps the index fresh             | ⚠️ change check every 10 min + scheduled full pass | ✅ Merkle-tree sync every 5 min          | n/a (reads live code)                          | ✅ watches the project of an open session        | ⚠️ incremental on re-index    | ✅ server-side                       |
 | Code editing / refactoring tools  | ❌                                           | ❌                                              | ✅                                             | ❌                                               | ❌                            | ❌                                   |
