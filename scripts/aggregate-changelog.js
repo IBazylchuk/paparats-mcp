@@ -14,8 +14,8 @@
  * Sources: all four packages/<name>/CHANGELOG.md files. `fixed` versioning
  * keeps the version numbers in step, but an entry lands only in the
  * changelogs of the packages its changeset names, so they are merged.
- * Dates come from `git log` against the changelog file (the commit that
- * added the version's heading), falling back to today.
+ * Dates come from the `vX.Y.Z` tag, then from the date the root
+ * CHANGELOG.md already shows for that version, falling back to today.
  */
 import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -157,7 +157,8 @@ function renderBody(sections) {
  * Resolve the release date for a version. Prefer the `vX.Y.Z` git tag's
  * commit date — that's the moment `yarn release:local` actually published.
  * Versions that don't have a tag yet (e.g. a release PR is open but not
- * yet published) fall back to today; the next run after the tag lands
+ * yet published) keep the date the root CHANGELOG already shows, or get
+ * today on their first run; the next run after the tag lands
  * will rewrite the section with the correct date.
  *
  * We deliberately avoid `git log -S/-G` against the changelog file — both
@@ -179,6 +180,26 @@ function findVersionDate(version) {
   }
 }
 
+/**
+ * Dates the root CHANGELOG.md already shows, by version. A version that was
+ * never tagged (a release PR that was folded into the next one) keeps the
+ * date it got when it was first aggregated instead of moving to today on
+ * every run.
+ */
+function readRecordedDates() {
+  const dates = new Map();
+  let existing;
+  try {
+    existing = readFileSync(ROOT_CHANGELOG, 'utf8');
+  } catch {
+    return dates;
+  }
+  for (const match of existing.matchAll(/^## \[([^\]]+)\] - (\d{4}-\d{2}-\d{2})\s*$/gm)) {
+    if (!dates.has(match[1])) dates.set(match[1], match[2]);
+  }
+  return dates;
+}
+
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -189,8 +210,9 @@ function renderSection({ version, body, date }) {
 }
 
 function buildAggregatedBlock(versions) {
+  const recorded = readRecordedDates();
   const sections = versions.map((v) => {
-    const date = findVersionDate(v.version) ?? todayIso();
+    const date = findVersionDate(v.version) ?? recorded.get(v.version) ?? todayIso();
     return renderSection({ ...v, date });
   });
   return [BEGIN_MARKER, '', INTRO, '', ...sections, END_MARKER].join('\n');
