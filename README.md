@@ -492,14 +492,14 @@ retrieval instruction:
 - `"function validateUser(req, res)"` → code → similar code (CodeTrans-DL instruction)
 - `"how does OAuth work in this app?"` → technical question (StackOverflow-QA instruction)
 
-**Query expansion** — every search generates 2-3 variations server-side:
+**Query expansion** (support-mode `explain_feature` and `impact_analysis` only) — the question is searched in 2-3 variations:
 
 - Abbreviations: `auth` ↔ `authentication`, `db` ↔ `database`
 - Case variants: `userAuth` → `user_auth` → `UserAuth`
 - Plurals: `users` → `user`, `dependencies` → `dependency`
 - Filler removal: `"how does auth work"` → `"auth"`
 
-All variants searched in parallel, results merged by max score.
+All variants searched in parallel, results merged by max score. `search_code` searches the query once: on the [retrieval bench](docs/benchmarking.md) the variants added no quality there and cost up to three embedding calls and Qdrant queries per search.
 
 **Confidence scores** — each result includes a percentage score (≥60% high, 40–60% partial, <40% low) to guide AI next steps.
 

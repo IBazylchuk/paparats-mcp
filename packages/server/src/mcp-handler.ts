@@ -1562,7 +1562,10 @@ export class McpHandler {
             }> = [];
 
             for (const g of groupNames) {
-              const response = await this.searcher.expandedSearch(g, query, {
+              // One query, no expansion: on the bench the variants added no quality
+              // to search_code for up to 3x the embed + Qdrant cost. The support tools
+              // keep expandedSearch until it is measured on support-style questions.
+              const response = await this.searcher.search(g, query, {
                 project,
                 limit: limit * 2,
                 tool: 'search_code',
