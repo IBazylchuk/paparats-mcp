@@ -42,6 +42,7 @@ export interface Prompts {
     get_chunk_meta: ToolPrompt;
     search_changes: ToolPrompt;
     find_usages: ToolPrompt;
+    change_impact: ToolPrompt;
     explain_feature: ToolPrompt;
     recent_changes: ToolPrompt;
     impact_analysis: ToolPrompt;
@@ -134,6 +135,7 @@ function validatePrompts(data: unknown): Prompts {
     'get_chunk_meta',
     'search_changes',
     'find_usages',
+    'change_impact',
     'explain_feature',
     'recent_changes',
     'impact_analysis',

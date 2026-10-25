@@ -839,6 +839,7 @@ describe('tool sets', () => {
         'search_code',
         'get_chunk',
         'find_usages',
+        'change_impact',
         'health_check',
         'delete_project',
         'list_projects',

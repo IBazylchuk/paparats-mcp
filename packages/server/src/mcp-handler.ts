@@ -63,9 +63,11 @@ import {
   DEFINITION_CANDIDATES,
   definitionCandidatesFilter,
   identifierTokens,
+  isTestPath,
   rankKey,
   rankQuery,
 } from './ranking.js';
+import { collectDependents, MAX_IMPACT_DEPTH } from './change-impact.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -967,7 +969,7 @@ export const ANALYTICS_TOOL_TITLES: Record<string, string> = {
  *
  * Resolution order matches the MCP spec's own fallback for a display name:
  * the registered title, then the raw tool name. Titles live in two places —
- * `prompts.json` for the 23 documented tools, {@link ANALYTICS_TOOL_TITLES}
+ * `prompts.json` for the 24 documented tools, {@link ANALYTICS_TOOL_TITLES}
  * for the analytics six — so this is the single place that knows about both.
  */
 export function toolTitle(name: string): string {
@@ -979,6 +981,8 @@ export const CODING_TOOLS = new Set([
   'search_code',
   'get_chunk',
   'find_usages',
+  // what depends on code about to change — coding only; support has impact_analysis.
+  'change_impact',
   'health_check',
   'delete_project',
   'list_projects',
@@ -2338,6 +2342,203 @@ export class McpHandler {
                 {
                   type: 'text' as const,
                   text: `Failed to find usages: ${(err as Error).message}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+
+    // ── Tool: change_impact ───────────────────────────────────────────────
+    if (tools.has('change_impact'))
+      server.registerTool(
+        'change_impact',
+        {
+          title: prompts.tools.change_impact.title,
+          description: prompts.tools.change_impact.description,
+          inputSchema: {
+            chunk_id: z.string().describe('Chunk you are about to change (from search_code)'),
+            whole_file: z
+              .boolean()
+              .default(false)
+              .describe("Treat every chunk of the chunk's file as changed"),
+            symbol: z
+              .string()
+              .optional()
+              .describe(
+                'Only follow code that uses this name — e.g. the one function whose signature changes'
+              ),
+            depth: z.coerce
+              .number()
+              .min(1)
+              .max(MAX_IMPACT_DEPTH)
+              .default(2)
+              .describe('How many steps of callers to follow (1-3)'),
+            limit: z.coerce.number().min(1).max(100).default(40).describe('Max dependents to list'),
+          },
+          annotations: READ_ONLY,
+        },
+        async ({ chunk_id, whole_file, symbol, depth, limit }) => {
+          try {
+            const store = this.metadataStore;
+            if (!store) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: 'Symbol graph is not available. The metadata store is not configured.',
+                  },
+                ],
+              };
+            }
+
+            const payload = scope.allowsChunk(chunk_id)
+              ? await this.indexer.getChunkById(chunk_id)
+              : null;
+            const parsed = parseChunkId(chunk_id);
+            if (!payload || !parsed) {
+              return {
+                content: [{ type: 'text' as const, text: chunkNotFoundText(chunk_id) }],
+              };
+            }
+
+            const seeds = [chunk_id];
+            if (whole_file) {
+              const fileChunks = await this.indexer.getAdjacentChunks(
+                parsed.group,
+                parsed.project,
+                parsed.file,
+                0,
+                Number.MAX_SAFE_INTEGER,
+                0
+              );
+              for (const c of fileChunks) {
+                const id = c['chunk_id'];
+                if (typeof id === 'string' && !seeds.includes(id)) seeds.push(id);
+              }
+            }
+
+            const hubs = store.getGroupDegreeSnapshot(parsed.group).hubChunkIds;
+            const { dependents, truncated, deeper } = collectDependents({
+              seeds,
+              edgesTo: (id) =>
+                store.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id)),
+              depth,
+              maxDependents: limit,
+              symbol,
+              isHub: (id) => hubs.has(id),
+              isLeaf: (id) => isTestPath(parseChunkId(id)?.file ?? ''),
+            });
+
+            const project = typeof payload['project'] === 'string' ? payload['project'] : 'unknown';
+            const file = typeof payload['file'] === 'string' ? payload['file'] : parsed.file;
+            const ownSymbol =
+              typeof payload['symbol_name'] === 'string' ? ` \`${payload['symbol_name']}\`` : '';
+            const target = whole_file
+              ? `[${project}] ${file} (whole file, ${seeds.length} chunks)`
+              : `[${project}] ${file}:${parsed.startLine}-${parsed.endLine}${ownSymbol}`;
+            let text = `## Change impact of ${target}\n\n`;
+
+            const defSymbols = Array.isArray(payload['defines_symbols'])
+              ? (payload['defines_symbols'] as string[])
+              : [];
+            if (symbol !== undefined && !whole_file && !defSymbols.includes(symbol)) {
+              text += `This chunk does not define \`${symbol}\`${defSymbols.length > 0 ? `; it defines ${defSymbols.map((s) => `\`${s}\``).join(', ')}` : ''}.\n\n`;
+            }
+
+            const caveat =
+              '_The graph links code by name. Calls made dynamically — reflection, string dispatch, routes, config — are not in it._\n';
+
+            if (dependents.length === 0) {
+              text += `Nothing in the indexed code depends on it${symbol !== undefined ? ` through \`${symbol}\`` : ''}.\n\n`;
+              text += caveat;
+              return { content: [{ type: 'text' as const, text }] };
+            }
+
+            const payloads = await Promise.all(
+              dependents.map((d) => this.indexer.getChunkById(d.chunkId))
+            );
+            const rows = dependents.map((dep, i) => {
+              const loc = parseChunkId(dep.chunkId);
+              return {
+                dep,
+                payload: payloads[i] ?? null,
+                file: loc?.file ?? '',
+                fileKey: loc ? `${loc.project}//${loc.file}` : dep.chunkId,
+                startLine: loc?.startLine ?? 0,
+                test: isTestPath(loc?.file ?? ''),
+              };
+            });
+            rows.sort(
+              (a, b) =>
+                a.dep.hop - b.dep.hop ||
+                Number(b.dep.certain) - Number(a.dep.certain) ||
+                a.fileKey.localeCompare(b.fileKey) ||
+                a.startLine - b.startLine
+            );
+
+            const code = rows.filter((r) => !r.test);
+            const tests = rows.filter((r) => r.test);
+            const direct = rows.filter((r) => r.dep.hop === 1).length;
+            const files = new Set(rows.map((r) => r.fileKey)).size;
+            text += `${rows.length} chunks in ${files} files depend on it: ${direct} directly, ${rows.length - direct} through other code. ${tests.length} of them are tests.\n`;
+
+            const line = (r: (typeof rows)[number], showHop: boolean): string => {
+              const ep = r.payload;
+              const uses = `uses ${r.dep.symbols.map((s) => `\`${s}\``).join(', ')}`;
+              const marks = `${r.dep.certain ? '' : ' [maybe]'}${r.dep.hub ? ' [hub]' : ''}`;
+              const hop = showHop ? `, ${r.dep.hop} step${r.dep.hop === 1 ? '' : 's'} away` : '';
+              if (!ep) return `- _chunk: ${r.dep.chunkId}_ — ${uses}${hop}${marks}\n`;
+              const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
+              const f = typeof ep['file'] === 'string' ? ep['file'] : r.file;
+              const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : r.startLine;
+              const sym = typeof ep['symbol_name'] === 'string' ? ` \`${ep['symbol_name']}\`` : '';
+              return `- **[${p}] ${f}:${sl}**${sym} — ${uses}${hop}${marks}\n  _chunk: ${r.dep.chunkId}_\n`;
+            };
+
+            for (let hop = 1; hop <= depth; hop++) {
+              const level = code.filter((r) => r.dep.hop === hop);
+              if (level.length === 0) continue;
+              const heading = hop === 1 ? 'Uses it directly' : `${hop} steps away`;
+              text += `\n### ${heading} (${level.length})\n\n`;
+              for (const r of level) text += line(r, false);
+            }
+            if (tests.length > 0) {
+              text += `\n### Tests (${tests.length}) — run these after the change\n\n`;
+              for (const r of tests) text += line(r, true);
+            }
+
+            const notes: string[] = [];
+            if (rows.some((r) => !r.dep.certain)) {
+              notes.push(
+                '`[maybe]` — reached only through a name defined in several places; check it really uses this definition.'
+              );
+            }
+            if (rows.some((r) => r.dep.hub)) {
+              notes.push('`[hub]` — called from many places; what depends on it was not followed.');
+            }
+            if (truncated) {
+              notes.push(
+                `Stopped at ${limit} dependents. Narrow with \`symbol\`, lower \`depth\`, or raise \`limit\` (max 100).`
+              );
+            }
+            if (deeper) {
+              notes.push(
+                depth < MAX_IMPACT_DEPTH
+                  ? `More code depends on the last step; raise \`depth\` (max ${MAX_IMPACT_DEPTH}) to follow it.`
+                  : `More code depends on the last step; callers past ${MAX_IMPACT_DEPTH} steps are not followed.`
+              );
+            }
+            text += '\n' + notes.map((n) => `_${n}_\n`).join('') + caveat;
+
+            return { content: [{ type: 'text' as const, text }] };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Change impact failed: ${(err as Error).message}`,
                 },
               ],
               isError: true,
