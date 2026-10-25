@@ -59,7 +59,13 @@ import type { ArchContextResult, ArchWriteResult } from './arch/types.js';
 import { type MetricsRegistry, NoOpMetrics } from './metrics.js';
 import { validateGroupName } from './config.js';
 import { describeQdrantError } from './qdrant-errors.js';
-import { rankKey } from './ranking.js';
+import {
+  DEFINITION_CANDIDATES,
+  definitionCandidatesFilter,
+  identifierTokens,
+  rankKey,
+  rankQuery,
+} from './ranking.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -1562,6 +1568,7 @@ export class McpHandler {
               uses_symbols: string[];
             }> = [];
 
+            const identifiers = identifierTokens(query);
             for (const g of groupNames) {
               // One query, no expansion: on the bench the variants added no quality
               // to search_code for up to 3x the embed + Qdrant cost. The support tools
@@ -1572,6 +1579,17 @@ export class McpHandler {
                 tool: 'search_code',
               });
               allResults.push(...response.results);
+              // A query naming a class or function: also take the chunks that define
+              // it, which dense search can leave out of its candidates.
+              if (identifiers.length > 0) {
+                const definitions = await this.searcher.searchWithFilter(
+                  g,
+                  query,
+                  definitionCandidatesFilter(identifiers),
+                  { project, limit: DEFINITION_CANDIDATES, tool: 'search_code' }
+                );
+                allResults.push(...definitions.results);
+              }
             }
 
             const seen = new Set<string>();
@@ -1581,8 +1599,10 @@ export class McpHandler {
               return true;
             });
 
-            // Order by rank (tests below code); show and threshold on similarity.
-            deduped.sort((a, b) => rankKey(query, b) - rankKey(query, a));
+            // Order by rank (tests below code, definitions of named identifiers up);
+            // show and threshold on similarity.
+            const ranked = rankQuery(query);
+            deduped.sort((a, b) => rankKey(ranked, b) - rankKey(ranked, a));
             const top = deduped.slice(0, limit);
 
             if (top.length === 0) {

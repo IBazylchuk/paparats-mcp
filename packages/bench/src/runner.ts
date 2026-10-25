@@ -11,8 +11,13 @@ import {
   createQdrantClient,
   createTreeSitterManager,
   loadProject,
+  DEFINITION_CANDIDATES,
+  definitionCandidatesFilter,
+  identifierTokens,
   modelFamily,
   rankKey,
+  rankQuery,
+  readFileCommitCounts,
   toCollectionName,
 } from '@paparats/server';
 import type { ProjectConfig, SearchResult } from '@paparats/server';
@@ -59,6 +64,12 @@ export interface RunOptions {
   source?: string;
   /** Git repository the dataset commit is exported from. */
   repoRoot: string;
+  /**
+   * Git repository whose history up to `dataset.commit` gives each file's
+   * churn. Defaults to `repoRoot` when indexing an export; with `source` and
+   * no `historyRoot`, files carry no churn.
+   */
+  historyRoot?: string;
   /** Where exports and the indexing embedding cache live (git-ignored). */
   cacheDir: string;
   /** Run only queries of these types. */
@@ -89,8 +100,9 @@ function makeProvider(opts: RunOptions, cache: EmbeddingCache): CachedEmbeddingP
 }
 
 /**
- * The ranking `search_code` returns: a search at twice the limit,
- * duplicates by content hash dropped, ranked (test files demoted), cut to the limit.
+ * The ranking `search_code` returns: a search at twice the limit plus, for a
+ * query naming identifiers, the chunks that define them; duplicates by content
+ * hash dropped, ranked (test files demoted, definitions up), cut to the limit.
  * Mirrors the tool handler in mcp-handler.ts for a single group.
  */
 export async function searchLikeTool(
@@ -109,14 +121,26 @@ export async function searchLikeTool(
     limit: limit * 2,
     tool: 'bench',
   });
+  const results = [...res.results];
+  const identifiers = identifierTokens(q.query);
+  if (identifiers.length > 0) {
+    const definitions = await searcher.searchWithFilter(
+      group,
+      q.query,
+      definitionCandidatesFilter(identifiers),
+      { project: q.project, limit: DEFINITION_CANDIDATES, tool: 'bench' }
+    );
+    results.push(...definitions.results);
+  }
+  const ranked = rankQuery(q.query);
   const seen = new Set<string>();
-  return res.results
+  return results
     .filter((r) => {
       if (seen.has(r.hash)) return false;
       seen.add(r.hash);
       return true;
     })
-    .sort((a, b) => rankKey(q.query, b) - rankKey(q.query, a))
+    .sort((a, b) => rankKey(ranked, b) - rankKey(ranked, a))
     .slice(0, limit);
 }
 
@@ -189,6 +213,13 @@ async function indexDataset(
       embeddingModelId: opts.embedModel,
       treeSitter,
       projectSuffix: benchProjectSuffix(opts.group),
+      // The index is an export without .git: read the churn from the history.
+      fileCommitCounts: async (project) => {
+        const historyRoot = opts.historyRoot ?? (opts.source ? undefined : opts.repoRoot);
+        const p = opts.dataset.projects.find((d) => d.name === project.name);
+        if (!historyRoot || !p) return null;
+        return readFileCommitCounts(path.join(historyRoot, p.path ?? '.'), opts.dataset.commit);
+      },
     });
     for (const p of opts.dataset.projects) {
       const dir = path.join(sourceRoot, p.path ?? '.');

@@ -7,6 +7,7 @@ import { toArchCollectionName } from '../src/arch/collection.js';
 import { toDocsCollectionName } from '../src/docs/collection.js';
 import { toTermsCollectionName } from '../src/terminology/collection.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
+import { EMBED_TEXT_FORMAT } from '../src/embed-text.js';
 import type { EmbeddingProvider, ProjectConfig } from '../src/types.js';
 
 function createTempDir(): string {
@@ -124,6 +125,27 @@ function createMockQdrant() {
       Promise.resolve({
         collections: Array.from(collections.keys()).map((name) => ({ name })),
       })
+    ),
+
+    setPayload: vi.fn().mockImplementation(
+      (
+        groupName: string,
+        opts: {
+          payload: Record<string, unknown>;
+          filter: { must: { key: string; match: { value?: string; any?: string[] } }[] };
+        }
+      ) => {
+        for (const point of collections.get(groupName)?.values() ?? []) {
+          const payload = (point as { payload: Record<string, unknown> }).payload;
+          const matches = opts.filter.must.every((m) =>
+            m.match.any
+              ? m.match.any.includes(String(payload[m.key]))
+              : payload[m.key] === m.match.value
+          );
+          if (matches) Object.assign(payload, opts.payload);
+        }
+        return Promise.resolve(true);
+      }
     ),
 
     retrieve: vi.fn().mockImplementation((groupName: string, opts: { ids: string[] }) => {
@@ -688,6 +710,61 @@ describe('Indexer', () => {
       for (const p of stored('src/svc.ts')) expect(p.payload['service']).toBe('billing');
       // And once applied, the file is unchanged again.
       expect(await indexer.indexFile('test-group', renamed, tsPath)).toBe(0);
+    });
+
+    it('embeds each chunk with its path, storing the plain chunk', async () => {
+      const tsPath = writeSrc(
+        'invoice.ts',
+        'export class Invoice {\n  total(): number {\n    return 1;\n  }\n}\n'
+      );
+      const spy = vi.spyOn(embeddingProvider, 'embedBatchPassage');
+      await makeIndexer().indexFile('test-group', createProjectConfig(projectDir), tsPath);
+
+      const texts = spy.mock.calls.flatMap((c) => c[0]);
+      expect(texts.length).toBeGreaterThan(0);
+      for (const t of texts) expect(t.startsWith('Filepath: src/invoice.ts\n')).toBe(true);
+      for (const p of stored('src/invoice.ts')) {
+        expect(String(p.payload['content'])).not.toContain('Filepath:');
+        expect(p.payload['embed_format']).toBe(EMBED_TEXT_FORMAT);
+      }
+    });
+
+    it('re-embeds an unchanged file stored under an older embed format', async () => {
+      const tsPath = writeSrc('old.ts', 'export const x = 1;\n');
+      const project = createProjectConfig(projectDir);
+      const indexer = makeIndexer();
+      const n = await indexer.indexFile('test-group', project, tsPath);
+      // Points written before the format existed carry no embed_format.
+      for (const p of stored('src/old.ts')) delete p.payload['embed_format'];
+
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBe(n);
+      for (const p of stored('src/old.ts'))
+        expect(p.payload['embed_format']).toBe(EMBED_TEXT_FORMAT);
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBe(0);
+    });
+
+    it("stores each file's commit-count percentile after a project pass", async () => {
+      writeSrc('hot.ts', 'export const hot = 1;\n');
+      writeSrc('cold.ts', 'export const cold = 1;\n');
+      const indexer = new Indexer({
+        qdrantUrl: 'http://localhost:6333',
+        embeddingProvider,
+        dimensions: 4,
+        qdrantClient: mockQdrant.client as never,
+        fileCommitCounts: async () => new Map([['src/hot.ts', 7]]),
+      });
+      await indexer.indexProject(createProjectConfig(projectDir, { patterns: ['**/*.ts'] }));
+
+      for (const p of stored('src/hot.ts')) expect(p.payload['file_churn']).toBe(0.75);
+      for (const p of stored('src/cold.ts')) expect(p.payload['file_churn']).toBe(0.25);
+      expect(mockQdrant.client.setPayload).toHaveBeenCalledTimes(2);
+    });
+
+    it('leaves file_churn unset without git history', async () => {
+      writeSrc('plain.ts', 'export const plain = 1;\n');
+      await makeIndexer().indexProject(createProjectConfig(projectDir, { patterns: ['**/*.ts'] }));
+      for (const p of stored('src/plain.ts')) expect(p.payload['file_churn']).toBeUndefined();
+      expect(mockQdrant.client.setPayload).not.toHaveBeenCalled();
     });
 
     it('fails the file, without writing, when its stored state cannot be read', async () => {

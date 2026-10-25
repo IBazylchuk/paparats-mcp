@@ -22,8 +22,10 @@ export interface StoredFingerprint {
  *      of stale high-fanout edges from pre-cap indexes.
  *  2 — AST chunker merges adjacent small chunks: re-chunk every file so existing
  *      indexes lose their one-line and lone-`}` chunks.
+ *  3 — code chunks are embedded with their path: re-embed every file
+ *      (`embed_format` makes unchanged files re-embed too).
  */
-const REINDEX_EPOCH = 2;
+const REINDEX_EPOCH = 3;
 
 /**
  * Persistent store of per-repo fingerprints used by the change-detection

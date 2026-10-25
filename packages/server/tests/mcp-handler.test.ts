@@ -860,6 +860,74 @@ describe('McpHandler', () => {
     }
   });
 
+  it('search_code adds the definitions of named identifiers that dense search missed', async () => {
+    const searcher = createMockSearcher();
+    const response = (results: ReturnType<typeof makeSearchResult>[]) => ({
+      results,
+      total: results.length,
+      metrics: {
+        tokensReturned: 10,
+        estimatedFullFileTokens: 100,
+        tokensSaved: 90,
+        savingsPercent: 90,
+      },
+    });
+    vi.mocked(searcher.search).mockResolvedValue(
+      response([
+        makeSearchResult({
+          file: 'src/report.ts',
+          score: 0.52,
+          hash: 'hu',
+          defines_symbols: ['render'],
+        }),
+      ])
+    );
+    vi.mocked(searcher.searchWithFilter).mockResolvedValue(
+      response([
+        makeSearchResult({
+          file: 'src/total.ts',
+          score: 0.5,
+          hash: 'hd',
+          defines_symbols: ['InvoiceTotal'],
+        }),
+      ])
+    );
+
+    const app = express();
+    app.use(express.json());
+    const handler2 = new McpHandler({
+      searcher,
+      indexer: createMockIndexer(),
+      getProjects: () => new Map([['g1', [createProjectConfig()]]]),
+      getGroupNames: () => ['g1'],
+    });
+    handler2.mount(app);
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+
+    try {
+      const { text } = await callTool(port, 'search_code', {
+        query: 'where is InvoiceTotal computed',
+      });
+      expect(searcher.searchWithFilter).toHaveBeenCalledWith(
+        'g1',
+        'where is InvoiceTotal computed',
+        { must: [{ key: 'defines_symbols', match: { any: ['InvoiceTotal'] } }] },
+        expect.objectContaining({ project: 'all', tool: 'search_code' })
+      );
+      // The definition ranks first; its shown score is still its similarity.
+      expect(text.indexOf('src/total.ts')).toBeLessThan(text.indexOf('src/report.ts'));
+      expect(text).toContain('(50.0%');
+
+      vi.mocked(searcher.searchWithFilter).mockClear();
+      await callTool(port, 'search_code', { query: 'where is the invoice total computed' });
+      expect(searcher.searchWithFilter).not.toHaveBeenCalled();
+    } finally {
+      server.close();
+      handler2.destroy();
+    }
+  });
+
   it('explain_feature returns code locations table', async () => {
     const searcher = createMockSearcher();
     vi.mocked(searcher.expandedSearch).mockResolvedValue({
