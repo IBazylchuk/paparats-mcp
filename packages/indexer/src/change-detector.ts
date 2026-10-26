@@ -1,10 +1,10 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { simpleGit } from 'simple-git';
 import { glob } from 'glob';
 import { filterFilesByGitignore, filterFilesWithinRoot } from '@paparats/shared';
 import type { ProjectConfig } from '@paparats/server';
+import { createGit } from './git-auth.js';
 import { redactCredentials } from './repo-manager.js';
 import type { RepoConfig } from './types.js';
 
@@ -26,12 +26,12 @@ export class GitDetector {
     if (!repo.url) {
       throw new Error(`GitDetector requires a remote url; got empty for ${repo.fullName}`);
     }
-    const git = simpleGit();
+    const git = createGit();
     let result: string;
     try {
       result = await git.listRemote(['--symref', repo.url, 'HEAD']);
     } catch (err) {
-      // git echoes the URL, which carries the token for private repos.
+      // git echoes the URL; mask credentials in case one carries them.
       throw new Error(`ls-remote failed: ${redactCredentials((err as Error).message)}`, {
         cause: err,
       });

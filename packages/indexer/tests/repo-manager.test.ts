@@ -12,7 +12,8 @@ let failSync = false;
 let failClone = false;
 
 vi.mock('simple-git', () => ({
-  simpleGit: (cwd?: string) => {
+  simpleGit: (opts?: { baseDir?: string }) => {
+    const cwd = opts?.baseDir;
     const record = (args: string[]) => {
       gitCalls.push(`${cwd ?? ''}: ${args.join(' ')}`);
       if (failSync)
@@ -61,12 +62,7 @@ describe('parseReposEnv', () => {
     expect(parseReposEnv('  ')).toHaveLength(0);
   });
 
-  it('includes token in URL when provided', () => {
-    const repos = parseReposEnv('org/repo', 'ghp_abc123');
-    expect(repos[0]!.url).toBe('https://ghp_abc123@github.com/org/repo.git');
-  });
-
-  it('does not include token when not provided', () => {
+  it('builds a URL without credentials (the token travels in a header)', () => {
     const repos = parseReposEnv('org/repo');
     expect(repos[0]!.url).toBe('https://github.com/org/repo.git');
   });

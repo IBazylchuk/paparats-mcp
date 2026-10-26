@@ -46,13 +46,13 @@ repos:
     expect(result.repos[2]!.fullName).toBe('other/c');
   });
 
-  it('includes token in URL when provided', () => {
+  it('builds a URL without credentials (the token travels in a header)', () => {
     writeConfig(`
 repos:
   - url: org/repo
 `);
-    const result = loadIndexerConfig(configPath, 'ghp_abc123');
-    expect(result.repos[0]!.url).toBe('https://ghp_abc123@github.com/org/repo.git');
+    const result = loadIndexerConfig(configPath);
+    expect(result.repos[0]!.url).toBe('https://github.com/org/repo.git');
   });
 
   it('parses per-repo overrides', () => {
