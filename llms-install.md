@@ -64,6 +64,14 @@ started with `npx`; install the CLI and let it start the stack.
    Antigravity uses `"serverUrl"`, Gemini CLI uses `"httpUrl"`. No API key
    is needed.
 
+6. Optionally, ask the user whether to add a short note on when to use
+   semantic search and when grep to the project's `CLAUDE.md` / `AGENTS.md`.
+   It edits a file in their repository, so only run it if they agree:
+
+   ```bash
+   paparats instructions /absolute/path/to/project
+   ```
+
 ## Verifying
 
 Call the `health_check` tool, then `search_code` with a question about the

@@ -1195,6 +1195,26 @@ running stack for Qdrant and the embedding server; point it at their host ports:
 
 On Linux add `"--add-host", "host.docker.internal:host-gateway"` to the `args`.
 
+### Tell agents when to use it
+
+The server sends its instructions to every client, but a short note in the repository
+itself stays in the agent's context all session. `paparats instructions` writes one into
+the repository's `CLAUDE.md` and `AGENTS.md` (whichever exist; a new `AGENTS.md`
+otherwise):
+
+```bash
+paparats instructions /path/to/repo            # write or refresh the block
+paparats instructions /path/to/repo --print    # show it, write nothing
+paparats instructions /path/to/repo --remove   # take it out again
+```
+
+The block says when to reach for `search_code` and when grep is the better tool, and
+points to `get_chunk`, `find_usages` and `change_impact`. It names the project the server
+indexes the repository as — the `projects.yml` name when the path is registered there,
+the directory name otherwise, or `--project <name>`. It sits between
+`<!-- paparats:begin -->` and `<!-- paparats:end -->`; reruns replace only that part, and
+the rest of the file is left as it was. `--file <name>` picks the file(s) to write.
+
 ### Verify
 
 - `paparats status` — check the stack is up
@@ -1223,6 +1243,8 @@ paparats status                         Stack health: Docker, embed server, serv
 paparats groups [--json]                List groups and their projects.
 paparats doctor                         Diagnostic checks (Docker, embed server, ports, configs).
 paparats update                         Update CLI from npm + pull latest Docker images.
+paparats instructions [dir] [flags]     Write the "paparats or grep" block into the repo's
+                                          CLAUDE.md / AGENTS.md (--print, --remove, --file).
 ```
 
 The legacy per-project commands (`paparats init`, `paparats index`, `paparats watch`) are
