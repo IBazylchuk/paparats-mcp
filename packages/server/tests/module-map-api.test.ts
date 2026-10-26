@@ -51,7 +51,10 @@ async function get<T = ModuleMapResponse>(
 function options(all: MapEdge[], scope = unscoped, projects = ['billing']) {
   const store = {
     edgesVersion: vi.fn().mockReturnValue('0:0'),
-    iterateGroupEdges: vi.fn().mockImplementation(() => all),
+    edgeProjects: vi.fn(() => [...new Set(all.map((e) => e.from_chunk_id.split('//')[1]!))]),
+    iterateProjectEdges: vi.fn((group: string, project: string) =>
+      all.filter((e) => e.from_chunk_id.startsWith(`${group}//${project}//`))
+    ),
   };
   return {
     moduleMaps: new ModuleMapService(store),

@@ -16,6 +16,17 @@ const DEFAULT_DB_PATH = path.join(PAPARATS_DIR, 'metadata.db');
  */
 const EDGE_INSERT_BATCH_SIZE = 5000;
 
+const EDGE_COLUMNS =
+  'from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, from_symbols';
+
+type EdgeRow = Omit<SymbolEdge, 'from_symbols'> & { from_symbols: string };
+
+/** `from_symbols` is stored as a JSON array, or '' when the whole chunk is the caller. */
+function toEdge(row: EdgeRow): SymbolEdge {
+  const { from_symbols, ...edge } = row;
+  return { ...edge, from_symbols: from_symbols ? (JSON.parse(from_symbols) as string[]) : [] };
+}
+
 /** Escape SQLite LIKE wildcards (% and _) so they match literally */
 function escapeLike(value: string): string {
   return value.replace(/[%_\\]/g, '\\$&');
@@ -54,6 +65,7 @@ export class MetadataStore {
   private deleteChunkCommitsStmt: Database.Statement;
   private deleteChunkTicketsStmt: Database.Statement;
   private insertEdgeStmt: Database.Statement;
+  private bumpEdgeVersionStmt: Database.Statement;
   private deleteEdgesFromStmt: Database.Statement;
   private deleteEdgesToStmt: Database.Statement;
   private getEdgesFromStmt: Database.Statement;
@@ -206,6 +218,36 @@ export class MetadataStore {
       );
     }
 
+    // Migrate databases pre-dating `from_symbols`: rows keep '' (the whole chunk
+    // is the caller) until the next reindex records the calling methods.
+    if (!cols.some((c) => c.name === 'from_symbols')) {
+      this.db.exec("ALTER TABLE symbol_edges ADD COLUMN from_symbols TEXT NOT NULL DEFAULT ''");
+    }
+
+    // Edge versions live in the file, not in memory: the indexer is another
+    // process writing to it, and the server's derived maps must see its writes.
+    const hadVersions = this.db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edge_versions'")
+      .get();
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS edge_versions (
+        grp TEXT NOT NULL,
+        project TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        PRIMARY KEY (grp, project)
+      )
+    `);
+    if (!hadVersions) {
+      // Projects that already have edges must be listed, or a group's map
+      // would be empty until each of them is indexed again.
+      this.db.exec(
+        'INSERT OR IGNORE INTO edge_versions (grp, project, version) ' +
+          "SELECT grp, substr(rest, 1, instr(rest, '//') - 1), 1 FROM (" +
+          'SELECT DISTINCT grp, substr(from_chunk_id, length(grp) + 3) AS rest FROM symbol_edges' +
+          ") WHERE instr(rest, '//') > 1"
+      );
+    }
+
     // Composite (grp, …) indexes for degree aggregation. Created here — after
     // the migration guarantees the `grp` column exists on both fresh and legacy
     // databases — so degree stats aggregate via an index range scan instead of
@@ -240,15 +282,18 @@ export class MetadataStore {
     this.deleteChunkTicketsStmt = this.db.prepare('DELETE FROM chunk_tickets WHERE chunk_id = ?');
 
     this.insertEdgeStmt = this.db.prepare(
-      'INSERT OR REPLACE INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, grp) VALUES (?, ?, ?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, grp, from_symbols) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    );
+    this.bumpEdgeVersionStmt = this.db.prepare(
+      'INSERT INTO edge_versions (grp, project, version) VALUES (?, ?, 1) ON CONFLICT (grp, project) DO UPDATE SET version = version + 1'
     );
     this.deleteEdgesFromStmt = this.db.prepare('DELETE FROM symbol_edges WHERE from_chunk_id = ?');
     this.deleteEdgesToStmt = this.db.prepare('DELETE FROM symbol_edges WHERE to_chunk_id = ?');
     this.getEdgesFromStmt = this.db.prepare(
-      'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence FROM symbol_edges WHERE from_chunk_id = ?'
+      'SELECT ' + EDGE_COLUMNS + ' FROM symbol_edges WHERE from_chunk_id = ?'
     );
     this.getEdgesToStmt = this.db.prepare(
-      'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence FROM symbol_edges WHERE to_chunk_id = ?'
+      'SELECT ' + EDGE_COLUMNS + ' FROM symbol_edges WHERE to_chunk_id = ?'
     );
     this.deleteChunkEdgesStmt = this.db.prepare(
       'DELETE FROM symbol_edges WHERE from_chunk_id = ? OR to_chunk_id = ?'
@@ -326,6 +371,8 @@ export class MetadataStore {
       this.deleteChunkEdgesStmt.run(chunkId, chunkId);
     });
     tx();
+    const [group, project] = chunkId.split('//');
+    if (group && project !== undefined) this.bumpEdgeVersion(group, project);
   }
 
   deleteByProject(group: string, project: string): void {
@@ -340,6 +387,7 @@ export class MetadataStore {
     tx();
     // The in-degree cache would otherwise keep ranking the deleted chunks.
     this.invalidateDegreeCache(group);
+    this.bumpEdgeVersion(group, project);
   }
 
   // ── Git file cache (parsed `git log` output keyed by repo HEAD) ──────────
@@ -385,7 +433,8 @@ export class MetadataStore {
           e.relation_type,
           e.symbol_name,
           e.confidence ?? 'INFERRED',
-          grp
+          grp,
+          e.from_symbols && e.from_symbols.length > 0 ? JSON.stringify(e.from_symbols) : ''
         );
       }
     });
@@ -400,26 +449,34 @@ export class MetadataStore {
     // Edges changed → mark the degree cache stale for affected groups only. The
     // group is the first `//`-delimited segment of a chunk_id; touching one
     // project must not invalidate cached stats for unrelated groups.
-    const affected = new Set<string>();
+    const affected = new Map<string, Set<string>>();
     for (const e of edges) {
-      const g = e.from_chunk_id.split('//')[0];
-      if (g) affected.add(g);
-      const g2 = e.to_chunk_id.split('//')[0];
-      if (g2) affected.add(g2);
+      for (const id of [e.from_chunk_id, e.to_chunk_id]) {
+        const [g, project] = id.split('//');
+        if (!g) continue;
+        let projects = affected.get(g);
+        if (!projects) affected.set(g, (projects = new Set()));
+        if (project !== undefined) projects.add(project);
+      }
     }
-    for (const g of affected) this.invalidateDegreeCache(g);
+    for (const [g, projects] of affected) {
+      this.invalidateDegreeCache(g);
+      for (const project of projects) this.bumpEdgeVersion(g, project);
+    }
   }
 
   getEdgesFrom(chunkId: string): SymbolEdge[] {
-    return this.getEdgesFromStmt.all(chunkId) as SymbolEdge[];
+    return this.getEdgesFromStmt.all(chunkId).map((row) => toEdge(row as EdgeRow));
   }
 
   getEdgesTo(chunkId: string): SymbolEdge[] {
-    return this.getEdgesToStmt.all(chunkId) as SymbolEdge[];
+    return this.getEdgesToStmt.all(chunkId).map((row) => toEdge(row as EdgeRow));
   }
 
   deleteEdgesForChunk(chunkId: string): void {
     this.deleteChunkEdgesStmt.run(chunkId, chunkId);
+    const [group, project] = chunkId.split('//');
+    if (group && project !== undefined) this.bumpEdgeVersion(group, project);
   }
 
   /** Delete all metadata (commits, tickets, edges) for a specific file within a project */
@@ -433,6 +490,7 @@ export class MetadataStore {
     });
     tx();
     this.invalidateDegreeCache(group);
+    this.bumpEdgeVersion(group, project);
   }
 
   /** Every edge leaving any chunk of one file. */
@@ -440,9 +498,12 @@ export class MetadataStore {
     const pattern = `${escapeLike(group)}//${escapeLike(project)}//${escapeLike(file)}//%`;
     return this.db
       .prepare(
-        "SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence FROM symbol_edges WHERE grp = ? AND from_chunk_id LIKE ? ESCAPE '\\'"
+        'SELECT ' +
+          EDGE_COLUMNS +
+          " FROM symbol_edges WHERE grp = ? AND from_chunk_id LIKE ? ESCAPE '\\'"
       )
-      .all(group, pattern) as SymbolEdge[];
+      .all(group, pattern)
+      .map((row) => toEdge(row as EdgeRow));
   }
 
   /** Whether any symbol edge originates in this project. */
@@ -458,6 +519,7 @@ export class MetadataStore {
     // Edges changed → drop the group's degree cache (per-group scope, since
     // hub thresholds are computed across the whole group, not per-project).
     this.invalidateDegreeCache(group);
+    this.bumpEdgeVersion(group, project);
   }
 
   // ── Degree analytics (for hub-threshold filtering + arch suggestions) ─────
@@ -516,24 +578,48 @@ export class MetadataStore {
     if (entry) entry.stale = true;
     const names = this.nameUsageCache.get(group);
     if (names) names.stale = true;
-    this.edgeVersions.set(group, (this.edgeVersions.get(group) ?? 0) + 1);
   }
 
-  /** Bumped on every edge write or delete in a group, so derived maps know they are behind. */
-  private edgeVersions = new Map<string, number>();
   private edgeEpoch = 0;
 
-  edgesVersion(group: string): string {
-    return `${this.edgeEpoch}:${this.edgeVersions.get(group) ?? 0}`;
+  private bumpEdgeVersion(group: string, project: string): void {
+    this.bumpEdgeVersionStmt.run(group, project);
   }
 
-  /** Every edge of a group, streamed — a large group has hundreds of thousands. */
-  iterateGroupEdges(group: string): Iterable<SymbolEdge> {
+  /**
+   * Changes on every edge write or delete in a project (or, without `project`,
+   * in any project of the group), by this process or another one sharing the
+   * file, so maps derived from the edges know they are behind.
+   */
+  edgesVersion(group: string, project?: string): string {
+    const row =
+      project === undefined
+        ? this.db.prepare('SELECT SUM(version) AS v FROM edge_versions WHERE grp = ?').get(group)
+        : this.db
+            .prepare('SELECT version AS v FROM edge_versions WHERE grp = ? AND project = ?')
+            .get(group, project);
+    return `${this.edgeEpoch}:${(row as { v: number | null } | undefined)?.v ?? 0}`;
+  }
+
+  /** Projects of a group that have had edges written or deleted. */
+  edgeProjects(group: string): string[] {
+    return (
+      this.db.prepare('SELECT project FROM edge_versions WHERE grp = ?').all(group) as Array<{
+        project: string;
+      }>
+    ).map((r) => r.project);
+  }
+
+  /** Every edge leaving a project's chunks, streamed. */
+  iterateProjectEdges(group: string, project: string): Iterable<SymbolEdge> {
+    // A range on the from_chunk_id index: ids starting with `g//p//` sort at or
+    // after it and before `g//p/0` ('0' follows '/').
+    const prefix = `${group}//${project}//`;
     return this.db
       .prepare(
-        'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence FROM symbol_edges WHERE grp = ?'
+        'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence FROM symbol_edges WHERE from_chunk_id >= ? AND from_chunk_id < ?'
       )
-      .iterate(group) as Iterable<SymbolEdge>;
+      .iterate(prefix, `${prefix.slice(0, -1)}0`) as Iterable<SymbolEdge>;
   }
 
   // ── Name usage (how common a linked name is) ─────────────────────────────

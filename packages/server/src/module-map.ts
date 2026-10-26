@@ -601,18 +601,60 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
 }
 
 /**
- * A module map older than this is rebuilt when the group's edges changed since.
- * Younger ones are served as they are while the indexer keeps writing edges:
- * mapping a large group takes seconds.
+ * One map out of maps of separate projects, as `buildModuleMap` would build it
+ * from all their edges: each project is grouped on its own there too, and
+ * edges never cross projects. Modules are numbered again, largest first.
+ */
+export function mergeModuleMaps(maps: ModuleMap[]): ModuleMap {
+  const entries = maps.flatMap((map, m) => map.modules.map((mod) => ({ m, mod })));
+  // buildModuleMap orders by size, then by the module's alphabetically first file.
+  const first = (mod: CodeModule) => [...mod.files].sort()[0] ?? '';
+  entries.sort(
+    (a, b) => b.mod.files.length - a.mod.files.length || first(a.mod).localeCompare(first(b.mod))
+  );
+  const newId = new Map<string, number>();
+  entries.forEach(({ m, mod }, id) => newId.set(`${m}:${mod.id}`, id));
+  const relink = (m: number, links: ModuleLink[]): ModuleLink[] =>
+    links.map((l) => ({ ...l, module: newId.get(`${m}:${l.module}`)! }));
+  const modules = entries.map(({ m, mod }, id) => ({
+    ...mod,
+    id,
+    uses: relink(m, mod.uses),
+    usedBy: relink(m, mod.usedBy),
+  }));
+
+  const weights = new Map<FileKey, Map<FileKey, number>>();
+  for (const map of maps) for (const [from, row] of map.weights) weights.set(from, row);
+  return {
+    modules,
+    shared: maps
+      .flatMap((map) => map.shared)
+      .sort((a, b) => b.callers - a.callers || a.file.localeCompare(b.file)),
+    unconnected: maps.flatMap((map) => map.unconnected).sort(),
+    migrations: maps.reduce((n, map) => n + map.migrations, 0),
+    weights,
+  };
+}
+
+/**
+ * A module map older than this is rebuilt when its project's edges changed
+ * since. Younger ones are served as they are while the indexer keeps writing
+ * edges: mapping a large project takes seconds.
  */
 export const MODULE_MAP_MAX_AGE_MS = 5 * 60 * 1000;
 
-/** Module maps per (group, project), shared by `module_map` and the console's map page. */
+type ModuleMapStore = Pick<MetadataStore, 'edgesVersion' | 'edgeProjects' | 'iterateProjectEdges'>;
+
+/**
+ * Module maps per (group, project), shared by `module_map` and the console's
+ * map page. A group's map is put together from its projects' maps, so after
+ * indexing only the projects whose edges changed are mapped again.
+ */
 export class ModuleMapService {
   private cache = new Map<string, { version: string; builtAt: number; map: ModuleMap }>();
 
   constructor(
-    private readonly store: Pick<MetadataStore, 'edgesVersion' | 'iterateGroupEdges'>,
+    private readonly store: ModuleMapStore,
     private readonly now: () => number = Date.now
   ) {}
 
@@ -627,8 +669,25 @@ export class ModuleMapService {
     storedProject: string | undefined,
     visible: (chunkId: string) => boolean
   ): ModuleMap {
-    const key = `${group}\0${storedProject ?? ''}`;
-    const version = this.store.edgesVersion(group);
+    if (storedProject !== undefined) return this.projectMap(group, storedProject, visible);
+    const projects = this.store.edgeProjects(group).sort();
+    const maps = projects.map((p) => this.projectMap(group, p, visible));
+    const key = `${group}\0`;
+    const version = projects.map((p) => this.cache.get(`${group}\0${p}`)!.version).join(',');
+    const cached = this.cache.get(key);
+    if (cached && cached.version === version) return cached.map;
+    const map = mergeModuleMaps(maps);
+    this.cache.set(key, { version, builtAt: this.now(), map });
+    return map;
+  }
+
+  private projectMap(
+    group: string,
+    project: string,
+    visible: (chunkId: string) => boolean
+  ): ModuleMap {
+    const key = `${group}\0${project}`;
+    const version = this.store.edgesVersion(group, project);
     const cached = this.cache.get(key);
     if (
       cached &&
@@ -637,16 +696,17 @@ export class ModuleMapService {
       return cached.map;
     }
     const store = this.store;
-    const prefix = storedProject !== undefined ? `${group}//${storedProject}//` : null;
+    const prefix = `${group}//${project}//`;
     function* visibleEdges(): Generator<SymbolEdge> {
-      for (const e of store.iterateGroupEdges(group)) {
-        if (prefix && !(e.from_chunk_id.startsWith(prefix) && e.to_chunk_id.startsWith(prefix)))
-          continue;
+      for (const e of store.iterateProjectEdges(group, project)) {
+        if (!e.to_chunk_id.startsWith(prefix)) continue;
         if (!visible(e.from_chunk_id) || !visible(e.to_chunk_id)) continue;
         yield e;
       }
     }
     const map = buildModuleMap(visibleEdges(), []);
+    // The group map is keyed by the versions its project maps were built at,
+    // so it is put together again exactly when one of them was rebuilt.
     this.cache.set(key, { version, builtAt: this.now(), map });
     return map;
   }

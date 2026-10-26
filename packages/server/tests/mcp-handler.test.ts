@@ -16,7 +16,7 @@ import {
   TERM_LOOKUP_MIN_SCORE,
 } from '../src/mcp-handler.js';
 import type { MetadataStore } from '../src/metadata-db.js';
-import type { ProjectConfig, ChunkKind } from '../src/types.js';
+import type { ProjectConfig, ChunkKind, SymbolEdge } from '../src/types.js';
 
 /** Parse SSE or JSON response from MCP Streamable HTTP */
 async function parseMcpResponse(res: Response): Promise<unknown> {
@@ -87,9 +87,20 @@ function createMockMetadataStore(): MetadataStore {
     getNameUsage: vi.fn().mockReturnValue({ callerFiles: 0, filesUsing: new Map() }),
     getEdgesFromFile: vi.fn().mockReturnValue([]),
     edgesVersion: vi.fn().mockReturnValue('0:0'),
-    iterateGroupEdges: vi.fn().mockReturnValue([]),
+    edgeProjects: vi.fn().mockReturnValue([]),
+    iterateProjectEdges: vi.fn().mockReturnValue([]),
     deleteByProject: vi.fn(),
   } as unknown as MetadataStore;
+}
+
+/** Serve `edges` through the store calls the module map reads. */
+function mockEdges(store: MetadataStore, edges: () => SymbolEdge[]): void {
+  vi.mocked(store.edgeProjects).mockImplementation(() => [
+    ...new Set(edges().map((e) => e.from_chunk_id.split('//')[1]!)),
+  ]);
+  vi.mocked(store.iterateProjectEdges).mockImplementation((group, project) =>
+    edges().filter((e) => e.from_chunk_id.startsWith(`${group}//${project}//`))
+  );
 }
 
 /** Standard search result for orchestration tool tests */
@@ -1371,6 +1382,26 @@ describe('McpHandler', () => {
       });
     });
 
+    it('names the method that makes the call, and follows only that method', async () => {
+      const { metadataStore, indexer } = mocks();
+      const VIEW = 'g1//p1//src/view.ts//0-9//h9';
+      const edges = [
+        { ...edge(CALLER, SEED, 'authenticate'), from_symbols: ['submit'] },
+        edge(CALLER_OF_CALLER, CALLER, 'handleLogin'),
+        edge(VIEW, CALLER, 'submit'),
+      ];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('**[p1] src/login.ts:6** `submit` — uses `authenticate`');
+        expect(text).toContain('src/view.ts:1** — uses `submit`');
+        // `handleLogin` sits in the same chunk as `submit` but does not call the change.
+        expect(text).not.toContain('src/routes.ts');
+      });
+    });
+
     it('stops at depth and says more is there', async () => {
       const { metadataStore, indexer } = mocks();
       await withHandler({ metadataStore, indexer }, async (port) => {
@@ -1490,7 +1521,7 @@ describe('McpHandler', () => {
 
     it('maps the group into modules with links and tests, in both modes', async () => {
       const metadataStore = createMockMetadataStore();
-      vi.mocked(metadataStore.iterateGroupEdges).mockImplementation(() => clusterEdges() as never);
+      mockEdges(metadataStore, () => clusterEdges() as SymbolEdge[]);
       await withHandler({ metadataStore }, async (port) => {
         for (const path of ['/mcp', '/support/mcp']) {
           const { text, isError } = await callTool(port, 'module_map', {}, path);
@@ -1507,15 +1538,15 @@ describe('McpHandler', () => {
 
     it('reuses the map until the edges change', async () => {
       const metadataStore = createMockMetadataStore();
-      vi.mocked(metadataStore.iterateGroupEdges).mockImplementation(() => clusterEdges() as never);
+      mockEdges(metadataStore, () => clusterEdges() as SymbolEdge[]);
       await withHandler({ metadataStore }, async (port) => {
         await callTool(port, 'module_map', { group: 'g1' });
         await callTool(port, 'module_map', { group: 'g1' });
-        expect(metadataStore.iterateGroupEdges).toHaveBeenCalledTimes(1);
+        expect(metadataStore.iterateProjectEdges).toHaveBeenCalledTimes(1);
         // A fresh map is still served while it is young, even after edges change.
         vi.mocked(metadataStore.edgesVersion).mockReturnValue('0:1');
         await callTool(port, 'module_map', { group: 'g1' });
-        expect(metadataStore.iterateGroupEdges).toHaveBeenCalledTimes(1);
+        expect(metadataStore.iterateProjectEdges).toHaveBeenCalledTimes(1);
       });
     });
 
@@ -1529,8 +1560,9 @@ describe('McpHandler', () => {
 
     it('maps one project only, and nothing for a project out of scope', async () => {
       const metadataStore = createMockMetadataStore();
-      vi.mocked(metadataStore.iterateGroupEdges).mockImplementation(
-        () => [...clusterEdges('billing-v3'), ...clusterEdges('handbook-v3')] as never
+      mockEdges(
+        metadataStore,
+        () => [...clusterEdges('billing-v3'), ...clusterEdges('handbook-v3')] as SymbolEdge[]
       );
       const searcher = createMockSearcher();
       vi.mocked(searcher.getProjectScope).mockReturnValue(['billing']);

@@ -27,8 +27,10 @@ export interface StoredFingerprint {
  *  4 — symbol extraction finds Ruby `def self.x` and `class A::B`, JSX component
  *      uses, and skips namespace-only Ruby modules: extract every file's symbols
  *      again (`symbol_format` makes unchanged files rewrite) and rebuild edges.
+ *  5 — a name a chunk defines stays a use when called on another object
+ *      (`def self.claim` calling `Other.claim`): extract symbols again.
  */
-const REINDEX_EPOCH = 4;
+const REINDEX_EPOCH = 5;
 
 /**
  * Persistent store of per-repo fingerprints used by the change-detection

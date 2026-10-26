@@ -252,6 +252,15 @@ function outOfScopeProjectResult(
 }
 
 /** Same text as a genuinely missing chunk, so an out-of-scope id is indistinguishable from one. */
+/**
+ * How a caller is named in `find_usages` and `change_impact`: the methods that
+ * make the call when the edge records them, else the chunk's first symbol.
+ */
+function callerLabel(callers: string[], payload: Record<string, unknown>): string {
+  if (callers.length > 0) return ` ${callers.map((n) => `\`${n}\``).join(', ')}`;
+  return typeof payload['symbol_name'] === 'string' ? ` \`${payload['symbol_name']}\`` : '';
+}
+
 function chunkNotFoundText(chunkId: string): string {
   return `Chunk not found: ${chunkId}\n\nThe chunk may have been removed during reindexing. Try searching again.`;
 }
@@ -2301,8 +2310,7 @@ export class McpHandler {
                     const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
                     const f = typeof ep['file'] === 'string' ? ep['file'] : 'unknown';
                     const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : 0;
-                    const sym = typeof ep['symbol_name'] === 'string' ? ep['symbol_name'] : null;
-                    const symInfo = sym ? ` (${sym})` : '';
+                    const symInfo = callerLabel(edge.from_symbols ?? [], ep);
                     text += `- **[${p}] ${f}:${shownLine(sl)}**${symInfo}${hub} — ${edge.relation_type} \`${conf}\`\n`;
                     text += `  _chunk: ${edge.from_chunk_id}_\n`;
                   } else {
@@ -2341,7 +2349,11 @@ export class McpHandler {
                     const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : 0;
                     const sym = typeof ep['symbol_name'] === 'string' ? ep['symbol_name'] : null;
                     const symInfo = sym ? ` (${sym})` : '';
-                    text += `- **[${p}] ${f}:${shownLine(sl)}**${symInfo}${hub} — ${edge.relation_type} \`${conf}\`\n`;
+                    const from =
+                      edge.from_symbols && edge.from_symbols.length > 0
+                        ? `, from ${edge.from_symbols.map((n) => `\`${n}\``).join(', ')}`
+                        : '';
+                    text += `- **[${p}] ${f}:${shownLine(sl)}**${symInfo}${hub} — ${edge.relation_type} \`${conf}\`${from}\n`;
                     text += `  _chunk: ${edge.to_chunk_id}_\n`;
                   } else {
                     text += `- _chunk: ${edge.to_chunk_id}_${hub} — ${edge.relation_type} \`${conf}\`\n`;
@@ -2551,7 +2563,7 @@ export class McpHandler {
               const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
               const f = typeof ep['file'] === 'string' ? ep['file'] : r.file;
               const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : r.startLine;
-              const sym = typeof ep['symbol_name'] === 'string' ? ` \`${ep['symbol_name']}\`` : '';
+              const sym = callerLabel(r.dep.callers, ep);
               return `- **[${p}] ${f}:${shownLine(sl)}**${sym} — ${uses}${hop}${marks}\n  _chunk: ${r.dep.chunkId}_\n`;
             };
 

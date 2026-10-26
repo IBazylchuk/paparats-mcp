@@ -248,4 +248,57 @@ describe('indexProject incremental git enrichment', () => {
     expect(await indexer.indexProject(project)).toBe(0);
     expect(metadataStore.hasEdgesForProject('test-group', 'test-project')).toBe(true);
   });
+  it('rebuilds the graph after a single file changes outside a project pass', async () => {
+    const treeSitter = await createTreeSitterManager();
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+      metadataStore,
+      treeSitter,
+    });
+    const project = createProjectConfig(projectDir);
+    await indexer.indexProject(project);
+    const callers = () =>
+      metadataStore
+        .getEdgesFromFile('test-group', 'test-project', 'src/c.ts')
+        .map((e) => e.symbol_name);
+    expect(callers()).toEqual([]);
+
+    // A new caller arrives through the content API, as the CLI watcher sends it.
+    await indexer.updateFileContent(
+      'test-group',
+      'test-project',
+      'src/c.ts',
+      'export function gamma() {\n  return alpha() + beta();\n}\n',
+      'typescript',
+      project
+    );
+    await indexer.flushSymbolGraphs();
+    expect(callers().sort()).toEqual(['alpha', 'beta']);
+
+    // It changes again: the edges follow the new chunk, none point at the old one.
+    await indexer.updateFileContent(
+      'test-group',
+      'test-project',
+      'src/c.ts',
+      'export function gamma() {\n  return beta();\n}\n',
+      'typescript',
+      project
+    );
+    await indexer.flushSymbolGraphs();
+    const edges = metadataStore.getEdgesFromFile('test-group', 'test-project', 'src/c.ts');
+    expect(edges.map((e) => e.symbol_name)).toEqual(['beta']);
+    const live = new Set(
+      [...mockQdrant.collections.values()].flatMap((points) =>
+        [...points.values()].map((p) => (p as { payload: { chunk_id: string } }).payload.chunk_id)
+      )
+    );
+    expect(live.has(edges[0]!.from_chunk_id)).toBe(true);
+
+    await indexer.deleteFileByPath('test-group', 'test-project', 'src/c.ts');
+    await indexer.flushSymbolGraphs();
+    expect(callers()).toEqual([]);
+  });
 });

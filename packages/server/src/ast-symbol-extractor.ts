@@ -6,23 +6,55 @@ import type { ChunkKind } from './types.js';
 export interface DefinedSymbol {
   name: string;
   kind: ChunkKind;
+  /**
+   * The class or module a method is declared in, with its namespaces:
+   * `Billing::Usage` for a method of `class Usage` inside `module Billing`.
+   */
+  owner?: string;
+}
+
+/** One use of a name, with where it is made from and what it is called on. */
+export interface UseSite {
+  name: string;
+  /**
+   * The function or method the use sits in, also when that method started in
+   * an earlier chunk. Empty for code in a class body or at the top of a file.
+   */
+  from: string;
+  /**
+   * The class it is called on, as written: `Usage` for `Usage.claim`,
+   * `Billing::Usage` for `Billing::Usage.claim`. A leading `::` marks a full
+   * path: `::Billing::Usage` as written, or the enclosing class for
+   * `self.claim` / `this.claim` (and a bare `claim` in Ruby).
+   */
+  on?: string;
+  /** For an `on` without `::`, the namespace the call is made in, to resolve it from. */
+  in?: string;
 }
 
 export interface SymbolExtractionResult {
   defines_symbols: string[];
   uses_symbols: string[];
   defined_symbols: DefinedSymbol[];
+  /** Absent where the language has no methods to attribute uses to (Terraform). */
+  use_sites?: UseSite[];
 }
 
-/** Map tree-sitter parent node type → ChunkKind */
 /**
  * Stored in each code point as `symbol_format`. Indexing compares it with the
  * stored value, like `embed_format`, so bumping it after a query change
  * rewrites unchanged files with their symbols extracted again (vectors come
  * from the embedding cache). Points without it were extracted as format 1.
+ *
+ *  2 — Ruby `def self.x` and `class A::B`, JSX component uses, namespace-only
+ *      Ruby modules define nothing.
+ *  3 — a name the chunk defines stays a use when called on another object;
+ *      uses record the method they are made from and the class they are
+ *      called on, and methods record their class.
  */
-export const SYMBOL_FORMAT = 2;
+export const SYMBOL_FORMAT = 3;
 
+/** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
   // TypeScript / JavaScript
   function_declaration: 'function',
@@ -449,6 +481,121 @@ function isTopLevelDeclaration(identifierNode: Node, scopeNodes: Set<string>): b
   return true;
 }
 
+/** The field naming a call's receiver, per grammar: `obj` in `obj.name`. */
+const RECEIVER_FIELDS = ['receiver', 'object', 'operand', 'value', 'argument', 'expression'];
+
+/** What a used name is called on: nothing (`charge`), the current object, or something else. */
+type Receiver = { kind: 'none' } | { kind: 'self' } | { kind: 'other'; text: string };
+
+function receiverOf(nameNode: Node): Receiver {
+  const parent = nameNode.parent;
+  if (!parent) return { kind: 'none' };
+  for (const field of RECEIVER_FIELDS) {
+    const receiver = parent.childForFieldName(field);
+    if (!receiver || receiver.id === nameNode.id) continue;
+    const self =
+      receiver.type === 'self' ||
+      receiver.type === 'this' ||
+      (receiver.type === 'identifier' && receiver.text === 'self');
+    return self ? { kind: 'self' } : { kind: 'other', text: receiver.text };
+  }
+  return { kind: 'none' };
+}
+
+/** `Usage`, `Billing::Usage`, `::Billing::Usage`, `Billing.Usage`: a receiver that names a class. */
+const CONSTANT_PATH = /^(?:::)?[A-Z][A-Za-z0-9_]*(?:(?:::|\.)[A-Z][A-Za-z0-9_]*)*$/;
+
+/** `Billing.Usage` and `Billing::Usage` alike, as `Billing::Usage`. */
+function constantPath(text: string): string {
+  return text.replace(/\./g, '::');
+}
+
+/** Node types whose name is the class a method inside them belongs to. */
+const CLASS_LIKE_NODES = new Set([
+  'class',
+  'module',
+  'class_declaration',
+  'abstract_class_declaration',
+  'class_definition',
+  'interface_declaration',
+  'struct_item',
+  'impl_item',
+  'trait_item',
+  'class_specifier',
+  'struct_specifier',
+  'struct_declaration',
+]);
+
+/**
+ * The full path of the classes and modules enclosing a node, outermost first:
+ * `Billing::Usage` inside `module Billing; class Usage`, and for `class
+ * Billing::Usage` too. A name written with a leading `::` starts from the top.
+ */
+function enclosingClass(node: Node): string | undefined {
+  const names: string[] = [];
+  for (let current = node.parent; current; current = current.parent) {
+    if (!CLASS_LIKE_NODES.has(current.type)) continue;
+    const name = current.childForFieldName('name') ?? current.childForFieldName('type');
+    if (!name) continue;
+    names.push(constantPath(name.text));
+    if (name.text.startsWith('::')) break;
+  }
+  if (names.length === 0) return undefined;
+  return names.reverse().join('::').replace(/^::/, '');
+}
+
+/** Kinds whose body holds methods rather than being one. */
+const CONTAINER_KINDS = new Set<ChunkKind>(['class', 'module', 'interface', 'enum']);
+
+/** The declaration node a definition capture names, as `resolveKind` finds it. */
+function declarationOf(captureNode: Node): Node | null {
+  let current: Node | null = captureNode.parent;
+  for (let depth = 0; current && depth < 3; depth++) {
+    if (NODE_TYPE_TO_KIND[current.type]) return current;
+    current = current.parent;
+  }
+  return null;
+}
+
+/**
+ * The function or method a use sits in: the nearest enclosing declaration
+ * among `callers` (declaration node id → name). Empty when the nearest one is
+ * a class or module body, or there is none.
+ */
+function callerOf(node: Node, callers: Map<number, string | null>): string {
+  for (let current = node.parent; current; current = current.parent) {
+    const name = callers.get(current.id);
+    if (name !== undefined) return name ?? '';
+  }
+  return '';
+}
+
+/**
+ * Where a use points, as far as the code says: the class for `Usage.claim`
+ * (with the namespace the call is in, to resolve a relative name), the
+ * enclosing class for `self.claim` and `this.claim`, and in Ruby for a bare
+ * `claim` too (a bare call there is a call on self). Lowercase names only for
+ * the implicit cases, so a constant like `Invoice` is not tied to the class
+ * it is mentioned in.
+ */
+function calledOn(
+  node: Node,
+  receiver: Receiver,
+  lang: string
+): Pick<UseSite, 'on' | 'in'> | undefined {
+  if (receiver.kind === 'other') {
+    if (!CONSTANT_PATH.test(receiver.text)) return undefined;
+    const path = constantPath(receiver.text);
+    if (path.startsWith('::')) return { on: path };
+    const scope = enclosingClass(node);
+    return scope ? { on: path, in: scope } : { on: path };
+  }
+  if (receiver.kind === 'none' && lang !== 'ruby') return undefined;
+  if (!/^[a-z_]/.test(node.text)) return undefined;
+  const own = enclosingClass(node);
+  return own ? { on: `::${own}` } : undefined;
+}
+
 /**
  * A Ruby `module` that only wraps classes and modules (`module Billing; class
  * Invoice; ...`). Every file under a namespace reopens it, so counting each
@@ -514,6 +661,18 @@ export function extractSymbolsForChunks(
     const defCaptures = defQuery ? defQuery.captures(tree.rootNode) : [];
     const useCaptures = useQuery ? useQuery.captures(tree.rootNode) : [];
 
+    // Declarations a use can be made from, across the whole file: a method
+    // split over several chunks still owns the uses in its later chunks.
+    // Classes and modules map to null — a use in their body comes from no method.
+    const callers = new Map<number, string | null>();
+    for (const capture of defCaptures) {
+      const decl = declarationOf(capture.node);
+      if (!decl || callers.has(decl.id)) continue;
+      if (!isTopLevelDeclaration(capture.node, scopeNodes)) continue;
+      const kind = NODE_TYPE_TO_KIND[decl.type];
+      callers.set(decl.id, kind && CONTAINER_KINDS.has(kind) ? null : capture.node.text);
+    }
+
     // Two-pointer approach: captures and chunks are both sorted by line number,
     // so we advance pointers instead of scanning all captures for every chunk.
     const results: SymbolExtractionResult[] = [];
@@ -521,8 +680,10 @@ export function extractSymbolsForChunks(
     let useIdx = 0;
 
     for (const chunk of chunks) {
-      const defines = new Map<string, ChunkKind>();
+      const defines = new Map<string, DefinedSymbol>();
       const uses = new Set<string>();
+      const sites = new Map<string, UseSite>();
+      const otherSites = new Set<string>();
 
       // Advance defIdx past captures before this chunk
       while (
@@ -544,7 +705,9 @@ export function extractSymbolsForChunks(
         if (isNoise(text) || defines.has(text)) continue;
         if (!isTopLevelDeclaration(captureNode, scopeNodes)) continue;
         if (lang === 'ruby' && isRubyNamespaceModule(captureNode)) continue;
-        defines.set(text, resolveKind(captureNode));
+        const kind = resolveKind(captureNode);
+        const owner = CONTAINER_KINDS.has(kind) ? undefined : enclosingClass(captureNode);
+        defines.set(text, owner ? { name: text, kind, owner } : { name: text, kind });
       }
 
       // Advance useIdx past captures before this chunk
@@ -555,32 +718,44 @@ export function extractSymbolsForChunks(
         useIdx++;
       }
       // Collect use captures within this chunk
+      const calledOnOther = new Set<string>();
       for (let u = useIdx; u < useCaptures.length; u++) {
-        const row = useCaptures[u]!.node.startPosition.row;
-        if (row > chunk.endLine) break;
-        const text = useCaptures[u]!.node.text;
+        const node = useCaptures[u]!.node;
+        if (node.startPosition.row > chunk.endLine) break;
+        const text = node.text;
         if (!isNoise(text)) {
           uses.add(text);
+          const receiver = receiverOf(node);
+          if (receiver.kind === 'other') calledOnOther.add(text);
+          const site: UseSite = {
+            name: text,
+            from: callerOf(node, callers),
+            ...calledOn(node, receiver, lang),
+          };
+          const key = `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}`;
+          if (!sites.has(key)) sites.set(key, site);
+          if (receiver.kind === 'other') otherSites.add(key);
         }
       }
 
-      // Remove self-references: if a symbol is both defined and used in the same chunk,
-      // remove it from uses (it's likely a recursive call or type annotation on its own definition)
+      // Remove self-references: a name both defined and used in the chunk is
+      // usually a recursive call or a type annotation on its own definition.
+      // Not when it is called on another object: `def self.claim` calling
+      // `Ledger.claim(...)` delegates to a different class's method.
       for (const sym of defines.keys()) {
-        uses.delete(sym);
+        if (!calledOnOther.has(sym)) uses.delete(sym);
       }
+      const use_sites = [...sites.entries()]
+        .filter(([key, site]) => !defines.has(site.name) || otherSites.has(key))
+        .map(([, site]) => site);
 
-      const defined_symbols: DefinedSymbol[] = Array.from(defines.entries()).map(
-        ([name, kind]) => ({
-          name,
-          kind,
-        })
-      );
+      const defined_symbols = Array.from(defines.values());
 
       results.push({
         defines_symbols: defined_symbols.map((d) => d.name),
         uses_symbols: Array.from(uses),
         defined_symbols,
+        use_sites,
       });
     }
 

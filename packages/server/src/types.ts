@@ -149,8 +149,9 @@ export type RelationType = 'calls' | 'called_by' | 'references' | 'referenced_by
  * Confidence label for symbol-graph edges, mirroring the EXTRACTED/INFERRED/
  * AMBIGUOUS scheme used by graph-style code intelligence tools.
  *
- * - `EXTRACTED`: the edge is structurally certain (e.g. caller and definition
- *   are in the same file, resolved by AST without name lookup).
+ * - `EXTRACTED`: the edge is structurally certain: caller and definition are
+ *   in the same file, or the call names the class that defines the method
+ *   (`Usage.claim`, or `self.claim` / a bare Ruby call inside that class).
  * - `INFERRED`: cross-file edge resolved by name match where exactly one
  *   chunk defines the symbol — likely correct but not proven.
  * - `AMBIGUOUS`: name resolved to multiple defining chunks; the caller could
@@ -177,6 +178,12 @@ export interface SymbolEdge {
    * absent, matching the legacy classification.
    */
   confidence?: EdgeConfidence;
+  /**
+   * The functions or methods in the caller chunk that make the call. Empty, or
+   * absent on rows written before the column existed, when the call is in a
+   * class body or at the top of a file — then the whole chunk is the caller.
+   */
+  from_symbols?: string[];
 }
 
 // ── Search types ───────────────────────────────────────────────────────────

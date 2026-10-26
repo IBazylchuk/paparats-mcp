@@ -678,6 +678,174 @@ end`;
     expect(byName.has('Billing')).toBe(false);
   });
 
+  it('keeps a name the chunk defines when it is called on another object (Ruby)', async () => {
+    const code = `class Quota
+  def self.claim(user)
+    Ledger.claim(user)
+  end
+end
+class Retry
+  def self.run(n)
+    self.run(n - 1) if n > 0
+    run(0)
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [
+        { startLine: 0, endLine: 4 },
+        { startLine: 5, endLine: 10 },
+      ],
+      'ruby'
+    );
+    tree.delete();
+
+    expect(results[0]!.defines_symbols).toContain('claim');
+    expect(results[0]!.uses_symbols).toEqual(expect.arrayContaining(['Ledger', 'claim']));
+    // Recursion through self or a bare call is not a use.
+    expect(results[1]!.uses_symbols).not.toContain('run');
+  });
+
+  it('keeps a name the chunk defines when it is called on another object (TypeScript)', async () => {
+    const code = `class Cache {
+  get(k: string) {
+    if (!this.has(k)) return this.get('x');
+    return this.store.get(k);
+  }
+}`;
+    const { tree, language } = parse('typescript', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 5 }],
+      'typescript'
+    );
+    tree.delete();
+
+    expect(results[0]!.defines_symbols).toContain('get');
+    expect(results[0]!.uses_symbols).toContain('get');
+  });
+
+  it('drops a recursive this-call on a name the chunk defines (TypeScript)', async () => {
+    const code = `class Walker {
+  walk(n: number): void {
+    if (n > 0) this.walk(n - 1);
+  }
+}`;
+    const { tree, language } = parse('typescript', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 4 }],
+      'typescript'
+    );
+    tree.delete();
+
+    expect(results[0]!.uses_symbols).not.toContain('walk');
+  });
+
+  it('records the method each use is made from, also in a later chunk of that method (Ruby)', async () => {
+    const code = `class Quota
+  has_many :limits
+  def first
+    Ledger.post
+  end
+  def second
+    Ledger.post
+    Audit.record
+    Notifier.ping
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [
+        { startLine: 0, endLine: 6 },
+        { startLine: 7, endLine: 10 },
+      ],
+      'ruby'
+    );
+    tree.delete();
+
+    const sites = (i: number, name: string) =>
+      results[i]!.use_sites!.filter((u) => u.name === name).map((u) => u.from);
+    expect(sites(0, 'post').sort()).toEqual(['first', 'second']);
+    expect(sites(0, 'has_many')).toEqual(['']);
+    // `second` started in the first chunk; its tail still comes from it.
+    expect(sites(1, 'record')).toEqual(['second']);
+    expect(sites(1, 'ping')).toEqual(['second']);
+  });
+
+  it('records the class a use is called on, and the class of each method (Ruby)', async () => {
+    const code = `module Billing
+  class Usage
+    def self.claim(user)
+      Billing::Ledger.claim(user)
+      ::Wallet.claim(user)
+      self.remaining(user)
+      remaining(user)
+      user.claim
+    end
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 10 }],
+      'ruby'
+    );
+    tree.delete();
+
+    const r = results[0]!;
+    expect(r.defined_symbols.find((d) => d.name === 'claim')?.owner).toBe('Billing::Usage');
+    expect(r.defined_symbols.find((d) => d.name === 'Usage')?.owner).toBeUndefined();
+    const on = (name: string) =>
+      r.use_sites!.filter((u) => u.name === name).map((u) => [u.on ?? null, u.in ?? null]);
+    // A relative name keeps the namespace it is resolved from; `::` and self are full paths.
+    // `user.claim`: called on something that is not a class, so no class.
+    expect(on('claim')).toEqual([
+      ['Billing::Ledger', 'Billing::Usage'],
+      ['::Wallet', null],
+      [null, null],
+    ]);
+    expect(on('remaining')).toEqual([['::Billing::Usage', null]]);
+    // A constant is not tied to the class it is mentioned in.
+    expect(on('Wallet')).toEqual([[null, null]]);
+  });
+
+  it('records the class for this-calls and Class.method calls, not for bare calls (TypeScript)', async () => {
+    const code = `export class Queue {
+  flush(): void {
+    this.drain();
+    Store.save();
+    drain();
+  }
+}`;
+    const { tree, language } = parse('typescript', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 6 }],
+      'typescript'
+    );
+    tree.delete();
+
+    const r = results[0]!;
+    expect(r.defined_symbols.find((d) => d.name === 'flush')?.owner).toBe('Queue');
+    const sites = r.use_sites!.filter((u) => u.name === 'drain' || u.name === 'save');
+    expect(sites).toEqual(
+      expect.arrayContaining([
+        { name: 'drain', from: 'flush', on: '::Queue' },
+        { name: 'drain', from: 'flush' },
+        { name: 'save', from: 'flush', on: 'Store', in: 'Queue' },
+      ])
+    );
+  });
+
   it('does not count a Ruby module that only wraps classes as a definition', async () => {
     const code = `module Billing
   module Reports
