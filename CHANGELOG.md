@@ -4,6 +4,14 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.14.1] - 2026-10-26
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 9662e87: Fix cloning and change detection for private GitHub repositories in the indexer image since 2.12. The indexer put `GITHUB_TOKEN` into the clone URL. The libcurl in newer images sends URL credentials on the first request of a fetch but not on the next one, so git got a 401 and asked for a username. The token now goes to git as an `Authorization` header (`http.https://github.com/.extraHeader`, set through `GIT_CONFIG_*`), sent only to github.com. Clone URLs carry no credentials, and an existing clone whose remote URL still holds the token is rewritten on its next update.
+
 ## [2.14.0] - 2026-10-26
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
