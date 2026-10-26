@@ -1,6 +1,6 @@
 {
   "name": "paparats",
-  "version": "2.14.1",
+  "version": "2.15.0",
   "description": "Self-hosted semantic code search across all your repos: search_code, get_chunk, find_usages over a local Qdrant index.",
   "contextFileName": "GEMINI.md",
   "mcpServers": {

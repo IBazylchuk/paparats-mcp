@@ -4,6 +4,41 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.15.0] - 2026-10-26
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- c0eef88: The console's map page (`/ui/map`) is now a code map you walk folder by folder, replacing the single cloud of unlabelled module circles.
+
+  - **Levels.** A group opens at its repositories and a repository at its top folders. Click a folder to go into it; a folder holding only one folder opens that one. Each level shows at most 24 folders and files, the most called first, and the rest are listed from one "more" circle.
+  - **What it shows.** Every circle is labelled and sized by its files. Arrows point from caller to called. Dashed circles around the edge are the folders elsewhere that this one calls or is called from.
+  - **Files.** Click a file to see what it calls and what calls it, with links to each.
+  - **Modules.** The side panel lists the modules with files in the folder. A module opens as its own view: its files, and the modules around it.
+  - **Links and navigation.** Every view has its own URL, so back, forward, reload and "open in a new tab" work, and breadcrumbs plus an "up" link lead back. Zoom with the buttons, the wheel or `+`/`-`. A search box finds files anywhere in the group. Group names in the console's corpus table link to their map.
+  - **New endpoints.** `GET /api/module-map/tree`, `/module`, `/file` and `/search`, behind the same optional basic auth.
+
+  The module map itself is now built per project. Before, in a group of several repositories, the thresholds for splitting a module and for shared files came from the whole group, so a small repository next to a large one stayed one undivided module. How specific a name is is now also judged within its own repository. This changes `module_map` output for groups with more than one project.
+
+### Patch Changes
+
+- 180f771: Line numbers in tool output now count from 1, as editors and `grep -n` do. Chunks store lines from 0, and `search_code`, `get_chunk`, `find_usages`, `change_impact` and the support tools printed the stored values, so every `file:line` pointed one line above the code: a chunk shown as `:30-54` started on line 31. `paparats search` had the same offset. JSON from the HTTP API is unchanged.
+- 180f771: `change_impact` and `module_map` no longer trust names like `create` or `digest` in large codebases. A single lowercase word counted as common only when more than √(files) files used it, so in a 6,000-file Rails app `create` (33 files) and `digest` (18) stayed specific: every `Model.create` linked to a controller's `create` action, and `OpenSSL::HMAC.digest` to a model's `digest`. The bar is now a fixed 8 files. A real caller through such a name still shows when its file also uses something specific from the changed file, such as the class name. Ruby conversions (`to_s`, `to_h`) now count as common too: a model that defines `to_s` was listed as shared code "called from 1,337 files".
+
+  On a private Ruby codebase, `change_impact` of a webhook controller went from 40 dependents (all false, cut off at the limit) to 5, of a small queue class from 40 (cut off) to 34 with none through `create`, and of a model method lost 18 false callers through `digest`.
+
+- 180f771: The symbol graph behind `find_usages`, `change_impact` and `module_map` missed several common ways code is written:
+
+  - **Ruby class methods.** `def self.overdue` was not a definition, so `Invoice.overdue(...)` linked to nothing and `change_impact` with `symbol: "overdue"` answered that the chunk does not define it. Classes and modules named with a namespace (`class Billing::Invoice`) were not definitions either.
+  - **Ruby namespaces.** A module that only wraps classes (`module Billing; class Invoice`) counted as a definition of `Billing` in every file under it, so any `Billing::X` linked to all of them. Such a module now defines nothing.
+  - **React components.** `<PriceBadge />` and `<Ui.Button>` in `.tsx`/`.jsx` were not recorded as uses, so a component had no callers. Lowercase HTML tags are not counted.
+  - **JavaScript projects.** The JavaScript query named TypeScript-only node types, so it failed to compile and files parsed with the JavaScript grammar got no symbols at all.
+
+  On a private Ruby codebase (4,962 files), calls of the form `Class.method` to a `def self.method` now link to the defining file for 63% of call sites instead of 42%, and to the method itself for 40% instead of 0.4%. Most of the rest are short class names defined in many namespaces, which the graph deliberately does not link to every candidate.
+
+  Each code point now stores `symbol_format`, which indexing compares like `embed_format`, so unchanged files are rewritten once with their symbols extracted again (vectors come from the embedding cache). The indexer's reindex epoch is bumped, so the first run after the upgrade does a full pass and rebuilds the edges.
+
 ## [2.14.1] - 2026-10-26
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
