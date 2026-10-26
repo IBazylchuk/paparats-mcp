@@ -4,6 +4,20 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.15.2] - 2026-10-26
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- b1bb87b: The symbol graph is updated for what changed instead of being rebuilt for the whole project.
+
+  - Every file written or removed is recorded with the names its old and new chunks define. The graph then works out again only the edges of those files and every use of those names, reading just the chunks involved, and replaces them in one transaction. A project pass (the indexer container) and single-file updates (`updateFile`, `POST /api/file-changed`, `POST /api/file-deleted`, CLI batches) both go this way. The changes are kept in the metadata database, so an update that did not happen (a crash, a failed write) is applied by the next one.
+  - The whole graph is still built when a project has none, or when more than 300 files changed at once.
+  - The edges of a file or a project are deleted by id range. The LIKE pattern used before scanned the whole table, once per removed file.
+
+  On a private Ruby codebase (6,092 files, 347,052 edges), one changed file updated the graph in 0.25 s (median over 102 files, slowest 1.9 s, the process never blocked for more than 0.07 s). The full rebuild it replaces took 20–25 s, stopped the process for about 4 s while deleting, and left tools with a partial graph for 11–15 s while writing. After the 102 updates the stored graph matched a full rebuild edge for edge.
+
 ## [2.15.1] - 2026-10-26
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
