@@ -1351,17 +1351,17 @@ describe('McpHandler', () => {
       await withHandler({ metadataStore, indexer }, async (port) => {
         const { text, isError } = await callTool(port, 'change_impact', { chunk_id: SEED });
         expect(isError).toBe(false);
-        expect(text).toContain('## Change impact of [p1] src/auth.ts:10-20 `authenticate`');
+        expect(text).toContain('## Change impact of [p1] src/auth.ts:11-21 `authenticate`');
         expect(text).toContain(
           '4 chunks in 4 files depend on it: 3 directly, 1 through other code. 1 of them are tests.'
         );
         expect(text).toContain('### Uses it directly (2)');
-        expect(text).toContain('**[p1] src/login.ts:5** — uses `authenticate`');
-        expect(text).toContain('src/legacy.ts:0** — uses `authenticate` [maybe]');
+        expect(text).toContain('**[p1] src/login.ts:6** — uses `authenticate`');
+        expect(text).toContain('src/legacy.ts:1** — uses `authenticate` [maybe]');
         expect(text).toContain('### 2 steps away (1)');
-        expect(text).toContain('src/routes.ts:0** — uses `handleLogin`');
+        expect(text).toContain('src/routes.ts:1** — uses `handleLogin`');
         expect(text).toContain('### Tests (1)');
-        expect(text).toContain('tests/auth.test.ts:0** — uses `authenticate`, 1 step away');
+        expect(text).toContain('tests/auth.test.ts:1** — uses `authenticate`, 1 step away');
         // Nothing meaningful depends on a test, so its callers are not followed.
         expect(text).not.toContain('tests/helpers.ts');
         // The sibling chunk of the same file is not part of a chunk-level change.
@@ -1445,7 +1445,7 @@ describe('McpHandler', () => {
       });
       await withHandler({ metadataStore, indexer }, async (port) => {
         const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
-        expect(text).toContain('src/worker.ts:0** — uses `add` [maybe]');
+        expect(text).toContain('src/worker.ts:1** — uses `add` [maybe]');
         expect(text).not.toContain('Linked only through a common name');
       });
     });

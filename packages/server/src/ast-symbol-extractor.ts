@@ -15,6 +15,14 @@ export interface SymbolExtractionResult {
 }
 
 /** Map tree-sitter parent node type → ChunkKind */
+/**
+ * Stored in each code point as `symbol_format`. Indexing compares it with the
+ * stored value, like `embed_format`, so bumping it after a query change
+ * rewrites unchanged files with their symbols extracted again (vectors come
+ * from the embedding cache). Points without it were extracted as format 1.
+ */
+export const SYMBOL_FORMAT = 2;
+
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
   // TypeScript / JavaScript
   function_declaration: 'function',
@@ -49,6 +57,7 @@ const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
   class: 'class',
   module: 'module',
   method: 'method',
+  singleton_method: 'method',
   // C/C++
   // function_definition: already mapped (Python takes precedence, same value 'function')
   struct_specifier: 'class',
@@ -441,6 +450,23 @@ function isTopLevelDeclaration(identifierNode: Node, scopeNodes: Set<string>): b
 }
 
 /**
+ * A Ruby `module` that only wraps classes and modules (`module Billing; class
+ * Invoice; ...`). Every file under a namespace reopens it, so counting each
+ * one as a definition of `Billing` linked every `Billing::X` in the codebase
+ * to all of those files.
+ */
+function isRubyNamespaceModule(nameNode: Node): boolean {
+  const owner =
+    nameNode.parent?.type === 'scope_resolution' ? nameNode.parent.parent : nameNode.parent;
+  if (owner?.type !== 'module') return false;
+  const body = owner.childForFieldName('body');
+  if (!body) return false;
+  return body.namedChildren.every(
+    (c) => c !== null && (c.type === 'class' || c.type === 'module' || c.type === 'comment')
+  );
+}
+
+/**
  * Extract defines_symbols, uses_symbols, and defined_symbols (with kind) for each chunk
  * from a parsed AST tree.
  *
@@ -517,6 +543,7 @@ export function extractSymbolsForChunks(
         const text = captureNode.text;
         if (isNoise(text) || defines.has(text)) continue;
         if (!isTopLevelDeclaration(captureNode, scopeNodes)) continue;
+        if (lang === 'ruby' && isRubyNamespaceModule(captureNode)) continue;
         defines.set(text, resolveKind(captureNode));
       }
 

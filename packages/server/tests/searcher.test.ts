@@ -1032,7 +1032,7 @@ describe('Searcher', () => {
       },
     });
 
-    expect(formatted).toContain('[p1] src/foo.ts:10');
+    expect(formatted).toContain('[p1] src/foo.ts:11');
     expect(formatted).toContain('95.0%');
     expect(formatted).toContain('```typescript');
     expect(formatted).toContain('const x = 1;');

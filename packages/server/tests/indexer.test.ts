@@ -8,6 +8,7 @@ import { toDocsCollectionName } from '../src/docs/collection.js';
 import { toTermsCollectionName } from '../src/terminology/collection.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
 import { EMBED_TEXT_FORMAT } from '../src/embed-text.js';
+import { SYMBOL_FORMAT } from '../src/ast-symbol-extractor.js';
 import type { EmbeddingProvider, ProjectConfig } from '../src/types.js';
 
 function createTempDir(): string {
@@ -740,6 +741,20 @@ describe('Indexer', () => {
       expect(await indexer.indexFile('test-group', project, tsPath)).toBe(n);
       for (const p of stored('src/old.ts'))
         expect(p.payload['embed_format']).toBe(EMBED_TEXT_FORMAT);
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBe(0);
+    });
+
+    it('rewrites an unchanged file stored under an older symbol format', async () => {
+      const tsPath = writeSrc('sym.ts', 'export const x = 1;\n');
+      const project = createProjectConfig(projectDir);
+      const indexer = makeIndexer();
+      const n = await indexer.indexFile('test-group', project, tsPath);
+      for (const p of stored('src/sym.ts')) expect(p.payload['symbol_format']).toBe(SYMBOL_FORMAT);
+      // Points written before the format existed carry no symbol_format.
+      for (const p of stored('src/sym.ts')) delete p.payload['symbol_format'];
+
+      expect(await indexer.indexFile('test-group', project, tsPath)).toBe(n);
+      for (const p of stored('src/sym.ts')) expect(p.payload['symbol_format']).toBe(SYMBOL_FORMAT);
       expect(await indexer.indexFile('test-group', project, tsPath)).toBe(0);
     });
 

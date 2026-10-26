@@ -10,6 +10,8 @@ const languages = new Map<string, Language>();
 
 const GRAMMAR_MAP: Record<string, string> = {
   typescript: 'typescript',
+  tsx: 'tsx',
+  javascript: 'javascript',
   python: 'python',
   go: 'go',
   rust: 'rust',
@@ -655,6 +657,90 @@ end`;
     expect(byName.get('MyClass')).toBe('class');
     expect(byName.get('method')).toBe('method');
     expect(byName.get('MyModule')).toBe('module');
+  });
+
+  it('defines Ruby class methods and classes named with a namespace', async () => {
+    const code = `class Billing::Invoice < Base
+  def self.overdue(days)
+  end
+  class << self
+    def open; end
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 6 }], 'ruby');
+    tree.delete();
+
+    const byName = new Map(results[0]!.defined_symbols.map((s) => [s.name, s.kind]));
+    expect(byName.get('Invoice')).toBe('class');
+    expect(byName.get('overdue')).toBe('method');
+    expect(byName.get('open')).toBe('method');
+    expect(byName.has('Billing')).toBe(false);
+  });
+
+  it('does not count a Ruby module that only wraps classes as a definition', async () => {
+    const code = `module Billing
+  module Reports
+    class Monthly
+      def self.build; end
+    end
+  end
+end
+module Pricing
+  def self.round(x); end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 9 }], 'ruby');
+    tree.delete();
+
+    const defs = results[0]!.defines_symbols;
+    expect(defs).toEqual(expect.arrayContaining(['Monthly', 'build', 'Pricing', 'round']));
+    expect(defs).not.toContain('Billing');
+    expect(defs).not.toContain('Reports');
+  });
+
+  it('records JSX components as uses in tsx and javascript, not HTML tags', async () => {
+    const code = `export const Page = () => (
+  <div>
+    <PriceBadge id={1} />
+    <Ui.Button>go</Ui.Button>
+  </div>
+);`;
+    for (const lang of ['tsx', 'javascript']) {
+      const { tree, language } = parse(lang, code);
+      const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 5 }], lang);
+      tree.delete();
+
+      const uses = results[0]!.uses_symbols;
+      expect(uses).toEqual(expect.arrayContaining(['PriceBadge', 'Button']));
+      expect(uses).not.toContain('div');
+    }
+  });
+
+  it('extracts JavaScript definitions (its grammar has no type nodes)', async () => {
+    const code = 'class Cart {\n  add(x) { save(x); }\n}\nfunction save(x) {}';
+    const { tree, language } = parse('javascript', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 3 }],
+      'javascript'
+    );
+    tree.delete();
+    expect(results[0]!.defines_symbols).toEqual(expect.arrayContaining(['Cart', 'add', 'save']));
+  });
+
+  it('keeps TypeScript usages working (the JSX patterns are not in its query)', async () => {
+    const code = 'const a = foo();';
+    const { tree, language } = parse('typescript', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 0 }],
+      'typescript'
+    );
+    tree.delete();
+    expect(results[0]!.uses_symbols).toContain('foo');
   });
 
   it('defined_symbols and defines_symbols stay in sync', async () => {

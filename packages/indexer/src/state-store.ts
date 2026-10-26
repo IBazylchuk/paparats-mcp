@@ -24,8 +24,11 @@ export interface StoredFingerprint {
  *      indexes lose their one-line and lone-`}` chunks.
  *  3 — code chunks are embedded with their path: re-embed every file
  *      (`embed_format` makes unchanged files re-embed too).
+ *  4 — symbol extraction finds Ruby `def self.x` and `class A::B`, JSX component
+ *      uses, and skips namespace-only Ruby modules: extract every file's symbols
+ *      again (`symbol_format` makes unchanged files rewrite) and rebuild edges.
  */
-const REINDEX_EPOCH = 3;
+const REINDEX_EPOCH = 4;
 
 /**
  * Persistent store of per-repo fingerprints used by the change-detection

@@ -162,7 +162,7 @@ export async function runSearch(
 
     for (const r of data.results) {
       const score = (r.score * 100).toFixed(1);
-      const header = `${chalk.cyan(`[${r.project}]`)} ${chalk.bold(r.file)}:${chalk.yellow(String(r.startLine))} ${chalk.dim(`(${score}%)`)}`;
+      const header = `${chalk.cyan(`[${r.project}]`)} ${chalk.bold(r.file)}:${chalk.yellow(String(r.startLine + 1))} ${chalk.dim(`(${score}%)`)}`;
       console.log(header);
       console.log(chalk.dim('─'.repeat(60)));
 

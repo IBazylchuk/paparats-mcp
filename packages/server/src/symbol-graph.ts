@@ -17,21 +17,26 @@ export const MAX_DEFINITION_FANOUT = 50;
  * Edges are matched by name, so `cache.get(k)` links to whichever class defines
  * `get` — and when that class is the only definition the edge even looks
  * certain. The names that collide like this are single lowercase words (`get`,
- * `add`, `close`, `run`, `each`): methods every object has. A name is common
- * when it has that shape and more files use it than the square root of all
- * files that use any name, and at least {@link COMMON_NAME_MIN_FILES} — in a
- * 10 000-file group over 100 files, in a 150-file one over 12. Compound names
- * (`ProjectConfig`, `getChunkById`, `find_by_name`) rarely collide by chance,
- * so a widely used one is a real dependency and stays.
+ * `add`, `close`, `run`, `each`, `create`, `digest`): methods every object has,
+ * or that unrelated classes define alike. Ruby's conversions (`to_s`, `to_h`)
+ * count as one word. A name is common when it has that shape and more than
+ * {@link COMMON_NAME_MIN_FILES} files use it.
+ *
+ * The bar does not grow with the codebase. It used to be √(files), so in a
+ * 6 000-file Rails app `create` (33 files) and `digest` (18) stayed specific
+ * and linked every `Model.create` to a controller's `create` action. A real
+ * caller through such a name usually also uses something specific from the
+ * same file (the class name), which keeps it. Compound names (`ProjectConfig`,
+ * `getChunkById`, `find_by_name`) rarely collide by chance, so a widely used
+ * one is a real dependency and stays.
  */
 export const COMMON_NAME_MIN_FILES = 8;
 
-const SINGLE_LOWERCASE_WORD = /^[a-z][a-z0-9]*[?!=]?$/;
+const SINGLE_LOWERCASE_WORD = /^(?:to_)?[a-z][a-z0-9]*[?!=]?$/;
 
 export function isCommonName(name: string, usage: NameUsage): boolean {
   if (!SINGLE_LOWERCASE_WORD.test(name)) return false;
-  const f = usage.filesUsing.get(name) ?? 0;
-  return f > Math.max(COMMON_NAME_MIN_FILES, Math.sqrt(usage.callerFiles));
+  return (usage.filesUsing.get(name) ?? 0) > COMMON_NAME_MIN_FILES;
 }
 
 /** Diagnostics returned alongside the edges so the indexer can log what it cut. */
