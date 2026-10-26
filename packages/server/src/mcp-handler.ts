@@ -68,6 +68,7 @@ import {
   rankQuery,
 } from './ranking.js';
 import { collectDependents, MAX_IMPACT_DEPTH } from './change-impact.js';
+import { isCommonName } from './symbol-graph.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -2420,7 +2421,11 @@ export class McpHandler {
             }
 
             const hubs = store.getGroupDegreeSnapshot(parsed.group).hubChunkIds;
-            const { dependents, truncated, deeper } = collectDependents({
+            const names = store.getNameUsage(parsed.group);
+            // Per caller file: the files it reaches through a specific name.
+            const specificLinks = new Map<string, Set<string>>();
+            const chunkFileKey = (id: string) => id.split('//').slice(0, 3).join('//');
+            const { dependents, truncated, deeper, viaCommonNames } = collectDependents({
               seeds,
               edgesTo: (id) =>
                 store.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id)),
@@ -2429,7 +2434,44 @@ export class McpHandler {
               symbol,
               isHub: (id) => hubs.has(id),
               isLeaf: (id) => isTestPath(parseChunkId(id)?.file ?? ''),
+              isCommonName: (name) => isCommonName(name, names),
+              confirmsLink: (caller, target) => {
+                const callerFile = chunkFileKey(caller);
+                if (callerFile === chunkFileKey(target)) return true;
+                let linked = specificLinks.get(callerFile);
+                if (!linked) {
+                  const loc = parseChunkId(caller);
+                  linked = new Set(
+                    loc
+                      ? store
+                          .getEdgesFromFile(loc.group, loc.project, loc.file)
+                          .filter((e) => !isCommonName(e.symbol_name, names))
+                          .map((e) => chunkFileKey(e.to_chunk_id))
+                      : []
+                  );
+                  specificLinks.set(callerFile, linked);
+                }
+                return linked.has(chunkFileKey(target));
+              },
             });
+
+            // Linked only by a name like `add` or `get`: listed by file, not followed.
+            let commonSection = '';
+            if (viaCommonNames.length > 0) {
+              const count = viaCommonNames.reduce((n, c) => n + c.chunkIds.length, 0);
+              commonSection += `\n### Linked only through a common name (${count}) — probably not dependents\n\n`;
+              commonSection +=
+                'The graph links by name, and these names are used all over the code, so most of these are calls on other objects (`set.add(...)`, `map.get(...)`). They were not followed further. Confirm with grep before relying on one.\n\n';
+              for (const c of viaCommonNames) {
+                const files = [
+                  ...new Set(c.chunkIds.map((id) => parseChunkId(id)?.file ?? id)),
+                ].sort();
+                const shown = files.slice(0, 5).join(', ');
+                const more = files.length > 5 ? ` (+${files.length - 5} more)` : '';
+                const used = names.filesUsing.get(c.symbol) ?? 0;
+                commonSection += `- \`${c.symbol}\` (used in ${used} files) — ${c.chunkIds.length} chunks in ${files.length} files: ${shown}${more}\n`;
+              }
+            }
 
             const project = typeof payload['project'] === 'string' ? payload['project'] : 'unknown';
             const file = typeof payload['file'] === 'string' ? payload['file'] : parsed.file;
@@ -2451,8 +2493,9 @@ export class McpHandler {
               '_The graph links code by name. Calls made dynamically — reflection, string dispatch, routes, config — are not in it._\n';
 
             if (dependents.length === 0) {
-              text += `Nothing in the indexed code depends on it${symbol !== undefined ? ` through \`${symbol}\`` : ''}.\n\n`;
-              text += caveat;
+              const clearly = viaCommonNames.length > 0 ? 'clearly ' : '';
+              text += `Nothing in the indexed code ${clearly}depends on it${symbol !== undefined ? ` through \`${symbol}\`` : ''}.\n`;
+              text += commonSection + '\n' + caveat;
               return { content: [{ type: 'text' as const, text }] };
             }
 
@@ -2508,11 +2551,12 @@ export class McpHandler {
               text += `\n### Tests (${tests.length}) — run these after the change\n\n`;
               for (const r of tests) text += line(r, true);
             }
+            text += commonSection;
 
             const notes: string[] = [];
             if (rows.some((r) => !r.dep.certain)) {
               notes.push(
-                '`[maybe]` — reached only through a name defined in several places; check it really uses this definition.'
+                '`[maybe]` — linked only through a name defined in several places, or through a common name (its file also uses something specific from the changed file); check it really uses this code.'
               );
             }
             if (rows.some((r) => r.dep.hub)) {

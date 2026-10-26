@@ -1,4 +1,4 @@
-import type { EdgeConfidence, SymbolEdge } from './types.js';
+import type { EdgeConfidence, NameUsage, SymbolEdge } from './types.js';
 
 /**
  * A symbol defined in more than this many chunks is treated as structural noise
@@ -12,6 +12,27 @@ import type { EdgeConfidence, SymbolEdge } from './types.js';
  * we drop them entirely and report the count.
  */
 export const MAX_DEFINITION_FANOUT = 50;
+
+/**
+ * Edges are matched by name, so `cache.get(k)` links to whichever class defines
+ * `get` — and when that class is the only definition the edge even looks
+ * certain. The names that collide like this are single lowercase words (`get`,
+ * `add`, `close`, `run`, `each`): methods every object has. A name is common
+ * when it has that shape and more files use it than the square root of all
+ * files that use any name, and at least {@link COMMON_NAME_MIN_FILES} — in a
+ * 10 000-file group over 100 files, in a 150-file one over 12. Compound names
+ * (`ProjectConfig`, `getChunkById`, `find_by_name`) rarely collide by chance,
+ * so a widely used one is a real dependency and stays.
+ */
+export const COMMON_NAME_MIN_FILES = 8;
+
+const SINGLE_LOWERCASE_WORD = /^[a-z][a-z0-9]*[?!=]?$/;
+
+export function isCommonName(name: string, usage: NameUsage): boolean {
+  if (!SINGLE_LOWERCASE_WORD.test(name)) return false;
+  const f = usage.filesUsing.get(name) ?? 0;
+  return f > Math.max(COMMON_NAME_MIN_FILES, Math.sqrt(usage.callerFiles));
+}
 
 /** Diagnostics returned alongside the edges so the indexer can log what it cut. */
 export interface SymbolEdgeStats {

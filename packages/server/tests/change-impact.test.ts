@@ -104,6 +104,61 @@ describe('collectDependents', () => {
     expect(res.truncated).toBe(true);
   });
 
+  it('sets aside callers linked only through a common name, and does not follow them', () => {
+    const edgesTo = graph([
+      ['real', 'seed', 'enqueue'],
+      ['setUser', 'seed', 'add'],
+      ['setUser2', 'seed', 'add'],
+      ['both', 'seed', 'add'],
+      ['both', 'real', 'run'],
+      ['behindSetUser', 'setUser', 'build'],
+    ]);
+    const res = collectDependents({
+      ...base,
+      seeds: ['seed'],
+      edgesTo,
+      isCommonName: (s) => s === 'add',
+    });
+    expect(res.dependents.map((d) => [d.chunkId, d.hop])).toEqual([
+      ['real', 1],
+      ['both', 2],
+    ]);
+    // `both` is reached through a real link too, so it is a dependent, not a coincidence.
+    expect(res.viaCommonNames).toEqual([{ symbol: 'add', chunkIds: ['setUser', 'setUser2'] }]);
+    expect(res.dependents.some((d) => d.chunkId === 'behindSetUser')).toBe(false);
+  });
+
+  it('keeps a common-name caller the file link confirms, as uncertain', () => {
+    const edgesTo = graph([
+      ['queueUser', 'seed', 'add'],
+      ['setUser', 'seed', 'add'],
+    ]);
+    const res = collectDependents({
+      ...base,
+      seeds: ['seed'],
+      edgesTo,
+      isCommonName: (s) => s === 'add',
+      confirmsLink: (caller) => caller === 'queueUser',
+    });
+    expect(res.dependents.map((d) => [d.chunkId, d.certain])).toEqual([['queueUser', false]]);
+    expect(res.viaCommonNames).toEqual([{ symbol: 'add', chunkIds: ['setUser'] }]);
+  });
+
+  it('does not count common-name callers as deeper work', () => {
+    const edgesTo = graph([
+      ['a', 'seed', 'enqueue'],
+      ['x', 'a', 'get'],
+    ]);
+    const res = collectDependents({
+      ...base,
+      seeds: ['seed'],
+      edgesTo,
+      depth: 1,
+      isCommonName: (s) => s === 'get',
+    });
+    expect(res.deeper).toBe(false);
+  });
+
   it('reports callers left beyond depth', () => {
     const edgesTo = graph([
       ['a', 'seed', 'f'],

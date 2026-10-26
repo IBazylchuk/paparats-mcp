@@ -12,8 +12,8 @@ export interface Dependent {
   symbols: string[];
   /**
    * False when every path to the change goes through a name defined in several
-   * chunks (an AMBIGUOUS edge): the graph links by name, so such a caller may be
-   * using a different definition.
+   * chunks (an AMBIGUOUS edge) or a common name kept by `confirmsLink`: the
+   * graph links by name, so such a caller may be using a different definition.
    */
   certain: boolean;
   /** A high-degree chunk. Listed, but its own dependents are not followed. */
@@ -26,6 +26,12 @@ export interface DependentsResult {
   truncated: boolean;
   /** Chunks at the last hop have callers of their own that `depth` left unwalked. */
   deeper: boolean;
+  /**
+   * Chunks linked only through a common name (see `isCommonName`), per name,
+   * most chunks first. Most are calls on other objects that share the name, so
+   * they are neither listed as dependents nor followed.
+   */
+  viaCommonNames: Array<{ symbol: string; chunkIds: string[] }>;
 }
 
 export interface CollectDependentsOptions {
@@ -40,6 +46,15 @@ export interface CollectDependentsOptions {
   isHub: (chunkId: string) => boolean;
   /** Chunks whose dependents are not followed (tests: nothing meaningful calls them). */
   isLeaf?: (chunkId: string) => boolean;
+  /** Names too common to trust as a link; edges through them are set aside. */
+  isCommonName?: (symbol: string) => boolean;
+  /**
+   * Whether a caller linked to `target` through a common name is still likely
+   * real — e.g. its file also uses a specific name from the target's file, as
+   * `queue.add(...)` next to `new TriggerQueue()`. Such a caller is kept, as an
+   * uncertain dependent.
+   */
+  confirmsLink?: (callerChunkId: string, targetChunkId: string) => boolean;
 }
 
 /**
@@ -53,6 +68,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
   const seeds = new Set(opts.seeds);
   const found = new Map<string, Dependent>();
   const certainSoFar = new Map<string, boolean>(opts.seeds.map((id) => [id, true]));
+  const common = new Map<string, Set<string>>();
   let frontier = [...seeds];
   let truncated = false;
 
@@ -64,8 +80,15 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
         if (hop === 1 && opts.symbol !== undefined && edge.symbol_name !== opts.symbol) continue;
         const caller = edge.from_chunk_id;
         if (seeds.has(caller) || found.has(caller)) continue;
+        const commonName = opts.isCommonName?.(edge.symbol_name) ?? false;
+        if (commonName && !opts.confirmsLink?.(caller, target)) {
+          let set = common.get(edge.symbol_name);
+          if (!set) common.set(edge.symbol_name, (set = new Set()));
+          set.add(caller);
+          continue;
+        }
 
-        const certain = targetCertain && edge.confidence !== 'AMBIGUOUS';
+        const certain = targetCertain && !commonName && edge.confidence !== 'AMBIGUOUS';
         let dep = level.get(caller);
         if (!dep) {
           if (found.size + level.size >= opts.maxDependents) {
@@ -91,7 +114,19 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
   const deeper =
     !truncated &&
     frontier.some((id) =>
-      opts.edgesTo(id).some((e) => !seeds.has(e.from_chunk_id) && !found.has(e.from_chunk_id))
+      opts
+        .edgesTo(id)
+        .some(
+          (e) =>
+            !seeds.has(e.from_chunk_id) &&
+            !found.has(e.from_chunk_id) &&
+            !opts.isCommonName?.(e.symbol_name)
+        )
     );
-  return { dependents: [...found.values()], truncated, deeper };
+  // A chunk also reached through a real link is a dependent, not a coincidence.
+  const viaCommonNames = [...common.entries()]
+    .map(([symbol, ids]) => ({ symbol, chunkIds: [...ids].filter((id) => !found.has(id)) }))
+    .filter((c) => c.chunkIds.length > 0)
+    .sort((a, b) => b.chunkIds.length - a.chunkIds.length || a.symbol.localeCompare(b.symbol));
+  return { dependents: [...found.values()], truncated, deeper, viaCommonNames };
 }
