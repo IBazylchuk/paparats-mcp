@@ -87,6 +87,19 @@
     return td;
   }
 
+  /** A group's name, linked to its code map when it has code indexed. */
+  function groupCell(group, hasCode) {
+    const td = makeCell(hasCode ? '' : group, { className: 'cell-query', title: group });
+    if (hasCode) {
+      const a = document.createElement('a');
+      a.href = `./map?group=${encodeURIComponent(group)}`;
+      a.textContent = group;
+      a.title = `Code map of ${group}`;
+      td.append(a);
+    }
+    return td;
+  }
+
   function makeRow(...cells) {
     const tr = document.createElement('tr');
     for (const c of cells) tr.append(c);
@@ -434,7 +447,7 @@
       body,
       shown.map((g) =>
         makeRow(
-          makeCell(g, { className: 'cell-query', title: g }),
+          groupCell(g, c.code.groups[g] > 0),
           makeCell(dash(c.code.groups[g]), { className: 'col-num' }),
           makeCell(dash(c.docs.groups[g]), { className: 'col-num' }),
           makeCell(dash(c.terms.groups[g]), { className: 'col-num' }),

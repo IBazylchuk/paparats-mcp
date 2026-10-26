@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import express from 'express';
 import { buildModuleMapRouter, type ModuleMapResponse } from '../src/module-map-api.js';
+import type { FileView, FolderView, ModuleView } from '../src/map-explorer.js';
 import { ModuleMapService, type MapEdge } from '../src/module-map.js';
 import type { ProjectScopeGuard } from '../src/mcp-handler.js';
 
@@ -20,7 +21,7 @@ function edges(project: string): MapEdge[] {
   }
   out.push(edge(project, 'src/a/a1.ts', 'src/b/b1.ts', 'crossOne'));
   out.push(edge(project, 'src/a/a2.ts', 'src/b/b2.ts', 'crossTwo'));
-  out.push(edge(project, 'tests/a.test.ts', 'src/a/a1.ts', 'to_src/a/a1.ts'));
+  out.push(edge(project, 'tests/a.test.ts', 'src/a/a1.ts', 'aOneForTests'));
   return out;
 }
 
@@ -30,17 +31,18 @@ const unscoped: ProjectScopeGuard = {
   allowsChunk: () => true,
 };
 
-async function get(
+async function get<T = ModuleMapResponse>(
   options: Parameters<typeof buildModuleMapRouter>[0],
-  query = ''
-): Promise<{ status: number; body: ModuleMapResponse & { error?: string } }> {
+  query = '',
+  route = ''
+): Promise<{ status: number; body: T & { error?: string } }> {
   const app = express();
   app.use('/api/module-map', buildModuleMapRouter(options));
   const server = app.listen(0);
   const port = (server.address() as { port: number }).port;
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/module-map${query}`);
-    return { status: res.status, body: (await res.json()) as ModuleMapResponse };
+    const res = await fetch(`http://127.0.0.1:${port}/api/module-map${route}${query}`);
+    return { status: res.status, body: (await res.json()) as T & { error?: string } };
   } finally {
     server.close();
   }
@@ -79,11 +81,20 @@ describe('GET /api/module-map', () => {
     expect(b!.usedBy.map((l) => l.module)).toEqual([a!.id]);
   });
 
-  it('prefixes files with their project when the map spans several', async () => {
-    const { body } = await get(
-      options([...edges('billing'), ...edges('ledger')], unscoped, ['billing', 'ledger'])
+  it('keeps each module in its project, and filters by project without renumbering', async () => {
+    const opts = options([...edges('billing'), ...edges('ledger')], unscoped, [
+      'billing',
+      'ledger',
+    ]);
+    const all = await get(opts);
+    const ledger = all.body.map!.modules.filter((m) => m.project === 'ledger');
+    expect(ledger.map((m) => m.name).sort()).toEqual(['src/a', 'src/b']);
+    expect(ledger[0]!.files).toContain(
+      `src/${ledger[0]!.name.slice(4)}/${ledger[0]!.name.slice(4)}1.ts`
     );
-    expect(body.map!.modules.flatMap((m) => m.files)).toContain('[ledger] src/a/a1.ts');
+
+    const one = await get(opts, '?project=ledger');
+    expect(one.body.map!.modules.map((m) => m.id)).toEqual(ledger.map((m) => m.id));
   });
 
   it('maps one project when asked, and hides out-of-scope projects', async () => {
@@ -107,5 +118,67 @@ describe('GET /api/module-map', () => {
     const none = await get({ ...options([]), moduleMaps: null });
     expect(none.status).toBe(503);
     expect(none.body.error).toContain('Symbol graph is not available');
+  });
+});
+
+describe('GET /api/module-map/tree, /module, /file, /search', () => {
+  const two = () =>
+    options([...edges('billing'), ...edges('ledger')], unscoped, ['billing', 'ledger']);
+
+  it('starts a group of several projects at its projects', async () => {
+    const { body } = await get<FolderView>(two(), '?group=g1', '/tree');
+    expect(body.project).toBeNull();
+    expect(body.nodes.map((n) => [n.key, n.kind])).toEqual([
+      ['billing', 'project'],
+      ['ledger', 'project'],
+    ]);
+  });
+
+  it('opens a project at its root, skipping a folder that holds only one folder', async () => {
+    const { body } = await get<FolderView>(two(), '?group=g1&project=billing', '/tree');
+    expect(body.path).toBe('');
+    // `src` holds only `a` and `b`: it is shown, with the calls a → b summed up.
+    expect(body.nodes.map((n) => n.key).sort()).toEqual(['src', 'tests']);
+    const src = await get<FolderView>(two(), '?group=g1&project=billing&path=src', '/tree');
+    expect(src.body.nodes.map((n) => n.key).sort()).toEqual(['src/a', 'src/b']);
+    expect(src.body.links).toEqual([expect.objectContaining({ from: 'src/a', to: 'src/b' })]);
+    expect(src.body.outside.map((n) => n.key)).toEqual(['tests']);
+    expect(src.body.modules.map((m) => m.filesHere)).toEqual([3, 3]);
+  });
+
+  it('shows one module, one file, and finds files by path', async () => {
+    const meta = await get(two(), '?group=g1');
+    const a = meta.body.map!.modules.find((m) => m.project === 'billing' && m.name === 'src/a')!;
+    const mod = await get<ModuleView>(two(), `?group=g1&module=${a.id}`, '/module');
+    expect(mod.body.project).toBe('billing');
+    expect(mod.body.nodes.map((n) => n.key).sort()).toEqual([
+      'src/a/a1.ts',
+      'src/a/a2.ts',
+      'src/a/a3.ts',
+    ]);
+    expect(mod.body.outside.map((n) => n.kind)).toEqual(['module']);
+
+    const file = await get<FileView>(two(), '?group=g1&project=billing&file=src/a/a1.ts', '/file');
+    expect(file.body.module).toEqual({ id: a.id, name: 'src/a' });
+    expect(file.body.calls.map((c) => c.file)).toContain('src/b/b1.ts');
+    expect(file.body.calledBy.map((c) => c.file)).toContain('tests/a.test.ts');
+
+    const missing = await get(two(), '?group=g1&project=billing&file=nope.ts', '/file');
+    expect(missing.status).toBe(404);
+
+    const found = await get<{ files: Array<{ project: string; file: string }> }>(
+      two(),
+      '?group=g1&q=b2',
+      '/search'
+    );
+    expect(found.body.files).toEqual([
+      { project: 'billing', file: 'src/b/b2.ts' },
+      { project: 'ledger', file: 'src/b/b2.ts' },
+    ]);
+  });
+
+  it('rejects a missing group', async () => {
+    const { status } = await get(two(), '', '/tree');
+    expect(status).toBe(400);
   });
 });
