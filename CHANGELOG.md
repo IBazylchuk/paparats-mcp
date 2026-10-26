@@ -4,6 +4,36 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.14.0] - 2026-10-26
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- feb3efb: Add `paparats instructions [dir]`: writes a short block into the repository's `CLAUDE.md` and `AGENTS.md` (whichever exist, a new `AGENTS.md` otherwise) telling agents when to use `search_code` and when grep is the better tool, and pointing to `get_chunk`, `find_usages` and `change_impact`. The block names the project the server indexes the repository as (the `projects.yml` name, else the directory name, or `--project`). It sits between `<!-- paparats:begin -->` / `<!-- paparats:end -->` markers, so reruns replace only that part. `--print` shows it without writing, `--remove` takes it out, `--file` picks the files. `paparats add` of a local path now mentions the command.
+- 4c45dce: Add `module_map` to the coding and support endpoints: a map of a codebase's modules, built from the symbol graph. A module is a set of files that call each other much more than they call the rest. Each module shows:
+
+  - its folder name and size;
+  - its main files;
+  - which modules it uses and which use it;
+  - the tests attached to it.
+
+  Code called from most of the rest is listed apart as shared, migrations are left out, and oversized modules are split again. Links through names used from most files (`get`, `add`) count for little, so they do not glue unrelated files together. The answer ends with a Mermaid diagram of the modules and their dependencies (`diagram: false` turns it off).
+
+  The operator console gets a matching page, `/ui/map`:
+
+  - circles sized by file count, arrows to the modules each one uses;
+  - click a module for its files, tests and links;
+  - pick a group or project, or find which module a file sits in.
+
+  The page is served from `GET /api/module-map`, behind the same optional basic auth as the rest of the console. Both share one cache per group and project, rebuilt after edges change at most every five minutes.
+
+  The `onboard_to_project` workflow and both modes' instructions now start an unfamiliar codebase with the map. On this repository it finds 10 modules, with 70% of files sitting in their module's main folder.
+
+### Patch Changes
+
+- c6e504c: `change_impact` no longer reports calls such as `set.add(...)` or `map.get(...)` as dependents. The symbol graph links calls to definitions by name, so when one class defines `add`, every `.add(...)` in the codebase used to look like a certain call to it — and the walk then followed their callers too. A name is now treated as common when it is a single lowercase word used from more than √(files) files (at least 8). Callers linked only through such a name are listed apart by file, as probably unrelated, and not followed. The exception is a caller whose file also uses a specific name from the changed file (`new TriggerQueue()` next to `queue.add(...)`): it stays in the main list, marked `[maybe]`. On this repository, the `add` of a small queue class went from 40 reported dependents in 21 files (cut off at the limit) to 7 in 4 files: the class's real users and their callers.
+
 ## [2.13.0] - 2026-10-25
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
