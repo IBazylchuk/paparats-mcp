@@ -16,7 +16,7 @@ import { collectFileModifiedTimes, extractGitMetadata } from './git-metadata.js'
 import type { MetadataStore } from './metadata-db.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
-import { extractSymbolsForChunks } from './ast-symbol-extractor.js';
+import { SYMBOL_FORMAT, extractSymbolsForChunks } from './ast-symbol-extractor.js';
 import { resolveAstLanguage } from './ast-language.js';
 import type { SymbolExtractionResult } from './ast-symbol-extractor.js';
 import { buildSymbolEdges } from './symbol-graph.js';
@@ -417,6 +417,7 @@ export class Indexer {
                 'bounded_context',
                 'tags',
                 'embed_format',
+                'symbol_format',
               ],
             },
             with_vector: false,
@@ -434,7 +435,8 @@ export class Indexer {
               p['service'],
               p['bounded_context'],
               p['tags'],
-              p['embed_format']
+              p['embed_format'],
+              p['symbol_format']
             )
           );
         }
@@ -472,7 +474,8 @@ export class Indexer {
         project.metadata.service,
         project.metadata.bounded_context,
         tags,
-        EMBED_TEXT_FORMAT
+        EMBED_TEXT_FORMAT,
+        SYMBOL_FORMAT
       )
     );
     stored.sort();
@@ -876,6 +879,7 @@ export class Indexer {
         defines_symbols: symbolResults?.[i]?.defines_symbols ?? [],
         uses_symbols: symbolResults?.[i]?.uses_symbols ?? [],
         embed_format: EMBED_TEXT_FORMAT,
+        symbol_format: SYMBOL_FORMAT,
       },
     }));
   }
@@ -2055,9 +2059,9 @@ export class Indexer {
 }
 
 /**
- * Comparable identity of one stored chunk: content hash, line range, and the
- * project metadata copied into its payload. Tags are sorted so their order is not
- * mistaken for a change.
+ * Comparable identity of one stored chunk: content hash, line range, the
+ * project metadata copied into its payload, and the embed and symbol formats.
+ * Tags are sorted so their order is not mistaken for a change.
  */
 function chunkStateKey(
   hash: unknown,
@@ -2066,7 +2070,8 @@ function chunkStateKey(
   service: unknown,
   boundedContext: unknown,
   tags: unknown,
-  embedFormat: unknown
+  embedFormat: unknown,
+  symbolFormat: unknown
 ): string {
   const sortedTags = Array.isArray(tags) ? tags.map(String).sort() : [];
   return JSON.stringify([
@@ -2077,6 +2082,7 @@ function chunkStateKey(
     boundedContext ?? null,
     sortedTags,
     embedFormat ?? null,
+    symbolFormat ?? 1,
   ]);
 }
 

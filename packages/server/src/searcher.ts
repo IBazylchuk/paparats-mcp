@@ -697,7 +697,8 @@ export class Searcher {
         const score = (r.score * 100).toFixed(1);
         const symbolInfo = r.symbol_name ? ` — ${r.kind ?? 'unknown'}: ${r.symbol_name}` : '';
         const chunkRef = r.chunk_id ? `\n_chunk: ${r.chunk_id}_` : '';
-        return `**[${r.project}] ${r.file}:${r.startLine}** (${score}%${symbolInfo})${chunkRef}\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
+        // Stored 0-indexed, shown 1-indexed as editors and grep do.
+        return `**[${r.project}] ${r.file}:${r.startLine + 1}** (${score}%${symbolInfo})${chunkRef}\n\`\`\`${r.language}\n${r.content}\n\`\`\``;
       })
       .join('\n\n---\n\n');
   }

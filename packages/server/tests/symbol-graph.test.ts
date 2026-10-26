@@ -12,11 +12,17 @@ describe('isCommonName', () => {
     filesUsing: new Map(Object.entries(names)),
   });
 
-  it('flags a single lowercase word used from more than √(files) files', () => {
-    const u = usage(400, { add: 21, get: 20, close: 3 });
-    expect(isCommonName('add', u)).toBe(true);
-    expect(isCommonName('get', u)).toBe(false);
+  it('flags a single lowercase word used from more than a few files, however large the group', () => {
+    const u = usage(6000, { create: 33, digest: 18, close: 3 });
+    expect(isCommonName('create', u)).toBe(true);
+    expect(isCommonName('digest', u)).toBe(true);
     expect(isCommonName('close', u)).toBe(false);
+  });
+
+  it('counts Ruby conversions as one word', () => {
+    const u = usage(6000, { to_s: 900, to_h: 400 });
+    expect(isCommonName('to_s', u)).toBe(true);
+    expect(isCommonName('to_h', u)).toBe(true);
   });
 
   it('keeps compound names, however widely used', () => {
@@ -26,7 +32,7 @@ describe('isCommonName', () => {
     }
   });
 
-  it('needs a minimum number of files in a small group', () => {
+  it('needs more than the minimum number of files', () => {
     const u = usage(16, { run: COMMON_NAME_MIN_FILES, each: COMMON_NAME_MIN_FILES + 1 });
     expect(isCommonName('run', u)).toBe(false);
     expect(isCommonName('each', u)).toBe(true);

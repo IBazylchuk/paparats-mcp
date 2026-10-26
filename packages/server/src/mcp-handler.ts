@@ -71,6 +71,9 @@ import { collectDependents, MAX_IMPACT_DEPTH } from './change-impact.js';
 import { isCommonName } from './symbol-graph.js';
 import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map.js';
 
+/** Chunks store 0-indexed lines; output shows them 1-indexed, as editors and grep do. */
+const shownLine = (line: number): number => line + 1;
+
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
 
@@ -1666,7 +1669,7 @@ export class McpHandler {
                   : '';
                 const chunkRef = r.chunk_id ? `\n_chunk: ${r.chunk_id}_` : '';
                 const symbolsLine = formatSymbolsLine(r.defines_symbols, r.uses_symbols);
-                return `**[${r.project}] ${r.file}:${r.startLine}-${r.endLine}** (${score}%${symbolInfo})${symbolsLine}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
+                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${symbolsLine}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
               })
               .join('\n\n---\n\n');
 
@@ -1789,7 +1792,7 @@ export class McpHandler {
             let text = '';
 
             // Metadata header
-            text += `**[${project}] ${file}:${startLine}-${endLine}**\n`;
+            text += `**[${project}] ${file}:${shownLine(startLine)}-${shownLine(endLine)}**\n`;
             if (symbolName) text += `Symbol: \`${symbolName}\` (${kind ?? 'unknown'})\n`;
             const symbolsLine = formatSymbolsLine(definesSymbols, usesSymbols);
             if (symbolsLine) text += symbolsLine.slice(1) + '\n'; // slice(1) removes leading newline
@@ -1815,7 +1818,7 @@ export class McpHandler {
                     const c = chunk['content'] as string;
                     const isTarget = sl === startLine && el === endLine;
                     const marker = isTarget ? ' ← target' : '';
-                    text += `**Lines ${sl}-${el}${marker}**\n\`\`\`${sanitizeLang(language)}\n${c}\n\`\`\`\n\n`;
+                    text += `**Lines ${shownLine(sl)}-${shownLine(el)}${marker}**\n\`\`\`${sanitizeLang(language)}\n${c}\n\`\`\`\n\n`;
                   }
 
                   return { content: [{ type: 'text' as const, text }] };
@@ -1906,7 +1909,7 @@ export class McpHandler {
 
             // Header
             const symbolSuffix = symbolName ? ` — \`${symbolName}\` (${kind ?? 'unknown'})` : '';
-            text += `**[${project}] ${file}:${startLine}-${endLine}**${symbolSuffix}\n\n`;
+            text += `**[${project}] ${file}:${shownLine(startLine)}-${shownLine(endLine)}**${symbolSuffix}\n\n`;
 
             // Commits table
             const commits = this.metadataStore.getCommits(chunk_id, commit_limit);
@@ -2058,7 +2061,7 @@ export class McpHandler {
                   : '';
                 const chunkRef = r.chunk_id ? `\n_chunk: ${r.chunk_id}_` : '';
                 const symbolsLine = formatSymbolsLine(r.defines_symbols, r.uses_symbols);
-                return `**[${r.project}] ${r.file}:${r.startLine}-${r.endLine}** (${score}%${symbolInfo})${lastChanged}${symbolsLine}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
+                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${lastChanged}${symbolsLine}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
               })
               .join('\n\n---\n\n');
 
@@ -2300,7 +2303,7 @@ export class McpHandler {
                     const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : 0;
                     const sym = typeof ep['symbol_name'] === 'string' ? ep['symbol_name'] : null;
                     const symInfo = sym ? ` (${sym})` : '';
-                    text += `- **[${p}] ${f}:${sl}**${symInfo}${hub} — ${edge.relation_type} \`${conf}\`\n`;
+                    text += `- **[${p}] ${f}:${shownLine(sl)}**${symInfo}${hub} — ${edge.relation_type} \`${conf}\`\n`;
                     text += `  _chunk: ${edge.from_chunk_id}_\n`;
                   } else {
                     text += `- _chunk: ${edge.from_chunk_id}_${hub} — ${edge.relation_type} \`${conf}\`\n`;
@@ -2338,7 +2341,7 @@ export class McpHandler {
                     const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : 0;
                     const sym = typeof ep['symbol_name'] === 'string' ? ep['symbol_name'] : null;
                     const symInfo = sym ? ` (${sym})` : '';
-                    text += `- **[${p}] ${f}:${sl}**${symInfo}${hub} — ${edge.relation_type} \`${conf}\`\n`;
+                    text += `- **[${p}] ${f}:${shownLine(sl)}**${symInfo}${hub} — ${edge.relation_type} \`${conf}\`\n`;
                     text += `  _chunk: ${edge.to_chunk_id}_\n`;
                   } else {
                     text += `- _chunk: ${edge.to_chunk_id}_${hub} — ${edge.relation_type} \`${conf}\`\n`;
@@ -2491,7 +2494,7 @@ export class McpHandler {
               typeof payload['symbol_name'] === 'string' ? ` \`${payload['symbol_name']}\`` : '';
             const target = whole_file
               ? `[${project}] ${file} (whole file, ${seeds.length} chunks)`
-              : `[${project}] ${file}:${parsed.startLine}-${parsed.endLine}${ownSymbol}`;
+              : `[${project}] ${file}:${shownLine(parsed.startLine)}-${shownLine(parsed.endLine)}${ownSymbol}`;
             let text = `## Change impact of ${target}\n\n`;
 
             const defSymbols = Array.isArray(payload['defines_symbols'])
@@ -2549,7 +2552,7 @@ export class McpHandler {
               const f = typeof ep['file'] === 'string' ? ep['file'] : r.file;
               const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : r.startLine;
               const sym = typeof ep['symbol_name'] === 'string' ? ` \`${ep['symbol_name']}\`` : '';
-              return `- **[${p}] ${f}:${sl}**${sym} — ${uses}${hop}${marks}\n  _chunk: ${r.dep.chunkId}_\n`;
+              return `- **[${p}] ${f}:${shownLine(sl)}**${sym} — ${uses}${hop}${marks}\n  _chunk: ${r.dep.chunkId}_\n`;
             };
 
             for (let hop = 1; hop <= depth; hop++) {
@@ -2797,7 +2800,7 @@ export class McpHandler {
               const sym = r.symbol_name ? `\`${r.symbol_name}\` (${r.kind ?? 'unknown'})` : '—';
               const svc = r.service ?? '—';
               const cid = r.chunk_id ?? '—';
-              text += `| ${r.project}/${r.file} | ${r.startLine}-${r.endLine} | ${sym} | ${score}% | ${svc} | ${cid} |\n`;
+              text += `| ${r.project}/${r.file} | ${shownLine(r.startLine)}-${shownLine(r.endLine)} | ${sym} | ${score}% | ${svc} | ${cid} |\n`;
             }
 
             // ── Recent Changes + Related Modules (requires metadataStore) ──
@@ -2936,7 +2939,7 @@ export class McpHandler {
                     text += `**\`${symbol}\`**\n`;
                     for (const { chunkId, relation, loc } of entries) {
                       if (loc) {
-                        text += `- [${loc.project}] ${loc.file}:${loc.startLine} — ${relation} _chunk: ${chunkId}_\n`;
+                        text += `- [${loc.project}] ${loc.file}:${shownLine(loc.startLine)} — ${relation} _chunk: ${chunkId}_\n`;
                       } else {
                         text += `- _chunk: ${chunkId}_ — ${relation}\n`;
                       }
@@ -2967,7 +2970,7 @@ export class McpHandler {
                     text += `**\`${symbol}\`**\n`;
                     for (const { chunkId, relation, loc } of entries) {
                       if (loc) {
-                        text += `- [${loc.project}] ${loc.file}:${loc.startLine} — ${relation} _chunk: ${chunkId}_\n`;
+                        text += `- [${loc.project}] ${loc.file}:${shownLine(loc.startLine)} — ${relation} _chunk: ${chunkId}_\n`;
                       } else {
                         text += `- _chunk: ${chunkId}_ — ${relation}\n`;
                       }
@@ -3176,7 +3179,7 @@ export class McpHandler {
                     for (const cid of c.chunks) {
                       const loc = chunkLocMap.get(cid);
                       if (loc) {
-                        text += `  - ${loc.project}/${loc.file}:${loc.startLine} _chunk: ${cid}_\n`;
+                        text += `  - ${loc.project}/${loc.file}:${shownLine(loc.startLine)} _chunk: ${cid}_\n`;
                       } else {
                         text += `  - _chunk: ${cid}_\n`;
                       }
@@ -3197,7 +3200,7 @@ export class McpHandler {
                 ? (r.last_commit_at.split('T')[0] ?? r.last_commit_at)
                 : '—';
               const cid = r.chunk_id ?? '—';
-              text += `| ${r.project}/${r.file} | ${r.startLine}-${r.endLine} | ${score}% | ${lastChanged} | ${cid} |\n`;
+              text += `| ${r.project}/${r.file} | ${shownLine(r.startLine)}-${shownLine(r.endLine)} | ${score}% | ${lastChanged} | ${cid} |\n`;
             }
 
             return { content: [{ type: 'text' as const, text }] };
@@ -3315,7 +3318,7 @@ export class McpHandler {
               const sym = r.symbol_name ? `\`${r.symbol_name}\` (${r.kind ?? 'unknown'})` : '—';
               const svc = r.service ?? '—';
               const cid = r.chunk_id ?? '—';
-              text += `| ${r.project}/${r.file} | ${r.startLine}-${r.endLine} | ${sym} | ${score}% | ${svc} | ${cid} |\n`;
+              text += `| ${r.project}/${r.file} | ${shownLine(r.startLine)}-${shownLine(r.endLine)} | ${sym} | ${score}% | ${svc} | ${cid} |\n`;
             }
 
             if (!this.metadataStore) {
@@ -3455,7 +3458,7 @@ export class McpHandler {
                 text += `\n### ${service}\n\n`;
                 for (const { chunkId, hop, loc } of entries) {
                   const sym = loc.symbolName ? ` \`${loc.symbolName}\`` : '';
-                  text += `- [hop ${hop}] ${loc.project}/${loc.file}:${loc.startLine}${sym} _chunk: ${chunkId}_\n`;
+                  text += `- [hop ${hop}] ${loc.project}/${loc.file}:${shownLine(loc.startLine)}${sym} _chunk: ${chunkId}_\n`;
                 }
               }
             }

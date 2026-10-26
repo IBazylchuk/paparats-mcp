@@ -27,6 +27,31 @@ const typescriptUsages = `
   (type_identifier) @usage
 `;
 
+// The javascript grammar has no type nodes, and a query naming one fails to
+// compile as a whole, so JavaScript gets its own sets.
+const javascriptDefinitions = `
+  (function_declaration name: (identifier) @definition)
+  (class_declaration name: (identifier) @definition)
+  (lexical_declaration (variable_declarator name: (identifier) @definition))
+  (method_definition name: (property_identifier) @definition)
+`;
+
+const javascriptUsages = `
+  (call_expression function: (identifier) @usage)
+  (call_expression function: (member_expression property: (property_identifier) @usage))
+  (new_expression constructor: (identifier) @usage)
+`;
+
+// JSX exists only in the javascript and tsx grammars: the typescript grammar
+// would reject the whole query over these node types. Only capitalised names
+// are components; lowercase ones are HTML elements.
+const jsxUsages = `
+  ((jsx_opening_element name: (identifier) @usage) (#match? @usage "^[A-Z]"))
+  ((jsx_self_closing_element name: (identifier) @usage) (#match? @usage "^[A-Z]"))
+  (jsx_opening_element name: (member_expression property: (property_identifier) @usage))
+  (jsx_self_closing_element name: (member_expression property: (property_identifier) @usage))
+`;
+
 // ── Python ────────────────────────────────────────────────────────────────
 
 const pythonDefinitions = `
@@ -92,8 +117,11 @@ const javaUsages = `
 
 const rubyDefinitions = `
   (class name: (constant) @definition)
+  (class name: (scope_resolution name: (constant) @definition))
   (module name: (constant) @definition)
+  (module name: (scope_resolution name: (constant) @definition))
   (method name: (identifier) @definition)
+  (singleton_method name: (identifier) @definition)
 `;
 
 const rubyUsages = `
@@ -159,8 +187,8 @@ const terraformUsages = `
 
 export const LANGUAGE_QUERIES: Record<string, LanguageQuerySet> = {
   typescript: { definitions: typescriptDefinitions, usages: typescriptUsages },
-  javascript: { definitions: typescriptDefinitions, usages: typescriptUsages },
-  tsx: { definitions: typescriptDefinitions, usages: typescriptUsages },
+  javascript: { definitions: javascriptDefinitions, usages: javascriptUsages + jsxUsages },
+  tsx: { definitions: typescriptDefinitions, usages: typescriptUsages + jsxUsages },
   python: { definitions: pythonDefinitions, usages: pythonUsages },
   go: { definitions: goDefinitions, usages: goUsages },
   rust: { definitions: rustDefinitions, usages: rustUsages },
