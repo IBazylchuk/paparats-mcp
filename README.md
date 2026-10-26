@@ -33,9 +33,9 @@ helps your agent see the right code across a sea of repositories.
 
 <sub>📊 The built-in `/ui` operator console — ROI, query quality, cross-project usage, per-user activity, indexer health. <em>Screenshot uses synthetic data (<code>?demo=1</code>) — no real queries, users, or project names.</em></sub>
 
-<a href="docs/module-map.png"><img src="docs/module-map.png" alt="Paparats module map — the modules of this repository drawn from its call graph, one selected with its main files and links" width="100%"></a>
+<a href="docs/module-map.png"><img src="docs/module-map.png" alt="Paparats code map — the server package of this repository folder by folder, one file selected with what it calls and what calls it" width="100%"></a>
 
-<sub>🗺️ <code>/ui/map</code> — the modules of a codebase from its call graph (this repository shown). The <code>module_map</code> tool gives agents the same map, as text plus a Mermaid diagram.</sub>
+<sub>🗺️ <code>/ui/map</code> — a code map: walk a codebase folder by folder, with arrows for who calls whom, files that work together grouped into modules, and a link for every view (this repository shown). The <code>module_map</code> tool gives agents the modules as text plus a Mermaid diagram.</sub>
 
 - ⚡ **One install, one config.** `paparats install` → `paparats add ~/code/repo` → done.
 - 🌳 **AST-aware chunking and symbol extraction.** Tree-sitter parses every supported

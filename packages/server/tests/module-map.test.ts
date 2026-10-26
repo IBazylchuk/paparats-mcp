@@ -84,6 +84,17 @@ describe('fileWeights', () => {
     expect(w.get('p//f0.ts')?.get('p//store.ts') ?? 0).toBe(0);
     expect(w.get('p//f0.ts')?.get('p//queue.ts')).toBe(1);
   });
+
+  it('judges how specific a name is within the caller’s own project', () => {
+    const edges: MapEdge[] = [];
+    // `runTask` is used from every file of project q...
+    for (let i = 0; i < 20; i++) edges.push(e(`q${i}.ts`, 'tasks.ts', 'runTask', 'q'));
+    // ...and from one file of project p, where it says a lot.
+    edges.push(e('a.ts', 'tasks.ts', 'runTask'), e('b.ts', 'other.ts', 'otherCall'));
+    const w = fileWeights(edges).weights;
+    expect(w.get('p//a.ts')?.get('p//tasks.ts')).toBeCloseTo(Math.log(2) / Math.log(2));
+    expect(w.get('q//q0.ts')?.get('q//tasks.ts') ?? 0).toBe(0);
+  });
 });
 
 describe('isMigrationPath', () => {
@@ -112,6 +123,19 @@ describe('buildModuleMap', () => {
     edges.push(e('src/a/one.ts', 'src/b/one.ts', 'to_src/b/one.ts'));
     return edges;
   }
+
+  it('sets each project’s thresholds by its own size, next to a much larger one', () => {
+    const edges: MapEdge[] = [];
+    // Small project p: twelve files calling one hub file.
+    for (let i = 0; i < 12; i++) edges.push(e(`src/f${i}.ts`, 'src/hub.ts', `hubCall${i}`));
+    // Large project q: two thousand files in pairs.
+    for (let i = 0; i < 1000; i++) {
+      edges.push(e(`x${i}.ts`, `y${i}.ts`, `pairCall${i}`, 'q'));
+    }
+    const map = buildModuleMap(edges, []);
+    expect(map.shared.map((s) => s.file)).toEqual(['p//src/hub.ts']);
+    expect(new Set(map.modules.map((m) => m.project))).toEqual(new Set(['q']));
+  });
 
   it('groups files, names modules by folder and links them by direction', () => {
     const map = buildModuleMap(twoClusters(), []);

@@ -72,6 +72,8 @@ export interface ModuleMap {
   unconnected: FileKey[];
   /** Migration files left out of the map. */
   migrations: number;
+  /** The file-to-file weights the map was built from, to show the files inside a module. */
+  weights: Map<FileKey, Map<FileKey, number>>;
 }
 
 function fileKeyOf(chunkId: string): FileKey | null {
@@ -94,7 +96,8 @@ function splitKey(key: FileKey): { project: string; file: string } {
  * `cache.get(k)` from a call to some class's own `get`, so a name used across
  * half the files says almost nothing about which file depends on which, while
  * a name used by two files says a lot: the factor is ln(F / f) / ln(F), where
- * f is the number of files using the name and F the number of files using any.
+ * f is the number of files using the name and F the number of files using any,
+ * both counted within the caller's project.
  * Uses inside one file do not link files and are dropped.
  */
 export interface FileGraph {
@@ -111,8 +114,10 @@ export interface FileGraph {
 export function fileWeights(edges: Iterable<MapEdge>): FileGraph {
   // Definitions per (caller chunk, symbol), to split one use over its candidates.
   const uses = new Map<string, MapEdge[]>();
-  const usersOf = new Map<string, Set<FileKey>>();
-  const callers = new Set<FileKey>();
+  // Name usage per project: a name common in one repository of a group says
+  // nothing about how specific it is in another.
+  const usersOf = new Map<string, Map<string, Set<FileKey>>>();
+  const callers = new Map<string, Set<FileKey>>();
   for (const e of edges) {
     const key = `${e.from_chunk_id}\0${e.symbol_name}`;
     let list = uses.get(key);
@@ -120,27 +125,41 @@ export function fileWeights(edges: Iterable<MapEdge>): FileGraph {
     list.push(e);
     const from = fileKeyOf(e.from_chunk_id);
     if (!from) continue;
-    callers.add(from);
-    let users = usersOf.get(e.symbol_name);
-    if (!users) usersOf.set(e.symbol_name, (users = new Set()));
+    const project = splitKey(from).project;
+    let projectCallers = callers.get(project);
+    if (!projectCallers) callers.set(project, (projectCallers = new Set()));
+    projectCallers.add(from);
+    let names = usersOf.get(project);
+    if (!names) usersOf.set(project, (names = new Map()));
+    let users = names.get(e.symbol_name);
+    if (!users) names.set(e.symbol_name, (users = new Set()));
     users.add(from);
   }
-  const usage = {
-    callerFiles: callers.size,
-    filesUsing: new Map([...usersOf].map(([name, set]) => [name, set.size])),
-  };
-  const logF = Math.log(callers.size);
-  const specificity = (symbol: string): number => {
-    const f = usersOf.get(symbol)?.size ?? 1;
-    return logF > 0 ? Math.max(0, Math.log(callers.size / f) / logF) : 1;
+  const usage = new Map(
+    [...usersOf].map(([project, names]) => [
+      project,
+      {
+        callerFiles: callers.get(project)?.size ?? 0,
+        filesUsing: new Map([...names].map(([name, set]) => [name, set.size])),
+      },
+    ])
+  );
+  const specificity = (project: string, symbol: string): number => {
+    const total = callers.get(project)?.size ?? 0;
+    const logF = Math.log(total);
+    const f = usersOf.get(project)?.get(symbol)?.size ?? 1;
+    return logF > 0 ? Math.max(0, Math.log(total / f) / logF) : 1;
   };
 
   const out = new Map<FileKey, Map<FileKey, number>>();
   const clearCallers = new Map<FileKey, Set<FileKey>>();
   for (const list of uses.values()) {
     const symbol = list[0]!.symbol_name;
-    const share = specificity(symbol) / list.length;
-    const clear = list.length <= 2 && !isCommonName(symbol, usage);
+    const caller = fileKeyOf(list[0]!.from_chunk_id);
+    if (!caller) continue;
+    const project = splitKey(caller).project;
+    const share = specificity(project, symbol) / list.length;
+    const clear = list.length <= 2 && !isCommonName(symbol, usage.get(project)!);
     for (const e of list) {
       const from = fileKeyOf(e.from_chunk_id);
       const to = fileKeyOf(e.to_chunk_id);
@@ -328,41 +347,62 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
   for (const k of all) if (isMigration(k)) all.delete(k);
   const code = [...all].filter((k) => !isTest(k)).sort();
 
-  // Shared files: clearly called from a large share of the other code files.
+  // Each project is grouped on its own: edges stay inside a project, and the
+  // thresholds (shared files, module size) depend on the project's size, so a
+  // small project next to a large one in a group still gets split.
+  const byProject = new Map<string, FileKey[]>();
+  for (const k of code) {
+    const p = splitKey(k).project;
+    let list = byProject.get(p);
+    if (!list) byProject.set(p, (list = []));
+    list.push(k);
+  }
   const codeCallers = (file: FileKey) =>
     [...(graph.callers.get(file) ?? [])].filter((c) => !isTest(c) && !isMigration(c)).length;
-  const sharedFloor = Math.max(SHARED_FILE_MIN_CALLERS, SHARED_FILE_CALLER_SHARE * code.length);
-  const shared = code
-    .map((file) => ({ file, callers: codeCallers(file) }))
-    .filter((s) => !isTest(s.file) && s.callers >= sharedFloor)
-    .sort((a, b) => b.callers - a.callers || a.file.localeCompare(b.file));
-  const sharedSet = new Set(shared.map((s) => s.file));
+  const shared: ModuleMap['shared'] = [];
+  const unconnected: FileKey[] = [];
+  const groups: FileKey[][] = [];
+  for (const projectFiles of byProject.values()) {
+    // Shared files: clearly called from a large share of the project's other code files.
+    const sharedFloor = Math.max(
+      SHARED_FILE_MIN_CALLERS,
+      SHARED_FILE_CALLER_SHARE * projectFiles.length
+    );
+    const sharedHere = projectFiles
+      .map((file) => ({ file, callers: codeCallers(file) }))
+      .filter((s) => s.callers >= sharedFloor);
+    shared.push(...sharedHere);
+    const sharedSet = new Set(sharedHere.map((s) => s.file));
 
-  // Undirected graph over the remaining code files.
-  const nodes = code.filter((k) => !sharedSet.has(k));
-  const index = new Map(nodes.map((k, i) => [k, i]));
-  const adj: Array<Map<number, number>> = nodes.map(() => new Map());
-  for (const [from, row] of weights) {
-    const i = index.get(from);
-    if (i === undefined) continue;
-    for (const [to, w] of row) {
-      const j = index.get(to);
-      if (j === undefined) continue;
-      adj[i]!.set(j, (adj[i]!.get(j) ?? 0) + w);
-      adj[j]!.set(i, (adj[j]!.get(i) ?? 0) + w);
+    // Undirected graph over the remaining code files.
+    const nodes = projectFiles.filter((k) => !sharedSet.has(k));
+    const index = new Map(nodes.map((k, i) => [k, i]));
+    const adj: Array<Map<number, number>> = nodes.map(() => new Map());
+    for (const [from, row] of weights) {
+      const i = index.get(from);
+      if (i === undefined) continue;
+      for (const [to, w] of row) {
+        const j = index.get(to);
+        if (j === undefined) continue;
+        adj[i]!.set(j, (adj[i]!.get(j) ?? 0) + w);
+        adj[j]!.set(i, (adj[j]!.get(i) ?? 0) + w);
+      }
     }
-  }
 
-  const unconnected = nodes.filter((_, i) => adj[i]!.size === 0);
-  const membership = splitLarge(adj, louvain(adj), maxModuleFiles(nodes.length));
-  const byCommunity = new Map<number, FileKey[]>();
-  nodes.forEach((k, i) => {
-    if (adj[i]!.size === 0) return;
-    const c = membership[i]!;
-    let list = byCommunity.get(c);
-    if (!list) byCommunity.set(c, (list = []));
-    list.push(k);
-  });
+    unconnected.push(...nodes.filter((_, i) => adj[i]!.size === 0));
+    const membership = splitLarge(adj, louvain(adj), maxModuleFiles(nodes.length));
+    const byCommunity = new Map<number, FileKey[]>();
+    nodes.forEach((k, i) => {
+      if (adj[i]!.size === 0) return;
+      const c = membership[i]!;
+      let list = byCommunity.get(c);
+      if (!list) byCommunity.set(c, (list = []));
+      list.push(k);
+    });
+    groups.push(...byCommunity.values());
+  }
+  shared.sort((a, b) => b.callers - a.callers || a.file.localeCompare(b.file));
+  unconnected.sort();
 
   // Weighted in-degree, to order files by how much the rest relies on them.
   const inWeight = new Map<FileKey, number>();
@@ -370,9 +410,7 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
     for (const [to, w] of row) inWeight.set(to, (inWeight.get(to) ?? 0) + w);
   }
 
-  const groups = [...byCommunity.values()].sort(
-    (a, b) => b.length - a.length || a[0]!.localeCompare(b[0]!)
-  );
+  groups.sort((a, b) => b.length - a.length || a[0]!.localeCompare(b[0]!));
   const moduleOf = new Map<FileKey, number>();
   groups.forEach((g, id) => g.forEach((k) => moduleOf.set(k, id)));
 
@@ -442,7 +480,7 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
     if (best) modules[best.module]!.tests.push(test);
   }
 
-  return { modules, shared, unconnected, migrations };
+  return { modules, shared, unconnected, migrations, weights };
 }
 
 /**

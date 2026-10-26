@@ -102,13 +102,15 @@ analytics store: ROI, top / slowest queries, cross-project usage, per-user activ
 indexer status, embedding p95/p99, and recent failures. Polls every 5 s, no extra
 services to run.
 
-- Module map: `http://localhost:9876/ui/map` (or the **module map** link in the
-  header) draws the modules of a group — the same map the `module_map` tool returns —
-  as circles sized by file count, with arrows to the modules each one uses. Click a
-  module for its main files, tests and links; pick a project, or find which module a
-  file sits in. Data comes from `GET /api/module-map?group=&project=`.
+- Code map: `http://localhost:9876/ui/map` (or the **code map** link in the header,
+  or a group's name in the corpus table) walks a group's code by its folders:
+  - **Levels.** Repositories, then each folder's subfolders and files. A circle is sized by its files, an arrow points from the caller to the called, and dashed circles around the edge are the folders elsewhere it is linked to.
+  - **Clicks.** Click a folder to go into it. Click a file to see what it calls and what calls it.
+  - **Modules.** The side panel lists the modules found from the call graph — files that work together wherever they sit — and each opens as its own view.
+  - **Links.** Every view has its own URL, so back, forward, reload and "open in a new tab" work.
+  - **Data.** `GET /api/module-map` (modules), `/api/module-map/tree`, `/module`, `/file` and `/search`.
 - Protect it (optional): `PAPARATS_UI_BASIC_AUTH=user:pass` — applies to `/ui`,
-  `/api/analytics` and `/api/module-map` only; `/mcp` and `/api/search` stay open so agents keep working.
+  `/api/analytics` and `/api/module-map/*` only; `/mcp` and `/api/search` stay open so agents keep working.
 - Browser access from other sites is refused on every route (`403` for a foreign
   `Origin`), so a web page cannot read search results or call MCP tools. Allow specific
   origins with `PAPARATS_CORS_ORIGINS=https://app.example.com,...`.

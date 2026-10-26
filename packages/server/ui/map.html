@@ -3,30 +3,24 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>paparats · module map</title>
+    <title>paparats · code map</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
-  <body>
+  <body class="map-page">
     <div class="grain" aria-hidden="true"></div>
 
-    <header class="masthead">
+    <header class="masthead masthead--map">
       <div class="masthead__brand">
         <span class="brand__mark">▰▰</span>
-        <span class="brand__name">paparats</span>
-        <span class="brand__sub">module map</span>
+        <a class="brand__name map-home" id="homeLink" href="./map">paparats</a>
+        <span class="brand__sub">code map</span>
       </div>
       <div class="masthead__meta">
         <div class="meta__group">
           <label class="meta__label" for="groupSelect">group</label>
           <select id="groupSelect" class="map-select" aria-label="Group"></select>
         </div>
-        <div class="meta__group">
-          <label class="meta__label" for="projectSelect">project</label>
-          <select id="projectSelect" class="map-select" aria-label="Project">
-            <option value="">all projects</option>
-          </select>
-        </div>
-        <div class="meta__group">
+        <div class="meta__group map-search-box">
           <label class="meta__label" for="fileSearch">find a file</label>
           <input
             id="fileSearch"
@@ -34,7 +28,9 @@
             type="search"
             placeholder="path or name"
             autocomplete="off"
+            aria-controls="searchResults"
           />
+          <ul id="searchResults" class="map-search__results" hidden></ul>
         </div>
         <div class="meta__group">
           <span class="meta__label">view</span>
@@ -43,75 +39,60 @@
       </div>
     </header>
 
-    <main class="canvas">
+    <nav class="map-crumbs" id="crumbs" aria-label="Where you are"></nav>
+
+    <main class="map-main">
       <section id="banner" class="banner banner--hidden" role="status"></section>
 
-      <section class="row row--map">
-        <article class="tile map-stage">
-          <header class="tile__head">
-            <span class="tile__eyebrow">001 / structure</span>
-            <h2 class="tile__title">Modules and what they use</h2>
-            <span class="tile__chip" id="mapChip">—</span>
-          </header>
-          <p class="map-lede" id="mapLede">
-            A module is a set of files that call each other much more than they call the rest.
-            Circle size is the number of files; an arrow points from a module to one it uses. Drag
-            to pan, scroll to zoom, click a module for details.
-          </p>
-          <div class="map-svg-wrap">
-            <svg id="mapSvg" class="map-svg" role="img" aria-label="Module map">
-              <defs>
-                <marker
-                  id="arrow"
-                  viewBox="0 0 10 10"
-                  refX="10"
-                  refY="5"
-                  markerWidth="8"
-                  markerHeight="8"
-                  markerUnits="userSpaceOnUse"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M 0 0 L 10 5 L 0 10 z" class="map-arrow" />
-                </marker>
-                <marker
-                  id="arrowHot"
-                  viewBox="0 0 10 10"
-                  refX="10"
-                  refY="5"
-                  markerWidth="8"
-                  markerHeight="8"
-                  markerUnits="userSpaceOnUse"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M 0 0 L 10 5 L 0 10 z" class="map-arrow map-arrow--hot" />
-                </marker>
-              </defs>
-              <g id="mapViewport">
-                <g id="mapEdges"></g>
-                <g id="mapNodes"></g>
-              </g>
-            </svg>
-            <div class="map-empty" id="mapEmpty" hidden></div>
-          </div>
-        </article>
-
-        <aside class="tile map-panel" id="mapPanel" aria-live="polite">
-          <header class="tile__head">
-            <span class="tile__eyebrow" id="panelEyebrow">002 / details</span>
-            <h2 class="tile__title" id="panelTitle">Pick a module</h2>
-          </header>
-          <div id="panelBody" class="map-panel__body"></div>
-        </aside>
+      <section class="map-stage">
+        <svg id="mapSvg" class="map-svg" aria-label="Code map">
+          <defs>
+            <marker
+              id="arrow"
+              viewBox="0 0 10 10"
+              refX="10"
+              refY="5"
+              markerWidth="9"
+              markerHeight="9"
+              markerUnits="userSpaceOnUse"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" class="map-arrow" />
+            </marker>
+            <marker
+              id="arrowHot"
+              viewBox="0 0 10 10"
+              refX="10"
+              refY="5"
+              markerWidth="10"
+              markerHeight="10"
+              markerUnits="userSpaceOnUse"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 0 L 10 5 L 0 10 z" class="map-arrow map-arrow--hot" />
+            </marker>
+          </defs>
+          <g id="mapViewport">
+            <g id="mapRing"></g>
+            <g id="mapEdges"></g>
+            <g id="mapNodes"></g>
+          </g>
+        </svg>
+        <div class="map-zoom" role="group" aria-label="Zoom">
+          <button type="button" id="zoomIn" title="Zoom in">+</button>
+          <button type="button" id="zoomOut" title="Zoom out">−</button>
+          <button type="button" id="zoomFit" title="Fit to screen">fit</button>
+        </div>
+        <div class="map-legend" id="legend"></div>
+        <div class="map-empty" id="mapEmpty" hidden></div>
       </section>
-    </main>
 
-    <footer class="footer">
-      <span class="footer__rule"></span>
-      <span class="footer__text">
-        <code>GET /api/module-map?group=…&amp;project=…</code> · rebuilt after indexing, at most
-        every 5 min · the same map the <code>module_map</code> tool returns
-      </span>
-    </footer>
+      <aside class="map-panel" id="mapPanel" aria-live="polite">
+        <span class="tile__eyebrow" id="panelEyebrow"></span>
+        <h2 class="map-panel__title" id="panelTitle">Loading…</h2>
+        <div id="panelBody" class="map-panel__body"></div>
+      </aside>
+    </main>
 
     <script src="./map.js"></script>
   </body>
