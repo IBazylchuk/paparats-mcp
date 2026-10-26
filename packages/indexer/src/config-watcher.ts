@@ -26,7 +26,6 @@ export interface ConfigChange {
 
 export interface ConfigWatcherOptions {
   configPath: string;
-  token?: string;
   debounceMs?: number;
   /** Override for tests: synchronous trigger of the underlying watcher. */
   spawnWatcher?: (path: string) => MinimalWatcher;
@@ -47,7 +46,6 @@ export interface MinimalWatcher {
  */
 export class ConfigWatcher {
   private readonly configPath: string;
-  private readonly token?: string;
   private readonly debounceMs: number;
   private readonly onChange: (change: ConfigChange) => void;
   private readonly onError: (err: Error) => void;
@@ -57,7 +55,6 @@ export class ConfigWatcher {
 
   constructor(opts: ConfigWatcherOptions, initial: RepoConfig[]) {
     this.configPath = opts.configPath;
-    this.token = opts.token;
     this.debounceMs = opts.debounceMs ?? DEFAULT_DEBOUNCE_MS;
     this.onChange = opts.onChange;
     this.onError = opts.onError ?? ((err) => console.error('[config-watcher]', err.message));
@@ -85,7 +82,7 @@ export class ConfigWatcher {
   private reloadNow(): void {
     let next: LoadConfigResult;
     try {
-      next = loadIndexerConfig(this.configPath, this.token);
+      next = loadIndexerConfig(this.configPath);
     } catch (err) {
       this.onError(err as Error);
       return;

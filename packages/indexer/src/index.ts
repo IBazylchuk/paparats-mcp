@@ -25,12 +25,15 @@ import { StateStore } from './state-store.js';
 import { GitDetector, MtimeDetector } from './change-detector.js';
 import { resolveRepoProject } from './project-resolver.js';
 import { IndexOrchestrator } from './orchestrator.js';
+import { gitAuthEnv } from './git-auth.js';
 import type { RepoConfig } from './types.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
 
 const REPOS = process.env['REPOS'] ?? '';
 const GITHUB_TOKEN = process.env['GITHUB_TOKEN'];
+// Every git process (clone, fetch, ls-remote) inherits this: the token goes as a header, not in the URL.
+Object.assign(process.env, gitAuthEnv(GITHUB_TOKEN));
 /** Slow safety-net cycle: indexes every repo unconditionally. */
 const CRON = process.env['CRON'] ?? '0 */3 * * *';
 /** Fast change-detection cycle: only indexes repos whose fingerprint changed. */
@@ -67,14 +70,14 @@ let repos: RepoConfig[];
 let configCron: string | undefined;
 let configCronFast: string | undefined;
 
-const fileConfig = tryLoadIndexerConfig(CONFIG_DIR, GITHUB_TOKEN);
+const fileConfig = tryLoadIndexerConfig(CONFIG_DIR);
 if (fileConfig) {
   repos = fileConfig.repos;
   configCron = fileConfig.cron;
   configCronFast = fileConfig.cronFast;
   console.log(`[indexer] Loaded ${repos.length} repo(s) from config file`);
 } else {
-  repos = parseReposEnv(REPOS, GITHUB_TOKEN);
+  repos = parseReposEnv(REPOS);
   if (repos.length === 0) {
     console.warn('[indexer] No repos configured. Set REPOS env or mount projects.yml.');
   }
@@ -274,7 +277,6 @@ if (fileConfig && configFilePath) {
   configWatcher = new ConfigWatcher(
     {
       configPath: configFilePath,
-      token: GITHUB_TOKEN,
       onChange: (change) => {
         console.log(
           `[indexer] Config changed: +${change.added.length} -${change.removed.length} ~${change.modified.length}`

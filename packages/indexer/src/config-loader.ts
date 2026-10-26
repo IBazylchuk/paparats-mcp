@@ -75,8 +75,7 @@ function mergeOverrides(
  */
 function parseRepoEntry(
   entry: IndexerFileConfig['repos'][number],
-  defaults: IndexerFileConfig['defaults'],
-  token?: string
+  defaults: IndexerFileConfig['defaults']
 ): RepoConfig {
   const hasUrl = typeof entry.url === 'string' && entry.url.trim().length > 0;
   const hasPath = typeof entry.path === 'string' && entry.path.trim().length > 0;
@@ -122,8 +121,7 @@ function parseRepoEntry(
     throw new Error(`Invalid repo format: "${fullName}". Expected "owner/repo".`);
   }
   const [owner, repoName] = parts as [string, string];
-  const host = token ? `${token}@github.com` : 'github.com';
-  const url = `https://${host}/${owner}/${repoName}.git`;
+  const url = `https://github.com/${owner}/${repoName}.git`;
   const name = (entry.name?.trim() || repoName).trim();
 
   return {
@@ -189,7 +187,7 @@ export interface LoadConfigResult {
  * Load indexer config from YAML file.
  * Returns parsed repos with per-project overrides and optional cron.
  */
-export function loadIndexerConfig(configPath: string, token?: string): LoadConfigResult {
+export function loadIndexerConfig(configPath: string): LoadConfigResult {
   const raw = fs.readFileSync(configPath, 'utf8');
   let parsed: unknown;
   try {
@@ -199,7 +197,7 @@ export function loadIndexerConfig(configPath: string, token?: string): LoadConfi
   }
   validateConfig(parsed);
 
-  const repos = parsed.repos.map((entry) => parseRepoEntry(entry, parsed.defaults, token));
+  const repos = parsed.repos.map((entry) => parseRepoEntry(entry, parsed.defaults));
 
   // Reject duplicate project names within the file (regardless of source).
   const seen = new Map<string, number>();
@@ -235,7 +233,7 @@ export function resolveConfigPath(configDir: string): string | null {
  * Try to load indexer config from standard paths.
  * Returns null if no config file found.
  */
-export function tryLoadIndexerConfig(configDir: string, token?: string): LoadConfigResult | null {
+export function tryLoadIndexerConfig(configDir: string): LoadConfigResult | null {
   const configPath = resolveConfigPath(configDir);
   if (!configPath) return null;
 
@@ -246,7 +244,7 @@ export function tryLoadIndexerConfig(configDir: string, token?: string): LoadCon
   } else {
     console.log(`[indexer] Loading config from ${configPath}`);
   }
-  return loadIndexerConfig(configPath, token);
+  return loadIndexerConfig(configPath);
 }
 
 export { CONFIG_FILE, LEGACY_CONFIG_FILE };
