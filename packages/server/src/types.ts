@@ -186,6 +186,18 @@ export interface SymbolEdge {
   from_symbols?: string[];
 }
 
+/**
+ * Files whose chunks were written or removed since a project's symbol graph was
+ * last brought up to date (`MetadataStore.graphChanges()`).
+ */
+export interface GraphChanges {
+  /** The last change read; later ones are left for the next update. */
+  upTo: number;
+  files: Set<string>;
+  /** Names the files' old or new chunks define. */
+  names: Set<string>;
+}
+
 // ── Search types ───────────────────────────────────────────────────────────
 
 export interface SearchResult {

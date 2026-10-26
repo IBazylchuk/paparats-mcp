@@ -856,6 +856,84 @@ describe('MetadataStore', () => {
     expect(store.getCommits('g//proj//src/file_1009.ts//1-5//h2')).toHaveLength(1);
   });
 
+  it('deleteByFile drops the edges of that file only, whatever its name holds', async () => {
+    const edge = (from: string, to: string) => ({
+      from_chunk_id: from,
+      to_chunk_id: to,
+      relation_type: 'calls' as const,
+      symbol_name: 'foo',
+    });
+    await store.upsertSymbolEdges([
+      edge('g//proj//src/file_100%.ts//1-5//h1', 'g//proj//src/x.ts//1-5//h3'),
+      edge('g//proj//src/x.ts//1-5//h3', 'g//proj//src/file_100%.ts//1-5//h1'),
+      edge('g//proj//src/file_1009.ts//1-5//h2', 'g//proj//src/x.ts//1-5//h3'),
+      edge('g//proj//src/file_100%.tsx//1-5//h4', 'g//proj//src/x.ts//1-5//h3'),
+    ]);
+
+    store.deleteByFile('g', 'proj', 'src/file_100%.ts');
+
+    expect(store.getEdgesFrom('g//proj//src/file_100%.ts//1-5//h1')).toHaveLength(0);
+    expect(store.getEdgesTo('g//proj//src/file_100%.ts//1-5//h1')).toHaveLength(0);
+    expect(store.getEdgesFrom('g//proj//src/file_1009.ts//1-5//h2')).toHaveLength(1);
+    expect(store.getEdgesFrom('g//proj//src/file_100%.tsx//1-5//h4')).toHaveLength(1);
+  });
+
+  it('keeps graph changes until they are applied; later ones wait for the next update', () => {
+    expect(store.graphChanges('g', 'p')).toBeNull();
+    store.markGraphChanged('g', 'p', 'a.rb', ['claim', 'Ledger']);
+    store.markGraphChanged('g', 'p', 'b.rb', ['claim']);
+    store.markGraphChanged('g', 'q', 'c.rb', ['other']);
+    const changes = store.graphChanges('g', 'p')!;
+    expect([...changes.files].sort()).toEqual(['a.rb', 'b.rb']);
+    expect([...changes.names].sort()).toEqual(['Ledger', 'claim']);
+
+    store.markGraphChanged('g', 'p', 'd.rb', ['late']);
+    store.applyGraphChanges('g', 'p', changes, []);
+    const left = store.graphChanges('g', 'p')!;
+    expect([...left.files]).toEqual(['d.rb']);
+    expect(store.graphChanges('g', 'q')).not.toBeNull();
+
+    store.deleteByProject('g', 'p');
+    expect(store.graphChanges('g', 'p')).toBeNull();
+  });
+
+  it('applyGraphChanges replaces only the edges of the changed files and names, at once', async () => {
+    const edge = (from: string, to: string, symbol_name: string) => ({
+      from_chunk_id: `g//p//${from}`,
+      to_chunk_id: `g//p//${to}`,
+      relation_type: 'calls' as const,
+      symbol_name,
+    });
+    await store.upsertSymbolEdges([
+      edge('a.rb//1-5//h1', 'z.rb//1-5//h9', 'save'), // leaves the changed file
+      edge('y.rb//1-5//h2', 'z.rb//1-5//h9', 'claim'), // through a changed name
+      edge('y.rb//1-5//h2', 'a.rb//1-5//h1', 'claim'), // into the changed file
+      edge('y.rb//1-5//h2', 'z.rb//1-5//h9', 'save'), // neither: kept
+      {
+        ...edge('y.rb//1-5//h2', 'z.rb//1-5//h9', 'claim'),
+        from_chunk_id: 'g//other//y.rb//1-5//h2',
+      },
+    ]);
+    const version = store.edgesVersion('g', 'p');
+
+    store.applyGraphChanges(
+      'g',
+      'p',
+      { upTo: 0, files: new Set(['a.rb']), names: new Set(['claim']) },
+      [edge('y.rb//1-5//h2', 'a.rb//6-9//h5', 'claim')]
+    );
+
+    const left = [...store.iterateProjectEdges('g', 'p')]
+      .map((e) => `${e.from_chunk_id} ${e.symbol_name} ${e.to_chunk_id}`)
+      .sort();
+    expect(left).toEqual([
+      'g//p//y.rb//1-5//h2 claim g//p//a.rb//6-9//h5',
+      'g//p//y.rb//1-5//h2 save g//p//z.rb//1-5//h9',
+    ]);
+    expect([...store.iterateProjectEdges('g', 'other')]).toHaveLength(1);
+    expect(store.edgesVersion('g', 'p')).not.toBe(version);
+  });
+
   it('upsertSymbolEdges handles empty array', async () => {
     await expect(store.upsertSymbolEdges([])).resolves.toBeUndefined();
   });
