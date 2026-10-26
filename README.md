@@ -33,6 +33,10 @@ helps your agent see the right code across a sea of repositories.
 
 <sub>📊 The built-in `/ui` operator console — ROI, query quality, cross-project usage, per-user activity, indexer health. <em>Screenshot uses synthetic data (<code>?demo=1</code>) — no real queries, users, or project names.</em></sub>
 
+<a href="docs/module-map.png"><img src="docs/module-map.png" alt="Paparats module map — the modules of this repository drawn from its call graph, one selected with its main files and links" width="100%"></a>
+
+<sub>🗺️ <code>/ui/map</code> — the modules of a codebase from its call graph (this repository shown). The <code>module_map</code> tool gives agents the same map, as text plus a Mermaid diagram.</sub>
+
 - ⚡ **One install, one config.** `paparats install` → `paparats add ~/code/repo` → done.
 - 🌳 **AST-aware chunking and symbol extraction.** Tree-sitter parses every supported
   file once and feeds both chunking and the cross-chunk symbol graph (calls /
@@ -664,6 +668,7 @@ Connect via the **coding endpoint** (`/mcp`):
 | **Find similar patterns**      | `search_code "retry with exponential backoff"` → examples              |
 | **Trace dependencies**         | `find_usages {chunk_id, direction: "incoming"}` → callers via the graph |
 | **Check before changing**      | `change_impact {chunk_id}` → callers up to 3 steps out, and the tests that reach the code |
+| **Get the lay of the land**    | `module_map {project}` → main modules, their key files and how they depend on each other |
 | **Explore context**            | `get_chunk <chunk_id> --radius_lines 50` → expand around               |
 | **Manage projects**            | `list_projects` and `delete_project` for index hygiene                 |
 | **Architectural Q&A**          | `arch_context "why X"` → components / decisions / lessons (with age)   |
@@ -868,6 +873,7 @@ projects.
 | `get_chunk`               | Retrieve a chunk by ID with optional surrounding context.                                                                    |
 | `find_usages`             | Walk the symbol graph from a `chunk_id` — `incoming` (callers/references in), `outgoing` (calls/references out), or `both`.  |
 | `change_impact`           | What depends on a chunk you are about to change: callers, their callers (up to 3 steps) and the tests that reach it, with `[maybe]` on links through a name defined in several places. Callers linked only through a common method name (`add`, `get`, `close`) are listed apart as probably unrelated. `symbol` narrows to one name, `whole_file` takes the whole file. |
+| `module_map`              | Modules of a codebase from the call graph: files that call each other much more than the rest, named by folder, with main files, which modules each uses and is used by, attached tests and shared code. Tests and migrations do not shape the grouping. |
 | `list_projects`           | List indexed projects with chunk counts and detected languages.                                                              |
 | `delete_project`          | Wipe Qdrant chunks + SQLite metadata for a project (`paparats remove` uses the equivalent HTTP endpoint).                    |
 | `health_check`            | Indexing status, chunks per group, running jobs.                                                                             |
@@ -901,6 +907,7 @@ no project deletion.
 | `search_changes`       | Semantic search filtered by last-commit date. Each result shows when it last changed. |
 | `explain_feature`      | Comprehensive feature analysis: locations + recent changes for a question.            |
 | `recent_changes`       | Timeline grouped by date with commits, tickets, affected files. `since` filter.       |
+| `module_map`           | Same as coding endpoint: the main modules of a codebase, their key files and how they depend on each other. |
 | `impact_analysis`      | Blast radius for a natural-language `question`: finds seed chunks, walks the symbol graph 1–2 hops (`max_hops`), groups dependents by service. No code. |
 | `search_docs`          | Same as coding endpoint.                                                               |
 | `get_document`         | Full text of a documentation page found by `search_docs`, section by section, paged at ~40k characters. Support cannot open files, so its excerpts point here. |

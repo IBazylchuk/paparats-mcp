@@ -331,6 +331,11 @@ export class Indexer {
     return this.stored(projectName);
   }
 
+  /** Inverse of {@link storedProjectName}: the clean name of a stored one (e.g. from a chunk id). */
+  displayProjectName(storedName: string): string {
+    return stripProjectSuffix(storedName, this.projectSuffix);
+  }
+
   /** Expose Qdrant client for git-metadata enrichment */
   get qdrantClient(): QdrantClient {
     return this.qdrant;

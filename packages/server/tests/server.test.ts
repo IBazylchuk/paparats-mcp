@@ -829,6 +829,8 @@ describe('PAPARATS_UI_BASIC_AUTH', () => {
     try {
       const denied = await fetch(`http://127.0.0.1:${p}/api/analytics`);
       expect(denied.status).toBe(401);
+      const mapDenied = await fetch(`http://127.0.0.1:${p}/api/module-map`);
+      expect(mapDenied.status).toBe(401);
       const auth = 'Basic ' + Buffer.from('admin:s3cret:with-colon').toString('base64');
       const allowed = await fetch(`http://127.0.0.1:${p}/ui/`, {
         headers: { Authorization: auth },

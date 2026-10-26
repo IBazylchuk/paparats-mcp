@@ -71,6 +71,9 @@ function createMockIndexer(suffix = ''): Indexer {
     getAdjacentChunks: vi.fn().mockResolvedValue([]),
     listProjectsInGroup: vi.fn().mockResolvedValue([]),
     storedProjectName: vi.fn((name: string) => (suffix ? `${name}${suffix}` : name)),
+    displayProjectName: vi.fn((stored: string) =>
+      suffix && stored.endsWith(suffix) ? stored.slice(0, -suffix.length) : stored
+    ),
   } as unknown as Indexer;
 }
 
@@ -83,6 +86,8 @@ function createMockMetadataStore(): MetadataStore {
     getGroupDegreeSnapshot: vi.fn().mockReturnValue({ hubChunkIds: new Set() }),
     getNameUsage: vi.fn().mockReturnValue({ callerFiles: 0, filesUsing: new Map() }),
     getEdgesFromFile: vi.fn().mockReturnValue([]),
+    edgesVersion: vi.fn().mockReturnValue('0:0'),
+    iterateGroupEdges: vi.fn().mockReturnValue([]),
     deleteByProject: vi.fn(),
   } as unknown as MetadataStore;
 }
@@ -1454,6 +1459,95 @@ describe('McpHandler', () => {
     });
   });
 
+  describe('module_map', () => {
+    /** Two tight clusters of files, `a*` and `b*`, with one link from a to b. */
+    function clusterEdges(project = 'p1') {
+      const edges: Array<Record<string, string>> = [];
+      const link = (from: string, to: string, symbol: string) =>
+        edges.push({
+          from_chunk_id: `g1//${project}//${from}//0-5//h`,
+          to_chunk_id: `g1//${project}//${to}//0-5//h`,
+          relation_type: 'calls',
+          symbol_name: symbol,
+          confidence: 'INFERRED',
+        });
+      for (const [x, y] of [
+        ['a1', 'a2'],
+        ['a2', 'a3'],
+        ['a3', 'a1'],
+        ['b1', 'b2'],
+        ['b2', 'b3'],
+        ['b3', 'b1'],
+      ]) {
+        link(`src/${x![0]}/${x}.ts`, `src/${y![0]}/${y}.ts`, `use_${y}`);
+        link(`src/${y![0]}/${y}.ts`, `src/${x![0]}/${x}.ts`, `use_${x}`);
+      }
+      link('src/a/a1.ts', 'src/b/b1.ts', 'crossOne');
+      link('src/a/a2.ts', 'src/b/b2.ts', 'crossTwo');
+      link('tests/a.test.ts', 'src/a/a1.ts', 'use_a1');
+      return edges;
+    }
+
+    it('maps the group into modules with links and tests, in both modes', async () => {
+      const metadataStore = createMockMetadataStore();
+      vi.mocked(metadataStore.iterateGroupEdges).mockImplementation(() => clusterEdges() as never);
+      await withHandler({ metadataStore }, async (port) => {
+        for (const path of ['/mcp', '/support/mcp']) {
+          const { text, isError } = await callTool(port, 'module_map', {}, path);
+          expect(isError).toBe(false);
+          expect(text).toContain('## Module map of `g1`');
+          expect(text).toContain('2 modules over 6 files (1 test file attached');
+          expect(text).toContain('### 1. src/a — 3 files, 1 test');
+          expect(text).toContain('Uses: 2. src/b');
+          expect(text).toContain('Used by: 1. src/a');
+          expect(text).not.toContain('[p1]');
+        }
+      });
+    });
+
+    it('reuses the map until the edges change', async () => {
+      const metadataStore = createMockMetadataStore();
+      vi.mocked(metadataStore.iterateGroupEdges).mockImplementation(() => clusterEdges() as never);
+      await withHandler({ metadataStore }, async (port) => {
+        await callTool(port, 'module_map', { group: 'g1' });
+        await callTool(port, 'module_map', { group: 'g1' });
+        expect(metadataStore.iterateGroupEdges).toHaveBeenCalledTimes(1);
+        // A fresh map is still served while it is young, even after edges change.
+        vi.mocked(metadataStore.edgesVersion).mockReturnValue('0:1');
+        await callTool(port, 'module_map', { group: 'g1' });
+        expect(metadataStore.iterateGroupEdges).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it('asks for a group when several are indexed', async () => {
+      const metadataStore = createMockMetadataStore();
+      await withHandler({ metadataStore, getGroupNames: () => ['g1', 'g2'] }, async (port) => {
+        const { text } = await callTool(port, 'module_map', {});
+        expect(text).toContain('Pass `group`: one of `g1`, `g2`.');
+      });
+    });
+
+    it('maps one project only, and nothing for a project out of scope', async () => {
+      const metadataStore = createMockMetadataStore();
+      vi.mocked(metadataStore.iterateGroupEdges).mockImplementation(
+        () => [...clusterEdges('billing-v3'), ...clusterEdges('handbook-v3')] as never
+      );
+      const searcher = createMockSearcher();
+      vi.mocked(searcher.getProjectScope).mockReturnValue(['billing']);
+      await withHandler(
+        { metadataStore, searcher, indexer: createMockIndexer('-v3') },
+        async (port) => {
+          const all = await callTool(port, 'module_map', { group: 'g1' });
+          expect(all.text).toContain('2 modules over 6 files');
+          expect(all.text).not.toContain('handbook');
+
+          const hidden = await callTool(port, 'module_map', { group: 'g1', project: 'handbook' });
+          expect(hidden.text).toContain('No modules');
+        }
+      );
+    });
+  });
+
   it('rejects reuse of a coding session id on the support endpoint', async () => {
     const app = express();
     app.use(express.json());
@@ -2370,6 +2464,7 @@ describe('tool annotations', () => {
     'get_chunk',
     'find_usages',
     'change_impact',
+    'module_map',
     'list_projects',
     'health_check',
     'term_search',
