@@ -509,12 +509,31 @@ export class MetadataStore {
     if (group === undefined) {
       this.degreeCache.clear();
       this.nameUsageCache.clear();
+      this.edgeEpoch++;
       return;
     }
     const entry = this.degreeCache.get(group);
     if (entry) entry.stale = true;
     const names = this.nameUsageCache.get(group);
     if (names) names.stale = true;
+    this.edgeVersions.set(group, (this.edgeVersions.get(group) ?? 0) + 1);
+  }
+
+  /** Bumped on every edge write or delete in a group, so derived maps know they are behind. */
+  private edgeVersions = new Map<string, number>();
+  private edgeEpoch = 0;
+
+  edgesVersion(group: string): string {
+    return `${this.edgeEpoch}:${this.edgeVersions.get(group) ?? 0}`;
+  }
+
+  /** Every edge of a group, streamed — a large group has hundreds of thousands. */
+  iterateGroupEdges(group: string): Iterable<SymbolEdge> {
+    return this.db
+      .prepare(
+        'SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence FROM symbol_edges WHERE grp = ?'
+      )
+      .iterate(group) as Iterable<SymbolEdge>;
   }
 
   // ── Name usage (how common a linked name is) ─────────────────────────────

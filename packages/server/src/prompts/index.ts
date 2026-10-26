@@ -43,6 +43,7 @@ export interface Prompts {
     search_changes: ToolPrompt;
     find_usages: ToolPrompt;
     change_impact: ToolPrompt;
+    module_map: ToolPrompt;
     explain_feature: ToolPrompt;
     recent_changes: ToolPrompt;
     impact_analysis: ToolPrompt;
@@ -136,6 +137,7 @@ function validatePrompts(data: unknown): Prompts {
     'search_changes',
     'find_usages',
     'change_impact',
+    'module_map',
     'explain_feature',
     'recent_changes',
     'impact_analysis',

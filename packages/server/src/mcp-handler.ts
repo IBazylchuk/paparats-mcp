@@ -69,6 +69,7 @@ import {
 } from './ranking.js';
 import { collectDependents, MAX_IMPACT_DEPTH } from './change-impact.js';
 import { isCommonName } from './symbol-graph.js';
+import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map.js';
 
 const HIGH_CONFIDENCE_THRESHOLD = 0.6;
 const LOW_CONFIDENCE_THRESHOLD = 0.4;
@@ -764,6 +765,11 @@ export interface McpHandlerConfig {
   syncGroups?: () => Promise<void>;
   /** Optional metadata store for git history tools */
   metadataStore?: MetadataStore;
+  /**
+   * Shared module-map cache, so the console's map page and `module_map` build
+   * each map once. Created from `metadataStore` when not given.
+   */
+  moduleMaps?: ModuleMapService;
   /** Optional telemetry façade */
   telemetry?: Telemetry;
   /** Optional analytics store backing the analytics MCP tools */
@@ -970,7 +976,7 @@ export const ANALYTICS_TOOL_TITLES: Record<string, string> = {
  *
  * Resolution order matches the MCP spec's own fallback for a display name:
  * the registered title, then the raw tool name. Titles live in two places —
- * `prompts.json` for the 24 documented tools, {@link ANALYTICS_TOOL_TITLES}
+ * `prompts.json` for the 25 documented tools, {@link ANALYTICS_TOOL_TITLES}
  * for the analytics six — so this is the single place that knows about both.
  */
 export function toolTitle(name: string): string {
@@ -984,6 +990,7 @@ export const CODING_TOOLS = new Set([
   'find_usages',
   // what depends on code about to change — coding only; support has impact_analysis.
   'change_impact',
+  'module_map',
   'health_check',
   'delete_project',
   'list_projects',
@@ -1015,6 +1022,7 @@ export const SUPPORT_TOOLS = new Set([
   'explain_feature',
   'recent_changes',
   'impact_analysis',
+  'module_map',
   // analytics tools
   'token_savings_report',
   'top_queries',
@@ -1072,6 +1080,7 @@ export class McpHandler {
   private removeProject: ((group: string, projectName: string) => void) | null;
   private syncGroups: (() => Promise<void>) | null;
   private metadataStore: MetadataStore | null;
+  private moduleMaps: ModuleMapService | null;
   private telemetry: Telemetry | null;
   private analytics: AnalyticsStore | null;
   private archStore: ArchStore | null;
@@ -1102,6 +1111,9 @@ export class McpHandler {
     this.removeProject = config.removeProject ?? null;
     this.syncGroups = config.syncGroups ?? null;
     this.metadataStore = config.metadataStore ?? null;
+    this.moduleMaps =
+      config.moduleMaps ??
+      (config.metadataStore ? new ModuleMapService(config.metadataStore) : null);
     this.telemetry = config.telemetry ?? null;
     this.analytics = config.analytics ?? null;
     this.archStore = config.archStore ?? null;
@@ -2193,8 +2205,8 @@ export class McpHandler {
             const wantIncoming = direction === 'incoming' || direction === 'both';
             const wantOutgoing = direction === 'outgoing' || direction === 'both';
 
-            // Edges cross project boundaries within a group; neighbours in a
-            // project outside the scope are dropped like any other hidden chunk.
+            // Edges are built per project pass, so they stay inside one project;
+            // the scope check still drops a neighbour in a hidden project.
             let edgesTo = wantIncoming
               ? this.metadataStore
                   .getEdgesTo(chunk_id)
@@ -2583,6 +2595,106 @@ export class McpHandler {
                 {
                   type: 'text' as const,
                   text: `Change impact failed: ${(err as Error).message}`,
+                },
+              ],
+              isError: true,
+            };
+          }
+        }
+      );
+
+    // ── Tool: module_map ──────────────────────────────────────────────────
+    if (tools.has('module_map'))
+      server.registerTool(
+        'module_map',
+        {
+          title: prompts.tools.module_map.title,
+          description: prompts.tools.module_map.description,
+          inputSchema: {
+            group: z
+              .string()
+              .optional()
+              .describe('Group to map; may be omitted when only one group is indexed'),
+            project: z
+              .string()
+              .optional()
+              .describe('Map only this project (its files and the links between them)'),
+            limit: z.coerce
+              .number()
+              .min(1)
+              .max(100)
+              .default(25)
+              .describe('Modules to show in full, largest first'),
+            diagram: z
+              .boolean()
+              .default(true)
+              .describe(
+                'Append a Mermaid diagram of the shown modules (rendered by clients that support Mermaid)'
+              ),
+          },
+          annotations: READ_ONLY,
+        },
+        async ({ group, project, limit, diagram }) => {
+          try {
+            const moduleMaps = this.moduleMaps;
+            if (!moduleMaps) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: 'Symbol graph is not available. The metadata store is not configured.',
+                  },
+                ],
+              };
+            }
+            const groups = this.getGroupNames();
+            const target = group ?? (groups.length === 1 ? groups[0] : undefined);
+            if (target === undefined) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text:
+                      groups.length === 0
+                        ? 'No groups registered. Index a project first.'
+                        : `Pass \`group\`: one of ${groups.map((g) => `\`${g}\``).join(', ')}.`,
+                  },
+                ],
+              };
+            }
+            // An out-of-scope project needs no check: its edges are filtered out,
+            // so it maps exactly like a project with nothing indexed.
+            const invalid = invalidGroupResult(target);
+            if (invalid) return invalid;
+
+            const map = moduleMaps.get(
+              target,
+              project !== undefined ? this.indexer.storedProjectName(project) : undefined,
+              (id) => scope.allowsChunk(id)
+            );
+            const projects = new Set(
+              map.modules.flatMap((m) => m.files.map((k) => k.slice(0, k.indexOf('//'))))
+            );
+            const showFile = (key: string): string => {
+              const i = key.indexOf('//');
+              const file = key.slice(i + 2);
+              return projects.size > 1
+                ? `[${this.indexer.displayProjectName(key.slice(0, i))}] ${file}`
+                : file;
+            };
+            const showName = (m: CodeModule): string =>
+              projects.size > 1
+                ? `[${this.indexer.displayProjectName(m.project)}] ${m.name}`
+                : m.name;
+            const title = `\`${target}\`${project !== undefined ? ` / \`${project}\`` : ''}`;
+            const text = formatModuleMap(map, { title, limit, showFile, showName, diagram });
+            return { content: [{ type: 'text' as const, text }] };
+          } catch (err) {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `Module map failed: ${(err as Error).message}`,
                 },
               ],
               isError: true,
@@ -3224,8 +3336,8 @@ export class McpHandler {
             }> = [];
             const discoveredByHop = new Map<string, number>(); // chunkId -> hop level
 
-            // Edges cross project boundaries within a group; a neighbour outside
-            // the project scope is never followed or shown.
+            // Edges are built per project pass, so they stay inside one project;
+            // a neighbour outside the project scope is still never followed or shown.
             const edgesTo = (id: string) =>
               this.metadataStore!.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id));
             const edgesFrom = (id: string) =>

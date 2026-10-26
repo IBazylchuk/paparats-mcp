@@ -7,6 +7,8 @@ import { buildProjectConfigFromContent, validateGroupName } from './config.js';
 import { Indexer, parseChunkId } from './indexer.js';
 import { Searcher } from './searcher.js';
 import { McpHandler, createProjectScopeGuard } from './mcp-handler.js';
+import { ModuleMapService } from './module-map.js';
+import { buildModuleMapRouter } from './module-map-api.js';
 import type { MetadataStore } from './metadata-db.js';
 import type { ProjectConfig } from './types.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
@@ -271,6 +273,8 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   const uiAuth = buildUiBasicAuth(process.env['PAPARATS_UI_BASIC_AUTH']);
   const corsOrigins = parseCorsOrigins(process.env['PAPARATS_CORS_ORIGINS']);
   const scope = createProjectScopeGuard(searcher, indexer);
+  // One module-map cache for the console's map page and the `module_map` tool.
+  const moduleMaps = metadataStore ? new ModuleMapService(metadataStore) : null;
 
   // ── Group discovery from Qdrant ───────────────────────────────────────────
 
@@ -858,6 +862,12 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     })
   );
 
+  app.use(
+    '/api/module-map',
+    ...uiHandlers,
+    buildModuleMapRouter({ moduleMaps, indexer, getGroupNames, scope })
+  );
+
   // ── MCP transports ─────────────────────────────────────────────────────────
 
   const mcpHandler = new McpHandler({
@@ -868,6 +878,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
     removeProject: unregisterProject,
     syncGroups: syncGroupsFromQdrant,
     metadataStore,
+    ...(moduleMaps ? { moduleMaps } : {}),
     telemetry,
     analytics,
     archStore,
