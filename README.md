@@ -867,7 +867,7 @@ projects.
 | `search_code`             | Semantic search across indexed projects. Returns chunks with symbol info and confidence scores.                              |
 | `get_chunk`               | Retrieve a chunk by ID with optional surrounding context.                                                                    |
 | `find_usages`             | Walk the symbol graph from a `chunk_id` — `incoming` (callers/references in), `outgoing` (calls/references out), or `both`.  |
-| `change_impact`           | What depends on a chunk you are about to change: callers, their callers (up to 3 steps) and the tests that reach it, with `[maybe]` on links through a name defined in several places. `symbol` narrows to one name, `whole_file` takes the whole file. |
+| `change_impact`           | What depends on a chunk you are about to change: callers, their callers (up to 3 steps) and the tests that reach it, with `[maybe]` on links through a name defined in several places. Callers linked only through a common method name (`add`, `get`, `close`) are listed apart as probably unrelated. `symbol` narrows to one name, `whole_file` takes the whole file. |
 | `list_projects`           | List indexed projects with chunk counts and detected languages.                                                              |
 | `delete_project`          | Wipe Qdrant chunks + SQLite metadata for a project (`paparats remove` uses the equivalent HTTP endpoint).                    |
 | `health_check`            | Indexing status, chunks per group, running jobs.                                                                             |

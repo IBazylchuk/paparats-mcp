@@ -158,6 +158,14 @@ export type RelationType = 'calls' | 'called_by' | 'references' | 'referenced_by
  */
 export type EdgeConfidence = 'EXTRACTED' | 'INFERRED' | 'AMBIGUOUS';
 
+/** How widely each linked name is used in a group; see `MetadataStore.getNameUsage`. */
+export interface NameUsage {
+  /** Files that use any name an edge links through. */
+  callerFiles: number;
+  /** Per name, the number of files using it. */
+  filesUsing: Map<string, number>;
+}
+
 export interface SymbolEdge {
   from_chunk_id: string;
   to_chunk_id: string;

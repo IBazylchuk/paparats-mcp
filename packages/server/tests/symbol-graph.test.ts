@@ -1,5 +1,38 @@
 import { describe, it, expect } from 'vitest';
-import { buildSymbolEdges, MAX_DEFINITION_FANOUT } from '../src/symbol-graph.js';
+import {
+  buildSymbolEdges,
+  COMMON_NAME_MIN_FILES,
+  isCommonName,
+  MAX_DEFINITION_FANOUT,
+} from '../src/symbol-graph.js';
+
+describe('isCommonName', () => {
+  const usage = (callerFiles: number, names: Record<string, number>) => ({
+    callerFiles,
+    filesUsing: new Map(Object.entries(names)),
+  });
+
+  it('flags a single lowercase word used from more than √(files) files', () => {
+    const u = usage(400, { add: 21, get: 20, close: 3 });
+    expect(isCommonName('add', u)).toBe(true);
+    expect(isCommonName('get', u)).toBe(false);
+    expect(isCommonName('close', u)).toBe(false);
+  });
+
+  it('keeps compound names, however widely used', () => {
+    const u = usage(400, { ProjectConfig: 300, getChunkById: 300, find_by_name: 300 });
+    for (const name of ['ProjectConfig', 'getChunkById', 'find_by_name']) {
+      expect(isCommonName(name, u)).toBe(false);
+    }
+  });
+
+  it('needs a minimum number of files in a small group', () => {
+    const u = usage(16, { run: COMMON_NAME_MIN_FILES, each: COMMON_NAME_MIN_FILES + 1 });
+    expect(isCommonName('run', u)).toBe(false);
+    expect(isCommonName('each', u)).toBe(true);
+    expect(isCommonName('valid?', usage(16, { 'valid?': 9 }))).toBe(true);
+  });
+});
 
 describe('buildSymbolEdges', () => {
   it('creates edges from usage to definition', () => {

@@ -2,7 +2,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import Database from 'better-sqlite3';
-import type { ChunkCommit, ChunkTicket, SymbolEdge } from './types.js';
+import type { ChunkCommit, ChunkTicket, NameUsage, SymbolEdge } from './types.js';
 
 const PAPARATS_DIR = path.join(os.homedir(), '.paparats');
 const DEFAULT_DB_PATH = path.join(PAPARATS_DIR, 'metadata.db');
@@ -435,6 +435,16 @@ export class MetadataStore {
     this.invalidateDegreeCache(group);
   }
 
+  /** Every edge leaving any chunk of one file. */
+  getEdgesFromFile(group: string, project: string, file: string): SymbolEdge[] {
+    const pattern = `${escapeLike(group)}//${escapeLike(project)}//${escapeLike(file)}//%`;
+    return this.db
+      .prepare(
+        "SELECT from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence FROM symbol_edges WHERE grp = ? AND from_chunk_id LIKE ? ESCAPE '\\'"
+      )
+      .all(group, pattern) as SymbolEdge[];
+  }
+
   /** Whether any symbol edge originates in this project. */
   hasEdgesForProject(group: string, project: string): boolean {
     const pattern = `${escapeLike(group)}//${escapeLike(project)}//%`;
@@ -498,10 +508,77 @@ export class MetadataStore {
   invalidateDegreeCache(group?: string): void {
     if (group === undefined) {
       this.degreeCache.clear();
+      this.nameUsageCache.clear();
       return;
     }
     const entry = this.degreeCache.get(group);
     if (entry) entry.stale = true;
+    const names = this.nameUsageCache.get(group);
+    if (names) names.stale = true;
+  }
+
+  // ── Name usage (how common a linked name is) ─────────────────────────────
+
+  /**
+   * Per-group name usage, cached and refreshed exactly like the degree stats
+   * (stale-while-revalidate, invalidated with them): one full scan of the
+   * group's edges, too slow to repeat per tool call on a large group.
+   */
+  private nameUsageCache = new Map<
+    string,
+    { usage: NameUsage; computedAt: number; stale: boolean }
+  >();
+  private nameUsageRefreshInFlight = new Set<string>();
+
+  private computeNameUsage(group: string): NameUsage {
+    const users = new Map<string, Set<string>>();
+    const callers = new Set<string>();
+    const rows = this.db
+      .prepare('SELECT from_chunk_id, symbol_name FROM symbol_edges WHERE grp = ?')
+      .iterate(group) as Iterable<{ from_chunk_id: string; symbol_name: string }>;
+    for (const row of rows) {
+      const file = chunkFileKey(row.from_chunk_id);
+      callers.add(file);
+      let set = users.get(row.symbol_name);
+      if (!set) users.set(row.symbol_name, (set = new Set()));
+      set.add(file);
+    }
+    const filesUsing = new Map<string, number>();
+    for (const [name, set] of users) filesUsing.set(name, set.size);
+    return { callerFiles: callers.size, filesUsing };
+  }
+
+  /**
+   * For every name the group's edges link through: how many files use it, and
+   * how many files use any linked name at all. A name used from most files
+   * (`get`, `add`, `close`) is mostly calls on other objects that happen to
+   * share it, since edges are matched by name — see `isCommonName`.
+   */
+  getNameUsage(group: string): NameUsage {
+    const cached = this.nameUsageCache.get(group);
+    if (cached) {
+      const expired = Date.now() - cached.computedAt >= MetadataStore.DEGREE_CACHE_TTL_MS;
+      if ((cached.stale || expired) && !this.nameUsageRefreshInFlight.has(group)) {
+        this.nameUsageRefreshInFlight.add(group);
+        setImmediate(() => {
+          try {
+            this.nameUsageCache.set(group, {
+              usage: this.computeNameUsage(group),
+              computedAt: Date.now(),
+              stale: false,
+            });
+          } catch {
+            // Keep serving the previous entry; a later read retries.
+          } finally {
+            this.nameUsageRefreshInFlight.delete(group);
+          }
+        });
+      }
+      return cached.usage;
+    }
+    const usage = this.computeNameUsage(group);
+    this.nameUsageCache.set(group, { usage, computedAt: Date.now(), stale: false });
+    return usage;
   }
 
   private computeGroupDegreeStats(group: string): {
@@ -680,6 +757,12 @@ export class MetadataStore {
  * output for every length, including the boundary cases where p*len is an
  * integer. Returns 0 for empty input.
  */
+/** `<group>//<project>//<file>` of a chunk id. */
+function chunkFileKey(chunkId: string): string {
+  const parts = chunkId.split('//');
+  return parts.slice(0, 3).join('//');
+}
+
 function percentile(sortedDesc: number[], p: number): number {
   const len = sortedDesc.length;
   if (len === 0) return 0;

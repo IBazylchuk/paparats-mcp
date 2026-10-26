@@ -81,6 +81,8 @@ function createMockMetadataStore(): MetadataStore {
     getEdgesTo: vi.fn().mockReturnValue([]),
     getEdgesFrom: vi.fn().mockReturnValue([]),
     getGroupDegreeSnapshot: vi.fn().mockReturnValue({ hubChunkIds: new Set() }),
+    getNameUsage: vi.fn().mockReturnValue({ callerFiles: 0, filesUsing: new Map() }),
+    getEdgesFromFile: vi.fn().mockReturnValue([]),
     deleteByProject: vi.fn(),
   } as unknown as MetadataStore;
 }
@@ -1392,6 +1394,54 @@ describe('McpHandler', () => {
         expect(wrong.text).toContain(
           'This chunk does not define `nope`; it defines `authenticate`, `logout`.'
         );
+      });
+    });
+
+    it('lists callers linked only through a common name apart, without following them', async () => {
+      const { metadataStore, indexer } = mocks();
+      const setUsers = Array.from({ length: 12 }, (_, i) => `g1//p1//src/m${i}.ts//0-5//c${i}`);
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) =>
+          [
+            ...EDGES.filter((e) => e.to_chunk_id === id),
+            ...(id === SEED ? setUsers.map((u) => edge(u, SEED, 'add')) : []),
+            ...(id === setUsers[0] ? [edge(CALLER_OF_CALLER, setUsers[0]!, 'build')] : []),
+          ] as never
+      );
+      vi.mocked(metadataStore.getNameUsage).mockReturnValue({
+        callerFiles: 100,
+        filesUsing: new Map([['add', 40]]),
+      });
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED, depth: 1 });
+        expect(text).toContain('3 chunks in 3 files depend on it');
+        expect(text).toContain(
+          '### Linked only through a common name (12) — probably not dependents'
+        );
+        expect(text).toContain(
+          '- `add` (used in 40 files) — 12 chunks in 12 files: src/m0.ts, src/m1.ts, src/m10.ts, src/m11.ts, src/m2.ts (+7 more)'
+        );
+        expect(text).not.toContain('**[p1] src/m0.ts');
+      });
+    });
+
+    it('keeps a common-name caller whose file also uses something specific from the changed file', async () => {
+      const { metadataStore, indexer } = mocks();
+      const QUEUE_USER = 'g1//p1//src/worker.ts//0-5//q1';
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => (id === SEED ? [edge(QUEUE_USER, SEED, 'add')] : []) as never
+      );
+      vi.mocked(metadataStore.getEdgesFromFile).mockReturnValue([
+        edge('g1//p1//src/worker.ts//6-9//q2', 'g1//p1//src/auth.ts//0-9//h9', 'AuthQueue'),
+      ]);
+      vi.mocked(metadataStore.getNameUsage).mockReturnValue({
+        callerFiles: 100,
+        filesUsing: new Map([['add', 40]]),
+      });
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('src/worker.ts:0** — uses `add` [maybe]');
+        expect(text).not.toContain('Linked only through a common name');
       });
     });
 

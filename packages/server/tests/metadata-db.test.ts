@@ -455,6 +455,45 @@ describe('MetadataStore', () => {
     expect(snap.inDegreeP95).toBeGreaterThanOrEqual(5);
   });
 
+  it('getNameUsage counts the files using each name, once per file', async () => {
+    const edge = (from: string, to: string, symbol_name: string) => ({
+      from_chunk_id: from,
+      to_chunk_id: to,
+      relation_type: 'calls' as const,
+      symbol_name,
+      confidence: 'INFERRED' as const,
+    });
+    await store.upsertSymbolEdges([
+      edge('g//p//a.ts//1-5//h1', 'g//p//q.ts//1-5//hq', 'add'),
+      edge('g//p//a.ts//6-9//h2', 'g//p//q.ts//1-5//hq', 'add'),
+      edge('g//p//b.ts//1-5//h3', 'g//p//q.ts//1-5//hq', 'add'),
+      edge('g//p//b.ts//1-5//h3', 'g//p//r.ts//1-5//hr', 'parseRow'),
+      edge('other//p//c.ts//1-5//h4', 'other//p//q.ts//1-5//hq', 'add'),
+    ]);
+    const usage = store.getNameUsage('g');
+    expect(usage.callerFiles).toBe(2);
+    expect(usage.filesUsing.get('add')).toBe(2);
+    expect(usage.filesUsing.get('parseRow')).toBe(1);
+  });
+
+  it('getEdgesFromFile returns the edges of every chunk of one file', async () => {
+    const edge = (from: string, to: string) => ({
+      from_chunk_id: from,
+      to_chunk_id: to,
+      relation_type: 'calls' as const,
+      symbol_name: 's',
+      confidence: 'INFERRED' as const,
+    });
+    await store.upsertSymbolEdges([
+      edge('g//p//src/a.ts//1-5//h1', 'g//p//q.ts//1-5//hq'),
+      edge('g//p//src/a.ts//6-9//h2', 'g//p//r.ts//1-5//hr'),
+      edge('g//p//src/a.ts.bak//1-5//h3', 'g//p//q.ts//1-5//hq'),
+      edge('g//p//src/a_ts//1-5//h4', 'g//p//q.ts//1-5//hq'),
+    ]);
+    const to = store.getEdgesFromFile('g', 'p', 'src/a.ts').map((e) => e.to_chunk_id);
+    expect(to.sort()).toEqual(['g//p//q.ts//1-5//hq', 'g//p//r.ts//1-5//hr']);
+  });
+
   it('getTopByInDegree honors an optional project filter', async () => {
     await store.upsertSymbolEdges([
       {
