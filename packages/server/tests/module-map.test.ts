@@ -5,6 +5,8 @@ import {
   formatModuleMap,
   isMigrationPath,
   louvain,
+  mergeModuleMaps,
+  ModuleMapService,
   moduleMapDiagram,
   splitLarge,
   type MapEdge,
@@ -184,6 +186,65 @@ describe('buildModuleMap', () => {
     expect(names).toHaveLength(2);
     expect(new Set(names).size).toBe(2);
     expect(names.every((n) => n.startsWith('src ('))).toBe(true);
+  });
+});
+
+describe('mergeModuleMaps', () => {
+  it('builds the same map from per-project maps as from all edges at once', () => {
+    const edges: MapEdge[] = [];
+    for (const project of ['p', 'q']) {
+      for (const dir of ['a', 'b']) {
+        const files = [1, 2, 3].map((i) => `src/${dir}/${project}${i}.ts`);
+        for (const x of files)
+          for (const y of files) if (x !== y) edges.push(e(x, y, `to_${y}`, project));
+      }
+      edges.push(e(`src/a/${project}1.ts`, `src/b/${project}1.ts`, `cross_${project}`, project));
+    }
+    edges.push(...[1, 2, 3, 4].map((i) => e(`src/q/x${i}.ts`, 'src/q/x0.ts', `x${i}`, 'q')));
+    const byProject = ['p', 'q'].map((p) =>
+      buildModuleMap(
+        edges.filter((x) => x.from_chunk_id.startsWith(`g//${p}//`)),
+        []
+      )
+    );
+
+    const merged = mergeModuleMaps(byProject);
+    const whole = buildModuleMap(edges, []);
+    expect(merged.modules).toEqual(whole.modules);
+    expect(merged.shared).toEqual(whole.shared);
+    expect(merged.unconnected).toEqual(whole.unconnected);
+    expect(merged.weights).toEqual(whole.weights);
+  });
+});
+
+describe('ModuleMapService', () => {
+  it('maps again only the projects whose edges changed', () => {
+    const edges = [e('a.ts', 'b.ts', 'toB', 'p'), e('c.ts', 'd.ts', 'toD', 'q')];
+    const versions: Record<string, string> = { p: '1', q: '1' };
+    const reads: string[] = [];
+    let now = 0;
+    const service = new ModuleMapService(
+      {
+        edgesVersion: (_group: string, project?: string) => versions[project!]!,
+        edgeProjects: () => ['p', 'q'],
+        iterateProjectEdges: (_group: string, project: string) => {
+          reads.push(project);
+          return edges.filter((x) => x.from_chunk_id.startsWith(`g//${project}//`)) as never;
+        },
+      },
+      () => now
+    );
+
+    const first = service.get('g', undefined, () => true);
+    expect(first.modules).toHaveLength(2);
+    expect(service.get('g', undefined, () => true)).toBe(first);
+    expect(reads).toEqual(['p', 'q']);
+
+    versions.q = '2';
+    now += 10 * 60 * 1000;
+    const second = service.get('g', undefined, () => true);
+    expect(reads).toEqual(['p', 'q', 'q']);
+    expect(second).not.toBe(first);
   });
 });
 

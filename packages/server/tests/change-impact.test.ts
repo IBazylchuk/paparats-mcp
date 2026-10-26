@@ -2,14 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { collectDependents } from '../src/change-impact.js';
 import type { EdgeConfidence, SymbolEdge } from '../src/types.js';
 
-/** Edges as `[caller, callee, symbol, confidence?]`. */
-function graph(edges: Array<[string, string, string, EdgeConfidence?]>) {
-  const rows: SymbolEdge[] = edges.map(([from, to, sym, confidence]) => ({
+/** Edges as `[caller, callee, symbol, confidence?, calling methods?]`. */
+function graph(edges: Array<[string, string, string, EdgeConfidence?, string[]?]>) {
+  const rows: SymbolEdge[] = edges.map(([from, to, sym, confidence, fromSymbols]) => ({
     from_chunk_id: from,
     to_chunk_id: to,
     relation_type: 'calls',
     symbol_name: sym,
     ...(confidence ? { confidence } : {}),
+    ...(fromSymbols ? { from_symbols: fromSymbols } : {}),
   }));
   return (id: string) => rows.filter((e) => e.to_chunk_id === id);
 }
@@ -31,6 +32,46 @@ describe('collectDependents', () => {
       ['c', 2],
     ]);
     expect(deeper).toBe(false);
+  });
+
+  it('passes the change on only through the calling method, not its neighbours in the chunk', () => {
+    // `config` holds two methods; only `description` calls the seed.
+    const edgesTo = graph([
+      ['config', 'seed', 'f', 'INFERRED', ['description']],
+      ['page', 'config', 'description'],
+      ['header', 'config', 'title'],
+    ]);
+    const { dependents } = collectDependents({ ...base, seeds: ['seed'], edgesTo });
+    expect(dependents.map((d) => [d.chunkId, d.hop, d.callers])).toEqual([
+      ['config', 1, ['description']],
+      ['page', 2, []],
+    ]);
+  });
+
+  it('follows a chunk again when a later hop reaches another of its methods', () => {
+    const edgesTo = graph([
+      ['config', 'seed', 'f', 'INFERRED', ['description']],
+      ['helper', 'seed', 'f', 'INFERRED', ['run']],
+      ['config', 'helper', 'run', 'INFERRED', ['title']],
+      ['header', 'config', 'title'],
+    ]);
+    const { dependents } = collectDependents({ ...base, depth: 3, seeds: ['seed'], edgesTo });
+    expect(dependents.map((d) => d.chunkId)).toEqual(['config', 'helper', 'header']);
+  });
+
+  it('keeps a common name when the edge names its target', () => {
+    const edgesTo = graph([
+      ['a', 'seed', 'create', 'EXTRACTED'],
+      ['b', 'seed', 'create', 'INFERRED'],
+    ]);
+    const { dependents, viaCommonNames } = collectDependents({
+      ...base,
+      seeds: ['seed'],
+      edgesTo,
+      isCommonName: (n) => n === 'create',
+    });
+    expect(dependents.map((d) => [d.chunkId, d.certain])).toEqual([['a', true]]);
+    expect(viaCommonNames).toEqual([{ symbol: 'create', chunkIds: ['b'] }]);
   });
 
   it('collects every name a dependent uses from the previous level', () => {

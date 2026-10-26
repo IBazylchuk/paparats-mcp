@@ -10,6 +10,8 @@ export interface Dependent {
   hop: number;
   /** Names it uses from the chunks one hop closer to the change. */
   symbols: string[];
+  /** The methods in it that make those calls; empty when the call is outside any method. */
+  callers: string[];
   /**
    * False when every path to the change goes through a name defined in several
    * chunks (an AMBIGUOUS edge) or a common name kept by `confirmsLink`: the
@@ -57,67 +59,135 @@ export interface CollectDependentsOptions {
   confirmsLink?: (callerChunkId: string, targetChunkId: string) => boolean;
 }
 
+/** The names a chunk's callers must use to be affected: some of its methods, or all of it. */
+type Via = Set<string> | 'all';
+
+/** What of the caller chunk an edge says is affected: its calling methods, or the whole chunk. */
+function viaOf(edge: SymbolEdge): Via {
+  return edge.from_symbols && edge.from_symbols.length > 0 ? new Set(edge.from_symbols) : 'all';
+}
+
+/** Adds `more` to `into`; returns what was not in it before ('all' stands for any name). */
+function mergeVia(into: Map<string, Via>, id: string, more: Via): Via | null {
+  const have = into.get(id);
+  if (have === 'all') return null;
+  if (more === 'all') {
+    into.set(id, 'all');
+    return 'all';
+  }
+  if (!have) {
+    into.set(id, new Set(more));
+    return more;
+  }
+  const added = new Set([...more].filter((name) => !have.has(name)));
+  for (const name of added) have.add(name);
+  return added.size > 0 ? added : null;
+}
+
 /**
  * Breadth-first walk over incoming symbol edges from `seeds`: everything that
  * would have to be checked if the seeds changed. Each chunk is reported once,
  * at the hop it is first reached, with every name it uses from the previous
  * level. Hubs and leaves are reported but not expanded, which keeps one
  * widely-called helper from pulling in half the codebase.
+ *
+ * The walk follows methods, not whole chunks: a chunk reached because its
+ * method `a` calls the change passes the change on only to callers of `a`, not
+ * to callers of `b` sitting in the same chunk. A chunk reached again later
+ * through another of its methods is followed through that one too.
  */
 export function collectDependents(opts: CollectDependentsOptions): DependentsResult {
   const seeds = new Set(opts.seeds);
   const found = new Map<string, Dependent>();
   const certainSoFar = new Map<string, boolean>(opts.seeds.map((id) => [id, true]));
   const common = new Map<string, Set<string>>();
-  let frontier = [...seeds];
+  // Per chunk, the names already followed (or queued) into its callers.
+  const followed = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
+  let frontier = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
   let truncated = false;
 
-  for (let hop = 1; hop <= opts.depth && frontier.length > 0 && !truncated; hop++) {
+  const followsEdge = (edge: SymbolEdge, via: Via, hop: number): boolean => {
+    if (hop === 1 && opts.symbol !== undefined && edge.symbol_name !== opts.symbol) return false;
+    return via === 'all' || via.has(edge.symbol_name);
+  };
+
+  for (let hop = 1; hop <= opts.depth && frontier.size > 0 && !truncated; hop++) {
     const level = new Map<string, Dependent>();
-    for (const target of frontier) {
+    const reached = new Map<string, Via>();
+    for (const [target, via] of frontier) {
       const targetCertain = certainSoFar.get(target) ?? false;
       for (const edge of opts.edgesTo(target)) {
-        if (hop === 1 && opts.symbol !== undefined && edge.symbol_name !== opts.symbol) continue;
+        if (!followsEdge(edge, via, hop)) continue;
         const caller = edge.from_chunk_id;
-        if (seeds.has(caller) || found.has(caller)) continue;
-        const commonName = opts.isCommonName?.(edge.symbol_name) ?? false;
+        if (seeds.has(caller)) continue;
+        // Extracted edges name their target (same file, or `Class.method`), so
+        // even a common name is a real link through them.
+        const commonName =
+          edge.confidence !== 'EXTRACTED' && (opts.isCommonName?.(edge.symbol_name) ?? false);
         if (commonName && !opts.confirmsLink?.(caller, target)) {
-          let set = common.get(edge.symbol_name);
-          if (!set) common.set(edge.symbol_name, (set = new Set()));
-          set.add(caller);
+          if (!found.has(caller)) {
+            let set = common.get(edge.symbol_name);
+            if (!set) common.set(edge.symbol_name, (set = new Set()));
+            set.add(caller);
+          }
           continue;
         }
 
+        const edgeVia = viaOf(edge);
         const certain = targetCertain && !commonName && edge.confidence !== 'AMBIGUOUS';
+        if (found.has(caller)) {
+          // Already listed at a nearer hop: only its newly affected methods are followed.
+          const prev = reached.get(caller);
+          reached.set(caller, prev === undefined ? edgeVia : unionVia(prev, edgeVia));
+          continue;
+        }
         let dep = level.get(caller);
         if (!dep) {
           if (found.size + level.size >= opts.maxDependents) {
             truncated = true;
             continue;
           }
-          dep = { chunkId: caller, hop, symbols: [], certain, hub: opts.isHub(caller) };
+          dep = {
+            chunkId: caller,
+            hop,
+            symbols: [],
+            callers: [],
+            certain,
+            hub: opts.isHub(caller),
+          };
           level.set(caller, dep);
         }
         if (!dep.symbols.includes(edge.symbol_name)) dep.symbols.push(edge.symbol_name);
+        for (const name of edge.from_symbols ?? []) {
+          if (!dep.callers.includes(name)) dep.callers.push(name);
+        }
         dep.certain ||= certain;
+        const prev = reached.get(caller);
+        reached.set(caller, prev === undefined ? edgeVia : unionVia(prev, edgeVia));
       }
     }
 
-    frontier = [];
     for (const dep of level.values()) {
       found.set(dep.chunkId, dep);
       certainSoFar.set(dep.chunkId, dep.certain);
-      if (!dep.hub && !opts.isLeaf?.(dep.chunkId)) frontier.push(dep.chunkId);
+    }
+    frontier = new Map();
+    for (const [id, via] of reached) {
+      const dep = found.get(id);
+      if (!dep || dep.hub || opts.isLeaf?.(id)) continue;
+      const added = mergeVia(followed, id, via);
+      if (added) frontier.set(id, added);
     }
   }
 
   const deeper =
     !truncated &&
-    frontier.some((id) =>
+    [...frontier].some(([id, via]) =>
       opts
         .edgesTo(id)
         .some(
           (e) =>
+            (via === 'all' || via.has(e.symbol_name)) &&
             !seeds.has(e.from_chunk_id) &&
             !found.has(e.from_chunk_id) &&
             !opts.isCommonName?.(e.symbol_name)
@@ -129,4 +199,9 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     .filter((c) => c.chunkIds.length > 0)
     .sort((a, b) => b.chunkIds.length - a.chunkIds.length || a.symbol.localeCompare(b.symbol));
   return { dependents: [...found.values()], truncated, deeper, viaCommonNames };
+}
+
+function unionVia(a: Via, b: Via): Via {
+  if (a === 'all' || b === 'all') return 'all';
+  return new Set([...a, ...b]);
 }

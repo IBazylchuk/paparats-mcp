@@ -54,7 +54,158 @@ describe('buildSymbolEdges', () => {
       relation_type: 'calls',
       symbol_name: 'greet',
       confidence: 'INFERRED',
+      from_symbols: [],
     });
+  });
+
+  it('links a call that names its class only to that class, as EXTRACTED', () => {
+    const { edges } = buildSymbolEdges([
+      {
+        chunk_id: 'g//p//usage.rb//1-5//h1',
+        defines_symbols: ['claim'],
+        uses_symbols: [],
+        def_owners: { claim: 'Usage' },
+      },
+      {
+        chunk_id: 'g//p//quota.rb//1-5//h2',
+        defines_symbols: ['claim'],
+        uses_symbols: [],
+        def_owners: { claim: 'Quota' },
+      },
+      {
+        chunk_id: 'g//p//caller.rb//1-5//h3',
+        defines_symbols: [],
+        uses_symbols: ['claim'],
+        use_sites: [{ name: 'claim', from: 'run', on: 'Usage' }],
+      },
+    ]);
+
+    expect(edges).toEqual([
+      expect.objectContaining({
+        to_chunk_id: 'g//p//usage.rb//1-5//h1',
+        confidence: 'EXTRACTED',
+        from_symbols: ['run'],
+      }),
+    ]);
+  });
+
+  it('resolves a relative class name from the namespace of the call, as Ruby does', () => {
+    const defs = [
+      ['api', 'Api::Parser'],
+      ['ext', 'Extraction::Parser'],
+      ['top', 'Parser'],
+    ].map(([id, owner]) => ({
+      chunk_id: `g//p//${id}.rb//1-5//h`,
+      defines_symbols: ['resolve'],
+      uses_symbols: [],
+      def_owners: { resolve: owner! },
+    }));
+    const caller = (on: string, scope?: string) => ({
+      chunk_id: 'g//p//caller.rb//1-5//h',
+      defines_symbols: [],
+      uses_symbols: ['resolve'],
+      use_sites: [{ name: 'resolve', from: 'run', on, ...(scope ? { in: scope } : {}) }],
+    });
+    const linked = (c: ReturnType<typeof caller>) =>
+      buildSymbolEdges([...defs, c]).edges.map((e) => [e.to_chunk_id.split('//')[2], e.confidence]);
+
+    // From inside Extraction, `Parser` is Extraction::Parser, not the others of the same name.
+    expect(linked(caller('Parser', 'Extraction::Pipeline'))).toEqual([['ext.rb', 'EXTRACTED']]);
+    expect(linked(caller('Parser', 'Billing::Job'))).toEqual([['top.rb', 'EXTRACTED']]);
+    expect(linked(caller('::Api::Parser'))).toEqual([['api.rb', 'EXTRACTED']]);
+    expect(linked(caller('V1::Parser'))).toEqual([
+      ['api.rb', 'AMBIGUOUS'],
+      ['ext.rb', 'AMBIGUOUS'],
+      ['top.rb', 'AMBIGUOUS'],
+    ]);
+  });
+
+  it('is less sure of a class found by the end of its path, or defined in several files', () => {
+    const def = (id: string, owner: string) => ({
+      chunk_id: `g//p//${id}.rb//1-5//h`,
+      defines_symbols: ['resolve'],
+      uses_symbols: [],
+      def_owners: { resolve: owner },
+    });
+    const caller = {
+      chunk_id: 'g//p//caller.rb//1-5//h',
+      defines_symbols: [],
+      uses_symbols: ['resolve'],
+      use_sites: [{ name: 'resolve', from: 'run', on: 'Parser' }],
+    };
+    const confidences = (defs: Array<ReturnType<typeof def>>) =>
+      buildSymbolEdges([...defs, caller]).edges.map((e) => e.confidence);
+
+    expect(confidences([def('a', 'Api::Parser'), def('x', 'Other')])).toEqual(['INFERRED']);
+    expect(confidences([def('a', 'Api::Parser'), def('b', 'Extraction::Parser')])).toEqual([
+      'AMBIGUOUS',
+      'AMBIGUOUS',
+    ]);
+    expect(confidences([def('a', 'Parser'), def('b', 'Parser')])).toEqual([
+      'AMBIGUOUS',
+      'AMBIGUOUS',
+    ]);
+  });
+
+  it('links every definition, as before, when the named class defines no such method', () => {
+    const { edges } = buildSymbolEdges([
+      { chunk_id: 'a', defines_symbols: ['claim'], uses_symbols: [], def_owners: { claim: 'A' } },
+      { chunk_id: 'b', defines_symbols: ['claim'], uses_symbols: [], def_owners: { claim: 'B' } },
+      {
+        chunk_id: 'c',
+        defines_symbols: [],
+        uses_symbols: ['claim'],
+        use_sites: [{ name: 'claim', from: 'run', on: 'Child' }],
+      },
+    ]);
+
+    expect(edges.map((e) => [e.to_chunk_id, e.confidence])).toEqual([
+      ['a', 'AMBIGUOUS'],
+      ['b', 'AMBIGUOUS'],
+    ]);
+  });
+
+  it('collects the calling methods per edge; a call outside any method makes the whole chunk the caller', () => {
+    const { edges } = buildSymbolEdges([
+      { chunk_id: 'def', defines_symbols: ['post', 'log'], uses_symbols: [] },
+      {
+        chunk_id: 'caller',
+        defines_symbols: ['a', 'b'],
+        uses_symbols: ['post', 'log'],
+        use_sites: [
+          { name: 'post', from: 'a' },
+          { name: 'post', from: 'b' },
+          { name: 'log', from: 'a' },
+          { name: 'log', from: '' },
+        ],
+      },
+    ]);
+
+    const bySymbol = Object.fromEntries(edges.map((e) => [e.symbol_name, e.from_symbols]));
+    expect(bySymbol).toEqual({ post: ['a', 'b'], log: [] });
+  });
+
+  it('exempts a call naming its class from the fan-out cap', () => {
+    const chunks = [
+      { chunk_id: 'd1', defines_symbols: ['call'], uses_symbols: [], def_owners: { call: 'One' } },
+      { chunk_id: 'd2', defines_symbols: ['call'], uses_symbols: [], def_owners: { call: 'Two' } },
+      {
+        chunk_id: 'd3',
+        defines_symbols: ['call'],
+        uses_symbols: [],
+        def_owners: { call: 'Three' },
+      },
+      {
+        chunk_id: 'c',
+        defines_symbols: [],
+        uses_symbols: ['call'],
+        use_sites: [{ name: 'call', from: 'run', on: 'Two' }],
+      },
+    ];
+    const { edges, stats } = buildSymbolEdges(chunks, 2);
+
+    expect(edges.map((e) => e.to_chunk_id)).toEqual(['d2']);
+    expect(stats.skippedSymbols).toBe(0);
   });
 
   it('labels intra-file edges as EXTRACTED (same `<group>//<project>//<file>` prefix)', () => {

@@ -16,10 +16,10 @@ import { collectFileModifiedTimes, extractGitMetadata } from './git-metadata.js'
 import type { MetadataStore } from './metadata-db.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
-import { SYMBOL_FORMAT, extractSymbolsForChunks } from './ast-symbol-extractor.js';
+import { SYMBOL_FORMAT, extractSymbolsForChunks, type UseSite } from './ast-symbol-extractor.js';
 import { resolveAstLanguage } from './ast-language.js';
 import type { SymbolExtractionResult } from './ast-symbol-extractor.js';
-import { buildSymbolEdges } from './symbol-graph.js';
+import { buildSymbolEdges, type ChunkSymbols } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
 import { resolveDocumentAudience, type DocsStore } from './docs/store.js';
 import { NotMarkdownError } from './docs/chunker.js';
@@ -139,6 +139,29 @@ export function stripProjectSuffix(storedName: string, suffix: string): string {
  * Build a stable, deterministic chunk_id from its components.
  * Format: {group}//{project}//{file}//{startLine}-{endLine}//{hash}
  */
+/**
+ * Payload fields for building edges per method: where each use is made from
+ * and what it is called on, and the class of each defined method. Omitted
+ * where the extractor records no sites (Terraform), so edges fall back to
+ * `uses_symbols`.
+ */
+function symbolSitePayload(result: SymbolExtractionResult | undefined): Record<string, unknown> {
+  if (!result?.use_sites) return {};
+  const owners: Record<string, string> = {};
+  for (const d of result.defined_symbols) if (d.owner) owners[d.name] = d.owner;
+  return { use_sites: result.use_sites, def_owners: owners };
+}
+
+interface GraphRebuild {
+  timer: ReturnType<typeof setTimeout> | null;
+  running: Promise<void> | null;
+  /** A change arrived while running: run once more after. */
+  again: boolean;
+}
+
+/** How long single-file changes wait, after the last one, before the project's graph is rebuilt. */
+export const GRAPH_REBUILD_DELAY_MS = 3000;
+
 export function buildChunkId(
   group: string,
   project: string,
@@ -878,6 +901,7 @@ export class Indexer {
         tags,
         defines_symbols: symbolResults?.[i]?.defines_symbols ?? [],
         uses_symbols: symbolResults?.[i]?.uses_symbols ?? [],
+        ...symbolSitePayload(symbolResults?.[i]),
         embed_format: EMBED_TEXT_FORMAT,
         symbol_format: SYMBOL_FORMAT,
       },
@@ -1319,24 +1343,7 @@ export class Indexer {
 
         // Symbol graph building
         if (needsSymbols && chunkSymbols.length > 0) {
-          try {
-            const { edges, stats } = buildSymbolEdges(chunkSymbols);
-            this.metadataStore!.deleteEdgesByProject(groupName, storedName);
-            if (edges.length > 0) {
-              await this.metadataStore!.upsertSymbolEdges(edges);
-            }
-            const skipNote =
-              stats.skippedSymbols > 0
-                ? ` (skipped ${stats.skippedSymbols} high-fanout symbols, ~${stats.skippedEdges} edges)`
-                : '';
-            console.log(
-              `  [indexer] Symbol graph: ${chunkSymbols.length} chunks, ${edges.length} edges${skipNote}`
-            );
-          } catch (err) {
-            console.warn(
-              `  [indexer] Symbol graph building failed (non-fatal): ${(err as Error).message}`
-            );
-          }
+          await this.writeSymbolGraph(groupName, storedName, chunkSymbols);
         }
       } catch (err) {
         console.warn(
@@ -1532,22 +1539,18 @@ export class Indexer {
     needsSymbols: boolean
   ): Promise<{
     chunksByFile: Map<string, Array<{ chunk_id: string; startLine: number; endLine: number }>>;
-    chunkSymbols: Array<{ chunk_id: string; defines_symbols: string[]; uses_symbols: string[] }>;
+    chunkSymbols: ChunkSymbols[];
   }> {
     const chunksByFile = new Map<
       string,
       Array<{ chunk_id: string; startLine: number; endLine: number }>
     >();
-    const chunkSymbols: Array<{
-      chunk_id: string;
-      defines_symbols: string[];
-      uses_symbols: string[];
-    }> = [];
+    const chunkSymbols: ChunkSymbols[] = [];
 
     // Request all fields needed by both consumers
     const fields: string[] = ['chunk_id'];
     if (needsGit) fields.push('file', 'startLine', 'endLine');
-    if (needsSymbols) fields.push('defines_symbols', 'uses_symbols');
+    if (needsSymbols) fields.push('defines_symbols', 'uses_symbols', 'use_sites', 'def_owners');
 
     let offset: string | number | undefined = undefined;
 
@@ -1586,10 +1589,16 @@ export class Indexer {
         if (needsSymbols) {
           const defs = payload['defines_symbols'];
           const uses = payload['uses_symbols'];
+          const sites = payload['use_sites'];
+          const owners = payload['def_owners'];
           chunkSymbols.push({
             chunk_id: chunkId,
             defines_symbols: Array.isArray(defs) ? (defs as string[]) : [],
             uses_symbols: Array.isArray(uses) ? (uses as string[]) : [],
+            ...(Array.isArray(sites) ? { use_sites: sites as UseSite[] } : {}),
+            ...(owners && typeof owners === 'object'
+              ? { def_owners: owners as Record<string, string> }
+              : {}),
           });
         }
       }
@@ -1599,6 +1608,114 @@ export class Indexer {
     }
 
     return { chunksByFile, chunkSymbols };
+  }
+
+  /** Replace a project's symbol edges with the ones built from `chunkSymbols`. Never throws. */
+  private async writeSymbolGraph(
+    groupName: string,
+    storedName: string,
+    chunkSymbols: ChunkSymbols[]
+  ): Promise<void> {
+    try {
+      const { edges, stats } = buildSymbolEdges(chunkSymbols);
+      this.metadataStore!.deleteEdgesByProject(groupName, storedName);
+      if (edges.length > 0) {
+        await this.metadataStore!.upsertSymbolEdges(edges);
+      }
+      const skipNote =
+        stats.skippedSymbols > 0
+          ? ` (skipped ${stats.skippedSymbols} high-fanout symbols, ~${stats.skippedEdges} edges)`
+          : '';
+      console.log(
+        `  [indexer] Symbol graph: ${chunkSymbols.length} chunks, ${edges.length} edges${skipNote}`
+      );
+    } catch (err) {
+      console.warn(
+        `  [indexer] Symbol graph building failed (non-fatal): ${(err as Error).message}`
+      );
+    }
+  }
+
+  /** Per project (`group\0stored name`): a pending graph rebuild, and the one running. */
+  private graphRebuilds = new Map<string, GraphRebuild>();
+
+  /**
+   * Rebuild a project's symbol graph shortly after single files were written
+   * or removed outside a project pass (`updateFile`, `/api/file-changed`, a
+   * content batch from the CLI). Their old edges would otherwise point at
+   * chunks that are gone, their new chunks would have none, and names they
+   * add or drop would keep their old ambiguity elsewhere. The whole project
+   * is rebuilt, as a project pass does; a burst of changes (a save storm, CLI
+   * batches) waits {@link GRAPH_REBUILD_DELAY_MS} after the last one and
+   * shares one rebuild.
+   */
+  private scheduleSymbolGraph(groupName: string, storedName: string): void {
+    if (!this.metadataStore || !this.treeSitter) return;
+    const key = `${groupName}\0${storedName}`;
+    let state = this.graphRebuilds.get(key);
+    if (!state) this.graphRebuilds.set(key, (state = { timer: null, running: null, again: false }));
+    if (state.timer) clearTimeout(state.timer);
+    const entry = state;
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      void this.runSymbolGraph(groupName, storedName, entry);
+    }, GRAPH_REBUILD_DELAY_MS);
+    entry.timer.unref?.();
+  }
+
+  private runSymbolGraph(
+    groupName: string,
+    storedName: string,
+    state: GraphRebuild
+  ): Promise<void> {
+    if (state.running) {
+      state.again = true;
+      return state.running;
+    }
+    state.running = this.rebuildSymbolGraph(groupName, storedName, state);
+    return state.running;
+  }
+
+  private async rebuildSymbolGraph(
+    groupName: string,
+    storedName: string,
+    state: GraphRebuild
+  ): Promise<void> {
+    try {
+      do {
+        state.again = false;
+        const { chunkSymbols } = await this.collectProjectChunksForPostIndex(
+          groupName,
+          storedName,
+          false,
+          true
+        );
+        if (chunkSymbols.length > 0) {
+          await this.writeSymbolGraph(groupName, storedName, chunkSymbols);
+        } else {
+          this.metadataStore!.deleteEdgesByProject(groupName, storedName);
+        }
+      } while (state.again);
+    } catch (err) {
+      console.warn(
+        `  [indexer] Symbol graph refresh failed (non-fatal): ${(err as Error).message}`
+      );
+    } finally {
+      state.running = null;
+      if (!state.timer) this.graphRebuilds.delete(`${groupName}\0${storedName}`);
+    }
+  }
+
+  /** Waits for scheduled graph rebuilds to finish. For tests and shutdown. */
+  async flushSymbolGraphs(): Promise<void> {
+    for (const [key, state] of [...this.graphRebuilds]) {
+      const [groupName, storedName] = key.split('\0') as [string, string];
+      if (state.timer) {
+        clearTimeout(state.timer);
+        state.timer = null;
+      }
+      await this.runSymbolGraph(groupName, storedName, state);
+    }
   }
 
   /** Index multiple projects (all in the same or different groups) */
@@ -1639,6 +1756,7 @@ export class Indexer {
       await this.removeStoredFile(groupName, this.stored(project.name), relPath);
       console.log(`[indexer] Deleted ${groupName}/${project.name}/${relPath}`);
     }
+    this.scheduleSymbolGraph(groupName, this.stored(project.name));
   }
 
   /** Remove all chunks and metadata for a file by absolute path (never throws) */
@@ -1647,6 +1765,7 @@ export class Indexer {
     try {
       await this.deleteStoredFile(groupName, this.stored(project.name), relPath);
       console.log(`[indexer] Removed ${groupName}/${project.name}/${relPath}`);
+      this.scheduleSymbolGraph(groupName, this.stored(project.name));
     } catch (err) {
       console.warn(`[indexer] Could not remove ${relPath}: ${(err as Error).message}`);
     }
@@ -1681,6 +1800,7 @@ export class Indexer {
 
     const defaultLang = project.languages[0] ?? 'generic';
     let totalChunks = 0;
+    let changed = false;
 
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
     let processed = 0;
@@ -1699,6 +1819,7 @@ export class Indexer {
 
         if (!content.trim()) {
           await this.removeStoredFile(groupName, storedName, relPath);
+          changed = true;
           await yieldIfDue();
           return;
         }
@@ -1709,6 +1830,7 @@ export class Indexer {
         });
         if (chunks.length === 0) {
           await this.removeStoredFile(groupName, storedName, relPath);
+          changed = true;
           await yieldIfDue();
           return;
         }
@@ -1728,6 +1850,7 @@ export class Indexer {
           chunks,
           symbolResults
         );
+        changed = true;
 
         this.telemetry?.upsertFile({
           groupName,
@@ -1750,6 +1873,10 @@ export class Indexer {
 
     await Promise.all(tasks);
     this.stats.cached = this.provider.cacheHits;
+    // Removed files count too: the names they defined may now resolve elsewhere.
+    if (changed || !this.metadataStore?.hasEdgesForProject(groupName, storedName)) {
+      this.scheduleSymbolGraph(groupName, storedName);
+    }
 
     return totalChunks;
   }
@@ -1768,6 +1895,7 @@ export class Indexer {
 
     if (!content.trim()) {
       await this.removeStoredFile(groupName, storedName, relPath);
+      this.scheduleSymbolGraph(groupName, storedName);
       console.log(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks, empty)`);
       return 0;
     }
@@ -1778,6 +1906,7 @@ export class Indexer {
     });
     if (chunks.length === 0) {
       await this.removeStoredFile(groupName, storedName, relPath);
+      this.scheduleSymbolGraph(groupName, storedName);
       console.log(`[indexer] Updated ${groupName}/${projectName}/${relPath} (0 chunks)`);
       return 0;
     }
@@ -1792,6 +1921,7 @@ export class Indexer {
       chunks,
       symbolResults
     );
+    this.scheduleSymbolGraph(groupName, storedName);
 
     this.telemetry?.upsertFile({
       groupName,
@@ -1860,6 +1990,7 @@ export class Indexer {
     // did not happen.
     await this.deleteStoredFile(groupName, this.stored(projectName), relPath);
     console.log(`[indexer] Removed ${groupName}/${projectName}/${relPath}`);
+    this.scheduleSymbolGraph(groupName, this.stored(projectName));
   }
 
   /** Delete entire group collection and re-index all its projects */

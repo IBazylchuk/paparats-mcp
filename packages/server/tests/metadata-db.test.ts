@@ -424,6 +424,73 @@ describe('MetadataStore', () => {
     expect(edge?.confidence).toBe('INFERRED');
   });
 
+  it('round-trips the calling methods of an edge; none means the whole chunk', async () => {
+    await store.upsertSymbolEdges([
+      {
+        from_chunk_id: 'g//p//caller.rb//1-9//h1',
+        to_chunk_id: 'g//p//def.rb//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'post',
+        from_symbols: ['first', 'valid?'],
+      },
+      {
+        from_chunk_id: 'g//p//caller.rb//1-9//h1',
+        to_chunk_id: 'g//p//def.rb//1-5//h2',
+        relation_type: 'calls',
+        symbol_name: 'log',
+      },
+    ]);
+
+    const bySymbol = Object.fromEntries(
+      store.getEdgesTo('g//p//def.rb//1-5//h2').map((e) => [e.symbol_name, e.from_symbols])
+    );
+    expect(bySymbol).toEqual({ post: ['first', 'valid?'], log: [] });
+  });
+
+  it('versions edges per project in the file, so another process sees the writes', async () => {
+    // The indexer is a separate process with its own connection to the file.
+    const other = new MetadataStore(path.join(tmpDir, 'test-metadata.db'));
+    try {
+      const before = { group: store.edgesVersion('g'), p: store.edgesVersion('g', 'p') };
+      const q = store.edgesVersion('g', 'q');
+      await other.upsertSymbolEdges([
+        {
+          from_chunk_id: 'g//p//a.ts//1-5//h1',
+          to_chunk_id: 'g//p//b.ts//1-5//h2',
+          relation_type: 'calls',
+          symbol_name: 'greet',
+        },
+      ]);
+      expect(store.edgesVersion('g')).not.toBe(before.group);
+      expect(store.edgesVersion('g', 'p')).not.toBe(before.p);
+      expect(store.edgesVersion('g', 'q')).toBe(q);
+      expect(store.edgeProjects('g')).toEqual(['p']);
+
+      const afterWrite = store.edgesVersion('g', 'p');
+      other.deleteEdgesByProject('g', 'p');
+      expect(store.edgesVersion('g', 'p')).not.toBe(afterWrite);
+    } finally {
+      other.close();
+    }
+  });
+
+  it('streams the edges leaving one project only', async () => {
+    const edge = (from: string, to: string) => ({
+      from_chunk_id: from,
+      to_chunk_id: to,
+      relation_type: 'calls' as const,
+      symbol_name: 'greet',
+    });
+    await store.upsertSymbolEdges([
+      edge('g//p//a.ts//1-5//h1', 'g//p//b.ts//1-5//h2'),
+      edge('g//p2//a.ts//1-5//h1', 'g//p2//b.ts//1-5//h2'),
+      edge('g//p-x//a.ts//1-5//h1', 'g//p-x//b.ts//1-5//h2'),
+    ]);
+
+    const from = [...store.iterateProjectEdges('g', 'p')].map((e) => e.from_chunk_id);
+    expect(from).toEqual(['g//p//a.ts//1-5//h1']);
+  });
+
   // ── Degree analytics ────────────────────────────────────────────────────
 
   it('getGroupDegreeSnapshot ranks chunks by incoming degree', async () => {
@@ -912,6 +979,34 @@ describe('MetadataStore git file cache', () => {
       expect(indexes.map((i) => i.name)).toContain('idx_symbol_edges_grp_to');
     } finally {
       legacyStore.close();
+    }
+  });
+
+  it('lists the projects that already have edges when it adds edge versions to an older database', () => {
+    const oldPath = path.join(tmpDir, 'pre-versions-metadata.db');
+    const raw = new Database(oldPath);
+    raw.exec(
+      'CREATE TABLE symbol_edges (' +
+        'from_chunk_id TEXT NOT NULL, to_chunk_id TEXT NOT NULL, ' +
+        'relation_type TEXT NOT NULL, symbol_name TEXT NOT NULL, ' +
+        "confidence TEXT NOT NULL DEFAULT 'INFERRED', grp TEXT NOT NULL DEFAULT '', " +
+        'PRIMARY KEY (from_chunk_id, to_chunk_id, symbol_name))'
+    );
+    const insert = raw.prepare(
+      'INSERT INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, grp) VALUES (?, ?, ?, ?, ?)'
+    );
+    insert.run('g//billing//a.rb//1-5//h1', 'g//billing//b.rb//1-5//h2', 'calls', 'foo', 'g');
+    insert.run('g//handbook//a.ts//1-5//h1', 'g//handbook//b.ts//1-5//h2', 'calls', 'bar', 'g');
+    raw.pragma('user_version = 1');
+    raw.close();
+
+    const opened = new MetadataStore(oldPath);
+    try {
+      expect(opened.edgeProjects('g').sort()).toEqual(['billing', 'handbook']);
+      // Rows written before the column existed: the whole chunk is the caller.
+      expect(opened.getEdgesFrom('g//billing//a.rb//1-5//h1')[0]?.from_symbols).toEqual([]);
+    } finally {
+      opened.close();
     }
   });
 
