@@ -19,13 +19,19 @@ import type { TreeSitterManager } from './tree-sitter-parser.js';
 import { SYMBOL_FORMAT, extractSymbolsForChunks, type UseSite } from './ast-symbol-extractor.js';
 import { resolveAstLanguage } from './ast-language.js';
 import type { SymbolExtractionResult } from './ast-symbol-extractor.js';
-import { buildSymbolEdges, type ChunkSymbols } from './symbol-graph.js';
+import { MAX_DEFINITION_FANOUT, buildSymbolEdges, type ChunkSymbols } from './symbol-graph.js';
 import { chunkByAst } from './ast-chunker.js';
 import { resolveDocumentAudience, type DocsStore } from './docs/store.js';
 import { NotMarkdownError } from './docs/chunker.js';
 import { parseFrontmatter } from './docs/frontmatter.js';
 import type { DocsKind } from './docs/types.js';
-import type { ChunkResult, ProjectConfig, IndexerStats, IndexProjectReport } from './types.js';
+import type {
+  ChunkResult,
+  GraphChanges,
+  ProjectConfig,
+  IndexerStats,
+  IndexProjectReport,
+} from './types.js';
 import type { Telemetry } from './telemetry/facade.js';
 import type { MetricsRegistry } from './metrics.js';
 import { NoOpMetrics } from './metrics.js';
@@ -152,15 +158,50 @@ function symbolSitePayload(result: SymbolExtractionResult | undefined): Record<s
   return { use_sites: result.use_sites, def_owners: owners };
 }
 
-interface GraphRebuild {
+interface GraphUpdate {
   timer: ReturnType<typeof setTimeout> | null;
   running: Promise<void> | null;
   /** A change arrived while running: run once more after. */
   again: boolean;
 }
 
-/** How long single-file changes wait, after the last one, before the project's graph is rebuilt. */
-export const GRAPH_REBUILD_DELAY_MS = 3000;
+/** How long single-file changes wait, after the last one, before the project's graph is updated. */
+export const GRAPH_UPDATE_DELAY_MS = 3000;
+
+/**
+ * Above this many changed files the project's graph is built again from all of
+ * its chunks rather than updated for the changes: the names they touch are by
+ * then most of the project's.
+ */
+export const MAX_INCREMENTAL_GRAPH_FILES = 300;
+
+/** Values per `match.any` filter when reading chunks by file or name. */
+const MATCH_ANY_BATCH = 500;
+
+/** The symbol fields of a chunk payload, as the graph reads them. */
+const SYMBOL_PAYLOAD_FIELDS = [
+  'chunk_id',
+  'defines_symbols',
+  'uses_symbols',
+  'use_sites',
+  'def_owners',
+] as const;
+
+function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): ChunkSymbols {
+  const defs = payload['defines_symbols'];
+  const uses = payload['uses_symbols'];
+  const sites = payload['use_sites'];
+  const owners = payload['def_owners'];
+  return {
+    chunk_id: chunkId,
+    defines_symbols: Array.isArray(defs) ? (defs as string[]) : [],
+    uses_symbols: Array.isArray(uses) ? (uses as string[]) : [],
+    ...(Array.isArray(sites) ? { use_sites: sites as UseSite[] } : {}),
+    ...(owners && typeof owners === 'object'
+      ? { def_owners: owners as Record<string, string> }
+      : {}),
+  };
+}
 
 export function buildChunkId(
   group: string,
@@ -520,8 +561,86 @@ export class Indexer {
   ): Promise<void> {
     const stored = await this.readStoredFileKeys(groupName, storedName, relPath);
     if (stored.length === 0) return;
+    const before = await this.storedDefinitions(groupName, storedName, relPath);
     await this.deleteStoredFilePoints(groupName, storedName, relPath);
     this.metadataStore?.deleteByFile(groupName, storedName, relPath);
+    this.markGraphChanged(groupName, storedName, relPath, before);
+  }
+
+  private graphEnabled(): boolean {
+    return !!this.metadataStore && !!this.treeSitter;
+  }
+
+  /**
+   * The names a file's stored chunks define, read before they are replaced or
+   * removed: the uses of those names elsewhere have to be linked again.
+   */
+  private async storedDefinitions(
+    groupName: string,
+    storedName: string,
+    relPath: string
+  ): Promise<string[]> {
+    if (!this.graphEnabled()) return [];
+    try {
+      const chunks = await this.readChunkSymbols(groupName, storedName, 'file', [relPath]);
+      return chunks.flatMap((c) => c.defines_symbols);
+    } catch (err) {
+      if (isMissingCollection(err)) return [];
+      throw err;
+    }
+  }
+
+  /** Record a file the project's graph has to catch up with, and the names it defined or defines. */
+  private markGraphChanged(
+    groupName: string,
+    storedName: string,
+    relPath: string,
+    names: Iterable<string>
+  ): void {
+    if (this.graphEnabled()) {
+      this.metadataStore!.markGraphChanged(groupName, storedName, relPath, names);
+    }
+  }
+
+  /**
+   * The symbol fields of a project's chunks whose `key` (`file`,
+   * `defines_symbols` or `uses_symbols`) matches any of `values`.
+   */
+  private async readChunkSymbols(
+    groupName: string,
+    storedName: string,
+    key: 'file' | 'defines_symbols' | 'uses_symbols',
+    values: string[]
+  ): Promise<ChunkSymbols[]> {
+    const chunks: ChunkSymbols[] = [];
+    for (let i = 0; i < values.length; i += MATCH_ANY_BATCH) {
+      const batch = values.slice(i, i + MATCH_ANY_BATCH);
+      let offset: string | number | undefined = undefined;
+      for (;;) {
+        const page = await this.retryQdrant(() =>
+          this.qdrant.scroll(this.col(groupName), {
+            filter: {
+              must: [
+                { key: 'project', match: { value: storedName } },
+                { key, match: { any: batch } },
+              ],
+            },
+            with_payload: { include: [...SYMBOL_PAYLOAD_FIELDS] },
+            with_vector: false,
+            limit: 256,
+            ...(offset !== undefined ? { offset } : {}),
+          })
+        );
+        for (const point of page.points) {
+          const payload = point.payload as Record<string, unknown> | null;
+          const chunkId = payload?.['chunk_id'];
+          if (payload && typeof chunkId === 'string') chunks.push(toChunkSymbols(chunkId, payload));
+        }
+        if (!page.next_page_offset) break;
+        offset = page.next_page_offset as string | number;
+      }
+    }
+    return chunks;
   }
 
   private async deleteStoredFilePoints(
@@ -580,6 +699,7 @@ export class Indexer {
       symbolResults
     );
 
+    const before = await this.storedDefinitions(groupName, storedName, relPath);
     await this.deleteStoredFilePoints(groupName, storedName, relPath);
     const batchSize = project.indexing.batchSize;
     for (let i = 0; i < points.length; i += batchSize) {
@@ -588,6 +708,10 @@ export class Indexer {
         this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
       );
     }
+    this.markGraphChanged(groupName, storedName, relPath, [
+      ...before,
+      ...(symbolResults ?? []).flatMap((r) => r.defines_symbols),
+    ]);
     return points;
   }
 
@@ -682,18 +806,10 @@ export class Indexer {
 
       if (orphaned.length > 0) {
         for (const relPath of orphaned) {
-          await this.retryQdrant(() =>
-            this.qdrant.delete(this.col(groupName), {
-              filter: {
-                must: [
-                  { key: 'project', match: { value: projectName } },
-                  { key: 'file', match: { value: relPath } },
-                ],
-              },
-              wait: true,
-            })
-          );
+          const before = await this.storedDefinitions(groupName, projectName, relPath);
+          await this.deleteStoredFilePoints(groupName, projectName, relPath);
           this.metadataStore?.deleteByFile(groupName, projectName, relPath);
+          this.markGraphChanged(groupName, projectName, relPath, before);
         }
         console.log(
           `  [indexer] Removed ${orphaned.length} orphaned file(s): ${orphaned.join(', ')}`
@@ -1291,35 +1407,34 @@ export class Indexer {
     await this.cleanupOrphanedChunks(groupName, storedName, currentRelPaths);
     if (totalChunks > 0) await this.writeFileChurn(groupName, storedName, project, currentRelPaths);
 
-    // Post-indexing: git metadata + symbol graph (single Qdrant scan for both)
-    const needsGit = this.metadataStore && project.metadata.git.enabled && totalChunks > 0;
-    // The graph is also rebuilt when the project has none. Otherwise a stable
-    // repository whose graph was lost — a failed rebuild (edges are deleted before
-    // the new ones are written) or a reset table — stayed without callers/usages
-    // until some file happened to change.
-    const needsSymbols =
-      this.metadataStore &&
-      this.treeSitter &&
-      (totalChunks > 0 || !this.metadataStore.hasEdgesForProject(groupName, storedName));
-
-    if (needsGit || needsSymbols) {
+    // The files written or removed above were recorded as graph changes.
+    if (this.graphEnabled()) {
       try {
-        const { chunksByFile, chunkSymbols } = await this.collectProjectChunksForPostIndex(
+        await this.updateSymbolGraph(groupName, storedName);
+      } catch (err) {
+        console.warn(
+          `  [indexer] Symbol graph update failed (non-fatal): ${(err as Error).message}`
+        );
+      }
+    }
+
+    const needsGit = this.metadataStore && project.metadata.git.enabled && totalChunks > 0;
+    if (needsGit) {
+      try {
+        const { chunksByFile } = await this.collectProjectChunksForPostIndex(
           groupName,
           storedName,
-          !!needsGit,
-          !!needsSymbols
+          true,
+          false
         );
 
         // Git metadata extraction — only for files actually reindexed this
         // run; skipped-unchanged files keep their existing payload.
-        if (needsGit) {
-          for (const file of chunksByFile.keys()) {
-            if (!changedFiles.has(file)) chunksByFile.delete(file);
-          }
+        for (const file of chunksByFile.keys()) {
+          if (!changedFiles.has(file)) chunksByFile.delete(file);
         }
 
-        if (needsGit && chunksByFile.size > 0) {
+        if (chunksByFile.size > 0) {
           try {
             const result = await extractGitMetadata({
               projectPath: project.path,
@@ -1339,11 +1454,6 @@ export class Indexer {
               `  [indexer] Git metadata extraction failed (non-fatal): ${(err as Error).message}`
             );
           }
-        }
-
-        // Symbol graph building
-        if (needsSymbols && chunkSymbols.length > 0) {
-          await this.writeSymbolGraph(groupName, storedName, chunkSymbols);
         }
       } catch (err) {
         console.warn(
@@ -1550,7 +1660,7 @@ export class Indexer {
     // Request all fields needed by both consumers
     const fields: string[] = ['chunk_id'];
     if (needsGit) fields.push('file', 'startLine', 'endLine');
-    if (needsSymbols) fields.push('defines_symbols', 'uses_symbols', 'use_sites', 'def_owners');
+    if (needsSymbols) fields.push(...SYMBOL_PAYLOAD_FIELDS.slice(1));
 
     let offset: string | number | undefined = undefined;
 
@@ -1586,21 +1696,7 @@ export class Indexer {
         }
 
         // Populate symbol data
-        if (needsSymbols) {
-          const defs = payload['defines_symbols'];
-          const uses = payload['uses_symbols'];
-          const sites = payload['use_sites'];
-          const owners = payload['def_owners'];
-          chunkSymbols.push({
-            chunk_id: chunkId,
-            defines_symbols: Array.isArray(defs) ? (defs as string[]) : [],
-            uses_symbols: Array.isArray(uses) ? (uses as string[]) : [],
-            ...(Array.isArray(sites) ? { use_sites: sites as UseSite[] } : {}),
-            ...(owners && typeof owners === 'object'
-              ? { def_owners: owners as Record<string, string> }
-              : {}),
-          });
-        }
+        if (needsSymbols) chunkSymbols.push(toChunkSymbols(chunkId, payload));
       }
 
       if (!page.next_page_offset) break;
@@ -1636,79 +1732,126 @@ export class Indexer {
     }
   }
 
-  /** Per project (`group\0stored name`): a pending graph rebuild, and the one running. */
-  private graphRebuilds = new Map<string, GraphRebuild>();
+  /**
+   * Bring a project's symbol graph up to date with the files recorded as
+   * changed (`MetadataStore.graphChanges()`). Only the edges they touch are
+   * worked out again: those of the changed files' chunks, and every use of a
+   * name those files defined before or define now (its definitions changed,
+   * so the use may link elsewhere, or with another confidence). That reads
+   * the changed chunks, the chunks using those names and the chunks defining
+   * any name involved, not the whole project. The whole graph is built again
+   * when the project has none, or past {@link MAX_INCREMENTAL_GRAPH_FILES}.
+   */
+  private async updateSymbolGraph(groupName: string, storedName: string): Promise<void> {
+    const store = this.metadataStore!;
+    const changes = store.graphChanges(groupName, storedName);
+    const hasEdges = store.hasEdgesForProject(groupName, storedName);
+    if (!changes && hasEdges) return;
+    if (changes && hasEdges && changes.files.size <= MAX_INCREMENTAL_GRAPH_FILES) {
+      await this.applyGraphChanges(groupName, storedName, changes);
+      return;
+    }
+    // No edges yet, or a graph that was lost (a failed write, a reset table):
+    // built from every chunk, even when no file changed.
+    const { chunkSymbols } = await this.collectProjectChunksForPostIndex(
+      groupName,
+      storedName,
+      false,
+      true
+    );
+    await this.writeSymbolGraph(groupName, storedName, chunkSymbols);
+    if (changes) store.clearGraphChanges(groupName, storedName, changes.upTo);
+  }
+
+  private async applyGraphChanges(
+    groupName: string,
+    storedName: string,
+    changes: GraphChanges
+  ): Promise<void> {
+    const changed = await this.readChunkSymbols(groupName, storedName, 'file', [...changes.files]);
+    const names = new Set(changes.names);
+    for (const chunk of changed) for (const name of chunk.defines_symbols) names.add(name);
+    const linked = new Set(names);
+    for (const chunk of changed) for (const name of chunk.uses_symbols) linked.add(name);
+
+    // `uses_symbols` lists every name a chunk's use sites have.
+    const pool = new Map<string, ChunkSymbols>();
+    for (const chunk of [
+      ...changed,
+      ...(await this.readChunkSymbols(groupName, storedName, 'uses_symbols', [...names])),
+      ...(await this.readChunkSymbols(groupName, storedName, 'defines_symbols', [...linked])),
+    ]) {
+      pool.set(chunk.chunk_id, chunk);
+    }
+    const changedIds = new Set(changed.map((c) => c.chunk_id));
+    const { edges } = buildSymbolEdges(
+      [...pool.values()],
+      MAX_DEFINITION_FANOUT,
+      (chunkId, name) => changedIds.has(chunkId) || names.has(name)
+    );
+    this.metadataStore!.applyGraphChanges(groupName, storedName, { ...changes, names }, edges);
+    console.log(
+      `  [indexer] Symbol graph: ${changes.files.size} changed file(s), ${names.size} name(s), ${pool.size} chunks read, ${edges.length} edges written`
+    );
+  }
+
+  /** Per project (`group\0stored name`): a pending graph update, and the one running. */
+  private graphUpdates = new Map<string, GraphUpdate>();
 
   /**
-   * Rebuild a project's symbol graph shortly after single files were written
-   * or removed outside a project pass (`updateFile`, `/api/file-changed`, a
+   * Update a project's symbol graph shortly after single files were written or
+   * removed outside a project pass (`updateFile`, `/api/file-changed`, a
    * content batch from the CLI). Their old edges would otherwise point at
-   * chunks that are gone, their new chunks would have none, and names they
-   * add or drop would keep their old ambiguity elsewhere. The whole project
-   * is rebuilt, as a project pass does; a burst of changes (a save storm, CLI
-   * batches) waits {@link GRAPH_REBUILD_DELAY_MS} after the last one and
-   * shares one rebuild.
+   * chunks that are gone, their new chunks would have none, and names they add
+   * or drop would keep their old ambiguity elsewhere. A burst of changes (a
+   * save storm, CLI batches) waits {@link GRAPH_UPDATE_DELAY_MS} after the last
+   * one and shares one update.
    */
   private scheduleSymbolGraph(groupName: string, storedName: string): void {
-    if (!this.metadataStore || !this.treeSitter) return;
+    if (!this.graphEnabled()) return;
     const key = `${groupName}\0${storedName}`;
-    let state = this.graphRebuilds.get(key);
-    if (!state) this.graphRebuilds.set(key, (state = { timer: null, running: null, again: false }));
+    let state = this.graphUpdates.get(key);
+    if (!state) this.graphUpdates.set(key, (state = { timer: null, running: null, again: false }));
     if (state.timer) clearTimeout(state.timer);
     const entry = state;
     entry.timer = setTimeout(() => {
       entry.timer = null;
       void this.runSymbolGraph(groupName, storedName, entry);
-    }, GRAPH_REBUILD_DELAY_MS);
+    }, GRAPH_UPDATE_DELAY_MS);
     entry.timer.unref?.();
   }
 
-  private runSymbolGraph(
-    groupName: string,
-    storedName: string,
-    state: GraphRebuild
-  ): Promise<void> {
+  private runSymbolGraph(groupName: string, storedName: string, state: GraphUpdate): Promise<void> {
     if (state.running) {
       state.again = true;
       return state.running;
     }
-    state.running = this.rebuildSymbolGraph(groupName, storedName, state);
+    state.running = this.runScheduledUpdate(groupName, storedName, state);
     return state.running;
   }
 
-  private async rebuildSymbolGraph(
+  private async runScheduledUpdate(
     groupName: string,
     storedName: string,
-    state: GraphRebuild
+    state: GraphUpdate
   ): Promise<void> {
     try {
       do {
         state.again = false;
-        const { chunkSymbols } = await this.collectProjectChunksForPostIndex(
-          groupName,
-          storedName,
-          false,
-          true
-        );
-        if (chunkSymbols.length > 0) {
-          await this.writeSymbolGraph(groupName, storedName, chunkSymbols);
-        } else {
-          this.metadataStore!.deleteEdgesByProject(groupName, storedName);
-        }
+        await this.updateSymbolGraph(groupName, storedName);
       } while (state.again);
     } catch (err) {
-      console.warn(
-        `  [indexer] Symbol graph refresh failed (non-fatal): ${(err as Error).message}`
-      );
+      // The changes stay recorded, so the next update or project pass applies them.
+      console.warn(`  [indexer] Symbol graph update failed (non-fatal): ${(err as Error).message}`);
     } finally {
       state.running = null;
-      if (!state.timer) this.graphRebuilds.delete(`${groupName}\0${storedName}`);
+      if (!state.timer) this.graphUpdates.delete(`${groupName}\0${storedName}`);
     }
   }
 
-  /** Waits for scheduled graph rebuilds to finish. For tests and shutdown. */
+  /** Waits for scheduled graph updates to finish. For tests and shutdown. */
   async flushSymbolGraphs(): Promise<void> {
-    for (const [key, state] of [...this.graphRebuilds]) {
+    for (const [key, state] of [...this.graphUpdates]) {
       const [groupName, storedName] = key.split('\0') as [string, string];
       if (state.timer) {
         clearTimeout(state.timer);
@@ -1780,12 +1923,14 @@ export class Indexer {
     storedName: string,
     relPath: string
   ): Promise<void> {
+    const before = await this.storedDefinitions(groupName, storedName, relPath);
     try {
       await this.deleteStoredFilePoints(groupName, storedName, relPath);
     } catch (err) {
       if (!isMissingCollection(err)) throw err;
     }
     this.metadataStore?.deleteByFile(groupName, storedName, relPath);
+    this.markGraphChanged(groupName, storedName, relPath, before);
   }
 
   /** Content-based: index files from in-memory content (no filesystem access) */
@@ -1965,9 +2110,11 @@ export class Indexer {
       // A missing collection means there is nothing to delete. Anything else is
       // a real failure: swallowing it let delete_project report success while the
       // chunks were still in Qdrant.
-      if (isMissingCollection(err)) return;
-      throw err;
+      if (!isMissingCollection(err)) throw err;
     }
+    // Its edges go with the chunks, so the next pass builds the graph from scratch.
+    this.metadataStore?.deleteEdgesByProject(groupName, storedName);
+    this.metadataStore?.clearGraphChanges(groupName, storedName);
   }
 
   /**

@@ -282,6 +282,23 @@ describe('buildSymbolEdges', () => {
     expect(targets).toEqual(['def1', 'def2']);
   });
 
+  it('with `only`, gives the edges of the uses it accepts exactly as the full graph has them', () => {
+    const chunks = [
+      { chunk_id: 'g//p//a.rb//1-5//h1', defines_symbols: ['claim'], uses_symbols: ['save'] },
+      { chunk_id: 'g//p//b.rb//1-5//h2', defines_symbols: ['claim', 'save'], uses_symbols: [] },
+      { chunk_id: 'g//p//c.rb//1-5//h3', defines_symbols: [], uses_symbols: ['claim', 'save'] },
+      { chunk_id: 'g//p//d.rb//1-5//h4', defines_symbols: [], uses_symbols: ['save'] },
+    ];
+    const only = (chunkId: string, name: string) =>
+      chunkId.includes('//a.rb//') || name === 'claim';
+    const full = buildSymbolEdges(chunks).edges.filter((e) => only(e.from_chunk_id, e.symbol_name));
+    const part = buildSymbolEdges(chunks, undefined, only).edges;
+    expect(part).toEqual(full);
+    expect(part.map((e) => `${e.from_chunk_id} ${e.symbol_name}`)).not.toContain(
+      'g//p//d.rb//1-5//h4 save'
+    );
+  });
+
   it('returns empty array for no input', () => {
     expect(buildSymbolEdges([])).toEqual({
       edges: [],

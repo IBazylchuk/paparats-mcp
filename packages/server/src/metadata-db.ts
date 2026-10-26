@@ -2,7 +2,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import Database from 'better-sqlite3';
-import type { ChunkCommit, ChunkTicket, NameUsage, SymbolEdge } from './types.js';
+import type { ChunkCommit, ChunkTicket, GraphChanges, NameUsage, SymbolEdge } from './types.js';
 
 const PAPARATS_DIR = path.join(os.homedir(), '.paparats');
 const DEFAULT_DB_PATH = path.join(PAPARATS_DIR, 'metadata.db');
@@ -25,6 +25,15 @@ type EdgeRow = Omit<SymbolEdge, 'from_symbols'> & { from_symbols: string };
 function toEdge(row: EdgeRow): SymbolEdge {
   const { from_symbols, ...edge } = row;
   return { ...edge, from_symbols: from_symbols ? (JSON.parse(from_symbols) as string[]) : [] };
+}
+
+/**
+ * The chunk ids starting with `prefix` (which ends in `//`): they sort at or
+ * after it and before it with its last '/' raised to '0'. A range uses the
+ * id indexes, which a LIKE pattern does not.
+ */
+function idRange(prefix: string): [string, string] {
+  return [prefix, `${prefix.slice(0, -1)}0`];
 }
 
 /** Escape SQLite LIKE wildcards (% and _) so they match literally */
@@ -73,8 +82,12 @@ export class MetadataStore {
   private deleteChunkEdgesStmt: Database.Statement;
   private deleteProjectCommitsStmt: Database.Statement;
   private deleteProjectTicketsStmt: Database.Statement;
-  private deleteProjectEdgesStmt: Database.Statement;
-  private hasProjectEdgesStmt: Database.Statement;
+  private deleteEdgesFromRangeStmt: Database.Statement;
+  private deleteEdgesToRangeStmt: Database.Statement;
+  private deleteSymbolEdgesInRangeStmt: Database.Statement;
+  private hasEdgesInRangeStmt: Database.Statement;
+  private insertGraphChangeStmt: Database.Statement;
+  private deleteGraphChangesStmt: Database.Statement;
   private getGitFileCacheStmt: Database.Statement;
   private setGitFileCacheStmt: Database.Statement;
   private deleteProjectGitCacheStmt: Database.Statement;
@@ -248,6 +261,20 @@ export class MetadataStore {
       );
     }
 
+    // Files written or removed since their project's graph was last updated.
+    // In the file, not in memory, so a change is not lost when the process
+    // stops before the graph catches up, and either process can apply it.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS graph_changes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        grp TEXT NOT NULL,
+        project TEXT NOT NULL,
+        file TEXT NOT NULL,
+        names TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_graph_changes_project ON graph_changes(grp, project, id);
+    `);
+
     // Composite (grp, …) indexes for degree aggregation. Created here — after
     // the migration guarantees the `grp` column exists on both fresh and legacy
     // databases — so degree stats aggregate via an index range scan instead of
@@ -304,11 +331,23 @@ export class MetadataStore {
     this.deleteProjectTicketsStmt = this.db.prepare(
       "DELETE FROM chunk_tickets WHERE chunk_id LIKE ? ESCAPE '\\'"
     );
-    this.deleteProjectEdgesStmt = this.db.prepare(
-      "DELETE FROM symbol_edges WHERE from_chunk_id LIKE ? ESCAPE '\\' OR to_chunk_id LIKE ? ESCAPE '\\'"
+    this.deleteEdgesFromRangeStmt = this.db.prepare(
+      'DELETE FROM symbol_edges WHERE from_chunk_id >= ? AND from_chunk_id < ?'
     );
-    this.hasProjectEdgesStmt = this.db.prepare(
-      "SELECT 1 FROM symbol_edges WHERE from_chunk_id LIKE ? ESCAPE '\\' LIMIT 1"
+    this.deleteEdgesToRangeStmt = this.db.prepare(
+      'DELETE FROM symbol_edges WHERE to_chunk_id >= ? AND to_chunk_id < ?'
+    );
+    this.deleteSymbolEdgesInRangeStmt = this.db.prepare(
+      'DELETE FROM symbol_edges WHERE symbol_name = ? AND from_chunk_id >= ? AND from_chunk_id < ?'
+    );
+    this.hasEdgesInRangeStmt = this.db.prepare(
+      'SELECT 1 FROM symbol_edges WHERE from_chunk_id >= ? AND from_chunk_id < ? LIMIT 1'
+    );
+    this.insertGraphChangeStmt = this.db.prepare(
+      'INSERT INTO graph_changes (grp, project, file, names) VALUES (?, ?, ?, ?)'
+    );
+    this.deleteGraphChangesStmt = this.db.prepare(
+      'DELETE FROM graph_changes WHERE grp = ? AND project = ? AND id <= ?'
     );
 
     this.getGitFileCacheStmt = this.db.prepare(
@@ -381,7 +420,8 @@ export class MetadataStore {
     const tx = this.db.transaction(() => {
       this.deleteProjectCommitsStmt.run(pattern);
       this.deleteProjectTicketsStmt.run(pattern);
-      this.deleteProjectEdgesStmt.run(pattern, pattern);
+      this.deleteEdgesUnder(`${group}//${project}//`);
+      this.deleteGraphChangesStmt.run(group, project, Number.MAX_SAFE_INTEGER);
       this.deleteProjectGitCacheStmt.run(group, project);
     });
     tx();
@@ -421,22 +461,24 @@ export class MetadataStore {
 
   // ── Symbol edge methods ─────────────────────────────────────────────────
 
+  private insertEdge(e: SymbolEdge): void {
+    // Denormalise the group (first `//` segment of the source chunk_id) so
+    // degree stats aggregate on an indexed column, not a LIKE scan.
+    const grp = e.from_chunk_id.split('//')[0] ?? '';
+    this.insertEdgeStmt.run(
+      e.from_chunk_id,
+      e.to_chunk_id,
+      e.relation_type,
+      e.symbol_name,
+      e.confidence ?? 'INFERRED',
+      grp,
+      e.from_symbols && e.from_symbols.length > 0 ? JSON.stringify(e.from_symbols) : ''
+    );
+  }
+
   async upsertSymbolEdges(edges: SymbolEdge[]): Promise<void> {
     const insertBatch = this.db.transaction((batch: SymbolEdge[]) => {
-      for (const e of batch) {
-        // Denormalise the group (first `//` segment of the source chunk_id) so
-        // degree stats aggregate on an indexed column, not a LIKE scan.
-        const grp = e.from_chunk_id.split('//')[0] ?? '';
-        this.insertEdgeStmt.run(
-          e.from_chunk_id,
-          e.to_chunk_id,
-          e.relation_type,
-          e.symbol_name,
-          e.confidence ?? 'INFERRED',
-          grp,
-          e.from_symbols && e.from_symbols.length > 0 ? JSON.stringify(e.from_symbols) : ''
-        );
-      }
+      for (const e of batch) this.insertEdge(e);
     });
     // Commit in bounded transactions, yielding between them so the synchronous
     // SQLite work never monopolises the event loop for the whole edge set.
@@ -479,6 +521,63 @@ export class MetadataStore {
     if (group && project !== undefined) this.bumpEdgeVersion(group, project);
   }
 
+  // ── Graph changes (files the symbol graph has not caught up with) ───────
+
+  /**
+   * Record that a file's chunks were written or removed, with the names its old
+   * and new chunks define: until {@link applyGraphChanges} the graph is behind
+   * for the edges leaving the file and for every use of those names.
+   */
+  markGraphChanged(group: string, project: string, file: string, names: Iterable<string>): void {
+    this.insertGraphChangeStmt.run(group, project, file, JSON.stringify([...new Set(names)]));
+  }
+
+  /** The project's changes not yet applied to its graph, or null when there are none. */
+  graphChanges(group: string, project: string): GraphChanges | null {
+    const rows = this.db
+      .prepare(
+        'SELECT id, file, names FROM graph_changes WHERE grp = ? AND project = ? ORDER BY id'
+      )
+      .all(group, project) as Array<{ id: number; file: string; names: string }>;
+    if (rows.length === 0) return null;
+    const changes: GraphChanges = { upTo: 0, files: new Set(), names: new Set() };
+    for (const row of rows) {
+      changes.upTo = row.id;
+      changes.files.add(row.file);
+      for (const name of JSON.parse(row.names) as string[]) changes.names.add(name);
+    }
+    return changes;
+  }
+
+  /** Drop the project's changes up to `upTo` (all of them without it). */
+  clearGraphChanges(group: string, project: string, upTo = Number.MAX_SAFE_INTEGER): void {
+    this.deleteGraphChangesStmt.run(group, project, upTo);
+  }
+
+  /**
+   * Bring the graph up to date with `changes` in one transaction: drop the edges
+   * they touch — leaving or entering a changed file, or through a changed name
+   * — write `edges` (those same edges as they are now) and drop the changes. A
+   * reader sees the old edges or the new ones, never a graph half rebuilt.
+   */
+  applyGraphChanges(
+    group: string,
+    project: string,
+    changes: GraphChanges,
+    edges: SymbolEdge[]
+  ): void {
+    const projectRange = idRange(`${group}//${project}//`);
+    this.db.transaction(() => {
+      for (const file of changes.files) this.deleteEdgesUnder(`${group}//${project}//${file}//`);
+      for (const name of changes.names)
+        this.deleteSymbolEdgesInRangeStmt.run(name, ...projectRange);
+      for (const e of edges) this.insertEdge(e);
+      this.deleteGraphChangesStmt.run(group, project, changes.upTo);
+    })();
+    this.invalidateDegreeCache(group);
+    this.bumpEdgeVersion(group, project);
+  }
+
   /** Delete all metadata (commits, tickets, edges) for a specific file within a project */
   deleteByFile(group: string, project: string, file: string): void {
     const prefix = `${escapeLike(group)}//${escapeLike(project)}//${escapeLike(file)}//`;
@@ -486,7 +585,7 @@ export class MetadataStore {
     const tx = this.db.transaction(() => {
       this.deleteProjectCommitsStmt.run(pattern);
       this.deleteProjectTicketsStmt.run(pattern);
-      this.deleteProjectEdgesStmt.run(pattern, pattern);
+      this.deleteEdgesUnder(`${group}//${project}//${file}//`);
     });
     tx();
     this.invalidateDegreeCache(group);
@@ -508,14 +607,18 @@ export class MetadataStore {
 
   /** Whether any symbol edge originates in this project. */
   hasEdgesForProject(group: string, project: string): boolean {
-    const pattern = `${escapeLike(group)}//${escapeLike(project)}//%`;
-    return this.hasProjectEdgesStmt.get(pattern) !== undefined;
+    return this.hasEdgesInRangeStmt.get(...idRange(`${group}//${project}//`)) !== undefined;
+  }
+
+  /** Edges leaving or entering chunks whose ids start with `prefix`. */
+  private deleteEdgesUnder(prefix: string): void {
+    const range = idRange(prefix);
+    this.deleteEdgesFromRangeStmt.run(...range);
+    this.deleteEdgesToRangeStmt.run(...range);
   }
 
   deleteEdgesByProject(group: string, project: string): void {
-    const prefix = `${escapeLike(group)}//${escapeLike(project)}//`;
-    const pattern = `${prefix}%`;
-    this.deleteProjectEdgesStmt.run(pattern, pattern);
+    this.deleteEdgesUnder(`${group}//${project}//`);
     // Edges changed → drop the group's degree cache (per-group scope, since
     // hub thresholds are computed across the whole group, not per-project).
     this.invalidateDegreeCache(group);

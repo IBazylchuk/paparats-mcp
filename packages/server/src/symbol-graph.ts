@@ -129,10 +129,16 @@ function resolveClass(
  *
  * Skips self-edges and merges by (from, to, symbol): `from_symbols` collects the
  * methods making the call and the edge keeps its most certain label.
+ *
+ * The edges of a use depend only on the use and on every definition of its
+ * name. `only` keeps the uses it accepts (by chunk and name), so a graph can be
+ * updated for some chunks and names from just those chunks, the users of those
+ * names and every chunk defining a name they use.
  */
 export function buildSymbolEdges(
   chunkSymbols: ChunkSymbols[],
-  maxDefinitionFanout: number = MAX_DEFINITION_FANOUT
+  maxDefinitionFanout: number = MAX_DEFINITION_FANOUT,
+  only?: (chunkId: string, name: string) => boolean
 ): { edges: SymbolEdge[]; stats: SymbolEdgeStats } {
   // Build inverted indexes: symbol → defining chunk IDs, and symbol → class → the same
   const definedBy = new Map<string, Set<string>>();
@@ -168,6 +174,7 @@ export function buildSymbolEdges(
       const sym = site.name;
       const defs = definedBy.get(sym);
       if (!defs) continue;
+      if (only && !only(chunk.chunk_id, sym)) continue;
 
       const onClass = resolveClass(site, definedIn.get(sym));
       const resolved = onClass !== null;
