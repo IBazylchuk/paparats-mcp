@@ -13,7 +13,7 @@
 #      all CPU backends), add llama-swap + gettext (envsubst) + baked GGUFs
 #
 # Final image bakes both models so it's ready on first request:
-#   bge-code-v1 Q8_0            (~1.5 GB, code, Apache-2.0, --pooling last)
+#   bge-code-v1 Q8_0            (~1.6 GB, code, Apache-2.0, --pooling last)
 #   Qwen3-Embedding-0.6B Q8_0   (~610 MB, arch/docs text, Apache-2.0, --pooling last)
 # Both are permissively licensed (Apache-2.0). The previous jina-code (CC-BY-NC)
 # and bge-m3 models were removed in the migration — rollback is via a previously
@@ -53,7 +53,7 @@ COPY --from=swap-fetch /usr/local/bin/llama-swap /usr/local/bin/llama-swap
 ENV PATH="/app:${PATH}"
 
 # Bake the models. Kept as separate layers so a model bump only re-pushes one.
-# Code embeddings — bge-code-v1 Q8_0 (~1.5 GB, Apache-2.0, --pooling last).
+# Code embeddings — bge-code-v1 Q8_0 (~1.6 GB, Apache-2.0, --pooling last).
 RUN mkdir -p /models && \
     curl -fsSL -o /models/bge-code-v1-Q8_0.gguf \
       "https://huggingface.co/taylor-jones/bge-code-v1-Q8_0-GGUF/resolve/main/bge-code-v1-q8_0.gguf"
@@ -83,4 +83,4 @@ ENTRYPOINT ["/usr/local/bin/paparats-embed-entrypoint"]
 
 LABEL org.opencontainers.image.title="paparats-embed"
 LABEL org.opencontainers.image.description="llama.cpp + llama-swap with pre-baked bge-code-v1 (code) and Qwen3-Embedding-0.6B (arch/docs text) — both Apache-2.0 — for Paparats MCP"
-LABEL org.opencontainers.image.source="https://github.com/ibaz/paparats-mcp"
+LABEL org.opencontainers.image.source="https://github.com/IBazylchuk/paparats-mcp"

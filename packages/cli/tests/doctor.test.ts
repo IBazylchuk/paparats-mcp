@@ -14,6 +14,14 @@ vi.mock('fs');
 vi.mock('os');
 vi.mock('../src/config.js');
 vi.mock('../src/api-client.js');
+// `os` is mocked, so the real module could not even build ~/.paparats.
+vi.mock('../src/local-urls.js', () => ({
+  localUrls: () => ({
+    server: 'http://localhost:9876',
+    indexer: 'http://localhost:9877',
+    qdrant: process.env.QDRANT_URL ?? 'http://localhost:6333',
+  }),
+}));
 
 const mockedExecSync = vi.mocked(execSync);
 const mockedFs = vi.mocked(fs);

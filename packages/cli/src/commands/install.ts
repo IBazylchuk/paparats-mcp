@@ -20,6 +20,7 @@ import {
   writePrivateFile,
   localProjectsFor,
 } from '../projects-yml.js';
+import { localUrls } from '../local-urls.js';
 
 const MODELS_DIR = path.join(PAPARATS_HOME, 'models');
 const EMBED_CONFIG_FILE = path.join(PAPARATS_HOME, 'llama-swap.yaml');
@@ -563,7 +564,7 @@ export async function ensureLocalEmbed(
   await downloadModelIfNeeded(
     deps,
     cleanupTasks,
-    'bge-code-v1 (~1.5 GB)',
+    'bge-code-v1 (~1.6 GB)',
     CODE_GGUF_URL,
     CODE_GGUF_FILE,
     CODE_GGUF_MIN_BYTES
@@ -889,7 +890,7 @@ export async function decideEmbeddingProvider(
           message: 'Which embedding provider should Paparats use?',
           choices: [
             {
-              name: 'Local llama.cpp (private, free, ~2.3 GB image, fast; Metal on macOS)',
+              name: 'Local llama.cpp (private, free, ~2.3 GB of models, fast; Metal on macOS)',
               value: 'llama' as EmbeddingProvider,
             },
             {
@@ -1148,9 +1149,17 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
     throw err;
   }
 
-  await deps.waitForHealth(qdrantHealthUrl(opts.qdrantUrl), 'Qdrant');
-  await deps.waitForHealth('http://localhost:9876/health', 'MCP server');
-  await deps.waitForHealth('http://localhost:9877/health', 'Indexer');
+  const urls = localUrls();
+  const health = [
+    { label: 'Qdrant', url: qdrantHealthUrl(opts.qdrantUrl), service: 'qdrant' },
+    { label: 'MCP server', url: `${urls.server}/health`, service: 'paparats' },
+    { label: 'Indexer', url: `${urls.indexer}/health`, service: 'paparats-indexer' },
+  ];
+  await waitForStack(
+    health,
+    deps.waitForHealth,
+    (service) => `${composeCmd} -f "${composePath}" logs ${service}`
+  );
 
   // 10. Native embed server setup on host (when native)
   if (embedDecision.setupHostEmbed) {
@@ -1158,7 +1167,9 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
   }
 
   // 11. MCP-client wiring
-  configureCursorMcp('http://localhost:9876/mcp', deps);
+  const mcpUrl = `${urls.server}/mcp`;
+  configureCursorMcp(mcpUrl, deps);
+  configureClaudeCodeMcp('paparats', mcpUrl, deps);
 
   // 12. Final summary
   console.log(chalk.bold.green('\n✓ Installation complete!\n'));
@@ -1169,9 +1180,31 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
   console.log(chalk.dim(`  • Edit compose:        paparats edit compose`));
   console.log(chalk.dim(`  • Stack lifecycle:     paparats start | stop | restart\n`));
   console.log(chalk.dim('MCP endpoints:'));
-  console.log(chalk.dim('  http://localhost:9876/mcp'));
-  console.log(chalk.dim('  http://localhost:9876/support/mcp'));
+  console.log(chalk.dim(`  ${urls.server}/mcp`));
+  console.log(chalk.dim(`  ${urls.server}/support/mcp`));
   console.log('');
+}
+
+/**
+ * Wait for each service of the stack and throw, with the commands that show
+ * why, when one does not answer. Reporting success here sent people to their
+ * MCP client with nothing listening behind the URL.
+ */
+export async function waitForStack(
+  checks: Array<{ label: string; url: string; service: string }>,
+  waitHealth: (url: string, label: string) => Promise<boolean>,
+  logsCommand: (service: string) => string
+): Promise<void> {
+  const down: typeof checks = [];
+  for (const check of checks) {
+    if (!(await waitHealth(check.url, check.label))) down.push(check);
+  }
+  if (down.length === 0) return;
+  const names = down.map((d) => d.label).join(', ');
+  console.log(chalk.red(`\n${names} did not come up. See why with:`));
+  for (const d of down) console.log(chalk.dim(`  ${logsCommand(d.service)}`));
+  console.log(chalk.dim('  paparats doctor'));
+  throw new Error(`The stack did not start: ${names}`);
 }
 
 // ── Support mode ────────────────────────────────────────────────────────────
@@ -1189,7 +1222,7 @@ async function runSupportInstall(
     | 'execFile'
   >
 ): Promise<void> {
-  const serverUrl = opts.server ?? 'http://localhost:9876';
+  const serverUrl = opts.server ?? localUrls().server;
 
   // Verify server is reachable
   const healthUrl = `${serverUrl}/health`;
@@ -1208,8 +1241,8 @@ async function runSupportInstall(
   console.log(chalk.bold.green('\n\u2713 Support setup complete!\n'));
   console.log('Configured endpoint:');
   console.log(chalk.dim(`  Support MCP: ${mcpUrl}\n`));
-  console.log('Available tools: search_code, get_chunk, find_usages, health_check,');
-  console.log('  get_chunk_meta, search_changes, explain_feature, recent_changes, impact_analysis');
+  console.log('Read-only tools: code search, usages, change history, feature explanations,');
+  console.log('  impact analysis, the module map and docs search (full list: the README).');
   console.log('');
   console.log(
     chalk.dim('Note: If the server uses PAPARATS_PROJECTS, searches are automatically scoped.')
@@ -1222,7 +1255,7 @@ async function runSupportInstall(
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function qdrantHealthUrl(qdrantUrl?: string): string {
-  return qdrantUrl ? `${qdrantUrl.replace(/\/$/, '')}/healthz` : 'http://localhost:6333/healthz';
+  return `${(qdrantUrl ?? localUrls().qdrant).replace(/\/$/, '')}/healthz`;
 }
 
 /**
@@ -1415,7 +1448,7 @@ export const installCommand = new Command('install')
   )
   .option('--qdrant-url <url>', 'External Qdrant URL (skips Qdrant Docker container)')
   .option('--qdrant-api-key <key>', 'Qdrant API key for authenticated access')
-  .option('--server <url>', 'Server URL to connect to (support mode)', 'http://localhost:9876')
+  .option('--server <url>', 'Server URL to connect to (support mode)')
   .option('--force', 'Skip overwrite/migration prompts (always overwrite)')
   .option('--non-interactive', 'Fail on any prompt instead of asking')
   .option('-v, --verbose', 'Show detailed output')

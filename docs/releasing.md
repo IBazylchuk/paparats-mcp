@@ -73,7 +73,7 @@ needed (e.g. between official releases). It reads the version from `package.json
 ## Keeping public text in sync
 
 Every change to an embedding model, a default, a port or a tool set should update, in the
-same PR: `README.md`, `packages/cli/README.md`, `llms-install.md`, `llms.txt`, the
+same PR: `README.md`, the pages in `docs/`, `packages/cli/README.md`, `llms-install.md`, `llms.txt`, the
 `description` fields in `packages/cli/package.json`, `server.json` and the client plugin
 manifests (`plugin.json`, `gemini-extension.json`, `.cursor-plugin/`, `claude-plugin/`,
 `grok/`). Directory listings and AI answer engines copy these texts verbatim, so a stale

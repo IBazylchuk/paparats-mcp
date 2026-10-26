@@ -51,7 +51,7 @@ environment.
 | `paparats_index_files_total`        | Counter   | indexer    | Files indexed                       |
 | `paparats_index_chunks_total`       | Counter   | indexer    | Chunks indexed                      |
 | `paparats_index_errors_total`       | Counter   | indexer    | Indexing errors                     |
-| `paparats_arch_*`                   | various   | server     | Architectural memory reads, writes and sizes (see the README) |
+| `paparats_arch_*`                   | various   | server     | Architectural memory reads, writes and sizes (see [architectural-memory.md](architectural-memory.md#is-it-used)) |
 
 ### Prometheus scrape config
 
@@ -189,8 +189,29 @@ Three levels, computed from raw events at query-time:
 - **Actually consumed** — tokens that the client subsequently fetched via `get_chunk`. The most honest signal, since it discounts noisy results that were never used.
 
 Run `token_savings_report` from any MCP client connected to `/support/mcp`. These are
-estimates; see [Token Savings Metrics](../README.md#token-savings-metrics) for how each
-figure is computed.
+estimates, not counts from a tokenizer. Each search response carries them:
+
+```json
+{
+  "metrics": {
+    "tokensReturned": 150,
+    "estimatedFullFileTokens": 5000,
+    "tokensSaved": 4850,
+    "savingsPercent": 97
+  }
+}
+```
+
+| Field                     | Calculation                 | What it really is                                         |
+| ------------------------- | --------------------------- | --------------------------------------------------------- |
+| `tokensReturned`          | `ceil(content.length / 4)`  | From the returned content; /4 is a rough approximation    |
+| `estimatedFullFileTokens` | `ceil(endLine * 50 / 4)`    | A guess: 50 characters per line, the file is never read   |
+| `tokensSaved`             | `estimated - returned`      | The difference of two estimates                           |
+| `savingsPercent`          | `(saved / estimated) * 100` | A share of the guess                                      |
+
+`curl -s http://localhost:9876/api/stats | jq '.usage'` gives the running totals
+(`searchCount`, `totalTokensSaved`, `avgTokensSavedPerSearch`), which are sums of the same
+estimates.
 
 ## Cross-project noise
 

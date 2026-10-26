@@ -1,7 +1,7 @@
 import http from 'node:http';
 import https from 'node:https';
+import { localUrls } from './local-urls.js';
 
-const DEFAULT_BASE_URL = 'http://localhost:9876';
 const MAX_RESPONSE_SIZE = 100 * 1024 * 1024; // 100MB
 
 interface RequestOptions {
@@ -73,7 +73,7 @@ export class ApiClient {
 
   constructor(options?: ApiClientOptions | string) {
     const opts = typeof options === 'string' ? { baseUrl: options } : (options ?? {});
-    this.baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
+    this.baseUrl = opts.baseUrl ?? localUrls().server;
     this.defaultTimeout = opts.defaultTimeout ?? 120_000;
     this.maxRetries = opts.maxRetries ?? 3;
     this.debug = opts.debug ?? false;

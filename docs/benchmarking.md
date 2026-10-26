@@ -6,7 +6,7 @@ scores the results offline — no LLM, no agent. Use it to back a retrieval chan
 BM25, a reranker, a different embedding model, chunking) with numbers, and to show the
 before/after in the PR.
 
-The embedding-model numbers in the README ("Model benchmarks & methodology") come from
+The embedding-model numbers in [embeddings.md](embeddings.md#how-the-models-were-chosen) come from
 public BEIR datasets (CoIR CosQA, SciFact, FiQA) and compare models in isolation. This
 bench measures the whole search path — chunking, instruction prefixes,
 project filtering, dedupe — on a real repository.

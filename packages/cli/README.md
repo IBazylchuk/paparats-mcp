@@ -12,7 +12,7 @@ leaves your machine.
 - **Symbol graph** - cross-chunk call/reference relationships (`find_usages`)
 - **Vector search** powered by Qdrant + llama.cpp (`bge-code-v1` for code, `Qwen3-Embedding-0.6B` for docs)
 - **Git metadata** - commit history and ticket references per chunk
-- **Architectural memory** - agent-maintained components / decisions (ADRs) / lessons learned with server-side similarity-gate deduplication (see [main README](https://github.com/IBazylchuk/paparats-mcp#architectural-memory-agent-maintained-adrs-components-lessons))
+- **Architectural memory** - agent-maintained components / decisions (ADRs) / lessons learned with server-side similarity-gate deduplication (see [docs/architectural-memory.md](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/architectural-memory.md))
 - **Three MCP endpoints** - coding (`/mcp`), support (`/support/mcp`) and an opt-in docs-only knowledge endpoint, each with its own tool set
 - **Automatic freshness** - the indexer checks every repo for changes every 10 minutes and runs a scheduled full pass; `POST /trigger` reindexes on demand
 - **Docker-based deployment** - one command sets up Qdrant, the embed server, the MCP server and the indexer
@@ -33,7 +33,7 @@ npm install -g @paparats/cli
 
 ```bash
 # 1. One-time setup: writes ~/.paparats/, starts the Docker stack,
-#    downloads the embedding models (~2 GB), wires Cursor if it is installed
+#    downloads the embedding models (~2.3 GB), connects Claude Code and Cursor
 paparats install
 
 # 2. Add the projects you want indexed (local path or GitHub repo)
@@ -43,9 +43,6 @@ paparats add your-org/your-repo
 # 3. Check the stack and the indexing status
 paparats status
 paparats list
-
-# 4. Connect Claude Code (Cursor is wired by step 1)
-claude mcp add --scope user --transport http paparats http://localhost:9876/mcp
 ```
 
 Indexing runs in the indexer container: there is no separate `index` or `watch` step.
@@ -92,7 +89,7 @@ Once connected, your AI assistant gets access to these tools:
 
 **Support mode** (`/support/mcp`): `search_code`, `get_chunk`, `find_usages`, `list_projects`, `health_check`, `get_chunk_meta`, `search_changes`, `explain_feature`, `recent_changes`, `impact_analysis`, `module_map`, `search_docs`, `get_document`, `term_search`, `term_list` and six analytics tools
 
-The full reference is in the [main README](https://github.com/IBazylchuk/paparats-mcp#mcp-tools-reference).
+The full reference is in [docs/tools.md](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/tools.md).
 
 ## Configuration
 

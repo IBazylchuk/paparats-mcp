@@ -3,6 +3,7 @@ import { execSync } from 'child_process';
 import chalk from 'chalk';
 import { findConfigDir, readConfig, CONFIG_FILE } from '../config.js';
 import { ApiClient } from '../api-client.js';
+import { localUrls } from '../local-urls.js';
 
 export interface StatusOptions {
   server?: string;
@@ -122,7 +123,7 @@ export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise
   const readCfg = deps?.readConfig ?? readConfig;
   const healthCheck = deps?.healthCheck;
 
-  const serverUrl = opts.server ?? 'http://localhost:9876';
+  const serverUrl = opts.server ?? localUrls().server;
   const timeout = opts.timeout ?? 5_000;
 
   const result: StatusResult = {
@@ -313,7 +314,7 @@ function outputStatus(result: StatusResult, opts: StatusOptions): void {
 
 export const statusCommand = new Command('status')
   .description('Show system status')
-  .option('--server <url>', 'MCP server URL', 'http://localhost:9876')
+  .option('--server <url>', 'MCP server URL', localUrls().server)
   .option('--timeout <ms>', 'Request timeout in milliseconds', '5000')
   .option('--json', 'Output as JSON')
   .option('-v, --verbose', 'Show detailed output')

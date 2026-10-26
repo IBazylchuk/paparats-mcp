@@ -76,6 +76,6 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
 
 LABEL org.opencontainers.image.title="paparats-indexer"
 LABEL org.opencontainers.image.description="Automated repo indexer for Paparats MCP — clones repos and indexes them on a schedule"
-LABEL org.opencontainers.image.source="https://github.com/ibaz/paparats-mcp"
+LABEL org.opencontainers.image.source="https://github.com/IBazylchuk/paparats-mcp"
 
 CMD ["node", "packages/indexer/dist/index.js"]

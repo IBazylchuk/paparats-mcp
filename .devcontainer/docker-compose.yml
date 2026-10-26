@@ -5,10 +5,15 @@
 services:
   # Seeds an empty projects.yml so the indexer enables its config-watcher
   # at startup; otherwise `paparats add` from the workspace is invisible to it.
+  # The workspace runs as vscode (uid 1000), which must be able to write it.
   init:
     image: busybox:latest
     command:
-      ['sh', '-c', '[ -f /config/projects.yml ] || printf "repos: []\n" > /config/projects.yml']
+      [
+        'sh',
+        '-c',
+        '[ -f /config/projects.yml ] || printf "repos: []\n" > /config/projects.yml; chown -R 1000:1000 /config',
+      ]
     volumes:
       - paparats_home:/config
 
@@ -16,7 +21,7 @@ services:
     image: mcr.microsoft.com/devcontainers/base:bookworm
     volumes:
       - ..:/workspaces/paparats-mcp:cached
-      - paparats_home:/root/.paparats
+      - paparats_home:/home/vscode/.paparats
     command: sleep infinity
     environment:
       PAPARATS_SERVER_URL: http://paparats:9876

@@ -18,6 +18,7 @@ import {
   type RegenerateOptions,
   type RegenerateResult,
 } from '../projects-yml.js';
+import { localUrls } from '../local-urls.js';
 
 const PAPARATS_HOME = path.join(os.homedir(), '.paparats');
 const COMPOSE_FILE = path.join(PAPARATS_HOME, 'docker-compose.yml');
@@ -355,11 +356,11 @@ export async function runUpdate(opts: UpdateOptions, deps?: UpdateDeps): Promise
       }
 
       if (hasQdrant) {
-        const qdrantReady = await waitHealth('http://localhost:6333/healthz', 'Qdrant');
+        const qdrantReady = await waitHealth(`${localUrls().qdrant}/healthz`, 'Qdrant');
         if (!qdrantReady) throw new Error('Qdrant failed to start');
       }
 
-      const mcpReady = await waitHealth('http://localhost:9876/health', 'MCP server');
+      const mcpReady = await waitHealth(`${localUrls().server}/health`, 'MCP server');
       if (!mcpReady) throw new Error('MCP server failed to start');
     }
   }
