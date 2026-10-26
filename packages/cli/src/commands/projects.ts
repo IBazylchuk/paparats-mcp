@@ -1,5 +1,6 @@
 import { Command } from 'commander';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import chalk from 'chalk';
 import { confirm } from '@inquirer/prompts';
@@ -18,9 +19,9 @@ import {
   resolveProjectName,
   type ProjectEntry,
 } from '../projects-yml.js';
+import { localUrls } from '../local-urls.js';
 
-const SERVER_BASE = process.env['PAPARATS_SERVER_URL'] ?? 'http://localhost:9876';
-const INDEXER_BASE = process.env['PAPARATS_INDEXER_URL'] ?? 'http://localhost:9877';
+const { server: SERVER_BASE, indexer: INDEXER_BASE } = localUrls();
 
 // ── add ─────────────────────────────────────────────────────────────────────
 
@@ -52,10 +53,27 @@ const REPO_SHORTHAND_RE = /^[^/]+\/[^/]+$/;
 const GITHUB_HOSTS = new Set(['github.com', 'www.github.com']);
 const GITHUB_NAME_RE = /^[A-Za-z0-9_.-]+$/;
 
-export function detectKind(input: string): 'local' | 'remote' {
+const EXPLICIT_LOCAL_RE = /^(\.{1,2}(\/|$)|~(\/|$))/;
+
+/**
+ * A URL is remote, `.`, `./x`, `../x` and `~/x` are local. `a/b` is the GitHub
+ * shorthand unless `isLocalDir` says such a directory exists here — `paparats
+ * add src/app` from a parent folder means that folder.
+ */
+export function detectKind(
+  input: string,
+  isLocalDir: (p: string) => boolean = () => false
+): 'local' | 'remote' {
   if (REPO_URL_RE.test(input)) return 'remote';
-  if (REPO_SHORTHAND_RE.test(input)) return 'remote';
+  if (EXPLICIT_LOCAL_RE.test(input)) return 'local';
+  if (REPO_SHORTHAND_RE.test(input) && !isLocalDir(input)) return 'remote';
   return 'local';
+}
+
+/** A local argument as an absolute path: relative to the current directory, `~` to the home directory. */
+export function resolveLocalPath(input: string, cwd: string = process.cwd()): string {
+  if (input === '~' || input.startsWith('~/')) return path.join(os.homedir(), input.slice(1));
+  return path.resolve(cwd, input);
 }
 
 /**
@@ -114,21 +132,23 @@ export async function runAdd(
   const pathExists = deps.pathExists ?? fs.existsSync.bind(fs);
   const isDirectory = deps.isDirectory ?? ((p: string) => fs.statSync(p).isDirectory());
 
-  const kind = detectKind(argument);
+  const isLocalDir = (p: string) => {
+    const abs = resolveLocalPath(p);
+    return pathExists(abs) && isDirectory(abs);
+  };
+  const kind = detectKind(argument, isLocalDir);
   const file = readProjectsFile(home);
 
   let entry: ProjectEntry;
   if (kind === 'local') {
-    if (!path.isAbsolute(argument)) {
-      throw new Error(`Local path must be absolute: ${argument}`);
+    const localPath = resolveLocalPath(argument);
+    if (!pathExists(localPath)) {
+      throw new Error(`Local path does not exist: ${localPath}`);
     }
-    if (!pathExists(argument)) {
-      throw new Error(`Local path does not exist: ${argument}`);
+    if (!isDirectory(localPath)) {
+      throw new Error(`Local path is not a directory: ${localPath}`);
     }
-    if (!isDirectory(argument)) {
-      throw new Error(`Local path is not a directory: ${argument}`);
-    }
-    entry = { path: argument };
+    entry = { path: localPath };
   } else {
     entry = { url: parseGithubRepo(argument) };
   }
@@ -484,7 +504,7 @@ export const addCommand = new Command('add')
   .description('Add a project (local path or GitHub repo) to the index')
   .argument(
     '<path-or-repo>',
-    'Absolute local path, or a GitHub repo (owner/repo, git@github.com:owner/repo.git, https://github.com/owner/repo)'
+    'Local path (absolute, relative or ~/...), or a GitHub repo (owner/repo, git@github.com:owner/repo.git, https://github.com/owner/repo)'
   )
   .option('--name <name>', 'Project name override')
   .option(

@@ -2,6 +2,7 @@ import { Command, Option } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import { ApiClient } from '../api-client.js';
+import { localUrls } from '../local-urls.js';
 
 function formatNumber(n: number): string {
   return n.toLocaleString('en-US');
@@ -207,7 +208,7 @@ export async function runGroups(
 export const groupsCommand = new Command('groups')
   .description('List all indexed groups and projects')
   .argument('[group]', 'Show details for specific group')
-  .option('--server <url>', 'MCP server URL', 'http://localhost:9876')
+  .option('--server <url>', 'MCP server URL', localUrls().server)
   .option('--timeout <ms>', 'Request timeout in milliseconds', '10000')
   .option('-v, --verbose', 'Show detailed information')
   .option('-q, --quiet', 'Show only group names')

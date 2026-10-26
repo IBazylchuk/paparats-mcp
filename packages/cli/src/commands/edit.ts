@@ -15,6 +15,7 @@ import {
   deriveRegenerateOptsFromCompose,
   type ProjectsFile,
 } from '../projects-yml.js';
+import { localUrls } from '../local-urls.js';
 
 export type EditTarget = 'compose' | 'projects';
 
@@ -143,7 +144,7 @@ async function defaultRegenerateAndRestart(
 }
 
 async function defaultTriggerFullReindex(): Promise<void> {
-  const url = process.env['PAPARATS_INDEXER_URL'] ?? 'http://localhost:9877';
+  const url = localUrls().indexer;
   const res = await fetch(`${url}/trigger`, { method: 'POST' });
   if (!res.ok) throw new Error(`Indexer ${url} returned ${res.status}`);
 }

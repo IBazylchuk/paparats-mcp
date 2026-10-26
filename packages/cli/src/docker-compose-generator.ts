@@ -124,15 +124,40 @@ function embedService(port: number): ComposeService {
     // 6G; raise the limit (and LLAMA_BATCH) for very large corpora, or lower it
     // on a constrained host. An explicit limit prevents a runaway model from
     // starving its siblings — the earlier OOM was an unbounded 8k-batch buffer.
+    // No CPU limit by default (0): Docker refuses to create a container whose
+    // limit exceeds the CPUs it has, so a fixed 6 broke every 4-core machine.
     deploy: {
       resources: {
-        limits: { cpus: '${EMBED_CPUS:-6.0}', memory: '${EMBED_MEMORY:-6G}' },
+        limits: { cpus: '${EMBED_CPUS:-0}', memory: '${EMBED_MEMORY:-6G}' },
         reservations: { cpus: '1.0', memory: '2G' },
       },
     },
     logging: { driver: 'json-file', options: { 'max-size': '10m', 'max-file': '3' } },
     restart: 'unless-stopped',
     networks: ['paparats-net'],
+  };
+}
+
+/**
+ * The prose layer (architectural memory, docs search) has its own model. With
+ * the local embed server it is the qwen3-embedding-0.6b baked into
+ * ibaz/paparats-embed; with a cloud provider there is no embed server, so the
+ * prose layer goes to the same provider — it used to be left on the local
+ * model and failed to embed anything. Each value can be overridden in .env.
+ */
+function textEmbeddingEnv(provider: EmbeddingProvider): Record<string, string> {
+  if (provider === 'llama') {
+    return {
+      TEXT_EMBEDDING_MODEL: '${TEXT_EMBEDDING_MODEL:-qwen3-embedding-0.6b}',
+      TEXT_EMBEDDING_DIMENSIONS: '${TEXT_EMBEDDING_DIMENSIONS:-1024}',
+    };
+  }
+  const [model, dimensions] =
+    provider === 'voyage' ? ['voyage-4', 1024] : ['text-embedding-3-small', 1536];
+  return {
+    TEXT_EMBEDDING_PROVIDER: `\${TEXT_EMBEDDING_PROVIDER:-${provider}}`,
+    TEXT_EMBEDDING_MODEL: `\${TEXT_EMBEDDING_MODEL:-${model}}`,
+    TEXT_EMBEDDING_DIMENSIONS: `\${TEXT_EMBEDDING_DIMENSIONS:-${dimensions}}`,
   };
 }
 
@@ -157,14 +182,13 @@ function paparatsService(
     env['EMBED_BATCH_SIZE'] = '${EMBED_BATCH_SIZE:-5}';
   } else {
     env['EMBEDDING_PROVIDER'] = embeddingProvider;
+    // Empty leaves the provider's default model (e.g. a newer voyage-code-* goes in .env).
+    env['EMBEDDING_MODEL'] = '${EMBEDDING_MODEL:-}';
+    env['EMBEDDING_DIMENSIONS'] = '${EMBEDDING_DIMENSIONS:-}';
     if (embeddingProvider === 'openai') env['OPENAI_API_KEY'] = '${OPENAI_API_KEY:-}';
     if (embeddingProvider === 'voyage') env['VOYAGE_API_KEY'] = '${VOYAGE_API_KEY:-}';
   }
-  // Arch-layer text embeddings — defaults track the qwen3-embedding-0.6b baked
-  // into ibaz/paparats-embed. Override via .env when using a cloud provider or a
-  // different text model.
-  env['TEXT_EMBEDDING_MODEL'] = '${TEXT_EMBEDDING_MODEL:-qwen3-embedding-0.6b}';
-  env['TEXT_EMBEDDING_DIMENSIONS'] = '${TEXT_EMBEDDING_DIMENSIONS:-1024}';
+  Object.assign(env, textEmbeddingEnv(embeddingProvider));
   if (qdrantApiKey) env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
   // Resolve indexer over the docker-compose network so the analytics UI's
   // indexer tile reaches its sibling instead of the host loopback (which has
@@ -221,15 +245,26 @@ function indexerService(
     GITHUB_TOKEN: '${GITHUB_TOKEN:-}',
     CRON: `\${CRON:-${config.cron ?? '0 */6 * * *'}}`,
     QDRANT_URL: qdrantUrl,
+    // Read from ~/.paparats/.env, so turning docs search on survives the
+    // compose being generated again by add / remove / edit.
+    INDEX_DOCS: '${INDEX_DOCS:-false}',
+    // On the shared data volume: the image default (/data) is not a volume, so
+    // the change-detection fingerprints were lost with every new container.
+    STATE_DB_PATH: '/home/nodejs/.paparats/indexer-state.db',
   };
   if (embeddingProvider === 'llama') {
     env['EMBED_URL'] = embedUrl;
     env['EMBED_BATCH_SIZE'] = '${EMBED_BATCH_SIZE:-5}';
   } else {
     env['EMBEDDING_PROVIDER'] = embeddingProvider;
+    // Empty leaves the provider's default model (e.g. a newer voyage-code-* goes in .env).
+    env['EMBEDDING_MODEL'] = '${EMBEDDING_MODEL:-}';
+    env['EMBEDDING_DIMENSIONS'] = '${EMBEDDING_DIMENSIONS:-}';
     if (embeddingProvider === 'openai') env['OPENAI_API_KEY'] = '${OPENAI_API_KEY:-}';
     if (embeddingProvider === 'voyage') env['VOYAGE_API_KEY'] = '${VOYAGE_API_KEY:-}';
   }
+  // The docs pass (INDEX_DOCS) embeds prose too.
+  Object.assign(env, textEmbeddingEnv(embeddingProvider));
   if (config.qdrantApiKey) env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
 
   // Mount the whole ~/.paparats as /config (directory bind-mount, not single file)

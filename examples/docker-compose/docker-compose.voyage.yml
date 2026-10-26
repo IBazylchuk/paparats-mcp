@@ -1,0 +1,139 @@
+# paparats — Voyage AI embeddings, no local models
+#
+# Needs VOYAGE_API_KEY in .env. Code is sent to Voyage AI to be embedded.
+# Save it as docker-compose.yml next to projects.yml, then:  docker compose up -d
+# MCP endpoint: http://localhost:9876/mcp
+#   Claude Code: claude mcp add --scope user --transport http paparats http://localhost:9876/mcp
+# Ports, keys and options go in a .env file in the same folder (see .env.example).
+#
+# A folder on this machine: list it in projects.yml (- path: /abs/path/app) and mount it
+# below under paparats-indexer → volumes as  - /abs/path/app:/projects/app:ro
+#
+# Written by scripts/generate-compose-examples.js from the compose paparats install writes.
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: paparats-qdrant
+    ports:
+      - ${QDRANT_PORT:-6333}:6333
+    volumes:
+      - qdrant_data:/qdrant/storage
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/6333 || exit 1
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    restart: unless-stopped
+    networks:
+      - paparats-net
+  paparats:
+    image: ibaz/paparats-server:latest
+    container_name: paparats-mcp
+    ports:
+      - ${PAPARATS_PORT:-9876}:9876
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      EMBEDDING_PROVIDER: voyage
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      TEXT_EMBEDDING_PROVIDER: ${TEXT_EMBEDDING_PROVIDER:-voyage}
+      TEXT_EMBEDDING_MODEL: ${TEXT_EMBEDDING_MODEL:-voyage-4}
+      TEXT_EMBEDDING_DIMENSIONS: ${TEXT_EMBEDDING_DIMENSIONS:-1024}
+      PAPARATS_INDEXER_URL: http://paparats-indexer:9877
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - paparats_data:/home/nodejs/.paparats
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - >-
+          require('http').get('http://localhost:9876/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1);
+          }).on('error', () => process.exit(1));
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    restart: unless-stopped
+    networks:
+      - paparats-net
+  paparats-indexer:
+    image: ibaz/paparats-indexer:latest
+    container_name: paparats-indexer
+    environment:
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      CRON: ${CRON:-0 */6 * * *}
+      QDRANT_URL: http://qdrant:6333
+      INDEX_DOCS: ${INDEX_DOCS:-false}
+      STATE_DB_PATH: /home/nodejs/.paparats/indexer-state.db
+      EMBEDDING_PROVIDER: voyage
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-}
+      EMBEDDING_DIMENSIONS: ${EMBEDDING_DIMENSIONS:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      TEXT_EMBEDDING_PROVIDER: ${TEXT_EMBEDDING_PROVIDER:-voyage}
+      TEXT_EMBEDDING_MODEL: ${TEXT_EMBEDDING_MODEL:-voyage-4}
+      TEXT_EMBEDDING_DIMENSIONS: ${TEXT_EMBEDDING_DIMENSIONS:-1024}
+    ports:
+      - ${INDEXER_PORT:-9877}:9877
+    volumes:
+      - indexer_repos:/data/repos
+      - paparats_data:/home/nodejs/.paparats
+      - .:/config:ro
+    depends_on:
+      qdrant:
+        condition: service_healthy
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    restart: unless-stopped
+    networks:
+      - paparats-net
+volumes:
+  qdrant_data: null
+  paparats_data: null
+  indexer_repos: null
+networks:
+  paparats-net:
+    driver: bridge
+    name: paparats-network

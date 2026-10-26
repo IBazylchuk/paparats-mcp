@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 import * as yaml from 'js-yaml';
 import { generateCompose } from '../src/docker-compose-generator.js';
 
@@ -162,6 +164,35 @@ describe('generateCompose', () => {
     expect(env['CRON']).toContain('0 */6 * * *');
   });
 
+  it('keeps the indexer state on the shared volume and docs search switchable from .env', () => {
+    const out = generateCompose({ embedMode: 'native', paparatsHome: HOME });
+    const indexer = parseCompose(out).services['paparats-indexer']!;
+    const env = indexer['environment'] as Record<string, string>;
+    expect(env['STATE_DB_PATH']).toBe('/home/nodejs/.paparats/indexer-state.db');
+    expect(indexer['volumes'] as string[]).toContain('paparats_data:/home/nodejs/.paparats');
+    expect(env['INDEX_DOCS']).toBe('${INDEX_DOCS:-false}');
+  });
+
+  it('sends the prose layer to the cloud provider when there is no embed server', () => {
+    for (const [provider, model] of [
+      ['voyage', 'voyage-4'],
+      ['openai', 'text-embedding-3-small'],
+    ] as const) {
+      const compose = parseCompose(
+        generateCompose({ embedMode: 'docker', embeddingProvider: provider, paparatsHome: HOME })
+      );
+      for (const service of ['paparats', 'paparats-indexer']) {
+        const env = compose.services[service]!['environment'] as Record<string, string>;
+        expect(env['TEXT_EMBEDDING_PROVIDER']).toBe(`\${TEXT_EMBEDDING_PROVIDER:-${provider}}`);
+        expect(env['TEXT_EMBEDDING_MODEL']).toBe(`\${TEXT_EMBEDDING_MODEL:-${model}}`);
+      }
+    }
+    const local = parseCompose(generateCompose({ embedMode: 'docker', paparatsHome: HOME }));
+    const env = local.services['paparats']!['environment'] as Record<string, string>;
+    expect(env['TEXT_EMBEDDING_PROVIDER']).toBeUndefined();
+    expect(env['TEXT_EMBEDDING_MODEL']).toBe('${TEXT_EMBEDDING_MODEL:-qwen3-embedding-0.6b}');
+  });
+
   it('custom cron override', () => {
     const out = generateCompose({ embedMode: 'native', paparatsHome: HOME, cron: '*/15 * * * *' });
     const compose = parseCompose(out);
@@ -250,4 +281,22 @@ describe('generateCompose', () => {
       expect(volumes).toContain('/Users/x/web:/projects/web:ro');
     });
   });
+});
+
+describe('examples/docker-compose', () => {
+  const dir = path.join(import.meta.dirname, '..', '..', '..', 'examples', 'docker-compose');
+
+  it.each([
+    ['docker-compose.yml', { embedMode: 'docker' as const }],
+    [
+      'docker-compose.voyage.yml',
+      { embedMode: 'docker' as const, embeddingProvider: 'voyage' as const },
+    ],
+  ])(
+    '%s is what paparats install generates (scripts/generate-compose-examples.js)',
+    (file, config) => {
+      const example = yaml.load(fs.readFileSync(path.join(dir, file), 'utf8'));
+      expect(example).toEqual(yaml.load(generateCompose({ ...config, paparatsHome: '.' })));
+    }
+  );
 });

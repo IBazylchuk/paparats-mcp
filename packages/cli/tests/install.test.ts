@@ -11,6 +11,7 @@ import {
   ensureLocalEmbed,
   isPlausibleGguf,
   configureClaudeCodeMcp,
+  waitForStack,
   type InstallOptions,
   type EmbedSetupDeps,
 } from '../src/commands/install.js';
@@ -657,5 +658,40 @@ describe('configureClaudeCodeMcp', () => {
     expect(console.log).toHaveBeenCalledWith(
       expect.stringContaining(`claude ${addArgs.join(' ')}`)
     );
+  });
+});
+
+describe('waitForStack', () => {
+  const checks = [
+    { label: 'Qdrant', url: 'http://localhost:6333/healthz', service: 'qdrant' },
+    { label: 'MCP server', url: 'http://localhost:9876/health', service: 'paparats' },
+  ];
+
+  it('returns when every service answers', async () => {
+    await expect(
+      waitForStack(
+        checks,
+        async () => true,
+        (s) => `logs ${s}`
+      )
+    ).resolves.toBe(undefined);
+  });
+
+  it('throws naming the services that did not answer, with how to see why', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await expect(
+        waitForStack(
+          checks,
+          async (url) => !url.includes('9876'),
+          (s) => `logs ${s}`
+        )
+      ).rejects.toThrow('The stack did not start: MCP server');
+      const printed = log.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(printed).toContain('logs paparats');
+      expect(printed).not.toContain('logs qdrant');
+    } finally {
+      log.mockRestore();
+    }
   });
 });

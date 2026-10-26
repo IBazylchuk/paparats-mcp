@@ -1,0 +1,14 @@
+# What to index. Edit and save: the indexer picks changes up on its own.
+#
+# Projects in one group are searched together. Each entry needs `url` or `path`.
+defaults:
+  group: default
+
+repos:
+  # A GitHub repository, cloned by the indexer. Private ones need GITHUB_TOKEN in .env.
+  - url: IBazylchuk/paparats-mcp
+
+  # A folder on this machine: an absolute path, also mounted in docker-compose.yml
+  # under paparats-indexer → volumes as  - /abs/path/app:/projects/app:ro
+  # - path: /abs/path/app
+  #   name: app

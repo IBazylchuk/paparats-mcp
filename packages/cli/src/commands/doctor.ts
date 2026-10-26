@@ -8,6 +8,7 @@ import ora from 'ora';
 import { findConfigDir, readConfig, CONFIG_FILE } from '../config.js';
 import { ApiClient } from '../api-client.js';
 import { createTimeoutSignal } from '../abort.js';
+import { localUrls } from '../local-urls.js';
 
 export interface CheckResult {
   name: string;
@@ -47,7 +48,7 @@ export async function runChecks(
   const results: CheckResult[] = [];
 
   // Resolve config for URLs/models
-  const qdrantUrl = process.env.QDRANT_URL ?? 'http://localhost:6333';
+  const qdrantUrl = localUrls().qdrant;
   const embedUrl = process.env.EMBED_URL ?? 'http://localhost:18434';
   let embedModel = process.env.EMBEDDING_MODEL ?? 'bge-code-v1';
 
@@ -215,7 +216,7 @@ export async function runChecks(
 
 export const doctorCommand = new Command('doctor')
   .description('Run diagnostic checks')
-  .option('--server <url>', 'MCP server URL', 'http://localhost:9876')
+  .option('--server <url>', 'MCP server URL', localUrls().server)
   .option('-v, --verbose', 'Show detailed error messages')
   .action(async (opts: { server: string; verbose?: boolean }) => {
     console.log(chalk.bold('\npaparats doctor\n'));

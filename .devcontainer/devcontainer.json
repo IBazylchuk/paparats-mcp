@@ -3,27 +3,27 @@
   "dockerComposeFile": "docker-compose.yml",
   "service": "workspace",
   "workspaceFolder": "/workspaces/paparats-mcp",
+  "remoteUser": "vscode",
   "shutdownAction": "stopCompose",
 
   "features": {
-    "ghcr.io/devcontainers/features/node:1": { "version": "22" },
+    "ghcr.io/devcontainers/features/node:1": { "version": "24" },
     "ghcr.io/devcontainers/features/git:1": {}
   },
 
-  "forwardPorts": [9876, 6333],
+  "forwardPorts": ["paparats:9876", "qdrant:6333"],
   "portsAttributes": {
-    "9876": {
+    "paparats:9876": {
       "label": "Paparats MCP",
       "onAutoForward": "notify"
     },
-    "6333": {
+    "qdrant:6333": {
       "label": "Qdrant",
       "onAutoForward": "silent"
     }
   },
 
   "remoteEnv": {
-    "PAPARATS_SERVER_URL": "http://localhost:9876",
     "OPENAI_API_KEY": "${localEnv:OPENAI_API_KEY}",
     "VOYAGE_API_KEY": "${localEnv:VOYAGE_API_KEY}",
     "EMBEDDING_PROVIDER": "${localEnv:EMBEDDING_PROVIDER}"

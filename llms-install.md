@@ -22,7 +22,7 @@ started with `npx`; install the CLI and let it start the stack.
    ```
 
 2. Bootstrap the stack. This writes `~/.paparats/`, starts the containers and
-   downloads the embedding models (about 2 GB on first run):
+   downloads the embedding models (about 2.3 GB on first run):
 
    ```bash
    paparats install --non-interactive

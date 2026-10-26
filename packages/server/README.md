@@ -47,7 +47,7 @@ http://<host>:9876/knowledge/mcp           – MCP, knowledge mode (stateless, b
 
 `POST /api/index` registers a project; `POST /api/file-changed` and `POST /api/file-deleted`
 update single files.
-See the [main README](https://github.com/IBazylchuk/paparats-mcp#mcp-tools-reference)
+See [docs/tools.md](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/tools.md)
 for the full tool inventory per endpoint.
 
 ## Knowledge mode
@@ -73,7 +73,7 @@ the other stops the server at startup.
 Documents get their audience at index time: frontmatter `audience:` first, then
 `docs.audience` from `.paparats.yml` / `projects.yml`, otherwise `internal`. An invalid
 frontmatter value is logged and stored as `internal`. See the
-[main README](https://github.com/IBazylchuk/paparats-mcp#documentation-audience-labels).
+[documentation search guide](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/documentation-search.md#audience-labels).
 
 **Set `PAPARATS_KNOWLEDGE_PROJECTS`** — otherwise a stray `audience:` in some code
 repository's README is enough to widen what the endpoint serves.
@@ -229,7 +229,7 @@ docker run --rm -p 9876:9876 \
   ibaz/paparats-server:latest
 ```
 
-See [`docker-compose.template.yml`](./docker-compose.template.yml) for a complete
+See [`examples/docker-compose`](../../examples/docker-compose) for a complete
 stack (Qdrant + embed server + server + indexer).
 
 ## Development

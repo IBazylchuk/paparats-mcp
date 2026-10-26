@@ -9,11 +9,15 @@
 
 ## Docs
 
-- [README](https://github.com/IBazylchuk/paparats-mcp#readme): what it is, install, configuration, tools, FAQ
+- [README](https://github.com/IBazylchuk/paparats-mcp#readme): what it is, quick start, what the agent gets
+- [Install](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/install.md): install options, plain docker compose, Codespaces, support mode, hardware
+- [Clients](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/clients.md): setup for Claude Code, Cursor, Codex, Copilot, Windsurf, Antigravity, Gemini CLI and others
+- [Configuration](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/configuration.md): projects.yml, .paparats.yml, groups, freshness, CLI, environment variables
+- [How it works](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/how-it-works.md): indexing, search and ranking, the call graph, the module map
 - [Agent install guide](https://github.com/IBazylchuk/paparats-mcp/blob/main/llms-install.md): step-by-step install for an AI agent
-- [MCP tools reference](https://github.com/IBazylchuk/paparats-mcp#mcp-tools-reference): tools per endpoint
+- [MCP tools](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/tools.md): tools per endpoint
 - [FAQ](https://github.com/IBazylchuk/paparats-mcp#faq): privacy, freshness, hardware, supported clients
-- [Comparison with alternatives](https://github.com/IBazylchuk/paparats-mcp#comparison-with-alternatives): claude-context, Serena, codebase-memory-mcp, claude-context-local, Sourcegraph
+- [Comparison with alternatives](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/comparison.md): claude-context, Serena, codebase-memory-mcp, claude-context-local, Sourcegraph
 - [Chunking strategy](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/chunking-strategy.md)
 - [Replacing embedding models](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/replacing-embedding-models.md)
 - [Monitoring and observability](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/observability.md)

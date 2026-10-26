@@ -3,6 +3,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import { readConfig } from '../config.js';
 import { ApiClient } from '../api-client.js';
+import { localUrls } from '../local-urls.js';
 
 export interface SearchResultItem {
   project: string;
@@ -218,7 +219,7 @@ export const searchCommand = new Command('search')
   .option('-n, --limit <n>', 'Max results', '5')
   .option('-p, --project <name>', 'Filter by project name', 'all')
   .option('-g, --group <name>', 'Override group from config')
-  .option('--server <url>', 'MCP server URL', 'http://localhost:9876')
+  .option('--server <url>', 'MCP server URL', localUrls().server)
   .option('--timeout <ms>', 'Request timeout in milliseconds', '30000')
   .option('--json', 'Output as JSON')
   .option('-v, --verbose', 'Show detailed output')

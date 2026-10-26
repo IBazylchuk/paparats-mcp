@@ -5,6 +5,7 @@ import path from 'path';
 import * as yaml from 'js-yaml';
 import {
   detectKind,
+  resolveLocalPath,
   parseGithubRepo,
   runAdd,
   runList,
@@ -41,11 +42,28 @@ describe('detectKind', () => {
     ['https://github.com/org/repo.git', 'remote'],
     ['https://github.com/org/repo', 'remote'],
     ['org/repo', 'remote'],
-    // Disambiguate locals: anything that LOOKS like owner/repo we treat as remote.
-    // The user must pass an absolute path for local projects.
     ['/var/log/billing', 'local'],
+    ['.', 'local'],
+    ['./billing', 'local'],
+    ['../billing', 'local'],
+    ['~/code/billing', 'local'],
+    ['billing', 'local'],
   ])('detects %s as %s', (input, expected) => {
     expect(detectKind(input)).toBe(expected);
+  });
+
+  it('reads owner/repo as a local folder when one exists there', () => {
+    expect(detectKind('src/app', (p) => p === 'src/app')).toBe('local');
+    expect(detectKind('org/repo', (p) => p === 'src/app')).toBe('remote');
+  });
+});
+
+describe('resolveLocalPath', () => {
+  it('resolves against the current directory, and ~ against home', () => {
+    expect(resolveLocalPath('.', '/work/billing')).toBe('/work/billing');
+    expect(resolveLocalPath('../widgets', '/work/billing')).toBe('/work/widgets');
+    expect(resolveLocalPath('/abs/path', '/work')).toBe('/abs/path');
+    expect(resolveLocalPath('~/code/x')).toBe(path.join(os.homedir(), 'code/x'));
   });
 });
 
