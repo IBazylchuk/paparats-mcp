@@ -28,9 +28,10 @@ set with `find_usages` or a text search.
 
 ## Reading the scores
 
-Each result carries a relevance score. Treat 60% and above as a confident
-match; 40–59% as a lead to verify; below 40% as a sign the index has nothing
-close — rephrase once, then fall back to a text search.
+Each result carries a relevance score. At 45% and above the right code is
+usually first; at 33–44% it is often in the list but not first, so read a
+few; below 33% the index may have nothing close — rephrase once, then fall
+back to a text search.
 
 ## Recent edits may not be indexed yet
 

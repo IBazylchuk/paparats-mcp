@@ -75,8 +75,15 @@ import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map
 /** Chunks store 0-indexed lines; output shows them 1-indexed, as editors and grep do. */
 const shownLine = (line: number): number => line + 1;
 
-const HIGH_CONFIDENCE_THRESHOLD = 0.6;
-const LOW_CONFIDENCE_THRESHOLD = 0.4;
+/**
+ * Score bands for the `search_code` guidance line, set on the retrieval bench with
+ * the default code model (bge-code-v1). The top result's similarity rarely reaches
+ * 0.6 even when it is right, so the old 0.6 / 0.4 bands marked nearly every answer
+ * partial and up to 38% low, though the right file was in the top five for 50–96%
+ * of those. At ≥0.45 the right file comes first for 76–96% of queries.
+ */
+const HIGH_CONFIDENCE_THRESHOLD = 0.45;
+const LOW_CONFIDENCE_THRESHOLD = 0.33;
 
 /**
  * `ToolAnnotations` advertised in `tools/list` so a client can group tools by side
@@ -1712,7 +1719,7 @@ export class McpHandler {
                 '> **Low confidence results.** Try rephrasing, use grep or file reading if available, or ask the user for more specific terms.\n\n';
             } else if (bestScore < HIGH_CONFIDENCE_THRESHOLD) {
               guidance =
-                '> **Partial match results.** Supplement with grep or file reading if available, or try rephrasing for better coverage.\n\n';
+                '> **Partial match results.** The right code is often here but not first: read a few results before relying on one, or try rephrasing.\n\n';
             } else if (highCount > 0 && lowCount > 0) {
               guidance = `> **${highCount} high-confidence and ${lowCount} low-confidence results.** Review low-confidence results carefully.\n\n`;
             }

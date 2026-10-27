@@ -63,8 +63,8 @@ Then the order is adjusted:
 - test files ×0.9 unless the query is about tests;
 - files changed more often slightly up (×1 + 0.05 × their commit-count percentile).
 
-Only the order changes; the score shown stays the similarity (≥60% high, 40–60% partial,
-<40% low), so the agent can judge a weak result. Results are cached for 5 minutes.
+Only the order changes; the score shown stays the similarity (≥45% strong, 33–45% partial,
+<33% weak), so the agent can judge a weak result. Results are cached for 5 minutes.
 
 `search_code` searches the query as written. The support tools `explain_feature` and
 `impact_analysis` also try 2–3 variants (`auth` ↔ `authentication`, `userAuth` ↔
