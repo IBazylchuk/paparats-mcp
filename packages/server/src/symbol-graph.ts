@@ -127,6 +127,8 @@ function resolveClass(
  *   could be several). The caller could be hitting any of them; surface all
  *   candidates with low confidence.
  *
+ * A re-export (`export { x } from`) links as `references` rather than `calls`.
+ *
  * Skips self-edges and merges by (from, to, symbol): `from_symbols` collects the
  * methods making the call and the edge keeps its most certain label.
  *
@@ -217,7 +219,7 @@ export function buildSymbolEdges(
           edge = {
             from_chunk_id: chunk.chunk_id,
             to_chunk_id: defChunkId,
-            relation_type: 'calls',
+            relation_type: site.reexport ? 'references' : 'calls',
             symbol_name: sym,
             confidence,
             callers: new Set(),
@@ -226,6 +228,8 @@ export function buildSymbolEdges(
         } else if (CONFIDENCE_RANK[confidence] > CONFIDENCE_RANK[edge.confidence!]) {
           edge.confidence = confidence;
         }
+        // One edge per (from, to, name): a call next to a re-export of the same name wins.
+        if (!site.reexport) edge.relation_type = 'calls';
         edge.callers.add(site.from);
       }
     }

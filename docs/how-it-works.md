@@ -78,7 +78,9 @@ cost up to three times the work.
 it calls. A call that names a class (`Invoice.total`, `self.total`, a bare call inside a
 class) links only to that class's method: in Ruby by constant lookup on full paths
 (certain within one file, inferred by path suffix, ambiguous when several classes match).
-Each edge records the methods that make the call.
+Each edge records the methods that make the call. In TypeScript and JavaScript a
+re-export (`export { x } from './x.js'`, the usual barrel `index.ts` or `lib.ts`) is a
+`references` edge, so a change to `x` lists the files that publish it.
 
 `change_impact` walks those edges backwards from what you are about to change: callers,
 then their callers, up to 3 steps. A caller passes the change on only through the methods
@@ -90,7 +92,8 @@ also uses something specific from the target's file.
 
 ## The module map
 
-`module_map` groups files into modules by how much they call each other. A use split over
+`module_map` groups files into modules by how much they call each other; re-exports do
+not count, or a barrel file would tie every module it publishes together. A use split over
 several definitions counts less, and names used everywhere count little. Communities are
 found with the Louvain method, oversized ones split again. Tests join the module they call
 most, migrations are left out, and files called from much of the code are listed apart as

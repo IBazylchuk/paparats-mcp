@@ -30,6 +30,8 @@ export interface UseSite {
   on?: string;
   /** For an `on` without `::`, the namespace the call is made in, to resolve it from. */
   in?: string;
+  /** A re-export (`export { x } from`), not a call: linked as `references`. */
+  reexport?: true;
 }
 
 export interface SymbolExtractionResult {
@@ -51,8 +53,9 @@ export interface SymbolExtractionResult {
  *  3 — a name the chunk defines stays a use when called on another object;
  *      uses record the method they are made from and the class they are
  *      called on, and methods record their class.
+ *  4 — TypeScript and JavaScript re-exports (`export { x } from`) are uses.
  */
-export const SYMBOL_FORMAT = 3;
+export const SYMBOL_FORMAT = 4;
 
 /** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
@@ -571,6 +574,20 @@ function callerOf(node: Node, callers: Map<number, string | null>): string {
 }
 
 /**
+ * The name a re-export makes public: `parseName` for `export { fromName as
+ * parseName } from './names.js'`. The use is made from that name rather than
+ * from the whole chunk, so `change_impact` stops at a barrel file instead of
+ * passing the change on to callers of whatever else the chunk defines. Its
+ * edge is a `references` one, which the module map leaves out: a barrel
+ * re-exporting every module would otherwise pull them all together.
+ */
+function exportedAs(node: Node): string | undefined {
+  const parent = node.parent;
+  if (parent?.type !== 'export_specifier') return undefined;
+  return (parent.childForFieldName('alias') ?? node).text;
+}
+
+/**
  * Where a use points, as far as the code says: the class for `Usage.claim`
  * (with the namespace the call is in, to resolve a relative name), the
  * enclosing class for `self.claim` and `this.claim`, and in Ruby for a bare
@@ -727,12 +744,14 @@ export function extractSymbolsForChunks(
           uses.add(text);
           const receiver = receiverOf(node);
           if (receiver.kind === 'other') calledOnOther.add(text);
+          const exported = exportedAs(node);
           const site: UseSite = {
             name: text,
-            from: callerOf(node, callers),
+            from: exported ?? callerOf(node, callers),
             ...calledOn(node, receiver, lang),
+            ...(exported !== undefined ? { reexport: true as const } : {}),
           };
-          const key = `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}`;
+          const key = `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.reexport ?? ''}`;
           if (!sites.has(key)) sites.set(key, site);
           if (receiver.kind === 'other') otherSites.add(key);
         }

@@ -25,6 +25,7 @@ const typescriptUsages = `
   (call_expression function: (member_expression property: (property_identifier) @usage))
   (new_expression constructor: (identifier) @usage)
   (type_identifier) @usage
+  (export_specifier name: (identifier) @usage)
 `;
 
 // The javascript grammar has no type nodes, and a query naming one fails to
@@ -40,6 +41,7 @@ const javascriptUsages = `
   (call_expression function: (identifier) @usage)
   (call_expression function: (member_expression property: (property_identifier) @usage))
   (new_expression constructor: (identifier) @usage)
+  (export_specifier name: (identifier) @usage)
 `;
 
 // JSX exists only in the javascript and tsx grammars: the typescript grammar

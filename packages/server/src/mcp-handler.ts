@@ -2556,14 +2556,15 @@ export class McpHandler {
 
             const line = (r: (typeof rows)[number], showHop: boolean): string => {
               const ep = r.payload;
-              const uses = `uses ${r.dep.symbols.map((s) => `\`${s}\``).join(', ')}`;
+              const names = r.dep.symbols.map((s) => `\`${s}\``).join(', ');
+              const uses = `${r.dep.reexport ? 're-exports' : 'uses'} ${names}`;
               const marks = `${r.dep.certain ? '' : ' [maybe]'}${r.dep.hub ? ' [hub]' : ''}`;
               const hop = showHop ? `, ${r.dep.hop} step${r.dep.hop === 1 ? '' : 's'} away` : '';
               if (!ep) return `- _chunk: ${r.dep.chunkId}_ — ${uses}${hop}${marks}\n`;
               const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
               const f = typeof ep['file'] === 'string' ? ep['file'] : r.file;
               const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : r.startLine;
-              const sym = callerLabel(r.dep.callers, ep);
+              const sym = r.dep.reexport ? '' : callerLabel(r.dep.callers, ep);
               return `- **[${p}] ${f}:${shownLine(sl)}**${sym} — ${uses}${hop}${marks}\n  _chunk: ${r.dep.chunkId}_\n`;
             };
 

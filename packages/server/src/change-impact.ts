@@ -20,6 +20,8 @@ export interface Dependent {
   certain: boolean;
   /** A high-degree chunk. Listed, but its own dependents are not followed. */
   hub: boolean;
+  /** Reached only through re-exports (`export { x } from`): a barrel file, not a caller. */
+  reexport: boolean;
 }
 
 export interface DependentsResult {
@@ -154,6 +156,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
             callers: [],
             certain,
             hub: opts.isHub(caller),
+            reexport: true,
           };
           level.set(caller, dep);
         }
@@ -162,6 +165,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
           if (!dep.callers.includes(name)) dep.callers.push(name);
         }
         dep.certain ||= certain;
+        dep.reexport &&= edge.relation_type === 'references';
         const prev = reached.get(caller);
         reached.set(caller, prev === undefined ? edgeVia : unionVia(prev, edgeVia));
       }

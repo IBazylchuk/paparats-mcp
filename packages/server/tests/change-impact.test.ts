@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { collectDependents } from '../src/change-impact.js';
+import { buildSymbolEdges } from '../src/symbol-graph.js';
 import type { EdgeConfidence, SymbolEdge } from '../src/types.js';
 
 /** Edges as `[caller, callee, symbol, confidence?, calling methods?]`. */
@@ -209,5 +210,32 @@ describe('collectDependents', () => {
     expect(res.dependents.map((d) => d.chunkId)).toEqual(['a']);
     expect(res.deeper).toBe(true);
     expect(res.truncated).toBe(false);
+  });
+  it('lists a barrel file that re-exports the change, without following its other names', () => {
+    // lib.ts re-exports `toName` and defines `version` in the same chunk; `cli` only uses `version`.
+    const { edges } = buildSymbolEdges([
+      { chunk_id: 'g//p//names.ts//0-9//a', defines_symbols: ['toName'], uses_symbols: [] },
+      {
+        chunk_id: 'g//p//lib.ts//0-9//b',
+        defines_symbols: ['version'],
+        uses_symbols: ['toName'],
+        use_sites: [{ name: 'toName', from: 'toName', reexport: true }],
+      },
+      {
+        chunk_id: 'g//p//cli.ts//0-9//c',
+        defines_symbols: [],
+        uses_symbols: ['version'],
+        use_sites: [{ name: 'version', from: '' }],
+      },
+    ]);
+    const res = collectDependents({
+      ...base,
+      seeds: ['g//p//names.ts//0-9//a'],
+      edgesTo: (id) => edges.filter((e) => e.to_chunk_id === id),
+    });
+    expect(res.dependents.map((d) => [d.chunkId, d.symbols, d.reexport])).toEqual([
+      ['g//p//lib.ts//0-9//b', ['toName'], true],
+    ]);
+    expect(edges.find((x) => x.symbol_name === 'toName')?.relation_type).toBe('references');
   });
 });

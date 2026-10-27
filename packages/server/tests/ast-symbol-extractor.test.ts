@@ -885,6 +885,34 @@ end`;
     }
   });
 
+  it('records re-exported names as uses made from the name they are exported as', async () => {
+    const code = `export { toName, fromName as parseName } from './names.js';
+export type { NameConfig } from './names.js';
+export function helper() { toName(); }`;
+    for (const lang of ['typescript', 'javascript']) {
+      const { tree, language } = parse(lang, code);
+      const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 2 }], lang);
+      tree.delete();
+
+      const sites = results[0]!.use_sites!;
+      expect(sites).toEqual(
+        expect.arrayContaining([
+          { name: 'toName', from: 'toName', reexport: true },
+          { name: 'fromName', from: 'parseName', reexport: true },
+          { name: 'toName', from: 'helper' },
+        ])
+      );
+      // The javascript grammar does not parse `export type`; TypeScript records it.
+      if (lang === 'typescript') {
+        expect(sites).toContainEqual({
+          name: 'NameConfig',
+          from: 'NameConfig',
+          reexport: true,
+        });
+      }
+    }
+  });
+
   it('extracts JavaScript definitions (its grammar has no type nodes)', async () => {
     const code = 'class Cart {\n  add(x) { save(x); }\n}\nfunction save(x) {}';
     const { tree, language } = parse('javascript', code);

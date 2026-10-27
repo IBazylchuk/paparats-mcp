@@ -1402,6 +1402,27 @@ describe('McpHandler', () => {
       });
     });
 
+    it('lists a barrel file as re-exporting the change, not as a caller', async () => {
+      const { metadataStore, indexer } = mocks();
+      const BARREL = 'g1//p1//src/lib.ts//0-40//h10';
+      const edges = [
+        edge(CALLER, SEED, 'authenticate'),
+        {
+          ...edge(BARREL, SEED, 'authenticate'),
+          relation_type: 'references' as const,
+          from_symbols: ['authenticate'],
+        },
+      ];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('**[p1] src/lib.ts:1** — re-exports `authenticate`');
+        expect(text).toContain('**[p1] src/login.ts:6** — uses `authenticate`');
+      });
+    });
+
     it('stops at depth and says more is there', async () => {
       const { metadataStore, indexer } = mocks();
       await withHandler({ metadataStore, indexer }, async (port) => {
