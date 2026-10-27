@@ -76,14 +76,15 @@ import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map
 const shownLine = (line: number): number => line + 1;
 
 /**
- * Score bands for the `search_code` guidance line, set on the retrieval bench with
- * the default code model (bge-code-v1). The top result's similarity rarely reaches
- * 0.6 even when it is right, so the old 0.6 / 0.4 bands marked nearly every answer
- * partial and up to 38% low, though the right file was in the top five for 50–96%
- * of those. At ≥0.45 the right file comes first for 76–96% of queries.
+ * Below this best similarity `search_code` warns that the index may have nothing
+ * close. Above it the score says little about whether the first result is right:
+ * on the retrieval bench (218 queries, default code model) the right file was in
+ * the top five for 84–96% of queries per set and first for 59–84%, and splitting
+ * that range into stronger and weaker bands did not separate right from wrong on
+ * real agent queries. Every bench query has an answer, so this floor is not
+ * measured: it sits under the scores of answered queries (2 of 218 fall below).
  */
-const HIGH_CONFIDENCE_THRESHOLD = 0.45;
-const LOW_CONFIDENCE_THRESHOLD = 0.33;
+const LOW_CONFIDENCE_THRESHOLD = 0.3;
 
 /**
  * `ToolAnnotations` advertised in `tools/list` so a client can group tools by side
@@ -1709,20 +1710,11 @@ export class McpHandler {
               })
               .join('\n\n---\n\n');
 
-            const highCount = top.filter((r) => r.score >= HIGH_CONFIDENCE_THRESHOLD).length;
-            const lowCount = top.filter((r) => r.score < LOW_CONFIDENCE_THRESHOLD).length;
             const bestScore = Math.max(0, ...top.map((r) => r.score));
-
-            let guidance = '';
-            if (bestScore < LOW_CONFIDENCE_THRESHOLD) {
-              guidance =
-                '> **Low confidence results.** Try rephrasing, use grep or file reading if available, or ask the user for more specific terms.\n\n';
-            } else if (bestScore < HIGH_CONFIDENCE_THRESHOLD) {
-              guidance =
-                '> **Partial match results.** The right code is often here but not first: read a few results before relying on one, or try rephrasing.\n\n';
-            } else if (highCount > 0 && lowCount > 0) {
-              guidance = `> **${highCount} high-confidence and ${lowCount} low-confidence results.** Review low-confidence results carefully.\n\n`;
-            }
+            const guidance =
+              bestScore < LOW_CONFIDENCE_THRESHOLD
+                ? '> **Low confidence results.** The index may have nothing close: rephrase once, then use grep or file reading if available, or ask the user for more specific terms.\n\n'
+                : '';
 
             return { content: [{ type: 'text' as const, text: guidance + formatted }] };
           } catch (err) {

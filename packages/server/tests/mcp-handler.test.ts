@@ -833,8 +833,8 @@ describe('McpHandler', () => {
     const searcher = createMockSearcher();
     vi.mocked(searcher.search).mockResolvedValue({
       results: [
-        makeSearchResult({ file: 'tests/symbol-graph.test.ts', score: 0.35, hash: 'ht' }),
-        makeSearchResult({ file: 'src/symbol-graph.ts', score: 0.32, hash: 'hc' }),
+        makeSearchResult({ file: 'tests/symbol-graph.test.ts', score: 0.32, hash: 'ht' }),
+        makeSearchResult({ file: 'src/symbol-graph.ts', score: 0.295, hash: 'hc' }),
       ],
       total: 2,
       metrics: {
@@ -863,10 +863,9 @@ describe('McpHandler', () => {
         text.indexOf('tests/symbol-graph.test.ts')
       );
       // The percentage is the similarity, not the demoted rank key.
-      expect(text).toContain('(35.0%');
       expect(text).toContain('(32.0%');
-      // Guidance reads the best similarity (0.35, partial), not the first result (0.32, low).
-      expect(text).toContain('Partial match results');
+      expect(text).toContain('(29.5%');
+      // Guidance reads the best similarity (0.32), not the first result (0.295, low).
       expect(text).not.toContain('Low confidence results');
 
       const asked = await callTool(port, 'search_code', { query: 'tests for buildSymbolEdges' });
