@@ -4,7 +4,9 @@ import {
   COMMON_NAME_MIN_FILES,
   isCommonName,
   MAX_DEFINITION_FANOUT,
+  type ChunkSymbols,
 } from '../src/symbol-graph.js';
+import type { SymbolEdge } from '../src/types.js';
 
 describe('isCommonName', () => {
   const usage = (callerFiles: number, names: Record<string, number>) => ({
@@ -140,6 +142,7 @@ describe('buildSymbolEdges', () => {
         chunk_id: 'g//p//queue.rb//0-9//a',
         defines_symbols: ['batch'],
         uses_symbols: [],
+        def_owners: { batch: 'Queue' },
         class_methods: ['batch'],
       },
       {
@@ -262,11 +265,8 @@ describe('buildSymbolEdges', () => {
     expect(linked(caller('Parser', 'Extraction::Pipeline'))).toEqual([['ext.rb', 'EXTRACTED']]);
     expect(linked(caller('Parser', 'Billing::Job'))).toEqual([['top.rb', 'EXTRACTED']]);
     expect(linked(caller('::Api::Parser'))).toEqual([['api.rb', 'EXTRACTED']]);
-    expect(linked(caller('V1::Parser'))).toEqual([
-      ['api.rb', 'AMBIGUOUS'],
-      ['ext.rb', 'AMBIGUOUS'],
-      ['top.rb', 'AMBIGUOUS'],
-    ]);
+    // No class of the project is `V1::Parser`: a gem's, which links to nothing.
+    expect(linked(caller('V1::Parser'))).toEqual([]);
   });
 
   it('is less sure of a class found by the end of its path, or defined in several files', () => {
@@ -296,22 +296,42 @@ describe('buildSymbolEdges', () => {
     ]);
   });
 
-  it('links every definition, as before, when the named class defines no such method', () => {
-    const { edges } = buildSymbolEdges([
-      { chunk_id: 'a', defines_symbols: ['claim'], uses_symbols: [], def_owners: { claim: 'A' } },
-      { chunk_id: 'b', defines_symbols: ['claim'], uses_symbols: [], def_owners: { claim: 'B' } },
+  it('looks a method up the class ancestry, and links nothing when no class of the project answers', () => {
+    const defs = [
       {
-        chunk_id: 'c',
-        defines_symbols: [],
-        uses_symbols: ['claim'],
-        use_sites: [{ name: 'claim', from: 'run', on: 'Child' }],
+        chunk_id: 'g//p//a.rb//0-9//a',
+        defines_symbols: ['claim'],
+        uses_symbols: [],
+        def_owners: { claim: 'A' },
       },
-    ]);
+      {
+        chunk_id: 'g//p//b.rb//0-9//b',
+        defines_symbols: ['claim'],
+        uses_symbols: [],
+        def_owners: { claim: 'B' },
+      },
+      {
+        chunk_id: 'g//p//child.rb//0-9//c',
+        defines_symbols: ['Child'],
+        uses_symbols: [],
+        def_classes: { Child: [{ name: 'A' }] },
+      },
+    ];
+    const caller = (on: string) => ({
+      chunk_id: 'g//p//run.rb//0-9//d',
+      defines_symbols: [],
+      uses_symbols: ['claim'],
+      use_sites: [{ name: 'claim', from: 'run', on }],
+    });
+    const linked = (on: string) =>
+      buildSymbolEdges([...defs, caller(on)]).edges.map((e) => [
+        e.to_chunk_id.split('//')[2],
+        e.confidence,
+      ]);
 
-    expect(edges.map((e) => [e.to_chunk_id, e.confidence])).toEqual([
-      ['a', 'AMBIGUOUS'],
-      ['b', 'AMBIGUOUS'],
-    ]);
+    expect(linked('Child')).toEqual([['a.rb', 'EXTRACTED']]);
+    // `ActiveRecord::Base.claim`, `Gem.claim`: not the project's, so not its namesakes either.
+    expect(linked('Gem')).toEqual([]);
   });
 
   it('collects the calling methods per edge; a call outside any method makes the whole chunk the caller', () => {
@@ -446,6 +466,87 @@ describe('buildSymbolEdges', () => {
     expect(part.map((e) => `${e.from_chunk_id} ${e.symbol_name}`)).not.toContain(
       'g//p//d.rb//1-5//h4 save'
     );
+  });
+
+  it('finds a method in a mixin, a top-level helper, or the implementations of an interface', () => {
+    const chunk = (id: string, extra: Partial<ChunkSymbols>): ChunkSymbols => ({
+      chunk_id: `g//p//${id}//0-9//h`,
+      defines_symbols: [],
+      uses_symbols: [],
+      ...extra,
+    });
+    const to = (edges: SymbolEdge[]) =>
+      edges.map((e) => [e.to_chunk_id.split('//')[2], e.confidence]);
+    const ruby = [
+      chunk('retryable.rb', { defines_symbols: ['attempt'], def_owners: { attempt: 'Retryable' } }),
+      chunk('other.rb', { defines_symbols: ['attempt'], def_owners: { attempt: 'Other' } }),
+      chunk('helpers.rb', { defines_symbols: ['slugify'] }),
+      chunk('run.rb', {
+        defines_symbols: ['Run'],
+        def_classes: { Run: [{ name: 'Retryable' }] },
+        uses_symbols: ['attempt', 'slugify'],
+        use_sites: [
+          { name: 'attempt', from: 'go', on: '::Run' },
+          { name: 'slugify', from: 'go', on: '::Run' },
+        ],
+      }),
+    ];
+    const edges = buildSymbolEdges(ruby).edges;
+    expect(to(edges.filter((e) => e.symbol_name === 'attempt'))).toEqual([
+      ['retryable.rb', 'EXTRACTED'],
+    ]);
+    expect(to(edges.filter((e) => e.symbol_name === 'slugify'))).toEqual([
+      ['helpers.rb', 'INFERRED'],
+    ]);
+
+    const ts = [
+      chunk('store.ts', { defines_symbols: ['Store'], def_classes: { Store: [] } }),
+      chunk('memory.ts', {
+        defines_symbols: ['MemoryStore', 'save'],
+        def_owners: { save: 'MemoryStore' },
+        def_classes: { MemoryStore: [{ name: 'Store', module: './store.js' }] },
+      }),
+      chunk('file.ts', {
+        defines_symbols: ['FileStore', 'save'],
+        def_owners: { save: 'FileStore' },
+        def_classes: { FileStore: [{ name: 'Store', module: './store.js' }] },
+      }),
+      chunk('cache.ts', { defines_symbols: ['save'], def_owners: { save: 'Cache' } }),
+      chunk('use.ts', {
+        uses_symbols: ['save'],
+        use_sites: [
+          { name: 'save', from: 'run', on: 'Store', module: './store.js', onObject: true },
+        ],
+      }),
+    ];
+    // A call on an interface reaches what implements it, and nothing else of that name.
+    expect(to(buildSymbolEdges(ts).edges)).toEqual([
+      ['memory.ts', 'AMBIGUOUS'],
+      ['file.ts', 'AMBIGUOUS'],
+    ]);
+  });
+
+  it('links an imported name to its module, and a call on a builtin or a package to nothing', () => {
+    const chunk = (id: string, extra: Partial<ChunkSymbols>): ChunkSymbols => ({
+      chunk_id: `g//p//src/${id}//0-9//h`,
+      defines_symbols: [],
+      uses_symbols: [],
+      ...extra,
+    });
+    const { edges } = buildSymbolEdges([
+      chunk('a.ts', { defines_symbols: ['parse'] }),
+      chunk('lib/b.ts', { defines_symbols: ['parse'] }),
+      chunk('lib/c.ts', {
+        uses_symbols: ['parse'],
+        use_sites: [
+          { name: 'parse', from: 'run', module: '../a.js' },
+          { name: 'parse', from: 'check', external: true },
+        ],
+      }),
+    ]);
+    expect(edges.map((e) => [e.to_chunk_id.split('//')[2], e.confidence, e.from_symbols])).toEqual([
+      ['src/a.ts', 'EXTRACTED', ['run']],
+    ]);
   });
 
   it('returns empty array for no input', () => {

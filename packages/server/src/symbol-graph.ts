@@ -1,4 +1,5 @@
-import type { UseSite } from './ast-symbol-extractor.js';
+import { posix } from 'node:path';
+import type { ClassParent, UseSite } from './ast-symbol-extractor.js';
 import type { EdgeConfidence, NameUsage, RelationType, SymbolEdge } from './types.js';
 
 /**
@@ -34,6 +35,11 @@ export const MAX_DEFINITION_FANOUT = 50;
 export const COMMON_NAME_MIN_FILES = 8;
 
 const SINGLE_LOWERCASE_WORD = /^(?:to_)?[a-z][a-z0-9]*[?!=]?$/;
+
+/** Whether a name has the shape of a common one (see {@link isCommonName}); only those need counting. */
+export function mayBeCommonName(name: string): boolean {
+  return SINGLE_LOWERCASE_WORD.test(name);
+}
 
 export function isCommonName(name: string, usage: NameUsage): boolean {
   if (!SINGLE_LOWERCASE_WORD.test(name)) return false;
@@ -71,6 +77,153 @@ export interface ChunkSymbols {
   local_defs?: string[];
   /** Ruby class methods it defines (see `DefinedSymbol.classMethod`). */
   class_methods?: string[];
+  /** The classes, modules and interfaces it defines, by full path, with their parents (see `DefinedSymbol.parents`). */
+  def_classes?: Record<string, ClassParent[]>;
+}
+
+/** TypeScript and JavaScript files: a class there is the one its file declares or imports. */
+const ES_FILE = /\.(?:[cm]?[jt]sx?)$/;
+
+function isEsFile(file: string | null): boolean {
+  return file !== null && ES_FILE.test(file);
+}
+
+const MODULE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mts', '.cts', '.mjs', '.cjs'];
+
+/**
+ * The files (as {@link fileKey}s) a relative import from `from` can load:
+ * `./store.js` as `store.js`, `store.ts`, `store/index.ts`, ... Null for a
+ * bare specifier (a package, a workspace, a path alias).
+ */
+function moduleFiles(from: string | null, spec: string): Set<string> | null {
+  if (!from || !spec.startsWith('.')) return null;
+  const parts = from.split('//');
+  const file = parts.slice(2).join('//');
+  const base = posix.normalize(posix.join(posix.dirname(file), spec));
+  const stem = base.replace(/\.(?:[cm]?[jt]sx?)$/, '');
+  const prefix = `${parts[0]}//${parts[1]}//`;
+  const files = new Set<string>([prefix + base]);
+  for (const ext of MODULE_EXTENSIONS) {
+    files.add(prefix + stem + ext);
+    files.add(`${prefix}${base}/index${ext}`);
+  }
+  return files;
+}
+
+/** A class as a use resolves it: its full path and, for a TS/JS class from a known file, that file. */
+interface ClassRef {
+  path: string;
+  files?: Set<string>;
+}
+
+interface ClassRecord {
+  file: string | null;
+  parents: ClassParent[];
+}
+
+/**
+ * The project's classes, modules and interfaces by full path, with what each
+ * inherits from or mixes in, per file declaring (or reopening) it. A class a
+ * method is defined in counts even where its `class` line defines nothing
+ * (a reopened `String`).
+ */
+class ClassTable {
+  private records = new Map<string, ClassRecord[]>();
+  private byLastName = new Map<string, string[]>();
+  private ancestry = new Map<string, { refs: ClassRef[]; depths: number[] }>();
+
+  constructor(chunks: ChunkSymbols[]) {
+    const add = (path: string, record: ClassRecord | null) => {
+      let known = this.records.get(path);
+      if (!known) {
+        this.records.set(path, (known = []));
+        const last = path.split('::').pop()!;
+        const same = this.byLastName.get(last);
+        if (same) same.push(path);
+        else this.byLastName.set(last, [path]);
+      }
+      if (record) known.push(record);
+    };
+    for (const chunk of chunks) {
+      const file = fileKey(chunk.chunk_id);
+      for (const [path, parents] of Object.entries(chunk.def_classes ?? {})) {
+        add(path, { file, parents });
+      }
+      for (const owner of Object.values(chunk.def_owners ?? {})) add(owner, null);
+    }
+  }
+
+  has(path: string): boolean {
+    return this.records.has(path);
+  }
+
+  /**
+   * The classes a name written in `scope` can mean, as Ruby looks a constant
+   * up: `::A::B` as it is; `B` in `A::C` as `A::C::B`, `A::B`, `B`; else
+   * every class whose path ends with it.
+   */
+  find(name: string, scope: string | undefined): { paths: string[]; suffix: boolean } {
+    if (name.startsWith('::')) {
+      const path = name.slice(2);
+      return { paths: this.records.has(path) ? [path] : [], suffix: false };
+    }
+    const parts = scope ? scope.split('::') : [];
+    for (let n = parts.length; n >= 0; n--) {
+      const path = [...parts.slice(0, n), name].join('::');
+      if (this.records.has(path)) return { paths: [path], suffix: false };
+    }
+    const last = name.split('::').pop()!;
+    const paths = (this.byLastName.get(last) ?? []).filter((p) => p.endsWith(`::${name}`));
+    return { paths, suffix: true };
+  }
+
+  /** Those of a class's files that declare it, when it is declared in some of them. */
+  declaredIn(path: string, files: Set<string>): Set<string> | null {
+    const there = (this.records.get(path) ?? []).filter(
+      (r) => r.file !== null && files.has(r.file)
+    );
+    return there.length > 0 ? new Set(there.map((r) => r.file!)) : null;
+  }
+
+  /**
+   * A class and what it inherits, nearest first, each with its distance: the
+   * superclass and mixins of every file declaring it, resolved from inside
+   * the class; in a TS/JS file the import or the same file's declaration.
+   */
+  ancestors(start: ClassRef): { refs: ClassRef[]; depths: number[] } {
+    const key = `${start.path}\0${[...(start.files ?? [])].sort().join('\0')}`;
+    const known = this.ancestry.get(key);
+    if (known) return known;
+    const refs: ClassRef[] = [start];
+    const depths = [0];
+    const seen = new Set([start.path]);
+    for (let i = 0; i < refs.length && refs.length < 64; i++) {
+      const ref = refs[i]!;
+      for (const record of this.records.get(ref.path) ?? []) {
+        if (ref.files && (record.file === null || !ref.files.has(record.file))) continue;
+        for (const parent of record.parents) {
+          const imported = parent.module ? moduleFiles(record.file, parent.module) : null;
+          for (const path of this.find(parent.name, ref.path).paths) {
+            if (seen.has(path)) continue;
+            let files: Set<string> | undefined;
+            if (imported) {
+              const there = this.declaredIn(path, imported);
+              if (!there) continue;
+              files = there;
+            } else if (isEsFile(record.file)) {
+              files = this.declaredIn(path, new Set([record.file!])) ?? undefined;
+            }
+            seen.add(path);
+            refs.push(files ? { path, files } : { path });
+            depths.push(depths[i]! + 1);
+          }
+        }
+      }
+    }
+    const found = { refs, depths };
+    this.ancestry.set(key, found);
+    return found;
+  }
 }
 
 const CONFIDENCE_RANK: Record<EdgeConfidence, number> = { AMBIGUOUS: 0, INFERRED: 1, EXTRACTED: 2 };
@@ -152,6 +305,82 @@ function resolveLexical(
 }
 
 /**
+ * The definitions a call on a class or an object reaches (`Usage.claim`,
+ * `x.claim` after `x = Usage.new`, `this.claim()`, a bare Ruby call): those of
+ * the nearest class up its ancestry that defines the name; in Ruby, for a call
+ * on self, else a method defined at the top of a file (Object's, which every
+ * class inherits); else those of its subclasses and implementations (a call
+ * on an interface, a mixin calling its host's method). Null when the class is
+ * not the project's (a gem's, a package's) or nothing of it answers (Rails'
+ * `where`, a `delegate`): the call does not reach a namesake elsewhere.
+ * Undefined when the use names no class the project has but its import may
+ * still hold the name (a type from another package of the project): it is
+ * linked by name.
+ */
+function resolveMember(
+  site: UseSite,
+  defs: Set<string>,
+  callerFile: string | null,
+  classes: ClassTable,
+  byClass: Map<string, string[]> | undefined,
+  topLevel: string[]
+): { chunks: string[]; match: 'exact' | 'suffix' | 'several' } | null | undefined {
+  const on = site.on!;
+  const found = classes.find(on, site.in);
+  if (found.paths.length === 0) return site.module !== undefined ? undefined : null;
+  const imported = site.module !== undefined ? moduleFiles(callerFile, site.module) : null;
+  const here = isEsFile(callerFile) ? new Set([callerFile!]) : null;
+  // A TS/JS class is the one its import or its own file declares; a barrel
+  // re-exporting it declares none, and then any class of that name may be it.
+  const starts: ClassRef[] = found.paths.map((path) => {
+    const files = imported
+      ? classes.declaredIn(path, imported)
+      : here
+        ? classes.declaredIn(path, here)
+        : null;
+    return files ? { path, files } : { path };
+  });
+  const answering = (ref: ClassRef) =>
+    (byClass?.get(ref.path) ?? []).filter(
+      (id) => defs.has(id) && (!ref.files || ref.files.has(fileKey(id)!))
+    );
+  const several = (ids: string[]) => starts.length > 1 || new Set(ids.map(fileKey)).size > 1;
+
+  const up = new Set<string>();
+  for (const start of starts) {
+    const { refs, depths } = classes.ancestors(start);
+    let nearest = -1;
+    for (let i = 0; i < refs.length; i++) {
+      if (nearest >= 0 && depths[i]! > nearest) break;
+      const there = answering(refs[i]!);
+      if (there.length === 0) continue;
+      nearest = depths[i]!;
+      for (const id of there) up.add(id);
+    }
+  }
+  if (up.size > 0) {
+    const ids = [...up];
+    return { chunks: ids, match: several(ids) ? 'several' : found.suffix ? 'suffix' : 'exact' };
+  }
+  const inferred = (ids: string[]) => ({
+    chunks: ids,
+    match: new Set(ids.map(fileKey)).size > 1 ? ('several' as const) : ('suffix' as const),
+  });
+  if (on.startsWith('::') && !isEsFile(callerFile)) {
+    const top = topLevel.filter((id) => defs.has(id));
+    if (top.length > 0) return inferred(top);
+  }
+  const startPaths = new Set(starts.map((ref) => ref.path));
+  const below: string[] = [];
+  for (const [owner, ids] of byClass ?? []) {
+    if (startPaths.has(owner)) continue;
+    if (!classes.ancestors({ path: owner }).refs.some((ref) => startPaths.has(ref.path))) continue;
+    for (const id of ids) if (defs.has(id)) below.push(id);
+  }
+  return below.length > 0 ? inferred(below) : null;
+}
+
+/**
  * Build cross-chunk symbol edges from chunk symbol data.
  *
  * For each use in a chunk, finds the chunks that define the name and creates a
@@ -225,6 +454,8 @@ export function buildSymbolEdges(
     }
   }
 
+  const classes = new ClassTable(chunkSymbols);
+
   const edges = new Map<string, SymbolEdge & { callers: Set<string>; reach: Set<string> }>();
   const skipped = new Set<string>();
   const stats: SymbolEdgeStats = { skippedSymbols: 0, skippedEdges: 0 };
@@ -236,6 +467,8 @@ export function buildSymbolEdges(
 
     for (const site of sites) {
       const sym = site.name;
+      // A string's `strip`, a `Map`'s `get`, `JSON.parse`: nothing of the project.
+      if (site.external) continue;
       const allDefs = definedBy.get(sym);
       if (!allDefs) continue;
       // A file-private definition is reachable only from its file, and there it
@@ -258,19 +491,44 @@ export function buildSymbolEdges(
         const beside = [...defs].filter((id) => fileKey(id) === callerFile && !owned?.has(id));
         if (beside.length > 0) defs = new Set(beside);
       }
+      // An imported name is its module's when the module defines it
+      // (`import { parse } from './names.js'`); a barrel re-exporting it does not.
+      let imported = false;
+      if (site.module !== undefined && site.on === undefined) {
+        const files = moduleFiles(callerFile, site.module);
+        const there = files ? [...defs].filter((id) => files.has(fileKey(id)!)) : [];
+        if (there.length > 0) {
+          defs = new Set(there);
+          imported = true;
+        }
+      }
       if (defs.size === 0) continue;
       if (only && !only(chunk.chunk_id, sym)) continue;
 
-      const onClass = site.lexical
-        ? resolveLexical(
-            site,
-            definedIn.get(sym),
-            [...defs].filter((id) => !ownedIn.get(sym)?.has(id))
-          )
-        : resolveClass(site, definedIn.get(sym));
+      let onClass: ReturnType<typeof resolveClass> | ReturnType<typeof resolveLexical>;
+      if (site.lexical) {
+        onClass = resolveLexical(
+          site,
+          definedIn.get(sym),
+          [...defs].filter((id) => !ownedIn.get(sym)?.has(id))
+        );
+      } else if (site.on !== undefined && !site.constant) {
+        const member = resolveMember(
+          site,
+          defs,
+          callerFile,
+          classes,
+          definedIn.get(sym),
+          [...defs].filter((id) => !ownedIn.get(sym)?.has(id))
+        );
+        if (member === null) continue;
+        onClass = member ?? null;
+      } else {
+        onClass = resolveClass(site, definedIn.get(sym));
+      }
       // A Ruby constant the lookup does not find is a gem's (`ActiveRecord::Base`).
       if (site.constant && onClass === null) continue;
-      const resolved = onClass !== null;
+      const resolved = onClass !== null || imported;
 
       // Structural-noise cap: a symbol defined in too many chunks explodes into
       // a quadratic AMBIGUOUS fan-out with no navigational value. Each use we
@@ -301,7 +559,10 @@ export function buildSymbolEdges(
           confidence = 'AMBIGUOUS';
         } else {
           const defFile = fileKey(defChunkId);
-          confidence = callerFile && defFile && callerFile === defFile ? 'EXTRACTED' : 'INFERRED';
+          confidence =
+            imported || (callerFile && defFile && callerFile === defFile)
+              ? 'EXTRACTED'
+              : 'INFERRED';
         }
 
         const key = `${chunk.chunk_id}\0${defChunkId}\0${sym}`;

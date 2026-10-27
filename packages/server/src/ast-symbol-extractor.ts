@@ -1,6 +1,15 @@
 import { Parser, Query } from 'web-tree-sitter';
 import type { Node, Tree, Language } from 'web-tree-sitter';
 import { LANGUAGE_QUERIES } from './ast-queries.js';
+import {
+  CONSTANT_PATH,
+  RubyReceiverTypes,
+  TsReceiverTypes,
+  constantPath,
+  enclosingClass,
+  type ReceiverClass,
+} from './receiver-types.js';
+import type { LocalModules } from './local-modules.js';
 import type { ChunkKind } from './types.js';
 
 export interface DefinedSymbol {
@@ -22,6 +31,18 @@ export interface DefinedSymbol {
    * name in the chunk: callable on the class, not on an object.
    */
   classMethod?: true;
+  /**
+   * A class, module or interface: what it inherits from or mixes in, as
+   * written (`class A < Base`, `include Billable`, `extends Base`,
+   * `implements Store`). Each is resolved like a constant written inside it.
+   */
+  parents?: ClassParent[];
+}
+
+/** A superclass, mixin or interface as written; `module` is the import it comes from (TypeScript, JavaScript). */
+export interface ClassParent {
+  name: string;
+  module?: string;
 }
 
 /** One use of a name, with where it is made from and what it is called on. */
@@ -62,6 +83,17 @@ export interface UseSite {
    */
   value?: true;
   /**
+   * TypeScript and JavaScript: the module the name is imported from, or the
+   * class or module it is called on (`./store.js`), as the import writes it.
+   */
+  module?: string;
+  /**
+   * Called on a value of a class outside the project: a literal, a builtin
+   * (`JSON.parse`, a `Map`'s `get`), a Node module (`fs.readFileSync`). It
+   * links to nothing.
+   */
+  external?: true;
+  /**
    * `from` does not make the call itself but reaches it through the chunk's
    * own calls (see `withInnerCallers`): followed by `change_impact`, not
    * named as the caller.
@@ -97,8 +129,13 @@ export interface SymbolExtractionResult {
  *      its lexical scope and the namespace part of a path is not a use
  *      (the class a value constant is read from is); Ruby code in a `RUBY`
  *      heredoc is read for uses.
+ *  5 — a call records the class of its receiver when the file says (`x =
+ *      Foo.new`, `x: Foo`, a field, a value constant) or that it is a builtin
+ *      or a package's (`external`); TypeScript and JavaScript uses record the
+ *      import they come from (`module`), and names read as values are uses;
+ *      classes record what they inherit and mix in (`parents`).
  */
-export const SYMBOL_FORMAT = 4;
+export const SYMBOL_FORMAT = 5;
 
 /** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
@@ -531,7 +568,7 @@ function isTopLevelDeclaration(identifierNode: Node, scopeNodes: Set<string>): b
 const RECEIVER_FIELDS = ['receiver', 'object', 'operand', 'value', 'argument', 'expression'];
 
 /** What a used name is called on: nothing (`charge`), the current object, or something else. */
-type Receiver = { kind: 'none' } | { kind: 'self' } | { kind: 'other'; text: string };
+type Receiver = { kind: 'none' } | { kind: 'self' } | { kind: 'other'; text: string; node: Node };
 
 function receiverOf(nameNode: Node): Receiver {
   const parent = nameNode.parent;
@@ -545,7 +582,7 @@ function receiverOf(nameNode: Node): Receiver {
       receiver.type === 'self' ||
       receiver.type === 'this' ||
       (receiver.type === 'identifier' && receiver.text === 'self');
-    return self ? { kind: 'self' } : { kind: 'other', text: receiver.text };
+    return self ? { kind: 'self' } : { kind: 'other', text: receiver.text, node: receiver };
   }
   return { kind: 'none' };
 }
@@ -564,55 +601,53 @@ function constructed(receiver: Node): Receiver | undefined {
   }
   if (node.type === 'new_expression') {
     const ctor = node.childForFieldName('constructor');
-    return ctor ? { kind: 'other', text: ctor.text } : undefined;
+    return ctor ? { kind: 'other', text: ctor.text, node } : undefined;
   }
   if (node.type === 'call' && node.childForFieldName('method')?.text === 'new') {
     const cls = node.childForFieldName('receiver');
-    return cls ? { kind: 'other', text: cls.text } : { kind: 'self' };
+    return cls ? { kind: 'other', text: cls.text, node: cls } : { kind: 'self' };
   }
   return undefined;
 }
 
-/** `Usage`, `Billing::Usage`, `::Billing::Usage`, `Billing.Usage`: a receiver that names a class. */
-const CONSTANT_PATH = /^(?:::)?[A-Z][A-Za-z0-9_]*(?:(?:::|\.)[A-Z][A-Za-z0-9_]*)*$/;
-
-/** `Billing.Usage` and `Billing::Usage` alike, as `Billing::Usage`. */
-function constantPath(text: string): string {
-  return text.replace(/\./g, '::');
-}
-
-/** Node types whose name is the class a method inside them belongs to. */
-const CLASS_LIKE_NODES = new Set([
-  'class',
-  'module',
-  'class_declaration',
-  'abstract_class_declaration',
-  'class_definition',
-  'interface_declaration',
-  'struct_item',
-  'impl_item',
-  'trait_item',
-  'class_specifier',
-  'struct_specifier',
-  'struct_declaration',
-]);
+const RUBY_MIXIN_CALLS = new Set(['include', 'extend', 'prepend']);
 
 /**
- * The full path of the classes and modules enclosing a node, outermost first:
- * `Billing::Usage` inside `module Billing; class Usage`, and for `class
- * Billing::Usage` too. A name written with a leading `::` starts from the top.
+ * What a class, module or interface inherits from or mixes in: Ruby's
+ * superclass and `include` / `extend` / `prepend` in its body, TypeScript's
+ * `extends` and `implements`. Empty when it has none.
  */
-function enclosingClass(node: Node): string | undefined {
-  const names: string[] = [];
-  for (let current = node.parent; current; current = current.parent) {
-    if (!CLASS_LIKE_NODES.has(current.type)) continue;
-    const name = current.childForFieldName('name') ?? current.childForFieldName('type');
-    if (!name) continue;
-    names.push(constantPath(name.text));
-    if (name.text.startsWith('::')) break;
+function classParents(nameNode: Node, ts: TsReceiverTypes | null): ClassParent[] {
+  const decl = declarationOf(nameNode);
+  if (!decl) return [];
+  const parents: ClassParent[] = [];
+  const add = (node: Node | null | undefined) => {
+    if (!node) return;
+    const named = node.type === 'generic_type' ? node.childForFieldName('name') : node;
+    if (!named || !CONSTANT_PATH.test(named.text)) return;
+    const name = constantPath(named.text);
+    const spec = ts?.importOf(named, name.split('::')[0])?.spec;
+    parents.push(spec !== undefined ? { name, module: spec } : { name });
+  };
+  if (decl.type === 'class' || decl.type === 'module') {
+    add(decl.childForFieldName('superclass')?.namedChild(0));
+    for (const stmt of decl.childForFieldName('body')?.namedChildren ?? []) {
+      if (stmt?.type !== 'call' || stmt.childForFieldName('receiver')) continue;
+      if (!RUBY_MIXIN_CALLS.has(stmt.childForFieldName('method')?.text ?? '')) continue;
+      for (const arg of stmt.childForFieldName('arguments')?.namedChildren ?? []) add(arg);
+    }
+    return parents;
   }
-  if (names.length === 0) return undefined;
-  return names.reverse().join('::').replace(/^::/, '');
+  for (const part of decl.namedChildren) {
+    if (part?.type !== 'class_heritage' && part?.type !== 'extends_type_clause') continue;
+    const clauses = part.type === 'class_heritage' ? part.namedChildren : [part];
+    for (const clause of clauses) {
+      if (!clause) continue;
+      if (clause.type === 'extends_clause') add(clause.childForFieldName('value'));
+      else for (const type of clause.namedChildren) add(type);
+    }
+  }
+  return parents;
 }
 
 /** Kinds whose body holds methods rather than being one. */
@@ -1080,6 +1115,79 @@ function addBareRubyCalls(
   }
 }
 
+/** Where an identifier is not a value read: a declaration, a parameter, an import, a label, a callee captured as a call. */
+const TS_NOT_VALUE_PARENTS = new Set([
+  'import_specifier',
+  'import_clause',
+  'namespace_import',
+  'export_specifier',
+  'function_declaration',
+  'generator_function_declaration',
+  'function_expression',
+  'class_declaration',
+  'labeled_statement',
+  'break_statement',
+  'continue_statement',
+  'required_parameter',
+  'optional_parameter',
+  'jsx_opening_element',
+  'jsx_closing_element',
+  'jsx_self_closing_element',
+  'nested_identifier',
+]);
+
+/**
+ * TypeScript and JavaScript names read as values rather than called: a
+ * function passed on (`retry(fetchPage)`), a constant (`PAPARATS_HOME`), an
+ * object (`{ handler }`), a class (`instanceof Store`). Only names the file
+ * imports or declares at its top level count, so a local or a parameter of
+ * the same name is not taken for them.
+ */
+function addTsValueUses(
+  tree: Tree,
+  chunk: { startLine: number; endLine: number },
+  ts: TsReceiverTypes,
+  callers: Map<number, string | null>,
+  sites: Map<string, UseSite>,
+  uses: Set<string>
+): void {
+  const ids = tree.rootNode.descendantsOfType(
+    ['identifier', 'shorthand_property_identifier'],
+    { row: chunk.startLine, column: 0 },
+    { row: chunk.endLine + 1, column: 0 }
+  );
+  for (const node of ids) {
+    if (!node || node.startPosition.row > chunk.endLine) continue;
+    const parent = node.parent;
+    if (!parent || TS_NOT_VALUE_PARENTS.has(parent.type)) continue;
+    const field = (name: string) => parent.childForFieldName(name)?.id === node.id;
+    if (parent.type === 'call_expression' && field('function')) continue;
+    if (parent.type === 'new_expression' && field('constructor')) continue;
+    if (parent.type === 'variable_declarator' && field('name')) continue;
+    if (parent.type === 'arrow_function' && field('parameter')) continue;
+    if (parent.type === 'await_expression' && parent.parent?.type === 'call_expression') continue;
+    if (
+      (parent.type === 'assignment_pattern' || parent.type === 'object_assignment_pattern') &&
+      field('left')
+    ) {
+      continue;
+    }
+    if (parent.type === 'catch_clause' || parent.type === 'for_in_statement') {
+      if (field('parameter') || field('left')) continue;
+    }
+    if (isNoise(node.text)) continue;
+    const bound = ts.valueBinding(node);
+    if (!bound) continue;
+    const site: UseSite = {
+      name: bound.name,
+      from: callerOf(node, callers),
+      ...(bound.module !== undefined ? { module: bound.module } : {}),
+    };
+    uses.add(bound.name);
+    if (!sites.has(siteKey(site))) sites.set(siteKey(site), site);
+  }
+}
+
 /**
  * Calls between a chunk's own methods, per method: the methods of the chunk
  * that call it (`receipt` → `call`, `preview`). Bare and self calls only, and
@@ -1133,7 +1241,70 @@ function withInnerCallers(sites: UseSite[], calledFrom: Map<string, Set<string>>
 }
 
 function siteKey(site: UseSite): string {
-  return `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.lexical ?? ''}\0${site.constant ?? ''}\0${site.reexport ?? ''}\0${site.value ?? ''}\0${site.onObject ?? ''}\0${site.through ?? ''}`;
+  return `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.lexical ?? ''}\0${site.constant ?? ''}\0${site.reexport ?? ''}\0${site.value ?? ''}\0${site.onObject ?? ''}\0${site.through ?? ''}\0${site.module ?? ''}\0${site.external ?? ''}`;
+}
+
+/**
+ * What a use is called on when its file tells more than the receiver as
+ * written: the class of a variable or field (`x = Foo.new; x.bar`, `x: Foo`,
+ * `this.store.get()` with `private store: Store`), a module imported whole, a
+ * builtin; in TypeScript and JavaScript also the import a name comes from.
+ * Undefined keeps {@link calledOn}; in TypeScript and JavaScript an empty
+ * object drops it, as a receiver the file cannot type says nothing about the
+ * class (`Foo.bar()` on an object constant `Foo`).
+ */
+function typedSite(
+  node: Node,
+  receiver: Receiver,
+  ruby: RubyReceiverTypes | null,
+  ts: TsReceiverTypes | null
+): Pick<UseSite, 'on' | 'in' | 'module' | 'external' | 'onObject'> | undefined {
+  if (receiver.kind === 'self') return undefined;
+  if (ruby) {
+    if (receiver.kind !== 'other') return undefined;
+    let typed: ReturnType<RubyReceiverTypes['classOf']>;
+    if (CONSTANT_PATH.test(receiver.text)) {
+      // `RATES.lookup(...)` after `RATES = Rates.new`: a constant holding an
+      // object, not a class. Assigned elsewhere, it is read as a class.
+      const last = constantPath(receiver.text).split('::').pop()!;
+      if (!RUBY_VALUE_CONSTANT_RE.test(last)) return undefined;
+      const held = ruby.constantClass(last);
+      if (held === undefined) return undefined;
+      typed = held ?? undefined;
+    } else {
+      typed = ruby.classOf(receiver.node);
+    }
+    if (!typed) return { onObject: true };
+    const { classValue, ...on } = typed;
+    return classValue ? on : { ...on, onObject: true };
+  }
+  if (!ts) return undefined;
+  if (receiver.kind === 'none') {
+    const source = node.parent?.type === 'export_specifier' ? reexportSource(node) : undefined;
+    const spec = source ?? ts.importOf(node)?.spec;
+    if (spec === undefined) return {};
+    return ts.isPackage(spec) ? { external: true } : { module: spec };
+  }
+  const statically = CONSTANT_PATH.test(receiver.text) && receiver.node.type !== 'new_expression';
+  const typed: ReceiverClass | undefined = statically
+    ? ts.staticReceiver(receiver.node)
+    : ts.classOf(receiver.node);
+  if (!typed) return {};
+  if ('external' in typed) return { external: true };
+  if (typed.on === undefined) return { module: typed.module };
+  return {
+    on: typed.on,
+    ...(typed.module !== undefined ? { module: typed.module } : {}),
+    ...(statically ? {} : { onObject: true as const }),
+  };
+}
+
+/** `./names.js` for a name in `export { x } from './names.js'`. */
+function reexportSource(node: Node): string | undefined {
+  let statement: Node | null = node.parent;
+  while (statement && statement.type !== 'export_statement') statement = statement.parent;
+  const source = statement?.childForFieldName('source');
+  return source?.type === 'string' ? source.text.slice(1, -1) : undefined;
 }
 
 /**
@@ -1144,6 +1315,8 @@ function siteKey(site: UseSite): string {
  * @param language - tree-sitter Language object (for creating queries)
  * @param chunks - Array of chunk ranges (0-indexed startLine/endLine)
  * @param lang - Language identifier (e.g. 'typescript', 'python')
+ * @param nested - Ruby code read from a heredoc of the file (no heredocs read again)
+ * @param modules - The project's own packages and path aliases: another bare import is a package
  * @returns Array of SymbolExtractionResult parallel to chunks
  */
 export function extractSymbolsForChunks(
@@ -1151,7 +1324,8 @@ export function extractSymbolsForChunks(
   language: Language,
   chunks: Array<{ startLine: number; endLine: number }>,
   lang: string,
-  nested = false
+  nested = false,
+  modules: LocalModules | null = null
 ): SymbolExtractionResult[] {
   const querySet = LANGUAGE_QUERIES[lang];
   if (!querySet) {
@@ -1188,6 +1362,8 @@ export function extractSymbolsForChunks(
     // In an ES module, the names it exports; null when every top-level name is
     // visible elsewhere (a script, CommonJS, another language).
     const exports = ES_MODULE_LANGS.has(lang) ? moduleExports(tree.rootNode) : null;
+    const rubyTypes = lang === 'ruby' ? new RubyReceiverTypes(tree.rootNode) : null;
+    const tsTypes = ES_MODULE_LANGS.has(lang) ? new TsReceiverTypes(tree.rootNode, modules) : null;
 
     // Declarations a use can be made from, across the whole file: a method
     // split over several chunks still owns the uses in its later chunks.
@@ -1250,10 +1426,12 @@ export function extractSymbolsForChunks(
           : enclosingClass(captureNode);
         const local =
           exports !== null && !owner && kind !== 'method' && !isExported(captureNode, exports);
+        const parents = CONTAINER_KINDS.has(kind) ? classParents(captureNode, tsTypes) : undefined;
         defines.set(text, {
           name: text,
           kind,
           ...(owner ? { owner } : {}),
+          ...(parents ? { parents } : {}),
           ...(local ? { local: true as const } : {}),
           ...(lang === 'ruby' && captureNode.parent?.type === 'singleton_method'
             ? { classMethod: true as const }
@@ -1285,13 +1463,10 @@ export function extractSymbolsForChunks(
           const site: UseSite = {
             name: text,
             from: exported ?? callerOf(node, callers),
-            ...calledOn(node, receiver, lang),
+            ...(typedSite(node, receiver, rubyTypes, tsTypes) ?? calledOn(node, receiver, lang)),
             ...constant,
             ...(exported !== undefined ? { reexport: true as const } : {}),
             ...(lang === 'ruby' && isRubyValue(node) ? { value: true as const } : {}),
-            ...(lang === 'ruby' && receiver.kind === 'other' && !CONSTANT_PATH.test(receiver.text)
-              ? { onObject: true as const }
-              : {}),
           };
           const key = siteKey(site);
           if (!sites.has(key)) sites.set(key, site);
@@ -1307,6 +1482,7 @@ export function extractSymbolsForChunks(
         if (!calledOnOther.has(sym)) uses.delete(sym);
       }
       if (lang === 'ruby') addBareRubyCalls(tree, chunk, defines, callers, sites);
+      if (tsTypes) addTsValueUses(tree, chunk, tsTypes, callers, sites, uses);
       const outside = [...sites.entries()]
         .filter(([key, site]) => !defines.has(site.name) || otherSites.has(key))
         .map(([, site]) => site);

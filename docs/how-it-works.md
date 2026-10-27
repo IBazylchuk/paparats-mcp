@@ -95,6 +95,24 @@ from its own file, where it wins over same-named functions elsewhere, and a bare
 to a top-level definition of the name in the same file means that one. Ruby code kept in a
 heredoc tagged `RUBY` (`<<~'RUBY_SOURCE'` in a data migration) is read for its calls.
 
+A call on a variable or a field links to its class's method when the file shows the class:
+`report = Report.new(...)`, `plan = Plan.find_by(...)` (Rails' finders),
+`@client ||= Api::Client.new`, a method or `attr_reader`
+returning one, a constant holding one (`RATES = Rates.new`); in TypeScript a type
+annotation, a `new`, a field, a constructor parameter property or a function's return type.
+The method is looked up the class's ancestry (superclass, `include` / `extend` /
+`prepend`, `extends` / `implements`), then, for a call on an interface or a mixin calling
+its host, in the classes below it; in Ruby a call on self also reaches a method defined at
+the top of a file. A call on a builtin (`JSON.parse`, a `Map`'s `get`, a string's `strip`),
+on a Node module or an installed package (`fs.readFileSync`, an `express()` app), or on a
+class the project has but that defines no such method anywhere up or down its ancestry
+(Rails' `where`, a `delegate`) links to nothing, instead of to whatever else is named
+alike. In TypeScript and JavaScript an imported name links to the module it is imported
+from, and a name read as a value (`retry(fetchPage)`, a constant, `{ handler }`) is a use
+when the file imports or declares it. The project's own packages and tsconfig path aliases
+are read from its `package.json` and `tsconfig*.json` files, so a workspace import is not
+taken for a package.
+
 `change_impact` walks those edges backwards from what you are about to change: callers,
 then their callers, up to 3 steps. A caller passes the change on only through the methods
 that actually make the call, and the methods of the same chunk that reach those through
@@ -104,7 +122,8 @@ once, at its nearest step; it is marked `[maybe]` when every path to it is ambig
 the first step, links only through a name several classes define are listed apart, not
 followed. Very widely used files and tests are listed
 but not followed. Callers linked only through a common name (a single lowercase word such
-as `add`, `get`, `create`, used from more than 8 files) are set apart unless their file
+as `add`, `get`, `create`, used from more than 8 files, counting the uses the graph links
+nowhere) are set apart unless their file
 also uses something specific from the target's file. When no indexed test reaches the
 change (Ruby projects leave `spec/` and `test/` out of the index by default), it lists
 where the tests would be by convention (`spec/models/invoice_spec.rb`, `src/queue.test.ts`).
