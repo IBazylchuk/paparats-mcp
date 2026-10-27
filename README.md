@@ -21,10 +21,12 @@ reach them.
 
 <img src="docs/with-and-without.gif" alt="Claude Code answering the same question about this repository side by side: without Paparats it finishes in 1:46, with Paparats in 1:14" width="100%">
 
-<sub>Claude Code, the same question about this repository, without Paparats (left) and with
-it (right), at 5× speed. Over three runs each: 99 s against 74 s and about a fifth fewer
-tokens. This repository is small, about 300 files. On large legacy codebases spread over
-many repositories, where I use Paparats every day, the difference is much bigger.</sub>
+**With Paparats the agent answered 25% faster and read 23% fewer new tokens.** Claude Code,
+the same question about this repository, without Paparats (left) and with it (right), at
+5× speed. Averages over three runs each: 99 s against 74 s, 23% fewer new input tokens and
+21% fewer output tokens. This repository is small, about 300 files. On large legacy
+codebases spread over many repositories, where I use Paparats every day, the difference is
+much bigger.
 
 ## Quick start
 
@@ -172,17 +174,23 @@ faster. With a cloud provider there are no local models at all.
 No, Paparats is self-hosted only. To try it without installing anything locally, open the
 repository in [GitHub Codespaces](docs/install.md#github-codespaces).
 
-### How is Paparats different from claude-context, Serena or codebase-memory-mcp?
+### How is Paparats different from Graphify, codegraph, GitNexus or Serena?
 
-[claude-context](https://github.com/zilliztech/claude-context) runs hybrid search over one
-codebase path per query, with OpenAI and Zilliz Cloud in its quick start; Paparats runs
-locally by default and searches many repositories at once.
+[Graphify](https://github.com/Graphify-Labs/graphify),
+[codegraph](https://github.com/colbymchenry/codegraph),
+[GitNexus](https://github.com/abhigyanpatwari/GitNexus) and
+[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) build a code graph
+from the syntax tree and let the agent walk it; they are lighter to install. Graphify and
+codegraph have no search by meaning, and GitNexus has it only with embeddings turned on;
+codebase-memory-mcp bundles an embedding model. Across repositories, codebase-memory-mcp
+links them in one local store, Graphify and GitNexus do it in Graphify Cloud and GitNexus
+Enterprise, and codegraph queries one project per call. Paparats searches by meaning with
+local models across many repositories in one query, adds git history and tickets per
+result, and runs as one server that a whole team and its agents share, with a read-only
+support endpoint and a docs-only one.
 [Serena](https://github.com/oraios/serena) drives language servers for precise lookup and
-editing; Paparats finds code by meaning and has no editing tools.
-[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp) is one native binary
-with a local code graph and a lighter setup; Paparats is a shared server for many people
-and agents, with a read-only support endpoint, git history per chunk and usage analytics.
-These and Sourcegraph, side by side: [comparison with alternatives](docs/comparison.md).
+editing; Paparats has no editing tools, and the two work well together. All of them,
+claude-context and Sourcegraph side by side: [comparison with alternatives](docs/comparison.md).
 
 ## Documentation
 
@@ -197,7 +205,7 @@ These and Sourcegraph, side by side: [comparison with alternatives](docs/compari
 | [Documentation search](docs/documentation-search.md) | Docs indexing, audience labels, the knowledge endpoint |
 | [Embedding models](docs/embeddings.md) | Local and cloud models, how they were chosen |
 | [Monitoring](docs/observability.md) | Prometheus, OpenTelemetry, the `/ui` console, token-savings estimates |
-| [Comparison with alternatives](docs/comparison.md) | claude-context, Serena, codebase-memory-mcp, claude-context-local, Sourcegraph side by side |
+| [Comparison with alternatives](docs/comparison.md) | Graphify, codegraph, GitNexus, codebase-memory-mcp, claude-context, Serena, Sourcegraph side by side |
 | [Benchmarking](docs/benchmarking.md), [Chunking](docs/chunking-strategy.md), [Replacing models](docs/replacing-embedding-models.md), [Releasing](docs/releasing.md) | For contributors |
 
 ## Contributing
