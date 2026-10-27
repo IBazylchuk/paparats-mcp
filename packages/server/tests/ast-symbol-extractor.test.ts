@@ -844,7 +844,27 @@ end`;
     ({ tree, language } = parse('typescript', 'function go() { new Queue(1).flush(); }'));
     results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 0 }], 'typescript');
     tree.delete();
-    expect(results[0]!.use_sites).toContainEqual({ name: 'flush', from: 'go', on: 'Queue' });
+    expect(results[0]!.use_sites).toContainEqual({
+      name: 'flush',
+      from: 'go',
+      on: 'Queue',
+      onObject: true,
+    });
+
+    // In a module, the class is the one imported.
+    ({ tree, language } = parse(
+      'typescript',
+      "import { Queue } from './queue.js';\nexport function go() { new Queue(1).flush(); }"
+    ));
+    results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 1 }], 'typescript');
+    tree.delete();
+    expect(results[0]!.use_sites).toContainEqual({
+      name: 'flush',
+      from: 'go',
+      on: 'Queue',
+      module: './queue.js',
+      onObject: true,
+    });
   });
 
   it('records a use also from the methods that reach it through the chunk’s own calls (Ruby)', async () => {
@@ -923,7 +943,8 @@ end`;
   });
 
   it('records the class for this-calls and Class.method calls, not for bare calls (TypeScript)', async () => {
-    const code = `export class Queue {
+    const code = `import { Store } from './store.js';
+export class Queue {
   flush(): void {
     this.drain();
     Store.save();
@@ -934,7 +955,7 @@ end`;
     const results = extractSymbolsForChunks(
       tree,
       language,
-      [{ startLine: 0, endLine: 6 }],
+      [{ startLine: 0, endLine: 7 }],
       'typescript'
     );
     tree.delete();
@@ -946,7 +967,7 @@ end`;
       expect.arrayContaining([
         { name: 'drain', from: 'flush', on: '::Queue' },
         { name: 'drain', from: 'flush' },
-        { name: 'save', from: 'flush', on: 'Store', in: 'Queue' },
+        { name: 'save', from: 'flush', on: 'Store', module: './store.js' },
       ])
     );
   });
@@ -1002,8 +1023,8 @@ export function helper() { toName(); }`;
       const sites = results[0]!.use_sites!;
       expect(sites).toEqual(
         expect.arrayContaining([
-          { name: 'toName', from: 'toName', reexport: true },
-          { name: 'fromName', from: 'parseName', reexport: true },
+          { name: 'toName', from: 'toName', module: './names.js', reexport: true },
+          { name: 'fromName', from: 'parseName', module: './names.js', reexport: true },
           { name: 'toName', from: 'helper' },
         ])
       );
@@ -1012,6 +1033,7 @@ export function helper() { toName(); }`;
         expect(sites).toContainEqual({
           name: 'NameConfig',
           from: 'NameConfig',
+          module: './names.js',
           reexport: true,
         });
       }
@@ -1222,6 +1244,155 @@ end`;
     );
     tree.delete();
     expect(results[0]!.uses_symbols).toContain('foo');
+  });
+
+  it('records the class of a Ruby receiver when the file says', async () => {
+    const code = `class Billing::Run < Base
+  include Retryable
+  attr_reader :client
+  RATES = Pricing::Rates.new
+  def initialize
+    @client = Api::Client.new
+    @queue ||= Queue.new
+  end
+  def go(item)
+    report = Report.new(item)
+    report.render
+    @queue.push(item)
+    client.get
+    store.save
+    item.title
+    "x".strip
+    RATES.lookup(item)
+    model.connection
+    [1].each { |report| report.close }
+    plan = Plan.find_by(code: item)
+    plan.renew
+  end
+  def store = @store ||= Store.new
+  def model = Invoice
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 24 }],
+      'ruby'
+    );
+    tree.delete();
+    const site = (name: string) =>
+      results[0]!
+        .use_sites!.filter((u) => u.name === name && !u.through)
+        .map(({ name: _, from: __, ...rest }) => rest);
+    const scope = { in: 'Billing::Run' };
+    expect(site('render')).toEqual([{ on: 'Report', ...scope, onObject: true }]);
+    expect(site('push')).toEqual([{ on: 'Queue', ...scope, onObject: true }]);
+    expect(site('get')).toEqual([{ on: 'Api::Client', ...scope, onObject: true }]);
+    expect(site('save')).toEqual([{ on: 'Store', ...scope, onObject: true }]);
+    expect(site('lookup')).toEqual([{ on: 'Pricing::Rates', ...scope, onObject: true }]);
+    expect(site('strip')).toEqual([{ on: '::String', onObject: true }]);
+    // A Rails finder returns an object of its class, as `new` does.
+    expect(site('renew')).toEqual([{ on: 'Plan', ...scope, onObject: true }]);
+    // A parameter, a block's own `report`: not known.
+    expect(site('title')).toEqual([{ onObject: true }]);
+    expect(site('close')).toEqual([{ onObject: true }]);
+    // `model` returns the class itself: a call on the class, not on an object of it.
+    expect(site('connection')).toEqual([{ on: 'Invoice', ...scope }]);
+    expect(results[0]!.defined_symbols.find((d) => d.name === 'Run')?.parents).toEqual([
+      { name: 'Base' },
+      { name: 'Retryable' },
+    ]);
+  });
+
+  it('records the class of a TypeScript receiver, its import, and builtins and packages as external', async () => {
+    const code = `import { Store } from './store.js';
+import * as names from './names.js';
+import express from 'express';
+import fs from 'node:fs';
+export class Queue extends Base implements Drain {
+  private store: Store;
+  private cache = new Map<string, number>();
+  run(store: Store, raw: string) {
+    this.store.save();
+    this.cache.get('a');
+    store.load();
+    raw.trim();
+    names.parse();
+    fs.readFileSync('x');
+    JSON.parse(raw);
+    const app = express();
+    app.listen();
+    retry(handler);
+  }
+}
+function handler() {}`;
+    const sites = (modules: { packages: string[]; aliases: string[] } | null) => {
+      const { tree, language } = parse('typescript', code);
+      const r = extractSymbolsForChunks(
+        tree,
+        language,
+        [
+          { startLine: 0, endLine: 19 },
+          { startLine: 20, endLine: 20 },
+        ],
+        'typescript',
+        false,
+        modules
+      );
+      tree.delete();
+      return r[0]!;
+    };
+    const r = sites({ packages: [], aliases: [] });
+    const site = (name: string) =>
+      r
+        .use_sites!.filter((u) => u.name === name && !u.through)
+        .map(({ name: _, from: __, ...rest }) => rest);
+    expect(site('save')).toEqual([{ on: 'Store', module: './store.js', onObject: true }]);
+    expect(site('load')).toEqual([{ on: 'Store', module: './store.js', onObject: true }]);
+    expect(site('get')).toEqual([{ external: true }]);
+    expect(site('trim')).toEqual([{ external: true }]);
+    expect(site('parse')).toEqual(
+      expect.arrayContaining([{ module: './names.js' }, { external: true }])
+    );
+    expect(site('readFileSync')).toEqual([{ external: true }]);
+    expect(site('listen')).toEqual([{ external: true }]);
+    // A function passed on is a use; an undeclared callee stays a bare call.
+    expect(site('handler')).toEqual([{}]);
+    expect(site('retry')).toEqual([{}]);
+    expect(r.defined_symbols.find((d) => d.name === 'Queue')?.parents).toEqual([
+      { name: 'Base' },
+      { name: 'Drain' },
+    ]);
+    // Without the project's packages known, \`express\` may be one of them.
+    const unknown = sites(null).use_sites!.filter((u) => u.name === 'listen');
+    expect(unknown).toEqual([{ name: 'listen', from: 'run' }]);
+  });
+
+  it('counts TypeScript names read as values when the file imports or declares them', async () => {
+    const code = `import { HOME } from './paths.js';
+const LIMIT = 3;
+export function f() { return join(HOME, LIMIT); }
+export function g(HOME: string) { return HOME; }`;
+    const { tree, language } = parse('typescript', code);
+    const r = extractSymbolsForChunks(
+      tree,
+      language,
+      [
+        { startLine: 0, endLine: 1 },
+        { startLine: 2, endLine: 3 },
+      ],
+      'typescript'
+    );
+    tree.delete();
+    const sites = r[1]!.use_sites!.filter((u) => u.name === 'HOME' || u.name === 'LIMIT');
+    expect(sites).toEqual(
+      expect.arrayContaining([
+        { name: 'HOME', from: 'f', module: './paths.js' },
+        { name: 'LIMIT', from: 'f' },
+      ])
+    );
+    // \`g\`'s parameter is its own HOME.
+    expect(sites.some((u) => u.from === 'g')).toBe(false);
   });
 
   it('defined_symbols and defines_symbols stay in sync', async () => {

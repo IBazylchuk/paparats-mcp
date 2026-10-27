@@ -16,10 +16,24 @@ import { collectFileModifiedTimes, extractGitMetadata } from './git-metadata.js'
 import type { MetadataStore } from './metadata-db.js';
 import type { CachedEmbeddingProvider } from './embeddings.js';
 import type { TreeSitterManager } from './tree-sitter-parser.js';
-import { SYMBOL_FORMAT, extractSymbolsForChunks, type UseSite } from './ast-symbol-extractor.js';
+import {
+  SYMBOL_FORMAT,
+  extractSymbolsForChunks,
+  type ClassParent,
+  type UseSite,
+} from './ast-symbol-extractor.js';
 import { resolveAstLanguage } from './ast-language.js';
 import type { SymbolExtractionResult } from './ast-symbol-extractor.js';
-import { MAX_DEFINITION_FANOUT, buildSymbolEdges, type ChunkSymbols } from './symbol-graph.js';
+import {
+  MAX_DEFINITION_FANOUT,
+  buildSymbolEdges,
+  mayBeCommonName,
+  type ChunkSymbols,
+} from './symbol-graph.js';
+import { readLocalModules, type LocalModules } from './local-modules.js';
+
+/** Languages whose imports say which package a name comes from. */
+const ES_LANGUAGES = new Set(['typescript', 'tsx', 'javascript']);
 import { chunkByAst } from './ast-chunker.js';
 import { resolveDocumentAudience, type DocsStore } from './docs/store.js';
 import { NotMarkdownError } from './docs/chunker.js';
@@ -151,17 +165,38 @@ export function stripProjectSuffix(storedName: string, suffix: string): string {
  * where the extractor records no sites (Terraform), so edges fall back to
  * `uses_symbols`.
  */
+/** The classes, modules and interfaces a chunk defines, by full path, with their parents. */
+function classRecords(result: SymbolExtractionResult): Array<readonly [string, ClassParent[]]> {
+  return result.defined_symbols
+    .filter((d) => d.parents)
+    .map((d) => [d.owner ? `${d.owner}::${d.name}` : d.name, d.parents!] as const);
+}
+
+/**
+ * A graph change no incremental update can follow: a file added, removed or
+ * changed a class or what one inherits, which can move calls on any class
+ * below it. The project's graph is then built again.
+ */
+const CLASSES_CHANGED = '\0classes';
+
+/** A file's class records in a comparable form: equal when no class or parent changed. */
+function classSignature(records: Iterable<readonly [string, ClassParent[]]>): string {
+  return JSON.stringify([...records].map(([path, parents]) => [path, parents]).sort());
+}
+
 function symbolSitePayload(result: SymbolExtractionResult | undefined): Record<string, unknown> {
   if (!result?.use_sites) return {};
   const owners: Record<string, string> = {};
   for (const d of result.defined_symbols) if (d.owner) owners[d.name] = d.owner;
   const local = result.defined_symbols.filter((d) => d.local).map((d) => d.name);
   const classMethods = result.defined_symbols.filter((d) => d.classMethod).map((d) => d.name);
+  const classes = classRecords(result);
   return {
     use_sites: result.use_sites,
     def_owners: owners,
     ...(local.length > 0 ? { local_defs: local } : {}),
     ...(classMethods.length > 0 ? { class_methods: classMethods } : {}),
+    ...(classes.length > 0 ? { def_classes: Object.fromEntries(classes) } : {}),
   };
 }
 
@@ -194,6 +229,7 @@ const SYMBOL_PAYLOAD_FIELDS = [
   'def_owners',
   'local_defs',
   'class_methods',
+  'def_classes',
 ] as const;
 
 function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): ChunkSymbols {
@@ -203,6 +239,7 @@ function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): Chun
   const owners = payload['def_owners'];
   const local = payload['local_defs'];
   const classMethods = payload['class_methods'];
+  const classes = payload['def_classes'];
   return {
     chunk_id: chunkId,
     defines_symbols: Array.isArray(defs) ? (defs as string[]) : [],
@@ -213,6 +250,9 @@ function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): Chun
       : {}),
     ...(Array.isArray(local) ? { local_defs: local as string[] } : {}),
     ...(Array.isArray(classMethods) ? { class_methods: classMethods as string[] } : {}),
+    ...(classes && typeof classes === 'object' && !Array.isArray(classes)
+      ? { def_classes: classes as Record<string, ClassParent[]> }
+      : {}),
   };
 }
 
@@ -577,7 +617,7 @@ export class Indexer {
     const before = await this.storedDefinitions(groupName, storedName, relPath);
     await this.deleteStoredFilePoints(groupName, storedName, relPath);
     this.metadataStore?.deleteByFile(groupName, storedName, relPath);
-    this.markGraphChanged(groupName, storedName, relPath, before);
+    this.markGraphChanged(groupName, storedName, relPath, this.changedNames(before));
   }
 
   private graphEnabled(): boolean {
@@ -586,21 +626,37 @@ export class Indexer {
 
   /**
    * The names a file's stored chunks define, read before they are replaced or
-   * removed: the uses of those names elsewhere have to be linked again.
+   * removed: the uses of those names elsewhere have to be linked again. With
+   * them, the file's classes ({@link classSignature}), to tell whether any
+   * changed.
    */
   private async storedDefinitions(
     groupName: string,
     storedName: string,
     relPath: string
-  ): Promise<string[]> {
-    if (!this.graphEnabled()) return [];
+  ): Promise<{ names: string[]; classes: string }> {
+    const none = { names: [], classes: classSignature([]) };
+    if (!this.graphEnabled()) return none;
     try {
       const chunks = await this.readChunkSymbols(groupName, storedName, 'file', [relPath]);
-      return chunks.flatMap((c) => c.defines_symbols);
+      return {
+        names: chunks.flatMap((c) => c.defines_symbols),
+        classes: classSignature(chunks.flatMap((c) => Object.entries(c.def_classes ?? {}))),
+      };
     } catch (err) {
-      if (isMissingCollection(err)) return [];
+      if (isMissingCollection(err)) return none;
       throw err;
     }
+  }
+
+  /** The names to record for a file whose stored chunks were `before` and are now `after`. */
+  private changedNames(
+    before: { names: string[]; classes: string },
+    after: SymbolExtractionResult[] = []
+  ): string[] {
+    const names = [...before.names, ...after.flatMap((r) => r.defines_symbols)];
+    if (before.classes !== classSignature(after.flatMap(classRecords))) names.push(CLASSES_CHANGED);
+    return names;
   }
 
   /** Record a file the project's graph has to catch up with, and the names it defined or defines. */
@@ -721,10 +777,20 @@ export class Indexer {
         this.qdrant.upsert(this.col(groupName), { points: batch, wait: true })
       );
     }
-    this.markGraphChanged(groupName, storedName, relPath, [
-      ...before,
-      ...(symbolResults ?? []).flatMap((r) => r.defines_symbols),
-    ]);
+    this.markGraphChanged(
+      groupName,
+      storedName,
+      relPath,
+      this.changedNames(before, symbolResults ?? [])
+    );
+    if (this.graphEnabled() && symbolResults) {
+      this.metadataStore!.setFileNames(
+        groupName,
+        storedName,
+        relPath,
+        symbolResults.flatMap((r) => r.uses_symbols).filter(mayBeCommonName)
+      );
+    }
     return points;
   }
 
@@ -822,7 +888,7 @@ export class Indexer {
           const before = await this.storedDefinitions(groupName, projectName, relPath);
           await this.deleteStoredFilePoints(groupName, projectName, relPath);
           this.metadataStore?.deleteByFile(groupName, projectName, relPath);
-          this.markGraphChanged(groupName, projectName, relPath, before);
+          this.markGraphChanged(groupName, projectName, relPath, this.changedNames(before));
         }
         console.log(
           `  [indexer] Removed ${orphaned.length} orphaned file(s): ${orphaned.join(', ')}`
@@ -878,6 +944,22 @@ export class Indexer {
         );
       }
     }
+  }
+
+  /** Per project directory, its own packages and path aliases (see `readLocalModules`). */
+  private localModules = new Map<string, LocalModules | null>();
+
+  private localModulesOf(project: ProjectConfig): LocalModules | null {
+    let found = this.localModules.get(project.path);
+    if (found === undefined) {
+      try {
+        found = readLocalModules(project.path);
+      } catch {
+        found = null;
+      }
+      this.localModules.set(project.path, found);
+    }
+    return found;
   }
 
   /**
@@ -943,7 +1025,9 @@ export class Indexer {
               parsed.tree,
               parsed.language,
               chunks.map((c) => ({ startLine: c.startLine, endLine: c.endLine })),
-              astLanguage
+              astLanguage,
+              false,
+              ES_LANGUAGES.has(astLanguage) ? this.localModulesOf(project) : null
             );
             return { chunks, symbolResults };
           } catch (err) {
@@ -1338,6 +1422,8 @@ export class Indexer {
    */
   async indexProjectWithReport(project: ProjectConfig): Promise<IndexProjectReport> {
     const groupName = project.group;
+    // A pass reads the project's packages again: a workspace may have been added.
+    this.localModules.delete(project.path);
     // Storage-layer project name (suffix applied) — see indexFile.
     const storedName = this.stored(project.name);
 
@@ -1760,7 +1846,12 @@ export class Indexer {
     const changes = store.graphChanges(groupName, storedName);
     const hasEdges = store.hasEdgesForProject(groupName, storedName);
     if (!changes && hasEdges) return;
-    if (changes && hasEdges && changes.files.size <= MAX_INCREMENTAL_GRAPH_FILES) {
+    if (
+      changes &&
+      hasEdges &&
+      changes.files.size <= MAX_INCREMENTAL_GRAPH_FILES &&
+      !changes.names.has(CLASSES_CHANGED)
+    ) {
       await this.applyGraphChanges(groupName, storedName, changes);
       return;
     }
@@ -1782,7 +1873,7 @@ export class Indexer {
     changes: GraphChanges
   ): Promise<void> {
     const changed = await this.readChunkSymbols(groupName, storedName, 'file', [...changes.files]);
-    const names = new Set(changes.names);
+    const names = new Set([...changes.names].filter((name) => name !== CLASSES_CHANGED));
     for (const chunk of changed) for (const name of chunk.defines_symbols) names.add(name);
     const linked = new Set(names);
     for (const chunk of changed) for (const name of chunk.uses_symbols) linked.add(name);
@@ -1796,6 +1887,7 @@ export class Indexer {
     ]) {
       pool.set(chunk.chunk_id, chunk);
     }
+    await this.addClassChains(groupName, storedName, pool);
     const changedIds = new Set(changed.map((c) => c.chunk_id));
     const { edges } = buildSymbolEdges(
       [...pool.values()],
@@ -1806,6 +1898,47 @@ export class Indexer {
     console.log(
       `  [indexer] Symbol graph: ${changes.files.size} changed file(s), ${names.size} name(s), ${pool.size} chunks read, ${edges.length} edges written`
     );
+  }
+
+  /**
+   * Read into `pool` every class its chunks call on, define methods in or
+   * inherit from, and what those inherit, until nothing new: a call on a
+   * class is resolved up its ancestry and down to its subclasses, as the
+   * whole graph would see them. Classes are read by the last part of their
+   * path, so every class a name could mean is there.
+   */
+  private async addClassChains(
+    groupName: string,
+    storedName: string,
+    pool: Map<string, ChunkSymbols>
+  ): Promise<void> {
+    const asked = new Set<string>();
+    const last = (path: string) => path.split('::').pop()!;
+    let fresh = [...pool.values()];
+    for (let round = 0; round < 8 && fresh.length > 0; round++) {
+      const wanted = new Set<string>();
+      for (const chunk of fresh) {
+        for (const site of chunk.use_sites ?? []) if (site.on) wanted.add(last(site.on));
+        for (const owner of Object.values(chunk.def_owners ?? {})) wanted.add(last(owner));
+        for (const parents of Object.values(chunk.def_classes ?? {})) {
+          for (const parent of parents) wanted.add(last(parent.name));
+        }
+      }
+      const names = [...wanted].filter((name) => name !== '' && !asked.has(name));
+      for (const name of names) asked.add(name);
+      if (names.length === 0) break;
+      fresh = [];
+      for (const chunk of await this.readChunkSymbols(
+        groupName,
+        storedName,
+        'defines_symbols',
+        names
+      )) {
+        if (pool.has(chunk.chunk_id)) continue;
+        pool.set(chunk.chunk_id, chunk);
+        fresh.push(chunk);
+      }
+    }
   }
 
   /** Per project (`group\0stored name`): a pending graph update, and the one running. */
@@ -1943,7 +2076,7 @@ export class Indexer {
       if (!isMissingCollection(err)) throw err;
     }
     this.metadataStore?.deleteByFile(groupName, storedName, relPath);
-    this.markGraphChanged(groupName, storedName, relPath, before);
+    this.markGraphChanged(groupName, storedName, relPath, this.changedNames(before));
   }
 
   /** Content-based: index files from in-memory content (no filesystem access) */

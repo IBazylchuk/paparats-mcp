@@ -412,4 +412,95 @@ describe('indexProject incremental git enrichment', () => {
     expect(fullScans()).toBe(scansBefore);
     expect(metadataStore.graphChanges('test-group', 'test-project')).toBeNull();
   });
+
+  it('follows class ancestry in an update, and builds the graph again when a class changes what it inherits', async () => {
+    const treeSitter = await createTreeSitterManager();
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+      metadataStore,
+      treeSitter,
+    });
+    const project = createProjectConfig(projectDir);
+    const files: Record<string, string> = {
+      'src/base.ts': 'export class Base {\n  save() {\n    return 1;\n  }\n}\n',
+      'src/other.ts': 'export class Other {\n  save() {\n    return 2;\n  }\n}\n',
+      'src/child.ts': "import { Base } from './base.js';\nexport class Child extends Base {}\n",
+      'src/use.ts':
+        "import { Child } from './child.js';\nexport function run(c: Child) {\n  return c.save();\n}\n",
+    };
+    for (const [file, content] of Object.entries(files)) {
+      fs.writeFileSync(path.join(projectDir, file), content);
+    }
+    await indexer.indexProject(project);
+
+    const chunks = (): ChunkSymbols[] =>
+      [...mockQdrant.collections.values()].flatMap((points) =>
+        [...points.values()].flatMap((p) => {
+          const payload = (p as { payload?: Record<string, unknown> }).payload ?? {};
+          if (typeof payload['chunk_id'] !== 'string') return [];
+          return {
+            chunk_id: payload['chunk_id'] as string,
+            defines_symbols: (payload['defines_symbols'] as string[]) ?? [],
+            uses_symbols: (payload['uses_symbols'] as string[]) ?? [],
+            use_sites: payload['use_sites'] as ChunkSymbols['use_sites'],
+            def_owners: payload['def_owners'] as Record<string, string>,
+            def_classes: payload['def_classes'] as ChunkSymbols['def_classes'],
+          };
+        })
+      );
+    const key = (e: {
+      from_chunk_id: string;
+      to_chunk_id: string;
+      symbol_name: string;
+      confidence?: string;
+    }) => [e.from_chunk_id, e.to_chunk_id, e.symbol_name, e.confidence].join(' ');
+    const stored = () =>
+      chunks()
+        .flatMap((c) => metadataStore.getEdgesFrom(c.chunk_id))
+        .map(key)
+        .sort();
+    const rebuilt = () => buildSymbolEdges(chunks()).edges.map(key).sort();
+    const savesIn = () =>
+      stored()
+        .filter((e) => e.includes('src/use.ts') && e.includes(' save '))
+        .map((e) => e.split(' ')[1]!.split('//')[2]);
+    const fullScans = () =>
+      mockQdrant.client.scroll.mock.calls.filter((call) => {
+        const opts = call[1] as { filter?: { must?: Array<{ key: string }> } };
+        return opts.filter?.must?.length === 1 && opts.filter.must[0]!.key === 'project';
+      }).length;
+    const update = async (file: string, content: string) => {
+      await indexer.updateFileContent(
+        'test-group',
+        'test-project',
+        file,
+        content,
+        'typescript',
+        project
+      );
+      await indexer.flushSymbolGraphs();
+      expect(stored()).toEqual(rebuilt());
+    };
+
+    expect(savesIn()).toEqual(['src/base.ts']);
+    const scans = fullScans();
+    // A method body changes, then the child gets its own `save`: updated in place.
+    await update('src/base.ts', 'export class Base {\n  save() {\n    return 3;\n  }\n}\n');
+    await update(
+      'src/child.ts',
+      "import { Base } from './base.js';\nexport class Child extends Base {\n  save() {\n    return 4;\n  }\n}\n"
+    );
+    expect(savesIn()).toEqual(['src/child.ts']);
+    expect(fullScans()).toBe(scans);
+    // The child now inherits from another class and loses its own `save`: the whole graph again.
+    await update(
+      'src/child.ts',
+      "import { Other } from './other.js';\nexport class Child extends Other {}\n"
+    );
+    expect(savesIn()).toEqual(['src/other.ts']);
+    expect(fullScans()).toBeGreaterThan(scans);
+  });
 });

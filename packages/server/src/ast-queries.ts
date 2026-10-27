@@ -20,9 +20,13 @@ const typescriptDefinitions = `
   (method_definition name: (property_identifier) @definition)
 `;
 
+// \`await x.run<T>(...)\` parses as a call of \`await x.run\`, the type argument
+// read as a call's: the awaited callee is the name.
 const typescriptUsages = `
   (call_expression function: (identifier) @usage)
   (call_expression function: (member_expression property: (property_identifier) @usage))
+  (call_expression function: (await_expression (identifier) @usage))
+  (call_expression function: (await_expression (member_expression property: (property_identifier) @usage)))
   (new_expression constructor: (identifier) @usage)
   (type_identifier) @usage
   (export_specifier name: (identifier) @usage)

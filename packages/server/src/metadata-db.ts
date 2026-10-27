@@ -291,6 +291,19 @@ export class MetadataStore {
       CREATE INDEX IF NOT EXISTS idx_graph_changes_project ON graph_changes(grp, project, id);
     `);
 
+    // Per file, the names its code uses that may be common (single lowercase
+    // words): how common a name is counts every file using it, also where the
+    // graph links the use nowhere (`Map#get`, `ActiveRecord`'s `connection`).
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS file_names (
+        grp TEXT NOT NULL,
+        project TEXT NOT NULL,
+        file TEXT NOT NULL,
+        names TEXT NOT NULL,
+        PRIMARY KEY (grp, project, file)
+      );
+    `);
+
     // Composite (grp, …) indexes for degree aggregation. Created here — after
     // the migration guarantees the `grp` column exists on both fresh and legacy
     // databases — so degree stats aggregate via an index range scan instead of
@@ -439,6 +452,7 @@ export class MetadataStore {
       this.deleteEdgesUnder(`${group}//${project}//`);
       this.deleteGraphChangesStmt.run(group, project, Number.MAX_SAFE_INTEGER);
       this.deleteProjectGitCacheStmt.run(group, project);
+      this.db.prepare('DELETE FROM file_names WHERE grp = ? AND project = ?').run(group, project);
     });
     tx();
     // The in-degree cache would otherwise keep ranking the deleted chunks.
@@ -603,10 +617,22 @@ export class MetadataStore {
       this.deleteProjectCommitsStmt.run(pattern);
       this.deleteProjectTicketsStmt.run(pattern);
       this.deleteEdgesUnder(`${group}//${project}//${file}//`);
+      this.db
+        .prepare('DELETE FROM file_names WHERE grp = ? AND project = ? AND file = ?')
+        .run(group, project, file);
     });
     tx();
     this.invalidateDegreeCache(group);
     this.bumpEdgeVersion(group, project);
+  }
+
+  /** Record the names a file's code uses that may be common (see `file_names`). */
+  setFileNames(group: string, project: string, file: string, names: Iterable<string>): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO file_names (grp, project, file, names) VALUES (?, ?, ?, ?)')
+      .run(group, project, file, JSON.stringify([...new Set(names)].sort()));
+    const usage = this.nameUsageCache.get(group);
+    if (usage) usage.stale = true;
   }
 
   /** Every edge leaving any chunk of one file. */
@@ -758,15 +784,29 @@ export class MetadataStore {
   private computeNameUsage(group: string): NameUsage {
     const users = new Map<string, Set<string>>();
     const callers = new Set<string>();
+    const use = (name: string, file: string) => {
+      let set = users.get(name);
+      if (!set) users.set(name, (set = new Set()));
+      set.add(file);
+    };
+    // Projects whose files recorded their names count those; others (indexed
+    // before `file_names`) count the files their edges link from.
+    const recorded = new Set<string>();
+    const named = this.db
+      .prepare('SELECT project, file, names FROM file_names WHERE grp = ?')
+      .iterate(group) as Iterable<{ project: string; file: string; names: string }>;
+    for (const row of named) {
+      recorded.add(row.project);
+      const file = `${group}//${row.project}//${row.file}`;
+      for (const name of JSON.parse(row.names) as string[]) use(name, file);
+    }
     const rows = this.db
       .prepare('SELECT from_chunk_id, symbol_name FROM symbol_edges WHERE grp = ?')
       .iterate(group) as Iterable<{ from_chunk_id: string; symbol_name: string }>;
     for (const row of rows) {
       const file = chunkFileKey(row.from_chunk_id);
       callers.add(file);
-      let set = users.get(row.symbol_name);
-      if (!set) users.set(row.symbol_name, (set = new Set()));
-      set.add(file);
+      if (!recorded.has(row.from_chunk_id.split('//')[1] ?? '')) use(row.symbol_name, file);
     }
     const filesUsing = new Map<string, number>();
     for (const [name, set] of users) filesUsing.set(name, set.size);
