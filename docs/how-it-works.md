@@ -83,6 +83,13 @@ re-export (`export { x } from './x.js'`, the usual barrel `index.ts` or `lib.ts`
 `reexports` edge, so a change to `x` lists the files that publish it. A call on a new
 object (`Rebuild.new(ids).call`, `new Queue().flush()`) links to that class's method. A
 Ruby class used as a value (passed, kept in a hash or a variable) is a `references` edge.
+A Ruby constant resolves as Ruby looks it up: `Base` inside `module Billing` is
+`Billing::Base` when that exists, otherwise the top-level `Base`; the `Billing` in
+`Billing::Base` is not a use of its own (the `Scanner` in `Scanner::SCOPE_KEY` is), and a constant defined nowhere in the project (a
+gem's `ActiveRecord::Base`) links to nothing. A call on an object does not link to a Ruby
+`def self.x`, and reopening a library class (`Time`, `Date`, `ActiveSupport::...`) does
+not define it. A TypeScript or JavaScript function that is not exported is reached only
+from its own file, where it wins over same-named functions elsewhere.
 
 `change_impact` walks those edges backwards from what you are about to change: callers,
 then their callers, up to 3 steps. A caller passes the change on only through the methods
@@ -94,7 +101,9 @@ the first step, links only through a name several classes define are listed apar
 followed. Very widely used files and tests are listed
 but not followed. Callers linked only through a common name (a single lowercase word such
 as `add`, `get`, `create`, used from more than 8 files) are set apart unless their file
-also uses something specific from the target's file.
+also uses something specific from the target's file. When no indexed test reaches the
+change (Ruby projects leave `spec/` and `test/` out of the index by default), it lists
+where the tests would be by convention (`spec/models/invoice_spec.rb`, `src/queue.test.ts`).
 
 ## The module map
 

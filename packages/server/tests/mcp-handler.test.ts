@@ -1442,6 +1442,20 @@ describe('McpHandler', () => {
       });
     });
 
+    it('says where the tests would be when no indexed test reaches the change', async () => {
+      const { metadataStore, indexer } = mocks();
+      const edges = [edge(CALLER, SEED, 'authenticate')];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('No indexed test reaches it.');
+        expect(text).toContain('- `src/auth.test.ts`');
+        expect(text).toContain('- `src/login.spec.ts`');
+      });
+    });
+
     it('stops at depth and says more is there', async () => {
       const { metadataStore, indexer } = mocks();
       await withHandler({ metadataStore, indexer }, async (port) => {

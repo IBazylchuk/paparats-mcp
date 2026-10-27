@@ -6,6 +6,7 @@ import {
   TEST_FILE_DEMOTION,
   definitionCandidatesFilter,
   identifierTokens,
+  conventionalTestPaths,
   isTestPath,
   mentionsTests,
   rankKey,
@@ -149,5 +150,24 @@ describe('rankKey with file churn', () => {
     expect(rankKey(q, { score: 0.6, file: 'a.rb', file_churn: 0 })).toBeGreaterThan(
       rankKey(q, { score: 0.55, file: 'b.rb', file_churn: 1 })
     );
+  });
+});
+
+describe('conventionalTestPaths', () => {
+  it('names where a file’s tests sit by convention', () => {
+    expect(conventionalTestPaths('app/models/invoice.rb')).toEqual([
+      'spec/models/invoice_spec.rb',
+      'test/models/invoice_test.rb',
+    ]);
+    expect(conventionalTestPaths('lib/billing/ledger.rb')).toEqual([
+      'spec/lib/billing/ledger_spec.rb',
+      'test/lib/billing/ledger_test.rb',
+    ]);
+    expect(conventionalTestPaths('src/queue.ts')).toEqual([
+      'src/queue.test.ts',
+      'src/queue.spec.ts',
+    ]);
+    expect(conventionalTestPaths('spec/models/invoice_spec.rb')).toEqual([]);
+    expect(conventionalTestPaths('README.md')).toEqual([]);
   });
 });

@@ -802,7 +802,8 @@ end`;
 
     const r = results[0]!;
     expect(r.defined_symbols.find((d) => d.name === 'claim')?.owner).toBe('Billing::Usage');
-    expect(r.defined_symbols.find((d) => d.name === 'Usage')?.owner).toBeUndefined();
+    // A class records the namespace it is declared in, to resolve constants by.
+    expect(r.defined_symbols.find((d) => d.name === 'Usage')?.owner).toBe('Billing');
     const on = (name: string) =>
       r.use_sites!.filter((u) => u.name === name).map((u) => [u.on ?? null, u.in ?? null]);
     // A relative name keeps the namespace it is resolved from; `::` and self are full paths.
@@ -1015,6 +1016,150 @@ export function helper() { toName(); }`;
         });
       }
     }
+  });
+
+  it('marks top-level names an ES module does not export as local to the file', async () => {
+    const local = (lang: string, code: string) => {
+      const { tree, language } = parse(lang, code);
+      const r = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 20 }], lang);
+      tree.delete();
+      return r[0]!.defined_symbols
+        .filter((d) => d.local)
+        .map((d) => d.name)
+        .sort();
+    };
+    const module = `import { join } from 'node:path';
+function readText() {}
+export function lint() {}
+const HELPERS = 1;
+export const VERSION = 2;
+class Report { render() {} }
+function shown() {}
+export { shown };
+export default lint;`;
+    expect(local('typescript', module)).toEqual(['HELPERS', 'Report', 'readText']);
+    expect(local('javascript', module)).toEqual(['HELPERS', 'Report', 'readText']);
+    // A script (no import or export) and CommonJS share their top-level names.
+    expect(local('typescript', 'function readText() {}\nreadText();')).toEqual([]);
+    expect(
+      local(
+        'javascript',
+        "const fs = require('fs');\nfunction readText() {}\nmodule.exports = { readText };"
+      )
+    ).toEqual([]);
+  });
+
+  it('does not count reopening a Ruby or Rails library class as defining it', async () => {
+    const code = `class Time
+  def id; to_s; end
+end
+class ActiveSupport::TimeWithZone
+  def id; to_s; end
+end
+module Billing
+  class Time
+    def self.zone; end
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 10 }],
+      'ruby'
+    );
+    tree.delete();
+    const defs = results[0]!.defines_symbols;
+    expect(defs).not.toContain('TimeWithZone');
+    expect(defs).toEqual(expect.arrayContaining(['id', 'Time', 'zone']));
+    // The one `Time` left is `Billing::Time`, the project's own class.
+    expect(results[0]!.defined_symbols.filter((d) => d.name === 'Time')).toHaveLength(1);
+  });
+
+  it('tells Ruby class methods and calls on objects apart', async () => {
+    const code = `class Queue
+  def self.batch(count); end
+  def self.size; end
+  def size; end
+  def run(input)
+    input.batch
+    @items.size
+    Queue.batch
+    self.size
+    batch
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 11 }],
+      'ruby'
+    );
+    tree.delete();
+    const r = results[0]!;
+    // `size` is also an instance method here, so objects can answer it.
+    expect(r.defined_symbols.filter((d) => d.classMethod).map((d) => d.name)).toEqual(['batch']);
+    const onObject = r
+      .use_sites!.filter((u) => u.onObject)
+      .map((u) => u.name)
+      .sort();
+    expect(onObject).toEqual(['batch', 'size']);
+  });
+
+  it('resolves Ruby constants by namespace and skips the namespace part of a path', async () => {
+    const code = `module Search
+  class Runner < Base
+    def run
+      Search::Query.new
+      ::Config.load
+      Reports::Base
+    end
+  end
+end
+class Billing::Invoice; end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 9 }], 'ruby');
+    tree.delete();
+    const r = results[0]!;
+    const sites = (name: string) =>
+      r.use_sites!.filter((u) => u.name === name).map(({ name: _n, from: _f, ...rest }) => rest);
+    expect(sites('Base')).toEqual(
+      expect.arrayContaining([
+        { lexical: true, in: 'Search::Runner', constant: true },
+        { on: 'Reports', in: 'Search::Runner', constant: true },
+      ])
+    );
+    // `Search::Query.new` is kept, not called on at once: a value.
+    expect(sites('Query')).toEqual([
+      { on: 'Search', in: 'Search::Runner', constant: true, value: true },
+    ]);
+    expect(sites('Config')).toEqual([{ lexical: true, constant: true }]);
+    // `Search` and `Reports` only qualify a path, `Billing` names the namespace of a definition.
+    expect(r.uses_symbols).not.toContain('Reports');
+    expect(r.uses_symbols).not.toContain('Billing');
+    expect(r.defined_symbols.find((d) => d.name === 'Invoice')?.owner).toBe('Billing');
+  });
+
+  it('counts the class a Ruby value constant is read from as used', async () => {
+    const code = `module Billing
+  class Refund
+    def run
+      { Scanner::SCOPE_KEY => Limits::MAX }
+      AI::LLM::Schemas
+    end
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 7 }], 'ruby');
+    tree.delete();
+    const r = results[0]!;
+    const sites = (name: string) =>
+      r.use_sites!.filter((u) => u.name === name).map(({ name: _n, from: _f, ...rest }) => rest);
+    expect(sites('Scanner')).toEqual([{ lexical: true, in: 'Billing::Refund', constant: true }]);
+    expect(sites('Limits')).toEqual([{ lexical: true, in: 'Billing::Refund', constant: true }]);
+    // An upper-case name followed by `::` is a namespace, not a value.
+    expect(r.uses_symbols).not.toContain('AI');
   });
 
   it('extracts JavaScript definitions (its grammar has no type nodes)', async () => {

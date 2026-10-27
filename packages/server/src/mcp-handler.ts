@@ -61,6 +61,7 @@ import { validateGroupName } from './config.js';
 import { describeQdrantError } from './qdrant-errors.js';
 import {
   DEFINITION_CANDIDATES,
+  conventionalTestPaths,
   definitionCandidatesFilter,
   identifierTokens,
   isTestPath,
@@ -259,6 +260,25 @@ function outOfScopeProjectResult(
 function callerLabel(callers: string[], payload: Record<string, unknown>): string {
   if (callers.length > 0) return ` ${callers.map((n) => `\`${n}\``).join(', ')}`;
   return typeof payload['symbol_name'] === 'string' ? ` \`${payload['symbol_name']}\`` : '';
+}
+
+/**
+ * Said when no indexed test reaches the change: Ruby projects leave `spec/`
+ * and `test/` out of the index by default, so "no tests" there means "not
+ * indexed", not "untested". Lists where the tests of the changed file and of
+ * its direct dependents would be by convention.
+ */
+function testsByConvention(files: string[]): string {
+  const paths = [...new Set(files.flatMap(conventionalTestPaths))].slice(0, 12);
+  let text = '\n### Tests\n\nNo indexed test reaches it.';
+  if (paths.length === 0) return text + '\n';
+  text +=
+    " If the project's tests are not indexed (Ruby projects leave out `spec/` and `test/` by default), by convention they would be at:\n\n";
+  return (
+    text +
+    paths.map((p) => `- \`${p}\`\n`).join('') +
+    '\nCheck which exist before relying on them.\n'
+  );
 }
 
 function chunkNotFoundText(chunkId: string): string {
@@ -2594,6 +2614,11 @@ export class McpHandler {
             if (tests.length > 0) {
               text += `\n### Tests (${tests.length}) — run these after the change\n\n`;
               for (const r of tests) text += line(r, true);
+            } else {
+              text += testsByConvention([
+                file,
+                ...code.filter((r) => r.dep.hop === 1).map((r) => r.file),
+              ]);
             }
             text += commonSection;
 

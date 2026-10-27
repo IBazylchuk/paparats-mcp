@@ -67,6 +67,10 @@ export interface ChunkSymbols {
   use_sites?: UseSite[];
   /** Per defined method, its class (see `DefinedSymbol.owner`). */
   def_owners?: Record<string, string>;
+  /** Names it defines that only its own file can use (see `DefinedSymbol.local`). */
+  local_defs?: string[];
+  /** Ruby class methods it defines (see `DefinedSymbol.classMethod`). */
+  class_methods?: string[];
 }
 
 const CONFIDENCE_RANK: Record<EdgeConfidence, number> = { AMBIGUOUS: 0, INFERRED: 1, EXTRACTED: 2 };
@@ -124,6 +128,30 @@ function resolveClass(
 }
 
 /**
+ * A bare Ruby constant, looked up the way Ruby does: in the namespace it is
+ * written in (`site.in`), then each enclosing one, then the top level
+ * (`topLevel`: definitions with no namespace). Null when none has it: a
+ * constant from a gem, which links to nothing.
+ */
+function resolveLexical(
+  site: UseSite,
+  byClass: Map<string, string[]> | undefined,
+  topLevel: string[]
+): { chunks: string[]; match: 'exact' | 'several' } | null {
+  const inFiles = (chunks: string[]) => new Set(chunks.map(fileKey)).size;
+  const found = (chunks: string[]) => ({
+    chunks,
+    match: inFiles(chunks) > 1 ? ('several' as const) : ('exact' as const),
+  });
+  const scope = site.in ? site.in.split('::') : [];
+  for (let n = scope.length; n > 0 && byClass; n--) {
+    const chunks = byClass.get(scope.slice(0, n).join('::'));
+    if (chunks) return found(chunks);
+  }
+  return topLevel.length > 0 ? found(topLevel) : null;
+}
+
+/**
  * Build cross-chunk symbol edges from chunk symbol data.
  *
  * For each use in a chunk, finds the chunks that define the name and creates a
@@ -160,7 +188,23 @@ export function buildSymbolEdges(
   // Build inverted indexes: symbol → defining chunk IDs, and symbol → class → the same
   const definedBy = new Map<string, Set<string>>();
   const definedIn = new Map<string, Map<string, string[]>>();
+  // Per name, the chunks defining it file-private; a use elsewhere skips them.
+  const localIn = new Map<string, Set<string>>();
+  // Per name, the chunks defining it only as a Ruby class method.
+  const classMethodIn = new Map<string, Set<string>>();
+  // Per name, the chunks defining it inside a class or namespace.
+  const ownedIn = new Map<string, Set<string>>();
   for (const chunk of chunkSymbols) {
+    for (const sym of chunk.class_methods ?? []) {
+      let set = classMethodIn.get(sym);
+      if (!set) classMethodIn.set(sym, (set = new Set()));
+      set.add(chunk.chunk_id);
+    }
+    for (const sym of chunk.local_defs ?? []) {
+      let set = localIn.get(sym);
+      if (!set) localIn.set(sym, (set = new Set()));
+      set.add(chunk.chunk_id);
+    }
     for (const sym of chunk.defines_symbols) {
       let defs = definedBy.get(sym);
       if (!defs) {
@@ -170,6 +214,9 @@ export function buildSymbolEdges(
       defs.add(chunk.chunk_id);
       const owner = chunk.def_owners?.[sym];
       if (owner === undefined) continue;
+      let owned = ownedIn.get(sym);
+      if (!owned) ownedIn.set(sym, (owned = new Set()));
+      owned.add(chunk.chunk_id);
       let byClass = definedIn.get(sym);
       if (!byClass) definedIn.set(sym, (byClass = new Map()));
       let inClass = byClass.get(owner);
@@ -189,11 +236,33 @@ export function buildSymbolEdges(
 
     for (const site of sites) {
       const sym = site.name;
-      const defs = definedBy.get(sym);
-      if (!defs) continue;
+      const allDefs = definedBy.get(sym);
+      if (!allDefs) continue;
+      // A file-private definition is reachable only from its file, and there it
+      // is the one meant: a module cannot also import a name it declares.
+      const private_ = localIn.get(sym);
+      const own = private_ ? [...private_].filter((id) => fileKey(id) === callerFile) : [];
+      let defs =
+        own.length > 0
+          ? new Set(own)
+          : private_
+            ? new Set([...allDefs].filter((id) => !private_.has(id)))
+            : allDefs;
+      // `input.batch` is a call on an object, which a `def self.batch` cannot answer.
+      const classOnly = site.onObject ? classMethodIn.get(sym) : undefined;
+      if (classOnly) defs = new Set([...defs].filter((id) => !classOnly.has(id)));
+      if (defs.size === 0) continue;
       if (only && !only(chunk.chunk_id, sym)) continue;
 
-      const onClass = resolveClass(site, definedIn.get(sym));
+      const onClass = site.lexical
+        ? resolveLexical(
+            site,
+            definedIn.get(sym),
+            [...defs].filter((id) => !ownedIn.get(sym)?.has(id))
+          )
+        : resolveClass(site, definedIn.get(sym));
+      // A Ruby constant the lookup does not find is a gem's (`ActiveRecord::Base`).
+      if (site.constant && onClass === null) continue;
       const resolved = onClass !== null;
 
       // Structural-noise cap: a symbol defined in too many chunks explodes into

@@ -11,6 +11,17 @@ export interface DefinedSymbol {
    * `Billing::Usage` for a method of `class Usage` inside `module Billing`.
    */
   owner?: string;
+  /**
+   * A top-level declaration a TypeScript or JavaScript module does not
+   * export: nothing outside its file can call it, so only uses in that file
+   * link to it.
+   */
+  local?: true;
+  /**
+   * A Ruby class method (`def self.batch`), with no instance method of that
+   * name in the chunk: callable on the class, not on an object.
+   */
+  classMethod?: true;
 }
 
 /** One use of a name, with where it is made from and what it is called on. */
@@ -30,6 +41,19 @@ export interface UseSite {
   on?: string;
   /** For an `on` without `::`, the namespace the call is made in, to resolve it from. */
   in?: string;
+  /**
+   * A bare Ruby constant (`Base`, not `Search::Base`): it means the class of
+   * that name in the nearest namespace around it (`in`, then its parents),
+   * else the top-level one, as Ruby looks it up.
+   */
+  lexical?: true;
+  /** A Ruby constant (class or module name): linked only where the lookup finds it. */
+  constant?: true;
+  /**
+   * Ruby: called on an object rather than on a class or self (`input.batch`,
+   * `pages.size`, `@queue.add`), so not a call to a class method.
+   */
+  onObject?: true;
   /** A re-export (`export { x } from`), not a call: linked as `reexports`. */
   reexport?: true;
   /**
@@ -66,7 +90,12 @@ export interface SymbolExtractionResult {
  *      called on, and methods record their class.
  *  4 — TypeScript and JavaScript re-exports (`export { x } from`) are uses;
  *      a use is also made from the chunk's methods that reach it through
- *      the chunk's own calls; `X.new(...).m` and `new X().m()` are calls on X.
+ *      the chunk's own calls; `X.new(...).m` and `new X().m()` are calls on X;
+ *      a TS/JS definition not exported is file-local; Ruby `def self.x` is a
+ *      class method, a call on an object is marked; a reopened library class
+ *      (`Time`, `ActiveSupport::...`) defines nothing; a Ruby constant records
+ *      its lexical scope and the namespace part of a path is not a use
+ *      (the class a value constant is read from is).
  */
 export const SYMBOL_FORMAT = 4;
 
@@ -652,6 +681,61 @@ function calledOn(
 }
 
 /**
+ * The namespace a Ruby class or module is declared in, with the path written
+ * in its name: `Billing` for `class Invoice` inside `module Billing`, and for
+ * `class Billing::Invoice`. Undefined at the top level.
+ */
+function rubyNamespaceOf(nameNode: Node): string | undefined {
+  const path = nameNode.parent?.type === 'scope_resolution' ? nameNode.parent : null;
+  const declaration = (path ?? nameNode).parent;
+  const outer = declaration ? enclosingClass(declaration) : undefined;
+  const written = path?.childForFieldName('scope')?.text;
+  if (written !== undefined && written.startsWith('::'))
+    return constantPath(written).slice(2) || undefined;
+  if (path && !path.childForFieldName('scope')) return undefined; // `class ::Invoice`
+  const parts = [outer, written].filter((p): p is string => p !== undefined && p !== '');
+  return parts.length > 0 ? parts.join('::') : undefined;
+}
+
+/** A Ruby constant holding a value (`SCOPE_KEY`, `MAX_RETRIES`), not a class. */
+const RUBY_VALUE_CONSTANT_RE = /^[A-Z][A-Z0-9_]+$/;
+
+/**
+ * How a Ruby constant use is resolved: `Search::Base` as `Base` in `Search`
+ * (from the namespace around it), a bare `Base` lexically. Null for the
+ * namespace part of a path (`Search` in `Search::Base`): naming a namespace
+ * uses nothing of the file that defines it, and counting it linked every
+ * `Companies::X` to whichever file gives `module Companies` a method. A class
+ * a value constant is read from (`Scanner` in `Scanner::SCOPE_KEY`) is used,
+ * and resolved like a bare constant: Ruby constants holding values are not
+ * definitions in the graph, so the class is what links.
+ */
+function rubyConstant(node: Node): Pick<UseSite, 'on' | 'in' | 'lexical' | 'constant'> | null {
+  const parent = node.parent;
+  const scope = enclosingClass(node);
+  if (parent?.type === 'scope_resolution') {
+    const name = parent.childForFieldName('name');
+    if (name?.id !== node.id) {
+      // `AI::LLM::Schemas`: an upper-case namespace, not a value.
+      const isScope =
+        parent.parent?.type === 'scope_resolution' &&
+        parent.parent.childForFieldName('scope')?.id === parent.id;
+      if (!name || isScope || !RUBY_VALUE_CONSTANT_RE.test(name.text)) return null;
+      return scope
+        ? { lexical: true, in: scope, constant: true }
+        : { lexical: true, constant: true };
+    }
+    const written = parent.childForFieldName('scope');
+    if (!written) return { lexical: true, constant: true }; // `::Base`: the top-level one
+    const on = constantPath(written.text);
+    return on.startsWith('::') || !scope
+      ? { on, constant: true }
+      : { on, in: scope, constant: true };
+  }
+  return scope ? { lexical: true, in: scope, constant: true } : { lexical: true, constant: true };
+}
+
+/**
  * A Ruby `module` that only wraps classes and modules (`module Billing; class
  * Invoice; ...`). Every file under a namespace reopens it, so counting each
  * one as a definition of `Billing` linked every `Billing::X` in the codebase
@@ -714,6 +798,121 @@ function isRubyValue(node: Node): boolean {
     return parent.childForFieldName('right')?.id === expr.id;
   }
   return parent.type === 'array';
+}
+
+const ES_MODULE_LANGS = new Set(['typescript', 'tsx', 'javascript']);
+
+/**
+ * The names an ES module exports by name (`export { a, b as c }`, `export
+ * default a`, `export = a`), or null when the file is not one: no `import` or
+ * `export` statement (a script, whose top-level names are global), or a
+ * CommonJS `module.exports` / `exports.x`. Declarations written under `export`
+ * are told apart by `isExported`.
+ */
+function moduleExports(root: Node): Set<string> | null {
+  let module = false;
+  const names = new Set<string>();
+  for (const stmt of root.namedChildren) {
+    if (!stmt) continue;
+    if (stmt.type === 'import_statement') module = true;
+    if (stmt.type !== 'export_statement') continue;
+    module = true;
+    if (stmt.childForFieldName('source')) continue;
+    for (const child of stmt.namedChildren) {
+      if (child?.type === 'identifier') names.add(child.text);
+      if (child?.type !== 'export_clause') continue;
+      for (const spec of child.namedChildren) {
+        const name = spec?.childForFieldName('name')?.text;
+        if (name) names.add(name);
+      }
+    }
+  }
+  if (!module || /\b(?:module\.exports|exports\.[A-Za-z_$])/.test(root.text)) return null;
+  return names;
+}
+
+/** Whether a top-level declaration is exported: written under `export`, or named in an export list. */
+function isExported(nameNode: Node, exports: Set<string>): boolean {
+  if (exports.has(nameNode.text)) return true;
+  let statement: Node | null = nameNode;
+  while (statement?.parent && statement.parent.type !== 'program') statement = statement.parent;
+  return statement?.type === 'export_statement';
+}
+
+/**
+ * Classes of Ruby, its standard library and Rails that a project reopens to
+ * add a method (`class Time; def id`, `class ActiveSupport::TimeWithZone`).
+ * Counting such a file as the definition of `Time` linked every `Time.current`
+ * in the codebase to it and listed it as shared code. Its methods still count.
+ */
+const RUBY_LIBRARY_CLASSES = new Set([
+  'Object',
+  'BasicObject',
+  'Kernel',
+  'Module',
+  'Class',
+  'Comparable',
+  'Enumerable',
+  'String',
+  'Symbol',
+  'Integer',
+  'Float',
+  'Numeric',
+  'Rational',
+  'Complex',
+  'BigDecimal',
+  'Array',
+  'Hash',
+  'Range',
+  'Regexp',
+  'Set',
+  'Struct',
+  'Data',
+  'Proc',
+  'Method',
+  'NilClass',
+  'TrueClass',
+  'FalseClass',
+  'Time',
+  'Date',
+  'DateTime',
+  'Exception',
+  'StandardError',
+  'IO',
+  'File',
+  'Dir',
+  'Pathname',
+  'URI',
+  'JSON',
+  'Thread',
+  'Logger',
+]);
+const RUBY_LIBRARY_NAMESPACES = new Set([
+  'ActiveSupport',
+  'ActiveRecord',
+  'ActiveModel',
+  'ActiveJob',
+  'ActiveStorage',
+  'ActionController',
+  'ActionDispatch',
+  'ActionView',
+  'ActionMailer',
+  'ActionCable',
+  'Rails',
+  'Arel',
+  'GlobalID',
+]);
+
+/** A `class` or `module` naming one of {@link RUBY_LIBRARY_CLASSES}, or a path under a Rails namespace. */
+function isRubyLibraryClass(nameNode: Node): boolean {
+  const path = nameNode.parent?.type === 'scope_resolution' ? nameNode.parent : nameNode;
+  const owner = path.parent;
+  if (owner?.type !== 'class' && owner?.type !== 'module') return false;
+  if (owner.childForFieldName('name')?.id !== path.id) return false;
+  const full = path.text.replace(/^::/, '');
+  if (enclosingClass(owner) !== undefined) return false;
+  const first = full.split('::')[0] ?? '';
+  return full.includes('::') ? RUBY_LIBRARY_NAMESPACES.has(first) : RUBY_LIBRARY_CLASSES.has(full);
 }
 
 /** Ruby nodes whose identifiers name a parameter, not a call. */
@@ -841,7 +1040,7 @@ function withInnerCallers(sites: UseSite[], calledFrom: Map<string, Set<string>>
 }
 
 function siteKey(site: UseSite): string {
-  return `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.reexport ?? ''}\0${site.value ?? ''}\0${site.through ?? ''}`;
+  return `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.lexical ?? ''}\0${site.constant ?? ''}\0${site.reexport ?? ''}\0${site.value ?? ''}\0${site.onObject ?? ''}\0${site.through ?? ''}`;
 }
 
 /**
@@ -892,6 +1091,10 @@ export function extractSymbolsForChunks(
     const defCaptures = defQuery ? defQuery.captures(tree.rootNode) : [];
     const useCaptures = useQuery ? useQuery.captures(tree.rootNode) : [];
 
+    // In an ES module, the names it exports; null when every top-level name is
+    // visible elsewhere (a script, CommonJS, another language).
+    const exports = ES_MODULE_LANGS.has(lang) ? moduleExports(tree.rootNode) : null;
+
     // Declarations a use can be made from, across the whole file: a method
     // split over several chunks still owns the uses in its later chunks.
     // Classes and modules map to null — a use in their body comes from no method.
@@ -933,12 +1136,35 @@ export function extractSymbolsForChunks(
         if (row > chunk.endLine) break;
         const captureNode = defCaptures[d]!.node;
         const text = captureNode.text;
-        if (isNoise(text) || defines.has(text)) continue;
+        if (isNoise(text)) continue;
+        const known = defines.get(text);
+        if (known) {
+          // An instance method next to a class method of the same name: callable on objects.
+          if (known.classMethod && captureNode.parent?.type !== 'singleton_method') {
+            delete known.classMethod;
+          }
+          continue;
+        }
         if (!isTopLevelDeclaration(captureNode, scopeNodes)) continue;
         if (lang === 'ruby' && isRubyNamespaceModule(captureNode)) continue;
+        if (lang === 'ruby' && isRubyLibraryClass(captureNode)) continue;
         const kind = resolveKind(captureNode);
-        const owner = CONTAINER_KINDS.has(kind) ? undefined : enclosingClass(captureNode);
-        defines.set(text, owner ? { name: text, kind, owner } : { name: text, kind });
+        const owner = CONTAINER_KINDS.has(kind)
+          ? lang === 'ruby'
+            ? rubyNamespaceOf(captureNode)
+            : undefined
+          : enclosingClass(captureNode);
+        const local =
+          exports !== null && !owner && kind !== 'method' && !isExported(captureNode, exports);
+        defines.set(text, {
+          name: text,
+          kind,
+          ...(owner ? { owner } : {}),
+          ...(local ? { local: true as const } : {}),
+          ...(lang === 'ruby' && captureNode.parent?.type === 'singleton_method'
+            ? { classMethod: true as const }
+            : {}),
+        });
       }
 
       // Advance useIdx past captures before this chunk
@@ -954,6 +1180,9 @@ export function extractSymbolsForChunks(
         const node = useCaptures[u]!.node;
         if (node.startPosition.row > chunk.endLine) break;
         const text = node.text;
+        const constant =
+          lang === 'ruby' && node.type === 'constant' ? rubyConstant(node) : undefined;
+        if (constant === null) continue;
         if (!isNoise(text)) {
           uses.add(text);
           const receiver = receiverOf(node);
@@ -963,8 +1192,12 @@ export function extractSymbolsForChunks(
             name: text,
             from: exported ?? callerOf(node, callers),
             ...calledOn(node, receiver, lang),
+            ...constant,
             ...(exported !== undefined ? { reexport: true as const } : {}),
             ...(lang === 'ruby' && isRubyValue(node) ? { value: true as const } : {}),
+            ...(lang === 'ruby' && receiver.kind === 'other' && !CONSTANT_PATH.test(receiver.text)
+              ? { onObject: true as const }
+              : {}),
           };
           const key = siteKey(site);
           if (!sites.has(key)) sites.set(key, site);

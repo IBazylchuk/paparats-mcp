@@ -44,6 +44,23 @@ export function isTestPath(file: string): boolean {
   return TEST_PATH_RE.test(file);
 }
 
+/**
+ * Where a file's tests sit by convention, for when tests are not indexed:
+ * `app/models/invoice.rb` → `spec/models/invoice_spec.rb`, `test/models/invoice_test.rb`;
+ * `src/queue.ts` → `src/queue.test.ts`, `src/queue.spec.ts`. Empty for other files.
+ */
+export function conventionalTestPaths(file: string): string[] {
+  if (isTestPath(file)) return [];
+  const ruby = /^(.*)\.rb$/.exec(file);
+  if (ruby) {
+    const rest = ruby[1]!.replace(/^app\//, '');
+    return [`spec/${rest}_spec.rb`, `test/${rest}_test.rb`];
+  }
+  const script = /^(.*)\.(tsx?|jsx?|mjs|cjs)$/.exec(file);
+  if (script) return [`${script[1]}.test.${script[2]}`, `${script[1]}.spec.${script[2]}`];
+  return [];
+}
+
 /** Whether the query asks about tests, in which case test files keep their rank. */
 export function mentionsTests(query: string): boolean {
   return TEST_QUERY_RE.test(query);

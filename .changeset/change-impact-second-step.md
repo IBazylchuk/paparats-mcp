@@ -10,4 +10,4 @@
 
 Past the first step, links only through a name that several classes define (AMBIGUOUS) are listed apart under "Further, only through a name defined in several places", not followed. At the first step they stay as `[maybe]`.
 
-On a private Ruby codebase, the seven dependents a production check found missing at the second step for two targets are all listed again, and two false ones through a shared method name are set aside. Over 300 sampled targets at depth 2, second-step dependents through certain links went up 40% and uncertain ones down 63%; 51 walks hit the 40-dependent limit instead of 72. Links between direct callers did not change (86.4% of found callers are real against grep, was 86.3%). Symbols are extracted again once on the next pass.
+On a private Ruby codebase, the seven dependents a production check found missing at the second step for two targets are all listed again, and two false ones through a shared method name are set aside. Symbols are extracted again once on the next pass.
