@@ -59,7 +59,8 @@ Qdrant is searched once; when the query names a class or function (`InvoiceTotal
 `charge_card`, `Billing::Invoice`), the chunks that define it are added to the candidates.
 Then the order is adjusted:
 
-- chunks defining a named identifier ×1.1, files named after it ×1.05;
+- chunks defining a named identifier ×1.1 (×1.25 when the query is only that name), files
+  named after it ×1.05;
 - test files ×0.9 unless the query is about tests;
 - files changed more often slightly up (×1 + 0.05 × their commit-count percentile).
 
