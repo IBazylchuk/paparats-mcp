@@ -2,13 +2,41 @@
 
 Four ways to run it:
 
-- [`paparats install`](#paparats-install): the CLI sets up everything, the usual way;
-- [plain `docker compose`](#plain-docker-compose): ready compose files, no CLI;
+- [plain `docker compose`](#plain-docker-compose): two files and one command, the easiest;
+- [`paparats install`](#paparats-install): the CLI, which also mounts local folders and on
+  macOS runs the models natively with Metal;
 - [GitHub Codespaces](#github-codespaces): try it without installing anything locally;
 - [support mode](#support-mode-connect-to-an-existing-server): connect clients to a
   server someone already runs.
 
 You need **Docker with Compose v2** for the first two, and **Node.js 24+** for the CLI.
+
+## Plain `docker compose`
+
+The easiest way: no Node, no CLI. [`examples/docker-compose/`](../examples/docker-compose/)
+holds the files `paparats install` would generate.
+
+```bash
+mkdir paparats && cd paparats
+base=https://raw.githubusercontent.com/IBazylchuk/paparats-mcp/main/examples/docker-compose
+curl -fsSLO $base/docker-compose.yml        # local models
+curl -fsSLO $base/projects.yml
+curl -fsSL  $base/.env.example -o .env      # optional: keys, ports, INDEX_DOCS
+docker compose up -d
+```
+
+For Voyage AI instead of local models, take `docker-compose.voyage.yml`, set
+`VOYAGE_API_KEY` in `.env` and run `docker compose -f docker-compose.voyage.yml up -d`.
+
+`projects.yml` indexes this repository from GitHub; replace it with yours. It is reloaded
+on save; `docker compose logs -f paparats-indexer` shows the progress. A local
+folder needs an entry with its host path and a name (`path: /abs/path/app`, `name: app`)
+and a matching mount in the `paparats-indexer` service (`- /abs/path/app:/projects/app:ro`);
+the comments in `projects.yml` show both. Then connect a client to
+`http://localhost:9876/mcp` ([clients.md](clients.md)).
+
+On macOS the models run in Docker on the CPU only; the CLI below runs them natively with
+Metal, which is much faster.
 
 ## `paparats install`
 
@@ -105,24 +133,6 @@ old `docker-compose.yml` and `.env` are regenerated. Nothing is reindexed: add t
 projects again with `paparats add` and they show their existing chunks. An old
 `paparats-indexer.yml` is renamed to `projects.yml` on the first run. `--force` skips the
 prompt.
-
-## Plain `docker compose`
-
-[`examples/docker-compose/`](../examples/docker-compose/) holds the files
-`paparats install` would generate, for a server or for anyone who prefers no CLI:
-
-```bash
-cp -r examples/docker-compose ~/paparats && cd ~/paparats
-cp .env.example .env              # optional: keys, ports, INDEX_DOCS
-# edit projects.yml: the repositories to index
-docker compose up -d                                  # local models
-docker compose -f docker-compose.voyage.yml up -d     # or Voyage (set VOYAGE_API_KEY in .env)
-```
-
-`projects.yml` there indexes this repository from GitHub; replace it with yours. A local
-folder needs an entry with its host path and a name (`path: /abs/path/app`, `name: app`)
-and a matching mount in the `paparats-indexer` service (`- /abs/path/app:/projects/app:ro`);
-the comments in `projects.yml` show both. Then connect a client to `http://localhost:9876/mcp` ([clients.md](clients.md)).
 
 ## GitHub Codespaces
 

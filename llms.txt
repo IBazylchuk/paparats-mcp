@@ -25,7 +25,7 @@
 
 ## Facts
 
-- Install: `npm install -g @paparats/cli && paparats install`, then `paparats add <path-or-github-repo>`; needs Node.js 24+ and Docker with Compose v2
+- Install: download examples/docker-compose/docker-compose.yml and projects.yml, then `docker compose up -d` (needs only Docker with Compose v2); or the CLI: `npm install -g @paparats/cli && paparats install`, then `paparats add <path-or-github-repo>` (needs Node.js 24+)
 - Package: @paparats/cli (npm); MCP Registry id io.github.IBazylchuk/paparats-mcp; license MIT
 - Endpoints (Streamable HTTP, default port 9876): /mcp (coding), /support/mcp (support), /knowledge/mcp (docs-only, opt-in, bearer auth)
 - Embeddings: bge-code-v1 for code (1536d), Qwen3-Embedding-0.6B for docs, glossary and architectural memory (1024d), served locally by llama.cpp llama-server + llama-swap; OpenAI and Voyage are opt-in
