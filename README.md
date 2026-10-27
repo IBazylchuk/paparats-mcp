@@ -19,13 +19,44 @@ it, with file and line, instead of grepping and reading whole files. Before chan
 it asks what depends on it and gets the callers up to three steps out and the tests that
 reach them.
 
-<a href="docs/module-map.png"><img src="docs/module-map.png" alt="Paparats code map: the server package of this repository folder by folder, one file selected with what it calls and what calls it" width="100%"></a>
+<img src="docs/with-and-without.gif" alt="Claude Code answering the same question about this repository side by side: without Paparats it finishes in 1:46, with Paparats in 1:14" width="100%">
 
-<sub>The code map at <code>/ui/map</code>: this repository folder by folder, with arrows for who calls whom.</sub>
+<sub>Claude Code, the same question about this repository, without Paparats (left) and with
+it (right), at 5× speed. Over three runs each: 99 s against 74 s and about a fifth fewer
+tokens. This repository is small, about 300 files. On large legacy codebases spread over
+many repositories, where I use Paparats every day, the difference is much bigger.</sub>
 
 ## Quick start
 
-You need **Docker** with Compose v2 and **Node.js 24+**.
+You need **Docker** with Compose v2. Two files and one command:
+
+```bash
+mkdir paparats && cd paparats
+curl -fsSLO https://raw.githubusercontent.com/IBazylchuk/paparats-mcp/main/examples/docker-compose/docker-compose.yml
+curl -fsSLO https://raw.githubusercontent.com/IBazylchuk/paparats-mcp/main/examples/docker-compose/projects.yml
+docker compose up -d
+claude mcp add --scope user --transport http paparats http://localhost:9876/mcp
+```
+
+`projects.yml` indexes this repository, so there is something to ask about right away
+(`docker compose logs -f paparats-indexer` shows the progress). Put your own GitHub
+repositories there; the file is reloaded on save, and private ones need `GITHUB_TOKEN` in a
+`.env` next to it. Any other MCP client takes the same URL, `http://localhost:9876/mcp`
+([setup for each](docs/clients.md)).
+
+Then ask your agent:
+
+> Search the codebase for where we handle failed payments, show me what calls it, and
+> what would be affected if I changed it.
+
+**Without local models:** download `docker-compose.voyage.yml` instead, put
+`VOYAGE_API_KEY=...` into `.env` and run `docker compose -f docker-compose.voyage.yml up -d`.
+Code is then sent to Voyage AI to be embedded, and the 2.3 GB of models are not needed.
+
+### With the CLI
+
+Easier for folders on your machine (it mounts them for you) and on macOS, where the models
+run natively with Metal; in Docker on a Mac they only get the CPU. Needs **Node.js 24+**.
 
 ```bash
 npm install -g @paparats/cli
@@ -36,21 +67,9 @@ paparats add ~/code/my-app  # or `.`, or a GitHub repo: paparats add acme/widget
 paparats list               # wait until the project shows as indexed
 ```
 
-Then ask your agent:
-
-> Search the codebase for where we handle failed payments, show me what calls it, and
-> what would be affected if I changed it.
-
-Other ways in:
-
-- **No local models:** `paparats install --embeddings voyage --embedding-api-key pa-...`
-  (or `openai`) skips the 2.3 GB of models; code is then sent to that provider to be
-  embedded.
-- **No CLI:** [`examples/docker-compose/`](examples/docker-compose/) has ready compose
-  files. Edit `projects.yml`, run `docker compose up -d`.
-- **Nothing local:**
-  [![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp)
-  runs the whole stack in your own Codespace, on this repository.
+**Nothing local:**
+[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/IBazylchuk/paparats-mcp)
+runs the whole stack in your own Codespace, on this repository.
 
 All install options, hardware and upgrading: [docs/install.md](docs/install.md).
 
@@ -73,6 +92,10 @@ All install options, hardware and upgrading: [docs/install.md](docs/install.md).
 - **Documentation search and a glossary**: your markdown, searched by meaning and keywords
   (opt-in), and a shared list of team terms. [More](docs/documentation-search.md).
 
+<a href="docs/module-map.png"><img src="docs/module-map.png" alt="Paparats code map: the server package of this repository folder by folder, one file selected with what it calls and what calls it" width="100%"></a>
+
+<sub>The code map at <code>/ui/map</code>: this repository folder by folder, with arrows for who calls whom.</sub>
+
 Tools come on three endpoints: **coding** (`/mcp`) for the agent you write code with,
 **support** (`/support/mcp`), read-only, for support people and bots, and **knowledge**
 (`/knowledge/mcp`), documentation only, behind a token, for a service outside your
@@ -89,8 +112,8 @@ search.
 
 ### How do I add semantic code search to Claude Code?
 
-Run the [quick start](#quick-start): `paparats install` connects Claude Code (and Cursor)
-by itself. By hand it is one command:
+Start the stack from the [quick start](#quick-start) and add it to Claude Code with one
+command (`paparats install` does this step for you):
 
 ```bash
 claude mcp add --scope user --transport http paparats http://localhost:9876/mcp
