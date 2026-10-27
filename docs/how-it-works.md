@@ -126,7 +126,10 @@ as `add`, `get`, `create`, used from more than 8 files, counting the uses the gr
 nowhere) are set apart unless their file
 also uses something specific from the target's file. When no indexed test reaches the
 change (Ruby projects leave `spec/` and `test/` out of the index by default), it lists
-where the tests would be by convention (`spec/models/invoice_spec.rb`, `src/queue.test.ts`).
+the project's test files named after the changed file and its direct callers: each pass
+records the project's test files by name (`*_spec.rb`, `*.test.ts`, `test_*.py`, ...),
+indexed or not, and of several namesakes the one sharing most folders with the file is
+shown. Without a project directory to read, it says where they would be by convention.
 
 ## The module map
 

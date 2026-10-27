@@ -86,6 +86,7 @@ function createMockMetadataStore(): MetadataStore {
     getGroupDegreeSnapshot: vi.fn().mockReturnValue({ hubChunkIds: new Set() }),
     getNameUsage: vi.fn().mockReturnValue({ callerFiles: 0, filesUsing: new Map() }),
     getEdgesFromFile: vi.fn().mockReturnValue([]),
+    getTestFiles: vi.fn().mockReturnValue(null),
     edgesVersion: vi.fn().mockReturnValue('0:0'),
     edgeProjects: vi.fn().mockReturnValue([]),
     iterateProjectEdges: vi.fn().mockReturnValue([]),
@@ -1455,6 +1456,30 @@ describe('McpHandler', () => {
         expect(text).toContain('No indexed test reaches it.');
         expect(text).toContain('- `src/auth.test.ts`');
         expect(text).toContain('- `src/login.spec.ts`');
+      });
+    });
+
+    it("names the project's test files named after the change when they are recorded", async () => {
+      const { metadataStore, indexer } = mocks();
+      const edges = [edge(CALLER, SEED, 'authenticate')];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      vi.mocked(metadataStore.getTestFiles).mockReturnValue([
+        'test/unit/src/auth.test.ts',
+        'test/unit/other/auth.test.ts',
+        'test/unit/src/session.test.ts',
+      ]);
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('These test files of the project are named after it');
+        expect(text).toContain('- `test/unit/src/auth.test.ts`');
+        expect(text).not.toContain('other/auth.test.ts');
+        expect(text).not.toContain('src/auth.spec.ts');
+
+        vi.mocked(metadataStore.getTestFiles).mockReturnValue([]);
+        const none = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(none.text).toContain('No test file of the project is named after it');
       });
     });
 

@@ -294,6 +294,17 @@ export class MetadataStore {
     // Per file, the names its code uses that may be common (single lowercase
     // words): how common a name is counts every file using it, also where the
     // graph links the use nowhere (`Map#get`, `ActiveRecord`'s `connection`).
+    // Per project, its test files by path, also those the index leaves out
+    // (Ruby specs): `change_impact` names the ones named after a change.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS test_files (
+        grp TEXT NOT NULL,
+        project TEXT NOT NULL,
+        files TEXT NOT NULL,
+        PRIMARY KEY (grp, project)
+      );
+    `);
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS file_names (
         grp TEXT NOT NULL,
@@ -453,6 +464,7 @@ export class MetadataStore {
       this.deleteGraphChangesStmt.run(group, project, Number.MAX_SAFE_INTEGER);
       this.deleteProjectGitCacheStmt.run(group, project);
       this.db.prepare('DELETE FROM file_names WHERE grp = ? AND project = ?').run(group, project);
+      this.db.prepare('DELETE FROM test_files WHERE grp = ? AND project = ?').run(group, project);
     });
     tx();
     // The in-degree cache would otherwise keep ranking the deleted chunks.
@@ -624,6 +636,21 @@ export class MetadataStore {
     tx();
     this.invalidateDegreeCache(group);
     this.bumpEdgeVersion(group, project);
+  }
+
+  /** Record a project's test files (see `test_files`), replacing those recorded before. */
+  setTestFiles(group: string, project: string, files: string[]): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO test_files (grp, project, files) VALUES (?, ?, ?)')
+      .run(group, project, JSON.stringify(files));
+  }
+
+  /** A project's test files; null when none were recorded (its directory was never read). */
+  getTestFiles(group: string, project: string): string[] | null {
+    const row = this.db
+      .prepare('SELECT files FROM test_files WHERE grp = ? AND project = ?')
+      .get(group, project) as { files: string } | undefined;
+    return row ? (JSON.parse(row.files) as string[]) : null;
   }
 
   /** Record the names a file's code uses that may be common (see `file_names`). */
