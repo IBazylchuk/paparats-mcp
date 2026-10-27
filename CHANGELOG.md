@@ -4,7 +4,47 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
-## [2.15.3] - 2026-10-26
+## [2.15.4] - 2026-10-27
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 27d62ec: README: the with-and-without GIF plays from the start; the previous file had lost its first 14 seconds and stood still on a middle frame.
+- 739c204: README: the GIF's numbers in plain text (25% faster, 23% fewer new tokens), and the comparison now covers Graphify, codegraph, GitNexus, codebase-memory-mcp, claude-context, Serena and Sourcegraph.
+- 44cd5db: README: the quick start leads with plain `docker compose`, and a GIF shows Claude Code answering the same question with and without Paparats.
+- 08f8317: `search_code` no longer tells the agent to fall back to grep for ordinary scores. With the default code model the top result's similarity rarely reaches 60% even when it is right, so over five query sets (218 queries) the old bands called 0–5% of answers high-confidence and 14–38% low-confidence, though the right file was in the top five for 50–96% of the "low" ones. Above 30% the score does not tell whether the first result is right (the right file was in the top five for 84–96% of queries per set and first for 59–84%, and no split of that range separated right from wrong on real agent queries), so there is one note now: below 30% the index may have nothing close. Every bench query has an answer, so that floor is not measured; it sits under the scores of answered queries (2 of 218 fall below). The instructions, the skill and the CLI's `CLAUDE.md` block say the same and ask to read the top few results.
+- 32d4b74: `search_code` puts the definition first when the query is only a name (`charge_card`, `Billing::Invoice`). A short chunk that imports, re-exports or explains the name could score well above the code that defines it; for such a query the defining chunk is now raised ×1.25 instead of ×1.1. On 50 bare-name queries built from a private Ruby codebase (a name defined in one file and used in at least two others), the defining file came first for 80% of them instead of 62%; on this repository's query set the right file came first for 79% of all queries instead of 75%. The other query sets have no bare-name queries and did not change.
+- 61a5e4e: `change_impact` lists the barrel files that re-export what you change. In TypeScript and
+  JavaScript, `export { x } from './x.js'` is now a `reexports` edge, so changing `x` shows
+  the `index.ts` or `lib.ts` that publishes it (the package's public API) under "re-exports".
+  The module map ignores these edges, so a barrel file does not pull every module it
+  re-exports together. Existing indexes re-extract symbols once on the next pass.
+- 3c5b9ba: `change_impact` no longer loses real dependents past the first step. Since 2.15.1 a caller passes a change on only through the method that makes the call, which cut three common shapes of code:
+
+  - **A private helper.** When a private method calls the change and only the class's own `call` and `preview` call that helper, nothing outside was followed. Each use is now also recorded for the methods of the same chunk that reach it through the chunk's own calls (`reach_symbols` on the edge), including Ruby calls without arguments written as a bare name (`log = receipt`). Labels still name only the method that makes the call.
+  - **A call on a new object.** `Rebuild.new(ids).call` in Ruby and `new Queue().flush()` link to that class's method, like `Rebuild.call` does. A bare `new(ids).call` inside a Ruby class is a call on that class. Service objects run this way had no link at all, since `call` is defined in too many classes to link by name.
+  - **A class used as a value.** A Ruby class passed as an argument, kept in a hash, an array or a variable, or `Foo.new` kept for later, is a `references` edge, and `change_impact` follows it whatever method of the class changed. Namespaces, `include`, `raise` and calls made on the class at once (`Invoice.overdue`) stay ordinary.
+
+  Past the first step, links only through a name that several classes define (AMBIGUOUS) are listed apart under "Further, only through a name defined in several places", not followed. At the first step they stay as `[maybe]`.
+
+  On a private Ruby codebase, the seven dependents a production check found missing at the second step for two targets are all listed again, and two false ones through a shared method name are set aside. Symbols are extracted again once on the next pass.
+
+- b20dd2e: The call graph reads Ruby code kept as a heredoc string (`SCRIPT = <<~'RUBY_SOURCE'` in a data migration, any tag containing `RUBY` or `RB`): grep saw the calls there, the parser saw text. Its calls join the chunks holding those lines; methods the heredoc defines stay inside it, and other heredocs (SQL, Markdown) are still text. A bare call next to a top-level definition of the name in the same file (a script's helper) now links to that one instead of to every same-named definition. On a private Ruby codebase, against grep, the callers found for class methods went from 23.6% to 26.6%, with 95.7% of found callers real (95.3% before); for one small class the five data migrations that call it are found now. Symbols are extracted again once on the next pass.
+
+  With this and the constant resolution above, links were checked against the code on the same private codebase: random samples from 300 targets at depth 2, each link read in full (the receiver's class, the constant's lookup) by a reviewer who did not know which group it came from. First-step links that were removed: 49 of 50 false. Links added: 25 of 30 real. Links kept: 24 of 30 real. At the second step, links set aside as "only through a name defined in several places": 1 of 40 real; links followed: 38 of 40 real. First-step dependents went from 2283 to 1782.
+
+- b2870e9: The call graph links fewer things by name alone, so `change_impact`, `find_usages` and `module_map` see fewer false dependencies:
+
+  - **Ruby constants resolve as Ruby looks them up.** `Base` inside `module Billing` is `Billing::Base` when that exists, otherwise the top-level `Base`. A constant defined nowhere in the project (a gem's `ActionController::Base`, `GraphQL::Dataloader::Source`) links to nothing, instead of to every project class with the same last name. The namespace part of a path (`Billing` in `Billing::Invoice`) is not a use; the class a value constant is read from (`Scanner` in `Scanner::SCOPE_KEY`) is.
+  - **Ruby class methods.** A call on an object (`record.batch`) no longer links to a `def self.batch`.
+  - **Reopened library classes.** `class Time` or `module ActiveSupport` in a project file adds methods to the library class and no longer counts as defining it, which had made such a file look used by every file.
+  - **File-local TypeScript and JavaScript.** A function or class that is not exported is reached only from its own file, and there it wins over same-named exports elsewhere.
+  - **Tests that are not indexed.** When no indexed test reaches the change, `change_impact` says so and lists where the tests would be by convention (`spec/models/invoice_spec.rb`, `src/queue.test.ts`): Ruby projects leave `spec/` and `test/` out of the index by default.
+
+  On a private Ruby codebase, per 300 targets at depth 2, first-step dependents went from 2283 to 1682 and links set aside from 6589 to 1330. Against grep, class-method callers found are real for 95.3% instead of 86.4%, with the same recall (23.6%). In the module map no file shows as shared by the whole project any more (a reopened library class did), and 32.9% of modules have their main files in one folder (32.7% before). In a TypeScript repository the map's edges halved and that share went from 77.4% to 82.4%. Symbols are extracted again once on the next pass.
+
+## [2.15.3] - 2026-10-27
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 

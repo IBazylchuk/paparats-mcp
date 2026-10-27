@@ -1,5 +1,15 @@
 # @paparats/cli
 
+## 2.15.4
+
+### Patch Changes
+
+- 27d62ec: README: the with-and-without GIF plays from the start; the previous file had lost its first 14 seconds and stood still on a middle frame.
+- 739c204: README: the GIF's numbers in plain text (25% faster, 23% fewer new tokens), and the comparison now covers Graphify, codegraph, GitNexus, codebase-memory-mcp, claude-context, Serena and Sourcegraph.
+- 44cd5db: README: the quick start leads with plain `docker compose`, and a GIF shows Claude Code answering the same question with and without Paparats.
+- 08f8317: `search_code` no longer tells the agent to fall back to grep for ordinary scores. With the default code model the top result's similarity rarely reaches 60% even when it is right, so over five query sets (218 queries) the old bands called 0–5% of answers high-confidence and 14–38% low-confidence, though the right file was in the top five for 50–96% of the "low" ones. Above 30% the score does not tell whether the first result is right (the right file was in the top five for 84–96% of queries per set and first for 59–84%, and no split of that range separated right from wrong on real agent queries), so there is one note now: below 30% the index may have nothing close. Every bench query has an answer, so that floor is not measured; it sits under the scores of answered queries (2 of 218 fall below). The instructions, the skill and the CLI's `CLAUDE.md` block say the same and ask to read the top few results.
+  - @paparats/shared@2.15.4
+
 ## 2.15.3
 
 ### Patch Changes
