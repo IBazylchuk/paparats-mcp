@@ -699,6 +699,8 @@ export class ModuleMapService {
     const prefix = `${group}//${project}//`;
     function* visibleEdges(): Generator<SymbolEdge> {
       for (const e of store.iterateProjectEdges(group, project)) {
+        // A barrel file's re-exports would tie every module it publishes together.
+        if (e.relation_type === 'reexports') continue;
         if (!e.to_chunk_id.startsWith(prefix)) continue;
         if (!visible(e.from_chunk_id) || !visible(e.to_chunk_id)) continue;
         yield e;

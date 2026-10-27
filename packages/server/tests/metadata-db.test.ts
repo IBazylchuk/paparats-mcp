@@ -424,7 +424,7 @@ describe('MetadataStore', () => {
     expect(edge?.confidence).toBe('INFERRED');
   });
 
-  it('round-trips the calling methods of an edge; none means the whole chunk', async () => {
+  it('round-trips the calling and reaching methods of an edge; none means the whole chunk', async () => {
     await store.upsertSymbolEdges([
       {
         from_chunk_id: 'g//p//caller.rb//1-9//h1',
@@ -432,6 +432,7 @@ describe('MetadataStore', () => {
         relation_type: 'calls',
         symbol_name: 'post',
         from_symbols: ['first', 'valid?'],
+        reach_symbols: ['call'],
       },
       {
         from_chunk_id: 'g//p//caller.rb//1-9//h1',
@@ -445,6 +446,10 @@ describe('MetadataStore', () => {
       store.getEdgesTo('g//p//def.rb//1-5//h2').map((e) => [e.symbol_name, e.from_symbols])
     );
     expect(bySymbol).toEqual({ post: ['first', 'valid?'], log: [] });
+    const reach = Object.fromEntries(
+      store.getEdgesTo('g//p//def.rb//1-5//h2').map((e) => [e.symbol_name, e.reach_symbols])
+    );
+    expect(reach).toEqual({ post: ['call'], log: undefined });
   });
 
   it('versions edges per project in the file, so another process sees the writes', async () => {
@@ -1083,6 +1088,7 @@ describe('MetadataStore git file cache', () => {
       expect(opened.edgeProjects('g').sort()).toEqual(['billing', 'handbook']);
       // Rows written before the column existed: the whole chunk is the caller.
       expect(opened.getEdgesFrom('g//billing//a.rb//1-5//h1')[0]?.from_symbols).toEqual([]);
+      expect(opened.getEdgesFrom('g//billing//a.rb//1-5//h1')[0]?.reach_symbols).toBeUndefined();
     } finally {
       opened.close();
     }

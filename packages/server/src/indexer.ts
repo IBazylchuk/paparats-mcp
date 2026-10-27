@@ -155,7 +155,14 @@ function symbolSitePayload(result: SymbolExtractionResult | undefined): Record<s
   if (!result?.use_sites) return {};
   const owners: Record<string, string> = {};
   for (const d of result.defined_symbols) if (d.owner) owners[d.name] = d.owner;
-  return { use_sites: result.use_sites, def_owners: owners };
+  const local = result.defined_symbols.filter((d) => d.local).map((d) => d.name);
+  const classMethods = result.defined_symbols.filter((d) => d.classMethod).map((d) => d.name);
+  return {
+    use_sites: result.use_sites,
+    def_owners: owners,
+    ...(local.length > 0 ? { local_defs: local } : {}),
+    ...(classMethods.length > 0 ? { class_methods: classMethods } : {}),
+  };
 }
 
 interface GraphUpdate {
@@ -185,6 +192,8 @@ const SYMBOL_PAYLOAD_FIELDS = [
   'uses_symbols',
   'use_sites',
   'def_owners',
+  'local_defs',
+  'class_methods',
 ] as const;
 
 function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): ChunkSymbols {
@@ -192,6 +201,8 @@ function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): Chun
   const uses = payload['uses_symbols'];
   const sites = payload['use_sites'];
   const owners = payload['def_owners'];
+  const local = payload['local_defs'];
+  const classMethods = payload['class_methods'];
   return {
     chunk_id: chunkId,
     defines_symbols: Array.isArray(defs) ? (defs as string[]) : [],
@@ -200,6 +211,8 @@ function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): Chun
     ...(owners && typeof owners === 'object'
       ? { def_owners: owners as Record<string, string> }
       : {}),
+    ...(Array.isArray(local) ? { local_defs: local as string[] } : {}),
+    ...(Array.isArray(classMethods) ? { class_methods: classMethods as string[] } : {}),
   };
 }
 

@@ -27,6 +27,18 @@ export const DEFINES_IDENTIFIER_BOOST = 1.1;
 export const FILE_NAMED_AFTER_IDENTIFIER_BOOST = 1.05;
 
 /**
+ * A query that is nothing but one identifier (`charge_card`, `Billing::Invoice`)
+ * asks for its definition, yet a short chunk that only imports, re-exports or
+ * explains the name can score well above it. For such a query the defining chunk
+ * gets this instead of {@link DEFINES_IDENTIFIER_BOOST}. On 50 such queries built
+ * from a private Ruby codebase (a name defined in one file and used in at least two
+ * others) the defining file came first for 80% of them instead of 62%; on this
+ * repository's query set for 79% of all queries instead of 75%; the other query
+ * sets, which have no such queries, did not change.
+ */
+export const BARE_IDENTIFIER_DEFINES_BOOST = 1.25;
+
+/**
  * Files that change often are where the code people ask about tends to live.
  * The key grows by up to 5% with the file's commit-count percentile in its
  * project (`file_churn`, written at index time). On the bench it put the right
@@ -39,9 +51,27 @@ const TEST_PATH_RE = /(^|\/)(tests?|__tests__|spec)\/|\.(test|spec)\.[^/]+$|_(te
 const TEST_QUERY_RE = /(^|[^a-z])(tests?|testing|specs?|rspec|vitest|jest)([^a-z]|$)/i;
 const IDENTIFIER_RE = /[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|#)[A-Za-z_][A-Za-z0-9_]*)*/g;
 const QUALIFIER_RE = /::|\.|#/;
+const BARE_QUERY_RE = /^[A-Za-z_][A-Za-z0-9_]*(?:(?:::|\.|#)[A-Za-z_][A-Za-z0-9_]*)*[?!]?$/;
 
 export function isTestPath(file: string): boolean {
   return TEST_PATH_RE.test(file);
+}
+
+/**
+ * Where a file's tests sit by convention, for when tests are not indexed:
+ * `app/models/invoice.rb` → `spec/models/invoice_spec.rb`, `test/models/invoice_test.rb`;
+ * `src/queue.ts` → `src/queue.test.ts`, `src/queue.spec.ts`. Empty for other files.
+ */
+export function conventionalTestPaths(file: string): string[] {
+  if (isTestPath(file)) return [];
+  const ruby = /^(.*)\.rb$/.exec(file);
+  if (ruby) {
+    const rest = ruby[1]!.replace(/^app\//, '');
+    return [`spec/${rest}_spec.rb`, `test/${rest}_test.rb`];
+  }
+  const script = /^(.*)\.(tsx?|jsx?|mjs|cjs)$/.exec(file);
+  if (script) return [`${script[1]}.test.${script[2]}`, `${script[1]}.spec.${script[2]}`];
+  return [];
 }
 
 /** Whether the query asks about tests, in which case test files keep their rank. */
@@ -107,6 +137,8 @@ export interface RankQuery {
   mentionsTests: boolean;
   identifiers: Set<string>;
   identifierNames: Set<string>;
+  /** The whole query is one identifier. */
+  bare: boolean;
 }
 
 export function rankQuery(query: string): RankQuery {
@@ -115,6 +147,7 @@ export function rankQuery(query: string): RankQuery {
     mentionsTests: mentionsTests(query),
     identifiers: new Set(identifiers),
     identifierNames: new Set(identifiers.map(normaliseName)),
+    bare: identifiers.length > 0 && BARE_QUERY_RE.test(query.trim()),
   };
 }
 
@@ -125,7 +158,7 @@ export function rankKey(query: string | RankQuery, result: RankedFields): number
   if (!q.mentionsTests && isTestPath(result.file)) key *= TEST_FILE_DEMOTION;
   if (q.identifiers.size > 0) {
     if (result.defines_symbols?.some((s) => q.identifiers.has(s))) {
-      key *= DEFINES_IDENTIFIER_BOOST;
+      key *= q.bare ? BARE_IDENTIFIER_DEFINES_BOOST : DEFINES_IDENTIFIER_BOOST;
     }
     if (q.identifierNames.has(normaliseName(fileStem(result.file)))) {
       key *= FILE_NAMED_AFTER_IDENTIFIER_BOOST;

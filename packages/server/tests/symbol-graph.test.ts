@@ -41,6 +41,155 @@ describe('isCommonName', () => {
 });
 
 describe('buildSymbolEdges', () => {
+  it('keeps the methods reaching a call apart from those making it, and how it is used', () => {
+    const { edges } = buildSymbolEdges([
+      {
+        chunk_id: 'g//p//log.rb//0-9//a',
+        defines_symbols: ['signature_valid?', 'Receipt'],
+        uses_symbols: [],
+      },
+      {
+        chunk_id: 'g//p//unsub.rb//0-9//b',
+        defines_symbols: ['receipt', 'call'],
+        uses_symbols: ['signature_valid?', 'Receipt'],
+        use_sites: [
+          { name: 'signature_valid?', from: 'receipt' },
+          { name: 'signature_valid?', from: 'call', through: true },
+          { name: 'Receipt', from: 'receipt' },
+          { name: 'Receipt', from: 'call', value: true },
+        ],
+      },
+    ]);
+    const edge = (name: string) => edges.find((e) => e.symbol_name === name);
+    expect(edge('signature_valid?')).toMatchObject({
+      relation_type: 'calls',
+      from_symbols: ['receipt'],
+      reach_symbols: ['call'],
+    });
+    // Held as a value anywhere in the chunk: `change_impact` follows it whatever changed.
+    expect(edge('Receipt')?.relation_type).toBe('references');
+    expect(edge('Receipt')?.reach_symbols).toBeUndefined();
+  });
+
+  it('links a file-private definition only from its own file', () => {
+    const { edges } = buildSymbolEdges([
+      {
+        chunk_id: 'g//p//lint.ts//0-9//a',
+        defines_symbols: ['readText'],
+        uses_symbols: [],
+        local_defs: ['readText'],
+      },
+      { chunk_id: 'g//p//lint.ts//10-19//b', defines_symbols: [], uses_symbols: ['readText'] },
+      { chunk_id: 'g//p//io.ts//0-9//c', defines_symbols: ['readText'], uses_symbols: [] },
+      { chunk_id: 'g//p//app.ts//0-9//d', defines_symbols: [], uses_symbols: ['readText'] },
+    ]);
+    const links = edges.map((e) => [
+      e.from_chunk_id.split('//')[2],
+      e.to_chunk_id.split('//')[2],
+      e.confidence,
+    ]);
+    // Each use has one definition it can reach, so neither link is ambiguous.
+    expect(links.sort()).toEqual([
+      ['app.ts', 'io.ts', 'INFERRED'],
+      ['lint.ts', 'lint.ts', 'EXTRACTED'],
+    ]);
+  });
+
+  it('links a bare call to the top-level definition beside it in the same file', () => {
+    const { edges } = buildSymbolEdges([
+      {
+        chunk_id: 'g//p//scripts/compare.rb//0-9//a',
+        defines_symbols: ['pairs'],
+        uses_symbols: [],
+      },
+      {
+        chunk_id: 'g//p//scripts/compare.rb//10-19//b',
+        defines_symbols: [],
+        uses_symbols: ['pairs'],
+        use_sites: [{ name: 'pairs', from: '' }],
+      },
+      { chunk_id: 'g//p//scripts/other.rb//0-9//c', defines_symbols: ['pairs'], uses_symbols: [] },
+      {
+        chunk_id: 'g//p//lib/ledger.rb//0-9//d',
+        defines_symbols: ['pairs'],
+        uses_symbols: [],
+        def_owners: { pairs: 'Ledger' },
+      },
+      {
+        chunk_id: 'g//p//lib/ledger.rb//10-19//e',
+        defines_symbols: [],
+        uses_symbols: ['pairs'],
+        use_sites: [{ name: 'pairs', from: '', onObject: true }],
+      },
+    ]);
+    const links = edges.map((e) => [
+      e.from_chunk_id.split('//')[2],
+      e.to_chunk_id.split('//')[2],
+      e.confidence,
+    ]);
+    expect(links.filter((l) => l[0] === 'scripts/compare.rb')).toEqual([
+      ['scripts/compare.rb', 'scripts/compare.rb', 'EXTRACTED'],
+    ]);
+    // A call on an object, or beside a method of a class, is not narrowed.
+    expect(links.filter((l) => l[0] === 'lib/ledger.rb')).toHaveLength(3);
+  });
+
+  it('does not link a call on an object to a Ruby class method', () => {
+    const { edges } = buildSymbolEdges([
+      {
+        chunk_id: 'g//p//queue.rb//0-9//a',
+        defines_symbols: ['batch'],
+        uses_symbols: [],
+        class_methods: ['batch'],
+      },
+      {
+        chunk_id: 'g//p//draft.rb//0-9//b',
+        defines_symbols: [],
+        uses_symbols: ['batch'],
+        use_sites: [{ name: 'batch', from: 'resolve', onObject: true }],
+      },
+      {
+        chunk_id: 'g//p//flush.rb//0-9//c',
+        defines_symbols: [],
+        uses_symbols: ['batch'],
+        use_sites: [{ name: 'batch', from: 'perform', on: 'Queue' }],
+      },
+    ]);
+    expect(edges.map((e) => e.from_chunk_id.split('//')[2])).toEqual(['flush.rb']);
+  });
+
+  it('links a Ruby constant to the class its namespace lookup finds, and a gem constant to none', () => {
+    const def = (id: string, owner?: string) => ({
+      chunk_id: `g//p//${id}//0-9//h`,
+      defines_symbols: ['Base'],
+      uses_symbols: [],
+      ...(owner ? { def_owners: { Base: owner } } : {}),
+    });
+    const use = (id: string, site: Record<string, unknown>) => ({
+      chunk_id: `g//p//${id}//0-9//u`,
+      defines_symbols: [],
+      uses_symbols: ['Base'],
+      use_sites: [{ name: 'Base', from: '', constant: true as const, ...site }],
+    });
+    const { edges } = buildSymbolEdges([
+      def('search/base.rb', 'Search'),
+      def('reports/base.rb', 'Reports'),
+      def('base.rb'),
+      use('search/runner.rb', { lexical: true, in: 'Search::Runner' }),
+      use('jobs/sync.rb', { lexical: true, in: 'Jobs::Sync' }),
+      use('reports/view.rb', { on: 'Reports', in: 'Billing' }),
+      use('models/user.rb', { on: 'ActiveRecord' }),
+    ]);
+    const links = edges.map(
+      (e) => `${e.from_chunk_id.split('//')[2]} -> ${e.to_chunk_id.split('//')[2]} ${e.confidence}`
+    );
+    expect(links.sort()).toEqual([
+      'jobs/sync.rb -> base.rb EXTRACTED',
+      'reports/view.rb -> reports/base.rb EXTRACTED',
+      'search/runner.rb -> search/base.rb EXTRACTED',
+    ]);
+  });
+
   it('creates edges from usage to definition', () => {
     const { edges } = buildSymbolEdges([
       { chunk_id: 'g//p//f1.ts//1-5//h1', defines_symbols: ['greet'], uses_symbols: [] },

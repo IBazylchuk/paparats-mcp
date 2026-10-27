@@ -246,6 +246,21 @@ describe('ModuleMapService', () => {
     expect(reads).toEqual(['p', 'q', 'q']);
     expect(second).not.toBe(first);
   });
+  it('leaves re-exports out, so a barrel file does not tie the modules together', () => {
+    const edges = [
+      e('a.ts', 'b.ts', 'toB'),
+      { ...e('lib.ts', 'a.ts', 'toA'), relation_type: 'reexports' },
+      { ...e('lib.ts', 'b.ts', 'toB'), relation_type: 'reexports' },
+    ];
+    const service = new ModuleMapService({
+      edgesVersion: () => '1',
+      edgeProjects: () => ['p'],
+      iterateProjectEdges: () => edges as never,
+    });
+    const map = JSON.stringify(service.get('g', undefined, () => true));
+    expect(map).toContain('a.ts');
+    expect(map).not.toContain('lib.ts');
+  });
 });
 
 describe('formatModuleMap', () => {

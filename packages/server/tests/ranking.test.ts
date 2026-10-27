@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
+  BARE_IDENTIFIER_DEFINES_BOOST,
   CHURN_WEIGHT,
   DEFINES_IDENTIFIER_BOOST,
   FILE_NAMED_AFTER_IDENTIFIER_BOOST,
   TEST_FILE_DEMOTION,
   definitionCandidatesFilter,
   identifierTokens,
+  conventionalTestPaths,
   isTestPath,
   mentionsTests,
   rankKey,
@@ -128,6 +130,22 @@ describe('rankKey for identifier queries', () => {
     expect(rankKey(plain, r)).toBe(0.5);
   });
 
+  it('puts the definition first when the query is only the name', () => {
+    const reexport = { score: 0.5, file: 'src/config.ts', defines_symbols: [] };
+    const definition = { score: 0.42, file: 'src/indexer.ts', defines_symbols: ['charge_card'] };
+    for (const bare of ['charge_card', '  charge_card ', 'Billing::charge_card', 'valid_card?']) {
+      expect(rankQuery(bare).bare).toBe(true);
+    }
+    expect(rankKey('charge_card', definition)).toBeCloseTo(0.42 * BARE_IDENTIFIER_DEFINES_BOOST);
+    expect(rankKey('charge_card', definition)).toBeGreaterThan(rankKey('charge_card', reexport));
+    // With other words around it, the usual boost.
+    expect(rankQuery('where is charge_card called').bare).toBe(false);
+    expect(rankKey('where is charge_card called', definition)).toBeCloseTo(
+      0.42 * DEFINES_IDENTIFIER_BOOST
+    );
+    expect(rankQuery('invoice').bare).toBe(false);
+  });
+
   it('accepts the raw query string too', () => {
     const r = { score: 0.5, file: 'a.rb', defines_symbols: ['InvoiceTotal'] };
     expect(rankKey('InvoiceTotal', r)).toBe(rankKey(rankQuery('InvoiceTotal'), r));
@@ -149,5 +167,24 @@ describe('rankKey with file churn', () => {
     expect(rankKey(q, { score: 0.6, file: 'a.rb', file_churn: 0 })).toBeGreaterThan(
       rankKey(q, { score: 0.55, file: 'b.rb', file_churn: 1 })
     );
+  });
+});
+
+describe('conventionalTestPaths', () => {
+  it('names where a file’s tests sit by convention', () => {
+    expect(conventionalTestPaths('app/models/invoice.rb')).toEqual([
+      'spec/models/invoice_spec.rb',
+      'test/models/invoice_test.rb',
+    ]);
+    expect(conventionalTestPaths('lib/billing/ledger.rb')).toEqual([
+      'spec/lib/billing/ledger_spec.rb',
+      'test/lib/billing/ledger_test.rb',
+    ]);
+    expect(conventionalTestPaths('src/queue.ts')).toEqual([
+      'src/queue.test.ts',
+      'src/queue.spec.ts',
+    ]);
+    expect(conventionalTestPaths('spec/models/invoice_spec.rb')).toEqual([]);
+    expect(conventionalTestPaths('README.md')).toEqual([]);
   });
 });

@@ -3,43 +3,56 @@
 Short answers to the usual questions are in the [README FAQ](../README.md#faq).
 
 Facts about other projects come from their own READMEs and documentation as of
-2026-10-24; "—" means the project does not document it. Corrections are welcome.
+2026-10-27; "—" means the project does not document it. Corrections are welcome.
 
-- **[claude-context](https://github.com/zilliztech/claude-context)**: an MCP server for
-  hybrid (BM25 + vector) code search, with OpenAI and Zilliz Cloud in its quick start
-  (Ollama and a self-hosted Milvus are options). It syncs changes every 5 minutes, and each
-  search targets one codebase path. Paparats runs locally by default, searches many
-  repositories in one query, and adds a call graph, git history per chunk and a shared
-  server with separate coding, support and docs endpoints. It has no BM25 on code.
-- **[Serena](https://github.com/oraios/serena)**: drives language servers (or a JetBrains
-  IDE) for precise symbol lookup, references and editing in the project you work on.
-  Paparats finds code by meaning across many repositories and has no editing tools. They
-  work well together.
+Most tools here build a code graph from the syntax tree and let the agent walk it. Paparats
+also has a call graph, but its centre is search by meaning with local embedding models,
+over many repositories at once, on one server that a whole team and its agents share.
+
+- **[Graphify](https://github.com/Graphify-Labs/graphify)**: a `/graphify` skill (and an
+  optional MCP server) that turns a project, with its docs, SQL schemas and PDFs, into a
+  knowledge graph you query instead of grepping. No embeddings: code is parsed locally;
+  docs and media go to your assistant's model for a semantic pass. Rebuilt by git hooks or
+  a watcher. Cross-repo and a shared team layer are in Graphify Cloud. Paparats searches
+  code by meaning across many repositories on a self-hosted shared server.
+- **[codegraph](https://github.com/colbymchenry/codegraph)**: a native binary that keeps a
+  local SQLite graph of symbols and calls with full-text search, kept fresh by a file
+  watcher. Light to install and quick to index; one index per project, no shared server.
+  Its main tool returns the relevant code and the call paths in one call. Paparats adds
+  search by meaning, many repositories in one query, git history per result and one
+  server for a team.
+- **[GitNexus](https://github.com/abhigyanpatwari/GitNexus)**: indexes a codebase into a
+  graph of symbols, calls and execution flows in an embedded graph database, with impact,
+  path tracing and a semantic rename. Embeddings are optional. One HTTP server can serve
+  several agents on a machine; a unified graph across repositories is in its Enterprise
+  offering. License: PolyForm Noncommercial, so commercial use needs a separate license.
 - **[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)**: one native
-  binary with a local code knowledge graph, structural, BM25 and semantic search, a
-  type-aware call graph, links between services and many more languages, with a lighter
-  setup. Paparats is a Docker stack around a shared server: one index for many people and
-  agents, a read-only support endpoint, a docs-only endpoint, git history and tickets per
-  chunk, and usage analytics.
-- **[claude-context-local](https://github.com/FarhanAliRaza/claude-context-local)**: local
-  semantic code search with EmbeddingGemma and FAISS (beta; last commit Nov 2025).
+  binary with a local knowledge graph of code, docs and infrastructure, a type-aware call
+  graph, bundled code embeddings, links across repositories in one store and 162
+  grammars. Paparats is a Docker stack around a shared server: one index for many people
+  and agents, a read-only support endpoint, a docs-only endpoint, git history and tickets
+  per chunk, and usage analytics.
+- **[claude-context](https://github.com/zilliztech/claude-context)**: hybrid (BM25 +
+  vector) code search with OpenAI and Zilliz Cloud in its quick start; each search
+  targets one codebase path. The closest to Paparats in approach; Paparats runs locally by
+  default, searches many repositories in one query and adds the call graph.
+- **[Serena](https://github.com/oraios/serena)**: drives language servers for precise
+  symbol lookup, references and editing in the project you work on. Paparats finds code by
+  meaning across many repositories and has no editing tools. They work well together.
 - **[Sourcegraph MCP](https://sourcegraph.com/docs/api/mcp)**: code search, navigation and
   history from a Sourcegraph Enterprise instance.
-- **[Greptile](https://www.greptile.com/)** is an AI code-review service; its MCP server
-  exposes review comments and context rather than a search index, so it is not in the
-  table.
 
-|                                   | Paparats                                     | claude-context                                  | Serena                                         | codebase-memory-mcp                              | claude-context-local          | Sourcegraph MCP                      |
-| :-------------------------------- | :------------------------------------------- | :---------------------------------------------- | :--------------------------------------------- | :----------------------------------------------- | :---------------------------- | :----------------------------------- |
-| Approach                          | Vector search over syntax-based chunks + call graph | Hybrid BM25 + vector search over AST chunks | Language-server symbol tools                | Code knowledge graph + structural/BM25/semantic search | Vector search (FAISS)    | Keyword, natural-language and symbol search |
-| Runs locally by default           | ✅ Docker stack                              | ❌ OpenAI + Zilliz Cloud (local setup possible) | ✅                                             | ✅ native binary                                 | ✅                            | ❌ needs a Sourcegraph Enterprise instance |
-| Many repos in one query           | ✅ groups                                    | ❌ one codebase path per search                 | ⚠️ active project; can query other projects    | ⚠️ per project; cross-repo service links         | —                             | ✅                                   |
-| Callers / references              | ✅ method-level edges from the syntax tree   | —                                               | ✅ via language server (most precise)          | ✅ call graph with type resolution               | —                             | ✅                                   |
-| Keyword (BM25) search on code     | ❌ dense vectors + identifier-aware ranking  | ✅                                              | regex search tool                              | ✅                                               | —                             | ✅ keyword search                    |
-| Git history per result            | ✅ commits + ticket refs per chunk           | —                                               | —                                              | ⚠️ git diff → affected symbols                   | —                             | ✅ commit and diff search            |
-| Keeps the index fresh             | ⚠️ change check every 10 min + scheduled full pass | ✅ Merkle-tree sync every 5 min          | n/a (reads live code)                          | ✅ watches the project of an open session        | ⚠️ incremental on re-index    | ✅ server-side                       |
-| Code editing / refactoring tools  | ❌                                           | ❌                                              | ✅                                             | ❌                                               | ❌                            | ❌                                   |
-| One shared server for a team      | ✅ coding, support and docs-only endpoints   | ❌ per-user stdio                               | —                                              | ⚠️ per machine; graph artifacts can be shared    | ❌                            | ✅                                   |
-| Languages                         | 11 (tree-sitter)                             | 14 listed                                       | 40+ (language servers)                         | 162 (per its README)                             | 9+                            | all (text search)                    |
-| Setup                             | Docker + npm CLI, ~2.3 GB of local models    | `npx` + API keys                                | `uv tool install`                              | install script                                   | install script (Python, uv)   | Enterprise admin setup               |
-| License / cost                    | MIT, free                                    | MIT; embedding and vector DB usage unless self-hosted | GPL-3.0-or-later, free; paid JetBrains plugin | MIT, free                                | GPL-3.0 (per README), free    | commercial                           |
+|                                  | Paparats                                     | Graphify                                    | codegraph                          | GitNexus                                   | codebase-memory-mcp                        | claude-context                            | Serena                                   |
+| :------------------------------- | :------------------------------------------- | :------------------------------------------ | :--------------------------------- | :----------------------------------------- | :----------------------------------------- | :---------------------------------------- | :--------------------------------------- |
+| Approach                         | Search by meaning over syntax-based chunks + call graph | Knowledge graph of code, docs and data | Code graph + full-text search    | Code graph in an embedded graph database   | Knowledge graph + structural, keyword and semantic search | Hybrid BM25 + vector search      | Language-server symbol tools             |
+| Search by meaning (embeddings)   | ✅ local models                              | ❌ graph queries; docs via your LLM          | ❌ full-text (FTS5)                | ⚠️ optional                                | ✅ bundled model                           | ✅                                        | ❌                                       |
+| Runs locally by default          | ✅ Docker stack                              | ✅                                          | ✅                                 | ✅                                         | ✅                                         | ❌ OpenAI + Zilliz Cloud (local possible) | ✅                                       |
+| Many repos in one query          | ✅ groups                                    | ⚠️ in Graphify Cloud                        | ⚠️ one project per call            | ⚠️ in Enterprise                           | ✅ cross-repo links in one store           | ❌ one codebase path per search           | ⚠️ active project                        |
+| Callers / change impact          | ✅ method-level edges, `change_impact`       | ✅                                          | ✅                                 | ✅                                         | ✅ type-aware                              | —                                         | ✅ via language server                   |
+| Git history per result           | ✅ commits + ticket refs per chunk           | —                                           | —                                  | ⚠️ git diff → affected symbols             | ⚠️ git diff → affected symbols             | —                                         | —                                        |
+| Keeps the index fresh            | ⚠️ change check every 10 min + full pass     | ✅ git hooks or watcher                     | ✅ file watcher                    | ✅ watch mode                              | ✅ watcher                                 | ✅ sync every 5 min                       | n/a (reads live code)                    |
+| One shared server for a team     | ✅ coding, support and docs-only endpoints   | ⚠️ Graphify Cloud                           | ❌                                 | ⚠️ one HTTP server per machine             | ⚠️ shared graph file                       | ❌                                        | —                                        |
+| Code editing tools               | ❌                                           | —                                           | ❌                                 | ⚠️ rename                                  | ❌                                         | ❌                                        | ✅                                       |
+| Languages                        | 11 (tree-sitter)                             | ~40, plus docs, SQL, PDFs                   | 20+                                | 18                                         | 162 grammars                               | 14                                        | 40+ (language servers)                   |
+| Setup                            | Docker + npm CLI, ~2.3 GB of local models    | `uv tool install graphifyy`                 | install script or npm              | `npx gitnexus analyze`                     | install script                             | `npx` + API keys                          | `uv tool install`                        |
+| License                          | MIT                                          | Apache-2.0                                  | MIT                                | PolyForm Noncommercial                     | MIT                                        | MIT                                       | GPL-3.0-or-later                         |

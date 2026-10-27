@@ -833,8 +833,8 @@ describe('McpHandler', () => {
     const searcher = createMockSearcher();
     vi.mocked(searcher.search).mockResolvedValue({
       results: [
-        makeSearchResult({ file: 'tests/symbol-graph.test.ts', score: 0.43, hash: 'ht' }),
-        makeSearchResult({ file: 'src/symbol-graph.ts', score: 0.39, hash: 'hc' }),
+        makeSearchResult({ file: 'tests/symbol-graph.test.ts', score: 0.32, hash: 'ht' }),
+        makeSearchResult({ file: 'src/symbol-graph.ts', score: 0.295, hash: 'hc' }),
       ],
       total: 2,
       metrics: {
@@ -863,10 +863,9 @@ describe('McpHandler', () => {
         text.indexOf('tests/symbol-graph.test.ts')
       );
       // The percentage is the similarity, not the demoted rank key.
-      expect(text).toContain('(43.0%');
-      expect(text).toContain('(39.0%');
-      // Guidance reads the best similarity (0.43, partial), not the first result (0.39, low).
-      expect(text).toContain('Partial match results');
+      expect(text).toContain('(32.0%');
+      expect(text).toContain('(29.5%');
+      // Guidance reads the best similarity (0.32), not the first result (0.295, low).
       expect(text).not.toContain('Low confidence results');
 
       const asked = await callTool(port, 'search_code', { query: 'tests for buildSymbolEdges' });
@@ -1399,6 +1398,60 @@ describe('McpHandler', () => {
         expect(text).toContain('src/view.ts:1** — uses `submit`');
         // `handleLogin` sits in the same chunk as `submit` but does not call the change.
         expect(text).not.toContain('src/routes.ts');
+      });
+    });
+
+    it('lists a barrel file as re-exporting the change, not as a caller', async () => {
+      const { metadataStore, indexer } = mocks();
+      const BARREL = 'g1//p1//src/lib.ts//0-40//h10';
+      const edges = [
+        edge(CALLER, SEED, 'authenticate'),
+        {
+          ...edge(BARREL, SEED, 'authenticate'),
+          relation_type: 'reexports' as const,
+          from_symbols: ['authenticate'],
+        },
+      ];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('**[p1] src/lib.ts:1** — re-exports `authenticate`');
+        expect(text).toContain('**[p1] src/login.ts:6** — uses `authenticate`');
+      });
+    });
+
+    it('lists links past the first step through a name defined in several places apart', async () => {
+      const { metadataStore, indexer } = mocks();
+      const OTHER = 'g1//p1//src/feed.ts//0-9//h11';
+      const edges = [
+        edge(CALLER, SEED, 'authenticate'),
+        edge(OTHER, CALLER, 'handleLogin', 'AMBIGUOUS'),
+      ];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('### Uses it directly (1)');
+        expect(text).not.toContain('### 2 steps away');
+        expect(text).toContain('### Further, only through a name defined in several places (1)');
+        expect(text).toContain('- `handleLogin` — 1 file: src/feed.ts');
+      });
+    });
+
+    it('says where the tests would be when no indexed test reaches the change', async () => {
+      const { metadataStore, indexer } = mocks();
+      const edges = [edge(CALLER, SEED, 'authenticate')];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('No indexed test reaches it.');
+        expect(text).toContain('- `src/auth.test.ts`');
+        expect(text).toContain('- `src/login.spec.ts`');
       });
     });
 

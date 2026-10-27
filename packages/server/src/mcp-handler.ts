@@ -61,6 +61,7 @@ import { validateGroupName } from './config.js';
 import { describeQdrantError } from './qdrant-errors.js';
 import {
   DEFINITION_CANDIDATES,
+  conventionalTestPaths,
   definitionCandidatesFilter,
   identifierTokens,
   isTestPath,
@@ -74,8 +75,16 @@ import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map
 /** Chunks store 0-indexed lines; output shows them 1-indexed, as editors and grep do. */
 const shownLine = (line: number): number => line + 1;
 
-const HIGH_CONFIDENCE_THRESHOLD = 0.6;
-const LOW_CONFIDENCE_THRESHOLD = 0.4;
+/**
+ * Below this best similarity `search_code` warns that the index may have nothing
+ * close. Above it the score says little about whether the first result is right:
+ * on the retrieval bench (218 queries, default code model) the right file was in
+ * the top five for 84–96% of queries per set and first for 59–84%, and splitting
+ * that range into stronger and weaker bands did not separate right from wrong on
+ * real agent queries. Every bench query has an answer, so this floor is not
+ * measured: it sits under the scores of answered queries (2 of 218 fall below).
+ */
+const LOW_CONFIDENCE_THRESHOLD = 0.3;
 
 /**
  * `ToolAnnotations` advertised in `tools/list` so a client can group tools by side
@@ -259,6 +268,25 @@ function outOfScopeProjectResult(
 function callerLabel(callers: string[], payload: Record<string, unknown>): string {
   if (callers.length > 0) return ` ${callers.map((n) => `\`${n}\``).join(', ')}`;
   return typeof payload['symbol_name'] === 'string' ? ` \`${payload['symbol_name']}\`` : '';
+}
+
+/**
+ * Said when no indexed test reaches the change: Ruby projects leave `spec/`
+ * and `test/` out of the index by default, so "no tests" there means "not
+ * indexed", not "untested". Lists where the tests of the changed file and of
+ * its direct dependents would be by convention.
+ */
+function testsByConvention(files: string[]): string {
+  const paths = [...new Set(files.flatMap(conventionalTestPaths))].slice(0, 12);
+  let text = '\n### Tests\n\nNo indexed test reaches it.';
+  if (paths.length === 0) return text + '\n';
+  text +=
+    " If the project's tests are not indexed (Ruby projects leave out `spec/` and `test/` by default), by convention they would be at:\n\n";
+  return (
+    text +
+    paths.map((p) => `- \`${p}\`\n`).join('') +
+    '\nCheck which exist before relying on them.\n'
+  );
 }
 
 function chunkNotFoundText(chunkId: string): string {
@@ -1682,20 +1710,11 @@ export class McpHandler {
               })
               .join('\n\n---\n\n');
 
-            const highCount = top.filter((r) => r.score >= HIGH_CONFIDENCE_THRESHOLD).length;
-            const lowCount = top.filter((r) => r.score < LOW_CONFIDENCE_THRESHOLD).length;
             const bestScore = Math.max(0, ...top.map((r) => r.score));
-
-            let guidance = '';
-            if (bestScore < LOW_CONFIDENCE_THRESHOLD) {
-              guidance =
-                '> **Low confidence results.** Try rephrasing, use grep or file reading if available, or ask the user for more specific terms.\n\n';
-            } else if (bestScore < HIGH_CONFIDENCE_THRESHOLD) {
-              guidance =
-                '> **Partial match results.** Supplement with grep or file reading if available, or try rephrasing for better coverage.\n\n';
-            } else if (highCount > 0 && lowCount > 0) {
-              guidance = `> **${highCount} high-confidence and ${lowCount} low-confidence results.** Review low-confidence results carefully.\n\n`;
-            }
+            const guidance =
+              bestScore < LOW_CONFIDENCE_THRESHOLD
+                ? '> **Low confidence results.** The index may have nothing close: rephrase once, then use grep or file reading if available, or ask the user for more specific terms.\n\n'
+                : '';
 
             return { content: [{ type: 'text' as const, text: guidance + formatted }] };
           } catch (err) {
@@ -2170,7 +2189,7 @@ export class McpHandler {
                 'incoming = who calls this chunk, outgoing = what this chunk calls, both = both directions'
               ),
             relation_types: z
-              .array(z.enum(['calls', 'called_by', 'references', 'referenced_by']))
+              .array(z.enum(['calls', 'called_by', 'references', 'referenced_by', 'reexports']))
               .optional()
               .describe('Filter by relation types (default: all)'),
             limit: z.coerce
@@ -2452,35 +2471,36 @@ export class McpHandler {
             // Per caller file: the files it reaches through a specific name.
             const specificLinks = new Map<string, Set<string>>();
             const chunkFileKey = (id: string) => id.split('//').slice(0, 3).join('//');
-            const { dependents, truncated, deeper, viaCommonNames } = collectDependents({
-              seeds,
-              edgesTo: (id) =>
-                store.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id)),
-              depth,
-              maxDependents: limit,
-              symbol,
-              isHub: (id) => hubs.has(id),
-              isLeaf: (id) => isTestPath(parseChunkId(id)?.file ?? ''),
-              isCommonName: (name) => isCommonName(name, names),
-              confirmsLink: (caller, target) => {
-                const callerFile = chunkFileKey(caller);
-                if (callerFile === chunkFileKey(target)) return true;
-                let linked = specificLinks.get(callerFile);
-                if (!linked) {
-                  const loc = parseChunkId(caller);
-                  linked = new Set(
-                    loc
-                      ? store
-                          .getEdgesFromFile(loc.group, loc.project, loc.file)
-                          .filter((e) => !isCommonName(e.symbol_name, names))
-                          .map((e) => chunkFileKey(e.to_chunk_id))
-                      : []
-                  );
-                  specificLinks.set(callerFile, linked);
-                }
-                return linked.has(chunkFileKey(target));
-              },
-            });
+            const { dependents, truncated, deeper, viaCommonNames, viaAmbiguousNames } =
+              collectDependents({
+                seeds,
+                edgesTo: (id) =>
+                  store.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id)),
+                depth,
+                maxDependents: limit,
+                symbol,
+                isHub: (id) => hubs.has(id),
+                isLeaf: (id) => isTestPath(parseChunkId(id)?.file ?? ''),
+                isCommonName: (name) => isCommonName(name, names),
+                confirmsLink: (caller, target) => {
+                  const callerFile = chunkFileKey(caller);
+                  if (callerFile === chunkFileKey(target)) return true;
+                  let linked = specificLinks.get(callerFile);
+                  if (!linked) {
+                    const loc = parseChunkId(caller);
+                    linked = new Set(
+                      loc
+                        ? store
+                            .getEdgesFromFile(loc.group, loc.project, loc.file)
+                            .filter((e) => !isCommonName(e.symbol_name, names))
+                            .map((e) => chunkFileKey(e.to_chunk_id))
+                        : []
+                    );
+                    specificLinks.set(callerFile, linked);
+                  }
+                  return linked.has(chunkFileKey(target));
+                },
+              });
 
             // Linked only by a name like `add` or `get`: listed by file, not followed.
             let commonSection = '';
@@ -2497,6 +2517,21 @@ export class McpHandler {
                 const more = files.length > 5 ? ` (+${files.length - 5} more)` : '';
                 const used = names.filesUsing.get(c.symbol) ?? 0;
                 commonSection += `- \`${c.symbol}\` (used in ${used} files) — ${c.chunkIds.length} chunks in ${files.length} files: ${shown}${more}\n`;
+              }
+            }
+            if (viaAmbiguousNames.length > 0) {
+              const count = viaAmbiguousNames.reduce((n, c) => n + c.chunkIds.length, 0);
+              commonSection += `\n### Further, only through a name defined in several places (${count}) — not followed\n\n`;
+              commonSection +=
+                'These call a name that several classes define, on an object whose class the code does not show, and they would be at least two steps from the change. Most are calls to another class of the same name. Check with grep if one matters.\n\n';
+              for (const c of viaAmbiguousNames) {
+                const files = [
+                  ...new Set(c.chunkIds.map((id) => parseChunkId(id)?.file ?? id)),
+                ].sort();
+                const shown = files.slice(0, 5).join(', ');
+                const more = files.length > 5 ? ` (+${files.length - 5} more)` : '';
+                const n = `${files.length} file${files.length === 1 ? '' : 's'}`;
+                commonSection += `- \`${c.symbol}\` — ${n}: ${shown}${more}\n`;
               }
             }
 
@@ -2556,14 +2591,15 @@ export class McpHandler {
 
             const line = (r: (typeof rows)[number], showHop: boolean): string => {
               const ep = r.payload;
-              const uses = `uses ${r.dep.symbols.map((s) => `\`${s}\``).join(', ')}`;
+              const names = r.dep.symbols.map((s) => `\`${s}\``).join(', ');
+              const uses = `${r.dep.reexport ? 're-exports' : 'uses'} ${names}`;
               const marks = `${r.dep.certain ? '' : ' [maybe]'}${r.dep.hub ? ' [hub]' : ''}`;
               const hop = showHop ? `, ${r.dep.hop} step${r.dep.hop === 1 ? '' : 's'} away` : '';
               if (!ep) return `- _chunk: ${r.dep.chunkId}_ — ${uses}${hop}${marks}\n`;
               const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
               const f = typeof ep['file'] === 'string' ? ep['file'] : r.file;
               const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : r.startLine;
-              const sym = callerLabel(r.dep.callers, ep);
+              const sym = r.dep.reexport ? '' : callerLabel(r.dep.callers, ep);
               return `- **[${p}] ${f}:${shownLine(sl)}**${sym} — ${uses}${hop}${marks}\n  _chunk: ${r.dep.chunkId}_\n`;
             };
 
@@ -2577,6 +2613,11 @@ export class McpHandler {
             if (tests.length > 0) {
               text += `\n### Tests (${tests.length}) — run these after the change\n\n`;
               for (const r of tests) text += line(r, true);
+            } else {
+              text += testsByConvention([
+                file,
+                ...code.filter((r) => r.dep.hop === 1).map((r) => r.file),
+              ]);
             }
             text += commonSection;
 

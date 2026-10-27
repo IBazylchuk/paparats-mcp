@@ -1,4 +1,4 @@
-import { Query } from 'web-tree-sitter';
+import { Parser, Query } from 'web-tree-sitter';
 import type { Node, Tree, Language } from 'web-tree-sitter';
 import { LANGUAGE_QUERIES } from './ast-queries.js';
 import type { ChunkKind } from './types.js';
@@ -11,6 +11,17 @@ export interface DefinedSymbol {
    * `Billing::Usage` for a method of `class Usage` inside `module Billing`.
    */
   owner?: string;
+  /**
+   * A top-level declaration a TypeScript or JavaScript module does not
+   * export: nothing outside its file can call it, so only uses in that file
+   * link to it.
+   */
+  local?: true;
+  /**
+   * A Ruby class method (`def self.batch`), with no instance method of that
+   * name in the chunk: callable on the class, not on an object.
+   */
+  classMethod?: true;
 }
 
 /** One use of a name, with where it is made from and what it is called on. */
@@ -30,6 +41,32 @@ export interface UseSite {
   on?: string;
   /** For an `on` without `::`, the namespace the call is made in, to resolve it from. */
   in?: string;
+  /**
+   * A bare Ruby constant (`Base`, not `Search::Base`): it means the class of
+   * that name in the nearest namespace around it (`in`, then its parents),
+   * else the top-level one, as Ruby looks it up.
+   */
+  lexical?: true;
+  /** A Ruby constant (class or module name): linked only where the lookup finds it. */
+  constant?: true;
+  /**
+   * Ruby: called on an object rather than on a class or self (`input.batch`,
+   * `pages.size`, `@queue.add`), so not a call to a class method.
+   */
+  onObject?: true;
+  /** A re-export (`export { x } from`), not a call: linked as `reexports`. */
+  reexport?: true;
+  /**
+   * A Ruby class used as a value rather than called on: passed, stored in a
+   * hash or variable, `Foo.new` kept for later. Linked as `references`.
+   */
+  value?: true;
+  /**
+   * `from` does not make the call itself but reaches it through the chunk's
+   * own calls (see `withInnerCallers`): followed by `change_impact`, not
+   * named as the caller.
+   */
+  through?: true;
 }
 
 export interface SymbolExtractionResult {
@@ -51,8 +88,17 @@ export interface SymbolExtractionResult {
  *  3 — a name the chunk defines stays a use when called on another object;
  *      uses record the method they are made from and the class they are
  *      called on, and methods record their class.
+ *  4 — TypeScript and JavaScript re-exports (`export { x } from`) are uses;
+ *      a use is also made from the chunk's methods that reach it through
+ *      the chunk's own calls; `X.new(...).m` and `new X().m()` are calls on X;
+ *      a TS/JS definition not exported is file-local; Ruby `def self.x` is a
+ *      class method, a call on an object is marked; a reopened library class
+ *      (`Time`, `ActiveSupport::...`) defines nothing; a Ruby constant records
+ *      its lexical scope and the namespace part of a path is not a use
+ *      (the class a value constant is read from is); Ruby code in a `RUBY`
+ *      heredoc is read for uses.
  */
-export const SYMBOL_FORMAT = 3;
+export const SYMBOL_FORMAT = 4;
 
 /** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
@@ -493,6 +539,8 @@ function receiverOf(nameNode: Node): Receiver {
   for (const field of RECEIVER_FIELDS) {
     const receiver = parent.childForFieldName(field);
     if (!receiver || receiver.id === nameNode.id) continue;
+    const made = constructed(receiver);
+    if (made) return made;
     const self =
       receiver.type === 'self' ||
       receiver.type === 'this' ||
@@ -500,6 +548,29 @@ function receiverOf(nameNode: Node): Receiver {
     return self ? { kind: 'self' } : { kind: 'other', text: receiver.text };
   }
   return { kind: 'none' };
+}
+
+/**
+ * A receiver that makes a new object: `Rebuild.new(ids)` in Ruby or `new
+ * Rebuild(ids)`, so `Rebuild.new(ids).call` is a call on a `Rebuild`. A bare
+ * `new(ids)` inside a Ruby class makes one of that class. The usual way to run a
+ * Ruby service object, and its method name (`call`) is too common to link by
+ * name alone.
+ */
+function constructed(receiver: Node): Receiver | undefined {
+  let node = receiver;
+  while (node.type === 'parenthesized_expression' && node.namedChildCount === 1) {
+    node = node.namedChild(0)!;
+  }
+  if (node.type === 'new_expression') {
+    const ctor = node.childForFieldName('constructor');
+    return ctor ? { kind: 'other', text: ctor.text } : undefined;
+  }
+  if (node.type === 'call' && node.childForFieldName('method')?.text === 'new') {
+    const cls = node.childForFieldName('receiver');
+    return cls ? { kind: 'other', text: cls.text } : { kind: 'self' };
+  }
+  return undefined;
 }
 
 /** `Usage`, `Billing::Usage`, `::Billing::Usage`, `Billing.Usage`: a receiver that names a class. */
@@ -570,6 +641,112 @@ function callerOf(node: Node, callers: Map<number, string | null>): string {
   return '';
 }
 
+/** Heredoc tags whose body is Ruby code: `RUBY`, `RUBY_SOURCE`, `SEED_RUBY`, `RB`. */
+const RUBY_HEREDOC_TAG = /(^|_)(RUBY|RB)(_|$)/;
+
+/**
+ * Uses in Ruby code kept as a heredoc string (`SCRIPT = <<~'RUBY_SOURCE'`, run
+ * later by a data migration or a script runner): grep sees the calls there, the
+ * parser saw text. The body is parsed as Ruby and its uses join the chunks
+ * holding those lines, made from the method around the heredoc. Names the
+ * heredoc itself defines stay inside it.
+ */
+function addRubyHeredocUses(
+  tree: Tree,
+  language: Language,
+  chunks: Array<{ startLine: number; endLine: number }>,
+  results: SymbolExtractionResult[],
+  callers: Map<number, string | null>
+): void {
+  const bodies = tree.rootNode
+    .descendantsOfType('heredoc_body')
+    .filter((b): b is Node => b !== null && RUBY_HEREDOC_TAG.test(b.lastChild?.text.trim() ?? ''));
+  if (bodies.length === 0) return;
+  const source = tree.rootNode.text;
+  const parser = new Parser();
+  parser.setLanguage(language);
+  try {
+    for (const body of bodies) {
+      const end = body.lastChild;
+      const first = body.firstChild;
+      if (!end || !first || end.type !== 'heredoc_end' || first.id === end.id) continue;
+      // The body's text with each interpolation blanked, rows kept, so a row in
+      // it plus `row0` is a row of the file.
+      let text = source.slice(first.startIndex, end.startIndex);
+      for (const part of body.namedChildren) {
+        if (part?.type !== 'interpolation') continue;
+        const from = part.startIndex - first.startIndex;
+        const to = part.endIndex - first.startIndex;
+        text = text.slice(0, from) + text.slice(from, to).replace(/[^\n]/g, ' ') + text.slice(to);
+      }
+      const row0 = first.startPosition.row;
+      text = ' '.repeat(first.startPosition.column) + text;
+      const sub = parser.parse(text);
+      if (!sub) continue;
+      try {
+        const lastRow = end.startPosition.row - 1;
+        const inside = chunks
+          .map((c, i) => ({
+            i,
+            startLine: Math.max(c.startLine, row0),
+            endLine: Math.min(c.endLine, lastRow),
+          }))
+          .filter((c) => c.startLine <= c.endLine);
+        if (inside.length === 0) continue;
+        const shifted = inside.map((c) => ({
+          startLine: c.startLine - row0,
+          endLine: c.endLine - row0,
+        }));
+        const whole = extractSymbolsForChunks(
+          sub,
+          language,
+          [{ startLine: 0, endLine: lastRow - row0 }],
+          'ruby',
+          true
+        )[0];
+        const ownNames = new Set(whole?.defines_symbols ?? []);
+        const from = callerOf(body, callers);
+        const found = extractSymbolsForChunks(sub, language, shifted, 'ruby', true);
+        inside.forEach(({ i }, k) => {
+          const target = results[i];
+          const extra = found[k];
+          if (!target || !extra) return;
+          const uses = new Set(target.uses_symbols);
+          const sites = new Map((target.use_sites ?? []).map((site) => [siteKey(site), site]));
+          for (const site of extra.use_sites ?? []) {
+            if (ownNames.has(site.name)) continue;
+            const moved: UseSite = { ...site, from };
+            delete moved.through;
+            uses.add(site.name);
+            const key = siteKey(moved);
+            if (!sites.has(key)) sites.set(key, moved);
+          }
+          target.uses_symbols = [...uses];
+          target.use_sites = [...sites.values()];
+        });
+      } finally {
+        sub.delete();
+      }
+    }
+  } finally {
+    parser.delete();
+  }
+}
+
+/**
+ * The name a re-export makes public: `parseName` for `export { fromName as
+ * parseName } from './names.js'`. The use is made from that name rather than
+ * from the whole chunk, so `change_impact` stops at a barrel file instead of
+ * passing the change on to callers of whatever else the chunk defines. Its
+ * edge is a `reexports` one, which the module map leaves out: a barrel
+ * re-exporting every module would otherwise pull them all together.
+ */
+function exportedAs(node: Node): string | undefined {
+  const parent = node.parent;
+  if (parent?.type !== 'export_specifier') return undefined;
+  return (parent.childForFieldName('alias') ?? node).text;
+}
+
 /**
  * Where a use points, as far as the code says: the class for `Usage.claim`
  * (with the namespace the call is in, to resolve a relative name), the
@@ -597,6 +774,61 @@ function calledOn(
 }
 
 /**
+ * The namespace a Ruby class or module is declared in, with the path written
+ * in its name: `Billing` for `class Invoice` inside `module Billing`, and for
+ * `class Billing::Invoice`. Undefined at the top level.
+ */
+function rubyNamespaceOf(nameNode: Node): string | undefined {
+  const path = nameNode.parent?.type === 'scope_resolution' ? nameNode.parent : null;
+  const declaration = (path ?? nameNode).parent;
+  const outer = declaration ? enclosingClass(declaration) : undefined;
+  const written = path?.childForFieldName('scope')?.text;
+  if (written !== undefined && written.startsWith('::'))
+    return constantPath(written).slice(2) || undefined;
+  if (path && !path.childForFieldName('scope')) return undefined; // `class ::Invoice`
+  const parts = [outer, written].filter((p): p is string => p !== undefined && p !== '');
+  return parts.length > 0 ? parts.join('::') : undefined;
+}
+
+/** A Ruby constant holding a value (`SCOPE_KEY`, `MAX_RETRIES`), not a class. */
+const RUBY_VALUE_CONSTANT_RE = /^[A-Z][A-Z0-9_]+$/;
+
+/**
+ * How a Ruby constant use is resolved: `Search::Base` as `Base` in `Search`
+ * (from the namespace around it), a bare `Base` lexically. Null for the
+ * namespace part of a path (`Search` in `Search::Base`): naming a namespace
+ * uses nothing of the file that defines it, and counting it linked every
+ * `Companies::X` to whichever file gives `module Companies` a method. A class
+ * a value constant is read from (`Scanner` in `Scanner::SCOPE_KEY`) is used,
+ * and resolved like a bare constant: Ruby constants holding values are not
+ * definitions in the graph, so the class is what links.
+ */
+function rubyConstant(node: Node): Pick<UseSite, 'on' | 'in' | 'lexical' | 'constant'> | null {
+  const parent = node.parent;
+  const scope = enclosingClass(node);
+  if (parent?.type === 'scope_resolution') {
+    const name = parent.childForFieldName('name');
+    if (name?.id !== node.id) {
+      // `AI::LLM::Schemas`: an upper-case namespace, not a value.
+      const isScope =
+        parent.parent?.type === 'scope_resolution' &&
+        parent.parent.childForFieldName('scope')?.id === parent.id;
+      if (!name || isScope || !RUBY_VALUE_CONSTANT_RE.test(name.text)) return null;
+      return scope
+        ? { lexical: true, in: scope, constant: true }
+        : { lexical: true, constant: true };
+    }
+    const written = parent.childForFieldName('scope');
+    if (!written) return { lexical: true, constant: true }; // `::Base`: the top-level one
+    const on = constantPath(written.text);
+    return on.startsWith('::') || !scope
+      ? { on, constant: true }
+      : { on, in: scope, constant: true };
+  }
+  return scope ? { lexical: true, in: scope, constant: true } : { lexical: true, constant: true };
+}
+
+/**
  * A Ruby `module` that only wraps classes and modules (`module Billing; class
  * Invoice; ...`). Every file under a namespace reopens it, so counting each
  * one as a definition of `Billing` linked every `Billing::X` in the codebase
@@ -613,6 +845,297 @@ function isRubyNamespaceModule(nameNode: Node): boolean {
   );
 }
 
+/** Calls whose arguments name a class without holding an object of it. */
+const RUBY_NON_VALUE_CALLS = new Set([
+  'include',
+  'extend',
+  'prepend',
+  'raise',
+  'fail',
+  'rescue_from',
+  'is_a?',
+  'kind_of?',
+  'instance_of?',
+]);
+
+/**
+ * A Ruby constant used as a value: passed (`dispatch(queue, Worker)`), stored
+ * in a hash, array or variable, or `Worker.new` kept for later. The code
+ * holding it may call any of its methods, which the graph cannot see, so
+ * `change_impact` follows such a link whatever method of the class changed.
+ * Not a namespace (`Billing` in `Billing::Invoice`), not a class called on at
+ * once (`Invoice.overdue`, `Rebuild.new(ids).call`), not `include`, `raise` or
+ * a superclass.
+ */
+function isRubyValue(node: Node): boolean {
+  if (node.type !== 'constant') return false;
+  let expr = node;
+  while (expr.parent?.type === 'scope_resolution') {
+    if (expr.parent.childForFieldName('name')?.id !== expr.id) return false;
+    expr = expr.parent;
+  }
+  const parent = expr.parent;
+  if (!parent) return false;
+  if (parent.type === 'call' && parent.childForFieldName('receiver')?.id === expr.id) {
+    if (parent.childForFieldName('method')?.text !== 'new') return false;
+    const outer = parent.parent;
+    return !(outer?.type === 'call' && outer.childForFieldName('receiver')?.id === parent.id);
+  }
+  if (parent.type === 'argument_list') {
+    const call = parent.parent;
+    const method = call?.type === 'call' ? call.childForFieldName('method')?.text : undefined;
+    return method !== undefined && !RUBY_NON_VALUE_CALLS.has(method);
+  }
+  if (parent.type === 'pair') return parent.childForFieldName('value')?.id === expr.id;
+  if (parent.type === 'assignment' || parent.type === 'operator_assignment') {
+    return parent.childForFieldName('right')?.id === expr.id;
+  }
+  return parent.type === 'array';
+}
+
+const ES_MODULE_LANGS = new Set(['typescript', 'tsx', 'javascript']);
+
+/**
+ * The names an ES module exports by name (`export { a, b as c }`, `export
+ * default a`, `export = a`), or null when the file is not one: no `import` or
+ * `export` statement (a script, whose top-level names are global), or a
+ * CommonJS `module.exports` / `exports.x`. Declarations written under `export`
+ * are told apart by `isExported`.
+ */
+function moduleExports(root: Node): Set<string> | null {
+  let module = false;
+  const names = new Set<string>();
+  for (const stmt of root.namedChildren) {
+    if (!stmt) continue;
+    if (stmt.type === 'import_statement') module = true;
+    if (stmt.type !== 'export_statement') continue;
+    module = true;
+    if (stmt.childForFieldName('source')) continue;
+    for (const child of stmt.namedChildren) {
+      if (child?.type === 'identifier') names.add(child.text);
+      if (child?.type !== 'export_clause') continue;
+      for (const spec of child.namedChildren) {
+        const name = spec?.childForFieldName('name')?.text;
+        if (name) names.add(name);
+      }
+    }
+  }
+  if (!module || /\b(?:module\.exports|exports\.[A-Za-z_$])/.test(root.text)) return null;
+  return names;
+}
+
+/** Whether a top-level declaration is exported: written under `export`, or named in an export list. */
+function isExported(nameNode: Node, exports: Set<string>): boolean {
+  if (exports.has(nameNode.text)) return true;
+  let statement: Node | null = nameNode;
+  while (statement?.parent && statement.parent.type !== 'program') statement = statement.parent;
+  return statement?.type === 'export_statement';
+}
+
+/**
+ * Classes of Ruby, its standard library and Rails that a project reopens to
+ * add a method (`class Time; def id`, `class ActiveSupport::TimeWithZone`).
+ * Counting such a file as the definition of `Time` linked every `Time.current`
+ * in the codebase to it and listed it as shared code. Its methods still count.
+ */
+const RUBY_LIBRARY_CLASSES = new Set([
+  'Object',
+  'BasicObject',
+  'Kernel',
+  'Module',
+  'Class',
+  'Comparable',
+  'Enumerable',
+  'String',
+  'Symbol',
+  'Integer',
+  'Float',
+  'Numeric',
+  'Rational',
+  'Complex',
+  'BigDecimal',
+  'Array',
+  'Hash',
+  'Range',
+  'Regexp',
+  'Set',
+  'Struct',
+  'Data',
+  'Proc',
+  'Method',
+  'NilClass',
+  'TrueClass',
+  'FalseClass',
+  'Time',
+  'Date',
+  'DateTime',
+  'Exception',
+  'StandardError',
+  'IO',
+  'File',
+  'Dir',
+  'Pathname',
+  'URI',
+  'JSON',
+  'Thread',
+  'Logger',
+]);
+const RUBY_LIBRARY_NAMESPACES = new Set([
+  'ActiveSupport',
+  'ActiveRecord',
+  'ActiveModel',
+  'ActiveJob',
+  'ActiveStorage',
+  'ActionController',
+  'ActionDispatch',
+  'ActionView',
+  'ActionMailer',
+  'ActionCable',
+  'Rails',
+  'Arel',
+  'GlobalID',
+]);
+
+/** A `class` or `module` naming one of {@link RUBY_LIBRARY_CLASSES}, or a path under a Rails namespace. */
+function isRubyLibraryClass(nameNode: Node): boolean {
+  const path = nameNode.parent?.type === 'scope_resolution' ? nameNode.parent : nameNode;
+  const owner = path.parent;
+  if (owner?.type !== 'class' && owner?.type !== 'module') return false;
+  if (owner.childForFieldName('name')?.id !== path.id) return false;
+  const full = path.text.replace(/^::/, '');
+  if (enclosingClass(owner) !== undefined) return false;
+  const first = full.split('::')[0] ?? '';
+  return full.includes('::') ? RUBY_LIBRARY_NAMESPACES.has(first) : RUBY_LIBRARY_CLASSES.has(full);
+}
+
+/** Ruby nodes whose identifiers name a parameter, not a call. */
+const RUBY_PARAMETER_NODES = new Set([
+  'method_parameters',
+  'block_parameters',
+  'lambda_parameters',
+  'optional_parameter',
+  'keyword_parameter',
+  'splat_parameter',
+  'hash_splat_parameter',
+  'block_parameter',
+]);
+
+/**
+ * Ruby calls a method without arguments by its bare name (`log = receipt`),
+ * which parses as an identifier, not a call, so the usage query misses it.
+ * Here such a name counts as a call when the chunk defines a method of that
+ * name and the method using it has no parameter or local of that name. Only for
+ * calls among the chunk's own methods (`innerCalls`): to another file, a bare
+ * name is as likely a local variable or an attribute.
+ */
+function addBareRubyCalls(
+  tree: Tree,
+  chunk: { startLine: number; endLine: number },
+  defines: Map<string, DefinedSymbol>,
+  callers: Map<number, string | null>,
+  sites: Map<string, UseSite>
+): void {
+  const methods = new Set(
+    [...defines.values()]
+      .filter((d) => d.kind === 'method' || d.kind === 'function')
+      .map((d) => d.name)
+  );
+  if (methods.size === 0) return;
+  const locals = new Map<number, Set<string>>();
+  const assignedIn = (method: Node): Set<string> => {
+    let names = locals.get(method.id);
+    if (!names) {
+      names = new Set();
+      for (const id of method.childForFieldName('parameters')?.descendantsOfType('identifier') ??
+        []) {
+        if (id) names.add(id.text);
+      }
+      for (const a of method.descendantsOfType('assignment')) {
+        const left = a?.childForFieldName('left');
+        if (left?.type === 'identifier') names.add(left.text);
+      }
+      locals.set(method.id, names);
+    }
+    return names;
+  };
+  const ids = tree.rootNode.descendantsOfType(
+    'identifier',
+    { row: chunk.startLine, column: 0 },
+    { row: chunk.endLine + 1, column: 0 }
+  );
+  for (const node of ids) {
+    if (!node || !methods.has(node.text)) continue;
+    const parent = node.parent;
+    if (!parent || RUBY_PARAMETER_NODES.has(parent.type)) continue;
+    if (parent.childForFieldName('name')?.id === node.id) continue;
+    if (parent.type === 'call' && parent.childForFieldName('method')?.id === node.id) continue;
+    if (parent.type === 'assignment' && parent.childForFieldName('left')?.id === node.id) continue;
+    let method: Node | null = parent;
+    while (method && method.type !== 'method' && method.type !== 'singleton_method') {
+      method = method.parent;
+    }
+    if (!method || assignedIn(method).has(node.text)) continue;
+    const site: UseSite = { name: node.text, from: callerOf(node, callers) };
+    if (!sites.has(siteKey(site))) sites.set(siteKey(site), site);
+  }
+}
+
+/**
+ * Calls between a chunk's own methods, per method: the methods of the chunk
+ * that call it (`receipt` → `call`, `preview`). Bare and self calls only, and
+ * none from the class body or from a method to itself.
+ */
+function innerCalls(
+  sites: Map<string, UseSite>,
+  defines: Map<string, DefinedSymbol>,
+  otherSites: Set<string>
+): Map<string, Set<string>> {
+  const calledFrom = new Map<string, Set<string>>();
+  for (const [key, site] of sites) {
+    if (!defines.has(site.name) || otherSites.has(key)) continue;
+    if (site.from === '' || site.from === site.name) continue;
+    let from = calledFrom.get(site.name);
+    if (!from) calledFrom.set(site.name, (from = new Set()));
+    from.add(site.from);
+  }
+  return calledFrom;
+}
+
+/**
+ * Each use, also as made from every method of the chunk that reaches the
+ * method making it through the chunk's own calls. A private helper calling
+ * the change passes it on to the public methods calling the helper: without
+ * this, `change_impact` stopped at the helper, which nothing outside calls.
+ */
+function withInnerCallers(sites: UseSite[], calledFrom: Map<string, Set<string>>): UseSite[] {
+  if (calledFrom.size === 0) return sites;
+  const reaching = (method: string): Set<string> => {
+    const found = new Set<string>();
+    const queue = [method];
+    for (let name = queue.pop(); name !== undefined; name = queue.pop()) {
+      for (const caller of calledFrom.get(name) ?? []) {
+        if (caller === method || found.has(caller)) continue;
+        found.add(caller);
+        queue.push(caller);
+      }
+    }
+    return found;
+  };
+  const out = new Map(sites.map((site) => [siteKey(site), site]));
+  for (const site of sites) {
+    if (site.from === '') continue;
+    for (const caller of reaching(site.from)) {
+      const copy: UseSite = { ...site, from: caller, through: true };
+      if (!out.has(siteKey(copy))) out.set(siteKey(copy), copy);
+    }
+  }
+  return [...out.values()];
+}
+
+function siteKey(site: UseSite): string {
+  return `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.lexical ?? ''}\0${site.constant ?? ''}\0${site.reexport ?? ''}\0${site.value ?? ''}\0${site.onObject ?? ''}\0${site.through ?? ''}`;
+}
+
 /**
  * Extract defines_symbols, uses_symbols, and defined_symbols (with kind) for each chunk
  * from a parsed AST tree.
@@ -627,7 +1150,8 @@ export function extractSymbolsForChunks(
   tree: Tree,
   language: Language,
   chunks: Array<{ startLine: number; endLine: number }>,
-  lang: string
+  lang: string,
+  nested = false
 ): SymbolExtractionResult[] {
   const querySet = LANGUAGE_QUERIES[lang];
   if (!querySet) {
@@ -660,6 +1184,10 @@ export function extractSymbolsForChunks(
     // Collect all captures once, sorted by row (tree-sitter returns them in order)
     const defCaptures = defQuery ? defQuery.captures(tree.rootNode) : [];
     const useCaptures = useQuery ? useQuery.captures(tree.rootNode) : [];
+
+    // In an ES module, the names it exports; null when every top-level name is
+    // visible elsewhere (a script, CommonJS, another language).
+    const exports = ES_MODULE_LANGS.has(lang) ? moduleExports(tree.rootNode) : null;
 
     // Declarations a use can be made from, across the whole file: a method
     // split over several chunks still owns the uses in its later chunks.
@@ -702,12 +1230,35 @@ export function extractSymbolsForChunks(
         if (row > chunk.endLine) break;
         const captureNode = defCaptures[d]!.node;
         const text = captureNode.text;
-        if (isNoise(text) || defines.has(text)) continue;
+        if (isNoise(text)) continue;
+        const known = defines.get(text);
+        if (known) {
+          // An instance method next to a class method of the same name: callable on objects.
+          if (known.classMethod && captureNode.parent?.type !== 'singleton_method') {
+            delete known.classMethod;
+          }
+          continue;
+        }
         if (!isTopLevelDeclaration(captureNode, scopeNodes)) continue;
         if (lang === 'ruby' && isRubyNamespaceModule(captureNode)) continue;
+        if (lang === 'ruby' && isRubyLibraryClass(captureNode)) continue;
         const kind = resolveKind(captureNode);
-        const owner = CONTAINER_KINDS.has(kind) ? undefined : enclosingClass(captureNode);
-        defines.set(text, owner ? { name: text, kind, owner } : { name: text, kind });
+        const owner = CONTAINER_KINDS.has(kind)
+          ? lang === 'ruby'
+            ? rubyNamespaceOf(captureNode)
+            : undefined
+          : enclosingClass(captureNode);
+        const local =
+          exports !== null && !owner && kind !== 'method' && !isExported(captureNode, exports);
+        defines.set(text, {
+          name: text,
+          kind,
+          ...(owner ? { owner } : {}),
+          ...(local ? { local: true as const } : {}),
+          ...(lang === 'ruby' && captureNode.parent?.type === 'singleton_method'
+            ? { classMethod: true as const }
+            : {}),
+        });
       }
 
       // Advance useIdx past captures before this chunk
@@ -723,16 +1274,26 @@ export function extractSymbolsForChunks(
         const node = useCaptures[u]!.node;
         if (node.startPosition.row > chunk.endLine) break;
         const text = node.text;
+        const constant =
+          lang === 'ruby' && node.type === 'constant' ? rubyConstant(node) : undefined;
+        if (constant === null) continue;
         if (!isNoise(text)) {
           uses.add(text);
           const receiver = receiverOf(node);
           if (receiver.kind === 'other') calledOnOther.add(text);
+          const exported = exportedAs(node);
           const site: UseSite = {
             name: text,
-            from: callerOf(node, callers),
+            from: exported ?? callerOf(node, callers),
             ...calledOn(node, receiver, lang),
+            ...constant,
+            ...(exported !== undefined ? { reexport: true as const } : {}),
+            ...(lang === 'ruby' && isRubyValue(node) ? { value: true as const } : {}),
+            ...(lang === 'ruby' && receiver.kind === 'other' && !CONSTANT_PATH.test(receiver.text)
+              ? { onObject: true as const }
+              : {}),
           };
-          const key = `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}`;
+          const key = siteKey(site);
           if (!sites.has(key)) sites.set(key, site);
           if (receiver.kind === 'other') otherSites.add(key);
         }
@@ -745,9 +1306,11 @@ export function extractSymbolsForChunks(
       for (const sym of defines.keys()) {
         if (!calledOnOther.has(sym)) uses.delete(sym);
       }
-      const use_sites = [...sites.entries()]
+      if (lang === 'ruby') addBareRubyCalls(tree, chunk, defines, callers, sites);
+      const outside = [...sites.entries()]
         .filter(([key, site]) => !defines.has(site.name) || otherSites.has(key))
         .map(([, site]) => site);
+      const use_sites = withInnerCallers(outside, innerCalls(sites, defines, otherSites));
 
       const defined_symbols = Array.from(defines.values());
 
@@ -759,6 +1322,7 @@ export function extractSymbolsForChunks(
       });
     }
 
+    if (lang === 'ruby' && !nested) addRubyHeredocUses(tree, language, chunks, results, callers);
     return results;
   } finally {
     defQuery?.delete();

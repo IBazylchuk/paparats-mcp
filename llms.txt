@@ -17,7 +17,7 @@
 - [Agent install guide](https://github.com/IBazylchuk/paparats-mcp/blob/main/llms-install.md): step-by-step install for an AI agent
 - [MCP tools](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/tools.md): tools per endpoint
 - [FAQ](https://github.com/IBazylchuk/paparats-mcp#faq): privacy, freshness, hardware, supported clients
-- [Comparison with alternatives](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/comparison.md): claude-context, Serena, codebase-memory-mcp, claude-context-local, Sourcegraph
+- [Comparison with alternatives](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/comparison.md): Graphify, codegraph, GitNexus, codebase-memory-mcp, claude-context, Serena, Sourcegraph
 - [Chunking strategy](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/chunking-strategy.md)
 - [Replacing embedding models](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/replacing-embedding-models.md)
 - [Monitoring and observability](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/observability.md)

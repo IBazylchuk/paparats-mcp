@@ -28,7 +28,7 @@ export function renderInstructionsBlock(project: string): string {
     '',
     '- **`search_code` first** when you know what code does but not what it is called ("where are retries handled", "how is the session token checked"). Include identifiers you already know: chunks that define them rank higher.',
     '- **grep / ripgrep** for exact text: an error message, a config key, every occurrence of a name before a rename. Also for files changed in the last few minutes, which may not be indexed yet.',
-    '- Below 40% score a result is a guess: fall back to grep or reading the file.',
+    '- Below 30% score a result is a guess: fall back to grep or reading the file.',
     '- `get_chunk` reads around a hit by its `chunk_id`, instead of opening the whole file.',
     '- `find_usages` lists callers and callees of a chunk. Before changing a signature, renaming or deleting, run `change_impact` on the chunk: it lists callers a few steps out and the tests that reach it.',
     '- The call graph links code by name, so dynamic calls (reflection, string dispatch, routes, config) are not in it. Confirm with grep before deleting something that looks unused.',

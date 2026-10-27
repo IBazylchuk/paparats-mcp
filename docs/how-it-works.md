@@ -59,12 +59,14 @@ Qdrant is searched once; when the query names a class or function (`InvoiceTotal
 `charge_card`, `Billing::Invoice`), the chunks that define it are added to the candidates.
 Then the order is adjusted:
 
-- chunks defining a named identifier ×1.1, files named after it ×1.05;
+- chunks defining a named identifier ×1.1 (×1.25 when the query is only that name), files
+  named after it ×1.05;
 - test files ×0.9 unless the query is about tests;
 - files changed more often slightly up (×1 + 0.05 × their commit-count percentile).
 
-Only the order changes; the score shown stays the similarity (≥60% high, 40–60% partial,
-<40% low), so the agent can judge a weak result. Results are cached for 5 minutes.
+Only the order changes; the score shown stays the similarity (below 30% it
+warns that the index may have nothing close; above, the score does not tell whether the
+first result is the right one). Results are cached for 5 minutes.
 
 `search_code` searches the query as written. The support tools `explain_feature` and
 `impact_analysis` also try 2–3 variants (`auth` ↔ `authentication`, `userAuth` ↔
@@ -78,19 +80,39 @@ cost up to three times the work.
 it calls. A call that names a class (`Invoice.total`, `self.total`, a bare call inside a
 class) links only to that class's method: in Ruby by constant lookup on full paths
 (certain within one file, inferred by path suffix, ambiguous when several classes match).
-Each edge records the methods that make the call.
+Each edge records the methods that make the call. In TypeScript and JavaScript a
+re-export (`export { x } from './x.js'`, the usual barrel `index.ts` or `lib.ts`) is a
+`reexports` edge, so a change to `x` lists the files that publish it. A call on a new
+object (`Rebuild.new(ids).call`, `new Queue().flush()`) links to that class's method. A
+Ruby class used as a value (passed, kept in a hash or a variable) is a `references` edge.
+A Ruby constant resolves as Ruby looks it up: `Base` inside `module Billing` is
+`Billing::Base` when that exists, otherwise the top-level `Base`; the `Billing` in
+`Billing::Base` is not a use of its own (the `Scanner` in `Scanner::SCOPE_KEY` is), and a constant defined nowhere in the project (a
+gem's `ActiveRecord::Base`) links to nothing. A call on an object does not link to a Ruby
+`def self.x`, and reopening a library class (`Time`, `Date`, `ActiveSupport::...`) does
+not define it. A TypeScript or JavaScript function that is not exported is reached only
+from its own file, where it wins over same-named functions elsewhere, and a bare call next
+to a top-level definition of the name in the same file means that one. Ruby code kept in a
+heredoc tagged `RUBY` (`<<~'RUBY_SOURCE'` in a data migration) is read for its calls.
 
 `change_impact` walks those edges backwards from what you are about to change: callers,
 then their callers, up to 3 steps. A caller passes the change on only through the methods
-that actually make the call. Each dependent appears once, at its nearest step; it is marked
-`[maybe]` when every path to it is ambiguous. Very widely used files and tests are listed
+that actually make the call, and the methods of the same chunk that reach those through
+the chunk's own calls (a public `call` using a private helper that makes the call). Code
+holding the class as a value passes it on whatever method changed. Each dependent appears
+once, at its nearest step; it is marked `[maybe]` when every path to it is ambiguous. Past
+the first step, links only through a name several classes define are listed apart, not
+followed. Very widely used files and tests are listed
 but not followed. Callers linked only through a common name (a single lowercase word such
 as `add`, `get`, `create`, used from more than 8 files) are set apart unless their file
-also uses something specific from the target's file.
+also uses something specific from the target's file. When no indexed test reaches the
+change (Ruby projects leave `spec/` and `test/` out of the index by default), it lists
+where the tests would be by convention (`spec/models/invoice_spec.rb`, `src/queue.test.ts`).
 
 ## The module map
 
-`module_map` groups files into modules by how much they call each other. A use split over
+`module_map` groups files into modules by how much they call each other; re-exports do
+not count, or a barrel file would tie every module it publishes together. A use split over
 several definitions counts less, and names used everywhere count little. Communities are
 found with the Louvain method, oversized ones split again. Tests join the module they call
 most, migrations are left out, and files called from much of the code are listed apart as
