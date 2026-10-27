@@ -2170,7 +2170,7 @@ export class McpHandler {
                 'incoming = who calls this chunk, outgoing = what this chunk calls, both = both directions'
               ),
             relation_types: z
-              .array(z.enum(['calls', 'called_by', 'references', 'referenced_by']))
+              .array(z.enum(['calls', 'called_by', 'references', 'referenced_by', 'reexports']))
               .optional()
               .describe('Filter by relation types (default: all)'),
             limit: z.coerce
@@ -2452,35 +2452,36 @@ export class McpHandler {
             // Per caller file: the files it reaches through a specific name.
             const specificLinks = new Map<string, Set<string>>();
             const chunkFileKey = (id: string) => id.split('//').slice(0, 3).join('//');
-            const { dependents, truncated, deeper, viaCommonNames } = collectDependents({
-              seeds,
-              edgesTo: (id) =>
-                store.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id)),
-              depth,
-              maxDependents: limit,
-              symbol,
-              isHub: (id) => hubs.has(id),
-              isLeaf: (id) => isTestPath(parseChunkId(id)?.file ?? ''),
-              isCommonName: (name) => isCommonName(name, names),
-              confirmsLink: (caller, target) => {
-                const callerFile = chunkFileKey(caller);
-                if (callerFile === chunkFileKey(target)) return true;
-                let linked = specificLinks.get(callerFile);
-                if (!linked) {
-                  const loc = parseChunkId(caller);
-                  linked = new Set(
-                    loc
-                      ? store
-                          .getEdgesFromFile(loc.group, loc.project, loc.file)
-                          .filter((e) => !isCommonName(e.symbol_name, names))
-                          .map((e) => chunkFileKey(e.to_chunk_id))
-                      : []
-                  );
-                  specificLinks.set(callerFile, linked);
-                }
-                return linked.has(chunkFileKey(target));
-              },
-            });
+            const { dependents, truncated, deeper, viaCommonNames, viaAmbiguousNames } =
+              collectDependents({
+                seeds,
+                edgesTo: (id) =>
+                  store.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id)),
+                depth,
+                maxDependents: limit,
+                symbol,
+                isHub: (id) => hubs.has(id),
+                isLeaf: (id) => isTestPath(parseChunkId(id)?.file ?? ''),
+                isCommonName: (name) => isCommonName(name, names),
+                confirmsLink: (caller, target) => {
+                  const callerFile = chunkFileKey(caller);
+                  if (callerFile === chunkFileKey(target)) return true;
+                  let linked = specificLinks.get(callerFile);
+                  if (!linked) {
+                    const loc = parseChunkId(caller);
+                    linked = new Set(
+                      loc
+                        ? store
+                            .getEdgesFromFile(loc.group, loc.project, loc.file)
+                            .filter((e) => !isCommonName(e.symbol_name, names))
+                            .map((e) => chunkFileKey(e.to_chunk_id))
+                        : []
+                    );
+                    specificLinks.set(callerFile, linked);
+                  }
+                  return linked.has(chunkFileKey(target));
+                },
+              });
 
             // Linked only by a name like `add` or `get`: listed by file, not followed.
             let commonSection = '';
@@ -2497,6 +2498,21 @@ export class McpHandler {
                 const more = files.length > 5 ? ` (+${files.length - 5} more)` : '';
                 const used = names.filesUsing.get(c.symbol) ?? 0;
                 commonSection += `- \`${c.symbol}\` (used in ${used} files) — ${c.chunkIds.length} chunks in ${files.length} files: ${shown}${more}\n`;
+              }
+            }
+            if (viaAmbiguousNames.length > 0) {
+              const count = viaAmbiguousNames.reduce((n, c) => n + c.chunkIds.length, 0);
+              commonSection += `\n### Further, only through a name defined in several places (${count}) — not followed\n\n`;
+              commonSection +=
+                'These call a name that several classes define, on an object whose class the code does not show, and they would be at least two steps from the change. Most are calls to another class of the same name. Check with grep if one matters.\n\n';
+              for (const c of viaAmbiguousNames) {
+                const files = [
+                  ...new Set(c.chunkIds.map((id) => parseChunkId(id)?.file ?? id)),
+                ].sort();
+                const shown = files.slice(0, 5).join(', ');
+                const more = files.length > 5 ? ` (+${files.length - 5} more)` : '';
+                const n = `${files.length} file${files.length === 1 ? '' : 's'}`;
+                commonSection += `- \`${c.symbol}\` — ${n}: ${shown}${more}\n`;
               }
             }
 

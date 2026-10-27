@@ -80,12 +80,18 @@ class) links only to that class's method: in Ruby by constant lookup on full pat
 (certain within one file, inferred by path suffix, ambiguous when several classes match).
 Each edge records the methods that make the call. In TypeScript and JavaScript a
 re-export (`export { x } from './x.js'`, the usual barrel `index.ts` or `lib.ts`) is a
-`references` edge, so a change to `x` lists the files that publish it.
+`reexports` edge, so a change to `x` lists the files that publish it. A call on a new
+object (`Rebuild.new(ids).call`, `new Queue().flush()`) links to that class's method. A
+Ruby class used as a value (passed, kept in a hash or a variable) is a `references` edge.
 
 `change_impact` walks those edges backwards from what you are about to change: callers,
 then their callers, up to 3 steps. A caller passes the change on only through the methods
-that actually make the call. Each dependent appears once, at its nearest step; it is marked
-`[maybe]` when every path to it is ambiguous. Very widely used files and tests are listed
+that actually make the call, and the methods of the same chunk that reach those through
+the chunk's own calls (a public `call` using a private helper that makes the call). Code
+holding the class as a value passes it on whatever method changed. Each dependent appears
+once, at its nearest step; it is marked `[maybe]` when every path to it is ambiguous. Past
+the first step, links only through a name several classes define are listed apart, not
+followed. Very widely used files and tests are listed
 but not followed. Callers linked only through a common name (a single lowercase word such
 as `add`, `get`, `create`, used from more than 8 files) are set apart unless their file
 also uses something specific from the target's file.

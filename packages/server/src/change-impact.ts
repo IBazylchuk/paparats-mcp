@@ -36,6 +36,14 @@ export interface DependentsResult {
    * they are neither listed as dependents nor followed.
    */
   viaCommonNames: Array<{ symbol: string; chunkIds: string[] }>;
+  /**
+   * Chunks past the first step linked only through a name defined in several
+   * places (AMBIGUOUS edges), per name, most chunks first. The walk is already
+   * a step away from the change there, and such a call on an object of
+   * unknown class is most often another class's method of the same name, so
+   * they are set aside like common names.
+   */
+  viaAmbiguousNames: Array<{ symbol: string; chunkIds: string[] }>;
 }
 
 export interface CollectDependentsOptions {
@@ -66,7 +74,8 @@ type Via = Set<string> | 'all';
 
 /** What of the caller chunk an edge says is affected: its calling methods, or the whole chunk. */
 function viaOf(edge: SymbolEdge): Via {
-  return edge.from_symbols && edge.from_symbols.length > 0 ? new Set(edge.from_symbols) : 'all';
+  if (!edge.from_symbols || edge.from_symbols.length === 0) return 'all';
+  return new Set([...edge.from_symbols, ...(edge.reach_symbols ?? [])]);
 }
 
 /** Adds `more` to `into`; returns what was not in it before ('all' stands for any name). */
@@ -103,6 +112,13 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
   const found = new Map<string, Dependent>();
   const certainSoFar = new Map<string, boolean>(opts.seeds.map((id) => [id, true]));
   const common = new Map<string, Set<string>>();
+  const ambiguous = new Map<string, Set<string>>();
+  const setAside = (into: Map<string, Set<string>>, symbol: string, caller: string) => {
+    if (found.has(caller)) return;
+    let set = into.get(symbol);
+    if (!set) into.set(symbol, (set = new Set()));
+    set.add(caller);
+  };
   // Per chunk, the names already followed (or queued) into its callers.
   const followed = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
   let frontier = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
@@ -110,7 +126,8 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
 
   const followsEdge = (edge: SymbolEdge, via: Via, hop: number): boolean => {
     if (hop === 1 && opts.symbol !== undefined && edge.symbol_name !== opts.symbol) return false;
-    return via === 'all' || via.has(edge.symbol_name);
+    // Code holding the class as a value may call any of its methods.
+    return via === 'all' || via.has(edge.symbol_name) || edge.relation_type === 'references';
   };
 
   for (let hop = 1; hop <= opts.depth && frontier.size > 0 && !truncated; hop++) {
@@ -127,11 +144,11 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
         const commonName =
           edge.confidence !== 'EXTRACTED' && (opts.isCommonName?.(edge.symbol_name) ?? false);
         if (commonName && !opts.confirmsLink?.(caller, target)) {
-          if (!found.has(caller)) {
-            let set = common.get(edge.symbol_name);
-            if (!set) common.set(edge.symbol_name, (set = new Set()));
-            set.add(caller);
-          }
+          setAside(common, edge.symbol_name, caller);
+          continue;
+        }
+        if (hop > 1 && edge.confidence === 'AMBIGUOUS') {
+          setAside(ambiguous, edge.symbol_name, caller);
           continue;
         }
 
@@ -165,7 +182,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
           if (!dep.callers.includes(name)) dep.callers.push(name);
         }
         dep.certain ||= certain;
-        dep.reexport &&= edge.relation_type === 'references';
+        dep.reexport &&= edge.relation_type === 'reexports';
         const prev = reached.get(caller);
         reached.set(caller, prev === undefined ? edgeVia : unionVia(prev, edgeVia));
       }
@@ -191,18 +208,26 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
         .edgesTo(id)
         .some(
           (e) =>
-            (via === 'all' || via.has(e.symbol_name)) &&
+            (via === 'all' || via.has(e.symbol_name) || e.relation_type === 'references') &&
             !seeds.has(e.from_chunk_id) &&
             !found.has(e.from_chunk_id) &&
+            e.confidence !== 'AMBIGUOUS' &&
             !opts.isCommonName?.(e.symbol_name)
         )
     );
   // A chunk also reached through a real link is a dependent, not a coincidence.
-  const viaCommonNames = [...common.entries()]
-    .map(([symbol, ids]) => ({ symbol, chunkIds: [...ids].filter((id) => !found.has(id)) }))
-    .filter((c) => c.chunkIds.length > 0)
-    .sort((a, b) => b.chunkIds.length - a.chunkIds.length || a.symbol.localeCompare(b.symbol));
-  return { dependents: [...found.values()], truncated, deeper, viaCommonNames };
+  const byName = (from: Map<string, Set<string>>) =>
+    [...from.entries()]
+      .map(([symbol, ids]) => ({ symbol, chunkIds: [...ids].filter((id) => !found.has(id)) }))
+      .filter((c) => c.chunkIds.length > 0)
+      .sort((a, b) => b.chunkIds.length - a.chunkIds.length || a.symbol.localeCompare(b.symbol));
+  return {
+    dependents: [...found.values()],
+    truncated,
+    deeper,
+    viaCommonNames: byName(common),
+    viaAmbiguousNames: byName(ambiguous),
+  };
 }
 
 function unionVia(a: Via, b: Via): Via {

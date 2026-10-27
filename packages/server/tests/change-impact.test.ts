@@ -236,6 +236,70 @@ describe('collectDependents', () => {
     expect(res.dependents.map((d) => [d.chunkId, d.symbols, d.reexport])).toEqual([
       ['g//p//lib.ts//0-9//b', ['toName'], true],
     ]);
-    expect(edges.find((x) => x.symbol_name === 'toName')?.relation_type).toBe('references');
+    expect(edges.find((x) => x.symbol_name === 'toName')?.relation_type).toBe('reexports');
+  });
+  it('follows the methods that reach the call through the chunk’s own calls', () => {
+    // `service` calls the seed from a private helper that only its `call` uses.
+    const edgesTo = graph([
+      ['service', 'seed', 'signature_valid?', 'INFERRED', ['receipt']],
+      ['mutation', 'service', 'call'],
+    ]);
+    const plain = collectDependents({ ...base, seeds: ['seed'], edgesTo });
+    expect(plain.dependents.map((d) => d.chunkId)).toEqual(['service']);
+
+    const withReach = (id: string) =>
+      edgesTo(id).map((e) =>
+        e.from_chunk_id === 'service' ? { ...e, reach_symbols: ['call'] } : e
+      );
+    const res = collectDependents({ ...base, seeds: ['seed'], edgesTo: withReach });
+    expect(res.dependents.map((d) => [d.chunkId, d.hop, d.callers])).toEqual([
+      ['service', 1, ['receipt']],
+      ['mutation', 2, []],
+    ]);
+  });
+
+  it('sets aside links through a name defined in several places past the first step', () => {
+    const edgesTo = graph([
+      ['service', 'seed', 'f', 'AMBIGUOUS'],
+      ['resolver', 'service', 'g', 'EXTRACTED'],
+      ['other', 'service', 'preview', 'AMBIGUOUS'],
+    ]);
+    const res = collectDependents({ ...base, seeds: ['seed'], edgesTo });
+    // At the first step an ambiguous link is listed as uncertain.
+    expect(res.dependents.map((d) => [d.chunkId, d.certain])).toEqual([
+      ['service', false],
+      ['resolver', false],
+    ]);
+    expect(res.viaAmbiguousNames).toEqual([{ symbol: 'preview', chunkIds: ['other'] }]);
+  });
+
+  it('follows code holding a class as a value whatever method of it changed', () => {
+    const rows: SymbolEdge[] = [
+      {
+        from_chunk_id: 'consumer',
+        to_chunk_id: 'seed',
+        relation_type: 'calls',
+        symbol_name: 'f',
+        from_symbols: ['refund'],
+      },
+      {
+        from_chunk_id: 'poll',
+        to_chunk_id: 'consumer',
+        relation_type: 'references',
+        symbol_name: 'Worker',
+      },
+      {
+        from_chunk_id: 'caller',
+        to_chunk_id: 'consumer',
+        relation_type: 'calls',
+        symbol_name: 'Worker',
+      },
+    ];
+    const res = collectDependents({
+      ...base,
+      seeds: ['seed'],
+      edgesTo: (id) => rows.filter((e) => e.to_chunk_id === id),
+    });
+    expect(res.dependents.map((d) => d.chunkId)).toEqual(['consumer', 'poll']);
   });
 });

@@ -249,8 +249,8 @@ describe('ModuleMapService', () => {
   it('leaves re-exports out, so a barrel file does not tie the modules together', () => {
     const edges = [
       e('a.ts', 'b.ts', 'toB'),
-      { ...e('lib.ts', 'a.ts', 'toA'), relation_type: 'references' },
-      { ...e('lib.ts', 'b.ts', 'toB'), relation_type: 'references' },
+      { ...e('lib.ts', 'a.ts', 'toA'), relation_type: 'reexports' },
+      { ...e('lib.ts', 'b.ts', 'toB'), relation_type: 'reexports' },
     ];
     const service = new ModuleMapService({
       edgesVersion: () => '1',

@@ -30,8 +30,19 @@ export interface UseSite {
   on?: string;
   /** For an `on` without `::`, the namespace the call is made in, to resolve it from. */
   in?: string;
-  /** A re-export (`export { x } from`), not a call: linked as `references`. */
+  /** A re-export (`export { x } from`), not a call: linked as `reexports`. */
   reexport?: true;
+  /**
+   * A Ruby class used as a value rather than called on: passed, stored in a
+   * hash or variable, `Foo.new` kept for later. Linked as `references`.
+   */
+  value?: true;
+  /**
+   * `from` does not make the call itself but reaches it through the chunk's
+   * own calls (see `withInnerCallers`): followed by `change_impact`, not
+   * named as the caller.
+   */
+  through?: true;
 }
 
 export interface SymbolExtractionResult {
@@ -53,7 +64,9 @@ export interface SymbolExtractionResult {
  *  3 — a name the chunk defines stays a use when called on another object;
  *      uses record the method they are made from and the class they are
  *      called on, and methods record their class.
- *  4 — TypeScript and JavaScript re-exports (`export { x } from`) are uses.
+ *  4 — TypeScript and JavaScript re-exports (`export { x } from`) are uses;
+ *      a use is also made from the chunk's methods that reach it through
+ *      the chunk's own calls; `X.new(...).m` and `new X().m()` are calls on X.
  */
 export const SYMBOL_FORMAT = 4;
 
@@ -496,6 +509,8 @@ function receiverOf(nameNode: Node): Receiver {
   for (const field of RECEIVER_FIELDS) {
     const receiver = parent.childForFieldName(field);
     if (!receiver || receiver.id === nameNode.id) continue;
+    const made = constructed(receiver);
+    if (made) return made;
     const self =
       receiver.type === 'self' ||
       receiver.type === 'this' ||
@@ -503,6 +518,29 @@ function receiverOf(nameNode: Node): Receiver {
     return self ? { kind: 'self' } : { kind: 'other', text: receiver.text };
   }
   return { kind: 'none' };
+}
+
+/**
+ * A receiver that makes a new object: `Rebuild.new(ids)` in Ruby or `new
+ * Rebuild(ids)`, so `Rebuild.new(ids).call` is a call on a `Rebuild`. A bare
+ * `new(ids)` inside a Ruby class makes one of that class. The usual way to run a
+ * Ruby service object, and its method name (`call`) is too common to link by
+ * name alone.
+ */
+function constructed(receiver: Node): Receiver | undefined {
+  let node = receiver;
+  while (node.type === 'parenthesized_expression' && node.namedChildCount === 1) {
+    node = node.namedChild(0)!;
+  }
+  if (node.type === 'new_expression') {
+    const ctor = node.childForFieldName('constructor');
+    return ctor ? { kind: 'other', text: ctor.text } : undefined;
+  }
+  if (node.type === 'call' && node.childForFieldName('method')?.text === 'new') {
+    const cls = node.childForFieldName('receiver');
+    return cls ? { kind: 'other', text: cls.text } : { kind: 'self' };
+  }
+  return undefined;
 }
 
 /** `Usage`, `Billing::Usage`, `::Billing::Usage`, `Billing.Usage`: a receiver that names a class. */
@@ -578,7 +616,7 @@ function callerOf(node: Node, callers: Map<number, string | null>): string {
  * parseName } from './names.js'`. The use is made from that name rather than
  * from the whole chunk, so `change_impact` stops at a barrel file instead of
  * passing the change on to callers of whatever else the chunk defines. Its
- * edge is a `references` one, which the module map leaves out: a barrel
+ * edge is a `reexports` one, which the module map leaves out: a barrel
  * re-exporting every module would otherwise pull them all together.
  */
 function exportedAs(node: Node): string | undefined {
@@ -628,6 +666,182 @@ function isRubyNamespaceModule(nameNode: Node): boolean {
   return body.namedChildren.every(
     (c) => c !== null && (c.type === 'class' || c.type === 'module' || c.type === 'comment')
   );
+}
+
+/** Calls whose arguments name a class without holding an object of it. */
+const RUBY_NON_VALUE_CALLS = new Set([
+  'include',
+  'extend',
+  'prepend',
+  'raise',
+  'fail',
+  'rescue_from',
+  'is_a?',
+  'kind_of?',
+  'instance_of?',
+]);
+
+/**
+ * A Ruby constant used as a value: passed (`dispatch(queue, Worker)`), stored
+ * in a hash, array or variable, or `Worker.new` kept for later. The code
+ * holding it may call any of its methods, which the graph cannot see, so
+ * `change_impact` follows such a link whatever method of the class changed.
+ * Not a namespace (`Billing` in `Billing::Invoice`), not a class called on at
+ * once (`Invoice.overdue`, `Rebuild.new(ids).call`), not `include`, `raise` or
+ * a superclass.
+ */
+function isRubyValue(node: Node): boolean {
+  if (node.type !== 'constant') return false;
+  let expr = node;
+  while (expr.parent?.type === 'scope_resolution') {
+    if (expr.parent.childForFieldName('name')?.id !== expr.id) return false;
+    expr = expr.parent;
+  }
+  const parent = expr.parent;
+  if (!parent) return false;
+  if (parent.type === 'call' && parent.childForFieldName('receiver')?.id === expr.id) {
+    if (parent.childForFieldName('method')?.text !== 'new') return false;
+    const outer = parent.parent;
+    return !(outer?.type === 'call' && outer.childForFieldName('receiver')?.id === parent.id);
+  }
+  if (parent.type === 'argument_list') {
+    const call = parent.parent;
+    const method = call?.type === 'call' ? call.childForFieldName('method')?.text : undefined;
+    return method !== undefined && !RUBY_NON_VALUE_CALLS.has(method);
+  }
+  if (parent.type === 'pair') return parent.childForFieldName('value')?.id === expr.id;
+  if (parent.type === 'assignment' || parent.type === 'operator_assignment') {
+    return parent.childForFieldName('right')?.id === expr.id;
+  }
+  return parent.type === 'array';
+}
+
+/** Ruby nodes whose identifiers name a parameter, not a call. */
+const RUBY_PARAMETER_NODES = new Set([
+  'method_parameters',
+  'block_parameters',
+  'lambda_parameters',
+  'optional_parameter',
+  'keyword_parameter',
+  'splat_parameter',
+  'hash_splat_parameter',
+  'block_parameter',
+]);
+
+/**
+ * Ruby calls a method without arguments by its bare name (`log = receipt`),
+ * which parses as an identifier, not a call, so the usage query misses it.
+ * Here such a name counts as a call when the chunk defines a method of that
+ * name and the method using it has no parameter or local of that name. Only for
+ * calls among the chunk's own methods (`innerCalls`): to another file, a bare
+ * name is as likely a local variable or an attribute.
+ */
+function addBareRubyCalls(
+  tree: Tree,
+  chunk: { startLine: number; endLine: number },
+  defines: Map<string, DefinedSymbol>,
+  callers: Map<number, string | null>,
+  sites: Map<string, UseSite>
+): void {
+  const methods = new Set(
+    [...defines.values()]
+      .filter((d) => d.kind === 'method' || d.kind === 'function')
+      .map((d) => d.name)
+  );
+  if (methods.size === 0) return;
+  const locals = new Map<number, Set<string>>();
+  const assignedIn = (method: Node): Set<string> => {
+    let names = locals.get(method.id);
+    if (!names) {
+      names = new Set();
+      for (const id of method.childForFieldName('parameters')?.descendantsOfType('identifier') ??
+        []) {
+        if (id) names.add(id.text);
+      }
+      for (const a of method.descendantsOfType('assignment')) {
+        const left = a?.childForFieldName('left');
+        if (left?.type === 'identifier') names.add(left.text);
+      }
+      locals.set(method.id, names);
+    }
+    return names;
+  };
+  const ids = tree.rootNode.descendantsOfType(
+    'identifier',
+    { row: chunk.startLine, column: 0 },
+    { row: chunk.endLine + 1, column: 0 }
+  );
+  for (const node of ids) {
+    if (!node || !methods.has(node.text)) continue;
+    const parent = node.parent;
+    if (!parent || RUBY_PARAMETER_NODES.has(parent.type)) continue;
+    if (parent.childForFieldName('name')?.id === node.id) continue;
+    if (parent.type === 'call' && parent.childForFieldName('method')?.id === node.id) continue;
+    if (parent.type === 'assignment' && parent.childForFieldName('left')?.id === node.id) continue;
+    let method: Node | null = parent;
+    while (method && method.type !== 'method' && method.type !== 'singleton_method') {
+      method = method.parent;
+    }
+    if (!method || assignedIn(method).has(node.text)) continue;
+    const site: UseSite = { name: node.text, from: callerOf(node, callers) };
+    if (!sites.has(siteKey(site))) sites.set(siteKey(site), site);
+  }
+}
+
+/**
+ * Calls between a chunk's own methods, per method: the methods of the chunk
+ * that call it (`receipt` → `call`, `preview`). Bare and self calls only, and
+ * none from the class body or from a method to itself.
+ */
+function innerCalls(
+  sites: Map<string, UseSite>,
+  defines: Map<string, DefinedSymbol>,
+  otherSites: Set<string>
+): Map<string, Set<string>> {
+  const calledFrom = new Map<string, Set<string>>();
+  for (const [key, site] of sites) {
+    if (!defines.has(site.name) || otherSites.has(key)) continue;
+    if (site.from === '' || site.from === site.name) continue;
+    let from = calledFrom.get(site.name);
+    if (!from) calledFrom.set(site.name, (from = new Set()));
+    from.add(site.from);
+  }
+  return calledFrom;
+}
+
+/**
+ * Each use, also as made from every method of the chunk that reaches the
+ * method making it through the chunk's own calls. A private helper calling
+ * the change passes it on to the public methods calling the helper: without
+ * this, `change_impact` stopped at the helper, which nothing outside calls.
+ */
+function withInnerCallers(sites: UseSite[], calledFrom: Map<string, Set<string>>): UseSite[] {
+  if (calledFrom.size === 0) return sites;
+  const reaching = (method: string): Set<string> => {
+    const found = new Set<string>();
+    const queue = [method];
+    for (let name = queue.pop(); name !== undefined; name = queue.pop()) {
+      for (const caller of calledFrom.get(name) ?? []) {
+        if (caller === method || found.has(caller)) continue;
+        found.add(caller);
+        queue.push(caller);
+      }
+    }
+    return found;
+  };
+  const out = new Map(sites.map((site) => [siteKey(site), site]));
+  for (const site of sites) {
+    if (site.from === '') continue;
+    for (const caller of reaching(site.from)) {
+      const copy: UseSite = { ...site, from: caller, through: true };
+      if (!out.has(siteKey(copy))) out.set(siteKey(copy), copy);
+    }
+  }
+  return [...out.values()];
+}
+
+function siteKey(site: UseSite): string {
+  return `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.reexport ?? ''}\0${site.value ?? ''}\0${site.through ?? ''}`;
 }
 
 /**
@@ -750,8 +964,9 @@ export function extractSymbolsForChunks(
             from: exported ?? callerOf(node, callers),
             ...calledOn(node, receiver, lang),
             ...(exported !== undefined ? { reexport: true as const } : {}),
+            ...(lang === 'ruby' && isRubyValue(node) ? { value: true as const } : {}),
           };
-          const key = `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.reexport ?? ''}`;
+          const key = siteKey(site);
           if (!sites.has(key)) sites.set(key, site);
           if (receiver.kind === 'other') otherSites.add(key);
         }
@@ -764,9 +979,11 @@ export function extractSymbolsForChunks(
       for (const sym of defines.keys()) {
         if (!calledOnOther.has(sym)) uses.delete(sym);
       }
-      const use_sites = [...sites.entries()]
+      if (lang === 'ruby') addBareRubyCalls(tree, chunk, defines, callers, sites);
+      const outside = [...sites.entries()]
         .filter(([key, site]) => !defines.has(site.name) || otherSites.has(key))
         .map(([, site]) => site);
+      const use_sites = withInnerCallers(outside, innerCalls(sites, defines, otherSites));
 
       const defined_symbols = Array.from(defines.values());
 

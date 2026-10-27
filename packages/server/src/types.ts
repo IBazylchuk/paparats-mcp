@@ -143,7 +143,12 @@ export interface ChunkResult {
 
 // ── Symbol graph types ────────────────────────────────────────────────────
 
-export type RelationType = 'calls' | 'called_by' | 'references' | 'referenced_by';
+/**
+ * `calls`: a call. `references`: a class held as a value (passed, stored in a
+ * hash, `Foo.new` kept in a variable), so any of its methods may be called.
+ * `reexports`: a TS/JS `export { x } from` in a barrel file.
+ */
+export type RelationType = 'calls' | 'called_by' | 'references' | 'referenced_by' | 'reexports';
 
 /**
  * Confidence label for symbol-graph edges, mirroring the EXTRACTED/INFERRED/
@@ -184,6 +189,12 @@ export interface SymbolEdge {
    * class body or at the top of a file — then the whole chunk is the caller.
    */
   from_symbols?: string[];
+  /**
+   * Further methods of the caller chunk that reach the call through the
+   * chunk's own calls (`call` → private `receipt` → the call). `change_impact`
+   * follows their callers too; they are not named as making the call.
+   */
+  reach_symbols?: string[];
 }
 
 /**

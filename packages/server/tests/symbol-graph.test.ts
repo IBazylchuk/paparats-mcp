@@ -41,6 +41,36 @@ describe('isCommonName', () => {
 });
 
 describe('buildSymbolEdges', () => {
+  it('keeps the methods reaching a call apart from those making it, and how it is used', () => {
+    const { edges } = buildSymbolEdges([
+      {
+        chunk_id: 'g//p//log.rb//0-9//a',
+        defines_symbols: ['signature_valid?', 'Receipt'],
+        uses_symbols: [],
+      },
+      {
+        chunk_id: 'g//p//unsub.rb//0-9//b',
+        defines_symbols: ['receipt', 'call'],
+        uses_symbols: ['signature_valid?', 'Receipt'],
+        use_sites: [
+          { name: 'signature_valid?', from: 'receipt' },
+          { name: 'signature_valid?', from: 'call', through: true },
+          { name: 'Receipt', from: 'receipt' },
+          { name: 'Receipt', from: 'call', value: true },
+        ],
+      },
+    ]);
+    const edge = (name: string) => edges.find((e) => e.symbol_name === name);
+    expect(edge('signature_valid?')).toMatchObject({
+      relation_type: 'calls',
+      from_symbols: ['receipt'],
+      reach_symbols: ['call'],
+    });
+    // Held as a value anywhere in the chunk: `change_impact` follows it whatever changed.
+    expect(edge('Receipt')?.relation_type).toBe('references');
+    expect(edge('Receipt')?.reach_symbols).toBeUndefined();
+  });
+
   it('creates edges from usage to definition', () => {
     const { edges } = buildSymbolEdges([
       { chunk_id: 'g//p//f1.ts//1-5//h1', defines_symbols: ['greet'], uses_symbols: [] },

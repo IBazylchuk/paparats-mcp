@@ -817,6 +817,110 @@ end`;
     expect(on('Wallet')).toEqual([[null, null]]);
   });
 
+  it('treats a call on a new object as a call on its class', async () => {
+    const ruby = `module Reports
+  class Rebuild
+    def self.all
+      new(ids).call
+    end
+    def run
+      Reports::Rebuild.new(ids).call
+      Other.new(ids).call
+    end
+  end
+end`;
+    let { tree, language } = parse('ruby', ruby);
+    let results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 10 }], 'ruby');
+    tree.delete();
+    const calls = results[0]!.use_sites!.filter((u) => u.name === 'call' && !u.through);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        { name: 'call', from: 'run', on: 'Reports::Rebuild', in: 'Reports::Rebuild' },
+        { name: 'call', from: 'run', on: 'Other', in: 'Reports::Rebuild' },
+      ])
+    );
+
+    ({ tree, language } = parse('typescript', 'function go() { new Queue(1).flush(); }'));
+    results = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 0 }], 'typescript');
+    tree.delete();
+    expect(results[0]!.use_sites).toContainEqual({ name: 'flush', from: 'go', on: 'Queue' });
+  });
+
+  it('records a use also from the methods that reach it through the chunk’s own calls (Ruby)', async () => {
+    const code = `class Refund
+  def self.preview(**args)
+    new(**args).preview
+  end
+  def preview
+    log = receipt
+    log && summary
+  end
+  def call
+    return unless receipt
+    Notifier.deliver
+  end
+  def summary(receipt = nil)
+    receipt
+  end
+  private
+  def receipt
+    Receipt.find_by(id: 1).signature_valid?(token)
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 19 }],
+      'ruby'
+    );
+    tree.delete();
+
+    const from = (name: string, through?: boolean) =>
+      results[0]!
+        .use_sites!.filter((u) => u.name === name && !!u.through === !!through)
+        .map((u) => u.from)
+        .sort();
+    // `receipt` is called bare, without arguments: `preview` and `call` reach the
+    // call through it, `self.preview` through `preview`. `summary` only has a parameter
+    // of that name.
+    expect(from('signature_valid?')).toEqual(['receipt']);
+    expect(from('signature_valid?', true)).toEqual(['call', 'preview']);
+    expect(from('deliver', true)).toEqual([]);
+    // Own methods stay out of the uses: they link to nothing outside the chunk.
+    expect(results[0]!.uses_symbols).not.toContain('receipt');
+  });
+
+  it('marks a Ruby class used as a value, not one called on or included', async () => {
+    const code = `class Dispatcher
+  include Retryable
+  def workers
+    { url => ImportWorker, other => [Billing::SyncWorker] }
+  end
+  def run
+    dispatch(queue, Fallback)
+    keep = Holder.new(1)
+    Invoice.overdue
+    Rebuild.new(ids).call
+    raise Failed unless keep.is_a?(Holder)
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 12 }],
+      'ruby'
+    );
+    tree.delete();
+
+    const values = results[0]!
+      .use_sites!.filter((u) => u.value)
+      .map((u) => u.name)
+      .sort();
+    expect(values).toEqual(['Fallback', 'Holder', 'ImportWorker', 'SyncWorker']);
+  });
+
   it('records the class for this-calls and Class.method calls, not for bare calls (TypeScript)', async () => {
     const code = `export class Queue {
   flush(): void {

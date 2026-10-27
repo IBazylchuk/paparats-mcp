@@ -1409,7 +1409,7 @@ describe('McpHandler', () => {
         edge(CALLER, SEED, 'authenticate'),
         {
           ...edge(BARREL, SEED, 'authenticate'),
-          relation_type: 'references' as const,
+          relation_type: 'reexports' as const,
           from_symbols: ['authenticate'],
         },
       ];
@@ -1420,6 +1420,25 @@ describe('McpHandler', () => {
         const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
         expect(text).toContain('**[p1] src/lib.ts:1** — re-exports `authenticate`');
         expect(text).toContain('**[p1] src/login.ts:6** — uses `authenticate`');
+      });
+    });
+
+    it('lists links past the first step through a name defined in several places apart', async () => {
+      const { metadataStore, indexer } = mocks();
+      const OTHER = 'g1//p1//src/feed.ts//0-9//h11';
+      const edges = [
+        edge(CALLER, SEED, 'authenticate'),
+        edge(OTHER, CALLER, 'handleLogin', 'AMBIGUOUS'),
+      ];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('### Uses it directly (1)');
+        expect(text).not.toContain('### 2 steps away');
+        expect(text).toContain('### Further, only through a name defined in several places (1)');
+        expect(text).toContain('- `handleLogin` — 1 file: src/feed.ts');
       });
     });
 

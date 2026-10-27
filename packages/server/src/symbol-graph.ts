@@ -1,5 +1,5 @@
 import type { UseSite } from './ast-symbol-extractor.js';
-import type { EdgeConfidence, NameUsage, SymbolEdge } from './types.js';
+import type { EdgeConfidence, NameUsage, RelationType, SymbolEdge } from './types.js';
 
 /**
  * A symbol defined in more than this many chunks is treated as structural noise
@@ -71,6 +71,20 @@ export interface ChunkSymbols {
 
 const CONFIDENCE_RANK: Record<EdgeConfidence, number> = { AMBIGUOUS: 0, INFERRED: 1, EXTRACTED: 2 };
 
+/** A class held as a value says most (`change_impact` follows it whatever changed), a re-export least. */
+const RELATION_RANK: Record<RelationType, number> = {
+  reexports: 0,
+  calls: 1,
+  called_by: 1,
+  referenced_by: 1,
+  references: 2,
+};
+
+function relationOf(site: UseSite): RelationType {
+  if (site.reexport) return 'reexports';
+  return site.value ? 'references' : 'calls';
+}
+
 /**
  * The definitions of a name in the class a use names, if the index has one.
  *
@@ -127,7 +141,8 @@ function resolveClass(
  *   could be several). The caller could be hitting any of them; surface all
  *   candidates with low confidence.
  *
- * A re-export (`export { x } from`) links as `references` rather than `calls`.
+ * A re-export (`export { x } from`) links as `reexports`, a class held as a
+ * value (`UseSite.value`) as `references`, anything else as `calls`.
  *
  * Skips self-edges and merges by (from, to, symbol): `from_symbols` collects the
  * methods making the call and the edge keeps its most certain label.
@@ -163,7 +178,7 @@ export function buildSymbolEdges(
     }
   }
 
-  const edges = new Map<string, SymbolEdge & { callers: Set<string> }>();
+  const edges = new Map<string, SymbolEdge & { callers: Set<string>; reach: Set<string> }>();
   const skipped = new Set<string>();
   const stats: SymbolEdgeStats = { skippedSymbols: 0, skippedEdges: 0 };
 
@@ -219,28 +234,36 @@ export function buildSymbolEdges(
           edge = {
             from_chunk_id: chunk.chunk_id,
             to_chunk_id: defChunkId,
-            relation_type: site.reexport ? 'references' : 'calls',
+            relation_type: relationOf(site),
             symbol_name: sym,
             confidence,
             callers: new Set(),
+            reach: new Set(),
           };
           edges.set(key, edge);
         } else if (CONFIDENCE_RANK[confidence] > CONFIDENCE_RANK[edge.confidence!]) {
           edge.confidence = confidence;
         }
-        // One edge per (from, to, name): a call next to a re-export of the same name wins.
-        if (!site.reexport) edge.relation_type = 'calls';
-        edge.callers.add(site.from);
+        // One edge per (from, to, name), as the most telling of its uses.
+        if (RELATION_RANK[relationOf(site)] > RELATION_RANK[edge.relation_type]) {
+          edge.relation_type = relationOf(site);
+        }
+        (site.through ? edge.reach : edge.callers).add(site.from);
       }
     }
   }
 
   return {
-    edges: [...edges.values()].map(({ callers, ...edge }) => ({
-      ...edge,
+    edges: [...edges.values()].map(({ callers, reach, ...edge }) => {
       // A use outside any method makes the whole chunk the caller.
-      from_symbols: callers.has('') ? [] : [...callers],
-    })),
+      const whole = callers.has('');
+      const further = whole ? [] : [...reach].filter((name) => !callers.has(name));
+      return {
+        ...edge,
+        from_symbols: whole ? [] : [...callers],
+        ...(further.length > 0 ? { reach_symbols: further } : {}),
+      };
+    }),
     stats,
   };
 }
