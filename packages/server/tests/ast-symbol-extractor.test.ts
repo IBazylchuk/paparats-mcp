@@ -1141,6 +1141,42 @@ class Billing::Invoice; end`;
     expect(r.defined_symbols.find((d) => d.name === 'Invoice')?.owner).toBe('Billing');
   });
 
+  it('reads uses from Ruby code kept in a RUBY heredoc, not from other heredocs', async () => {
+    const code = `class SeedRefunds < ActiveRecord::Migration[8.1]
+  SCRIPT = <<~'RUBY_SOURCE'.freeze
+    def provider = Billing::Provider.find_by!(slug: Billing::Gateway::TAG)
+
+    Refund.where(id: provider.ids).each { |r| r.settle!(1) }
+  RUBY_SOURCE
+
+  QUERY = <<~SQL
+    SELECT Invoice FROM x
+  SQL
+
+  def up = Scripts.build(SCRIPT).run
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [
+        { startLine: 0, endLine: 3 },
+        { startLine: 4, endLine: 12 },
+      ],
+      'ruby'
+    );
+    tree.delete();
+    const [head, tail] = results;
+    // Each use lands in the chunk holding its line.
+    expect(head!.uses_symbols).toEqual(expect.arrayContaining(['Provider', 'find_by!', 'Gateway']));
+    expect(head!.uses_symbols).not.toContain('Refund');
+    expect(tail!.uses_symbols).toEqual(expect.arrayContaining(['Refund', 'where', 'settle!']));
+    expect(head!.use_sites!.find((u) => u.name === 'find_by!')?.on).toBe('Billing::Provider');
+    // A method the script defines stays inside it; an SQL heredoc is text.
+    expect(tail!.uses_symbols).not.toContain('provider');
+    expect(tail!.uses_symbols).not.toContain('Invoice');
+  });
+
   it('counts the class a Ruby value constant is read from as used', async () => {
     const code = `module Billing
   class Refund

@@ -95,6 +95,45 @@ describe('buildSymbolEdges', () => {
     ]);
   });
 
+  it('links a bare call to the top-level definition beside it in the same file', () => {
+    const { edges } = buildSymbolEdges([
+      {
+        chunk_id: 'g//p//scripts/compare.rb//0-9//a',
+        defines_symbols: ['pairs'],
+        uses_symbols: [],
+      },
+      {
+        chunk_id: 'g//p//scripts/compare.rb//10-19//b',
+        defines_symbols: [],
+        uses_symbols: ['pairs'],
+        use_sites: [{ name: 'pairs', from: '' }],
+      },
+      { chunk_id: 'g//p//scripts/other.rb//0-9//c', defines_symbols: ['pairs'], uses_symbols: [] },
+      {
+        chunk_id: 'g//p//lib/ledger.rb//0-9//d',
+        defines_symbols: ['pairs'],
+        uses_symbols: [],
+        def_owners: { pairs: 'Ledger' },
+      },
+      {
+        chunk_id: 'g//p//lib/ledger.rb//10-19//e',
+        defines_symbols: [],
+        uses_symbols: ['pairs'],
+        use_sites: [{ name: 'pairs', from: '', onObject: true }],
+      },
+    ]);
+    const links = edges.map((e) => [
+      e.from_chunk_id.split('//')[2],
+      e.to_chunk_id.split('//')[2],
+      e.confidence,
+    ]);
+    expect(links.filter((l) => l[0] === 'scripts/compare.rb')).toEqual([
+      ['scripts/compare.rb', 'scripts/compare.rb', 'EXTRACTED'],
+    ]);
+    // A call on an object, or beside a method of a class, is not narrowed.
+    expect(links.filter((l) => l[0] === 'lib/ledger.rb')).toHaveLength(3);
+  });
+
   it('does not link a call on an object to a Ruby class method', () => {
     const { edges } = buildSymbolEdges([
       {

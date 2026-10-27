@@ -1,4 +1,4 @@
-import { Query } from 'web-tree-sitter';
+import { Parser, Query } from 'web-tree-sitter';
 import type { Node, Tree, Language } from 'web-tree-sitter';
 import { LANGUAGE_QUERIES } from './ast-queries.js';
 import type { ChunkKind } from './types.js';
@@ -95,7 +95,8 @@ export interface SymbolExtractionResult {
  *      class method, a call on an object is marked; a reopened library class
  *      (`Time`, `ActiveSupport::...`) defines nothing; a Ruby constant records
  *      its lexical scope and the namespace part of a path is not a use
- *      (the class a value constant is read from is).
+ *      (the class a value constant is read from is); Ruby code in a `RUBY`
+ *      heredoc is read for uses.
  */
 export const SYMBOL_FORMAT = 4;
 
@@ -640,6 +641,98 @@ function callerOf(node: Node, callers: Map<number, string | null>): string {
   return '';
 }
 
+/** Heredoc tags whose body is Ruby code: `RUBY`, `RUBY_SOURCE`, `SEED_RUBY`, `RB`. */
+const RUBY_HEREDOC_TAG = /(^|_)(RUBY|RB)(_|$)/;
+
+/**
+ * Uses in Ruby code kept as a heredoc string (`SCRIPT = <<~'RUBY_SOURCE'`, run
+ * later by a data migration or a script runner): grep sees the calls there, the
+ * parser saw text. The body is parsed as Ruby and its uses join the chunks
+ * holding those lines, made from the method around the heredoc. Names the
+ * heredoc itself defines stay inside it.
+ */
+function addRubyHeredocUses(
+  tree: Tree,
+  language: Language,
+  chunks: Array<{ startLine: number; endLine: number }>,
+  results: SymbolExtractionResult[],
+  callers: Map<number, string | null>
+): void {
+  const bodies = tree.rootNode
+    .descendantsOfType('heredoc_body')
+    .filter((b): b is Node => b !== null && RUBY_HEREDOC_TAG.test(b.lastChild?.text.trim() ?? ''));
+  if (bodies.length === 0) return;
+  const source = tree.rootNode.text;
+  const parser = new Parser();
+  parser.setLanguage(language);
+  try {
+    for (const body of bodies) {
+      const end = body.lastChild;
+      const first = body.firstChild;
+      if (!end || !first || end.type !== 'heredoc_end' || first.id === end.id) continue;
+      // The body's text with each interpolation blanked, rows kept, so a row in
+      // it plus `row0` is a row of the file.
+      let text = source.slice(first.startIndex, end.startIndex);
+      for (const part of body.namedChildren) {
+        if (part?.type !== 'interpolation') continue;
+        const from = part.startIndex - first.startIndex;
+        const to = part.endIndex - first.startIndex;
+        text = text.slice(0, from) + text.slice(from, to).replace(/[^\n]/g, ' ') + text.slice(to);
+      }
+      const row0 = first.startPosition.row;
+      text = ' '.repeat(first.startPosition.column) + text;
+      const sub = parser.parse(text);
+      if (!sub) continue;
+      try {
+        const lastRow = end.startPosition.row - 1;
+        const inside = chunks
+          .map((c, i) => ({
+            i,
+            startLine: Math.max(c.startLine, row0),
+            endLine: Math.min(c.endLine, lastRow),
+          }))
+          .filter((c) => c.startLine <= c.endLine);
+        if (inside.length === 0) continue;
+        const shifted = inside.map((c) => ({
+          startLine: c.startLine - row0,
+          endLine: c.endLine - row0,
+        }));
+        const whole = extractSymbolsForChunks(
+          sub,
+          language,
+          [{ startLine: 0, endLine: lastRow - row0 }],
+          'ruby',
+          true
+        )[0];
+        const ownNames = new Set(whole?.defines_symbols ?? []);
+        const from = callerOf(body, callers);
+        const found = extractSymbolsForChunks(sub, language, shifted, 'ruby', true);
+        inside.forEach(({ i }, k) => {
+          const target = results[i];
+          const extra = found[k];
+          if (!target || !extra) return;
+          const uses = new Set(target.uses_symbols);
+          const sites = new Map((target.use_sites ?? []).map((site) => [siteKey(site), site]));
+          for (const site of extra.use_sites ?? []) {
+            if (ownNames.has(site.name)) continue;
+            const moved: UseSite = { ...site, from };
+            delete moved.through;
+            uses.add(site.name);
+            const key = siteKey(moved);
+            if (!sites.has(key)) sites.set(key, moved);
+          }
+          target.uses_symbols = [...uses];
+          target.use_sites = [...sites.values()];
+        });
+      } finally {
+        sub.delete();
+      }
+    }
+  } finally {
+    parser.delete();
+  }
+}
+
 /**
  * The name a re-export makes public: `parseName` for `export { fromName as
  * parseName } from './names.js'`. The use is made from that name rather than
@@ -1057,7 +1150,8 @@ export function extractSymbolsForChunks(
   tree: Tree,
   language: Language,
   chunks: Array<{ startLine: number; endLine: number }>,
-  lang: string
+  lang: string,
+  nested = false
 ): SymbolExtractionResult[] {
   const querySet = LANGUAGE_QUERIES[lang];
   if (!querySet) {
@@ -1228,6 +1322,7 @@ export function extractSymbolsForChunks(
       });
     }
 
+    if (lang === 'ruby' && !nested) addRubyHeredocUses(tree, language, chunks, results, callers);
     return results;
   } finally {
     defQuery?.delete();

@@ -251,6 +251,13 @@ export function buildSymbolEdges(
       // `input.batch` is a call on an object, which a `def self.batch` cannot answer.
       const classOnly = site.onObject ? classMethodIn.get(sym) : undefined;
       if (classOnly) defs = new Set([...defs].filter((id) => !classOnly.has(id)));
+      // A bare call next to a top-level definition of the name in the same file
+      // (a script's helper `pairs(a, b)`) means that one.
+      if (site.on === undefined && !site.lexical && !site.onObject && defs.size > 1) {
+        const owned = ownedIn.get(sym);
+        const beside = [...defs].filter((id) => fileKey(id) === callerFile && !owned?.has(id));
+        if (beside.length > 0) defs = new Set(beside);
+      }
       if (defs.size === 0) continue;
       if (only && !only(chunk.chunk_id, sym)) continue;
 

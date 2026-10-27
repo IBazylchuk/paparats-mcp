@@ -91,7 +91,9 @@ A Ruby constant resolves as Ruby looks it up: `Base` inside `module Billing` is
 gem's `ActiveRecord::Base`) links to nothing. A call on an object does not link to a Ruby
 `def self.x`, and reopening a library class (`Time`, `Date`, `ActiveSupport::...`) does
 not define it. A TypeScript or JavaScript function that is not exported is reached only
-from its own file, where it wins over same-named functions elsewhere.
+from its own file, where it wins over same-named functions elsewhere, and a bare call next
+to a top-level definition of the name in the same file means that one. Ruby code kept in a
+heredoc tagged `RUBY` (`<<~'RUBY_SOURCE'` in a data migration) is read for its calls.
 
 `change_impact` walks those edges backwards from what you are about to change: callers,
 then their callers, up to 3 steps. A caller passes the change on only through the methods
