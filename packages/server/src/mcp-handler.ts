@@ -2521,9 +2521,9 @@ export class McpHandler {
             }
             if (viaAmbiguousNames.length > 0) {
               const count = viaAmbiguousNames.reduce((n, c) => n + c.chunkIds.length, 0);
-              commonSection += `\n### Further, only through a name defined in several places (${count}) — not followed\n\n`;
+              commonSection += `\n### Linked only through a name defined in several places (${count}) — probably not dependents\n\n`;
               commonSection +=
-                'These call a name that several classes define, on an object whose class the code does not show, and they would be at least two steps from the change. Most are calls to another class of the same name. Check with grep if one matters.\n\n';
+                'These call a name that several classes define, on an object whose class the code does not show. Most are calls to another class of the same name. They were not followed further. Check with grep if one matters.\n\n';
               for (const c of viaAmbiguousNames) {
                 const files = [
                   ...new Set(c.chunkIds.map((id) => parseChunkId(id)?.file ?? id)),
@@ -2624,7 +2624,7 @@ export class McpHandler {
             const notes: string[] = [];
             if (rows.some((r) => !r.dep.certain)) {
               notes.push(
-                '`[maybe]` — linked only through a name defined in several places, or through a common name (its file also uses something specific from the changed file); check it really uses this code.'
+                '`[maybe]` — linked only through a common name (its file also uses something specific from the changed file), or through such a dependent; check it really uses this code.'
               );
             }
             if (rows.some((r) => r.dep.hub)) {

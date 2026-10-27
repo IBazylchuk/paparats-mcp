@@ -103,16 +103,16 @@ describe('collectDependents', () => {
     expect(dependents.map((d) => d.chunkId)).toEqual(['a', 'b']);
   });
 
-  it('marks a dependent uncertain only when every path to it is ambiguous', () => {
+  it('keeps a dependent that a certain link also reaches', () => {
     const edgesTo = graph([
       ['a', 'seed', 'f', 'AMBIGUOUS'],
       ['b', 'a', 'g', 'INFERRED'],
       ['c', 'seed', 'f', 'AMBIGUOUS'],
       ['c', 'seed', 'h', 'EXTRACTED'],
     ]);
-    const { dependents } = collectDependents({ ...base, seeds: ['seed'], edgesTo });
-    const certain = Object.fromEntries(dependents.map((d) => [d.chunkId, d.certain]));
-    expect(certain).toEqual({ a: false, c: true, b: false });
+    const res = collectDependents({ ...base, seeds: ['seed'], edgesTo });
+    expect(res.dependents.map((d) => [d.chunkId, d.certain])).toEqual([['c', true]]);
+    expect(res.viaAmbiguousNames).toEqual([{ symbol: 'f', chunkIds: ['a'] }]);
   });
 
   it('lists hubs and leaves without following their callers', () => {
@@ -258,19 +258,22 @@ describe('collectDependents', () => {
     ]);
   });
 
-  it('sets aside links through a name defined in several places past the first step', () => {
+  it('sets aside links through a name defined in several places', () => {
     const edgesTo = graph([
-      ['service', 'seed', 'f', 'AMBIGUOUS'],
-      ['resolver', 'service', 'g', 'EXTRACTED'],
-      ['other', 'service', 'preview', 'AMBIGUOUS'],
+      ['other', 'seed', 'f', 'AMBIGUOUS'],
+      ['service', 'seed', 'g', 'EXTRACTED'],
+      ['resolver', 'service', 'h', 'EXTRACTED'],
+      ['far', 'service', 'preview', 'AMBIGUOUS'],
     ]);
     const res = collectDependents({ ...base, seeds: ['seed'], edgesTo });
-    // At the first step an ambiguous link is listed as uncertain.
     expect(res.dependents.map((d) => [d.chunkId, d.certain])).toEqual([
-      ['service', false],
-      ['resolver', false],
+      ['service', true],
+      ['resolver', true],
     ]);
-    expect(res.viaAmbiguousNames).toEqual([{ symbol: 'preview', chunkIds: ['other'] }]);
+    expect(res.viaAmbiguousNames).toEqual([
+      { symbol: 'f', chunkIds: ['other'] },
+      { symbol: 'preview', chunkIds: ['far'] },
+    ]);
   });
 
   it('follows code holding a class as a value whatever method of it changed', () => {

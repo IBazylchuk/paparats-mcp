@@ -13,9 +13,9 @@ export interface Dependent {
   /** The methods in it that make those calls; empty when the call is outside any method. */
   callers: string[];
   /**
-   * False when every path to the change goes through a name defined in several
-   * chunks (an AMBIGUOUS edge) or a common name kept by `confirmsLink`: the
-   * graph links by name, so such a caller may be using a different definition.
+   * False when every path to the change goes through a common name kept by
+   * `confirmsLink`: the graph links by name, so such a caller may be using a
+   * different definition.
    */
   certain: boolean;
   /** A high-degree chunk. Listed, but its own dependents are not followed. */
@@ -37,11 +37,11 @@ export interface DependentsResult {
    */
   viaCommonNames: Array<{ symbol: string; chunkIds: string[] }>;
   /**
-   * Chunks past the first step linked only through a name defined in several
-   * places (AMBIGUOUS edges), per name, most chunks first. The walk is already
-   * a step away from the change there, and such a call on an object of
-   * unknown class is most often another class's method of the same name, so
-   * they are set aside like common names.
+   * Chunks linked only through a name defined in several places (AMBIGUOUS
+   * edges), per name, most chunks first. Such a call on an object of unknown
+   * class is most often another class's method of the same name (15% of them
+   * were real in a blind check of a Ruby codebase), so they are set aside
+   * like common names.
    */
   viaAmbiguousNames: Array<{ symbol: string; chunkIds: string[] }>;
 }
@@ -147,13 +147,13 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
           setAside(common, edge.symbol_name, caller);
           continue;
         }
-        if (hop > 1 && edge.confidence === 'AMBIGUOUS') {
+        if (edge.confidence === 'AMBIGUOUS') {
           setAside(ambiguous, edge.symbol_name, caller);
           continue;
         }
 
         const edgeVia = viaOf(edge);
-        const certain = targetCertain && !commonName && edge.confidence !== 'AMBIGUOUS';
+        const certain = targetCertain && !commonName;
         if (found.has(caller)) {
           // Already listed at a nearer hop: only its newly affected methods are followed.
           const prev = reached.get(caller);

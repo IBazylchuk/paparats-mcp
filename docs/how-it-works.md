@@ -118,9 +118,9 @@ then their callers, up to 3 steps. A caller passes the change on only through th
 that actually make the call, and the methods of the same chunk that reach those through
 the chunk's own calls (a public `call` using a private helper that makes the call). Code
 holding the class as a value passes it on whatever method changed. Each dependent appears
-once, at its nearest step; it is marked `[maybe]` when every path to it is ambiguous. Past
-the first step, links only through a name several classes define are listed apart, not
-followed. Very widely used files and tests are listed
+once, at its nearest step. Links only through a name several classes define, on an object
+whose class the code does not show, are listed apart and not followed: in a blind check on a
+Ruby codebase 15% of them were real. Very widely used files and tests are listed
 but not followed. Callers linked only through a common name (a single lowercase word such
 as `add`, `get`, `create`, used from more than 8 files, counting the uses the graph links
 nowhere) are set apart unless their file
