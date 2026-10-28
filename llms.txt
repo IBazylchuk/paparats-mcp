@@ -16,8 +16,8 @@
 - [How it works](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/how-it-works.md): indexing, search and ranking, the call graph, the module map
 - [Agent install guide](https://github.com/IBazylchuk/paparats-mcp/blob/main/llms-install.md): step-by-step install for an AI agent
 - [MCP tools](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/tools.md): tools per endpoint
-- [FAQ](https://github.com/IBazylchuk/paparats-mcp#faq): privacy, freshness, hardware, supported clients
-- [Comparison with alternatives](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/comparison.md): Graphify, codegraph, GitNexus, codebase-memory-mcp, claude-context, Serena, Sourcegraph
+- [FAQ](https://github.com/IBazylchuk/paparats-mcp#faq): privacy, freshness, which branch is indexed, grep, hardware, supported clients
+- [Comparison with alternatives](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/comparison.md): Graphify, codegraph, GitNexus, codebase-memory-mcp, claude-context, Serena, ast-grep, Sourcegraph
 - [Chunking strategy](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/chunking-strategy.md)
 - [Replacing embedding models](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/replacing-embedding-models.md)
 - [Monitoring and observability](https://github.com/IBazylchuk/paparats-mcp/blob/main/docs/observability.md)
