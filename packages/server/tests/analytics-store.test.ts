@@ -432,6 +432,48 @@ describe('analytics queries', () => {
     expect(rows[0]!.reformulations).toBeGreaterThanOrEqual(1);
   });
 
+  it('with query text off stores no words, and still finds reformulations', () => {
+    const hiddenPath = tmpFile();
+    const hidden = new AnalyticsStore({ dbPath: hiddenPath, logQueryText: false });
+    try {
+      const t0 = Date.now() - 60_000;
+      for (const [ts, q] of [
+        [t0, 'invoice retry schedule'],
+        [t0 + 5_000, 'invoice retry schedule ?'],
+      ] as const) {
+        tctx.run(newContext({ user: 'alice', session: 'sess' }), () => {
+          hidden.recordSearch({
+            ts,
+            tool: 'search',
+            groupName: 'g',
+            anchorProject: null,
+            queryText: q,
+            queryHash: hashQuery(q),
+            queryTokens: tokenizeQuery(q),
+            limit: 5,
+            durationMs: 10,
+            resultCount: 0,
+            cacheHit: false,
+            error: null,
+            results: [],
+          });
+        });
+      }
+      const rows = hidden.database
+        .prepare('SELECT query_text, query_tokens FROM search_events')
+        .all() as Array<{ query_text: string | null; query_tokens: string }>;
+      expect(rows.map((r) => r.query_text)).toEqual([null, null]);
+      for (const r of rows) {
+        expect(r.query_tokens).not.toMatch(/invoice|retry|schedule/);
+        expect(JSON.parse(r.query_tokens)).toHaveLength(3);
+      }
+      expect(retryRate(hidden, {})[0]!.reformulations).toBe(1);
+    } finally {
+      hidden.close();
+      fs.rmSync(path.dirname(hiddenPath), { recursive: true, force: true });
+    }
+  });
+
   it('top_queries deduplicates by query_hash', () => {
     const baseTs = Date.now() - 60_000;
     for (let i = 0; i < 3; i++) {

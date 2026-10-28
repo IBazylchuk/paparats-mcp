@@ -1,6 +1,7 @@
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
+import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import { v7 as uuidv7 } from 'uuid';
 import { tctx } from './context.js';
@@ -42,7 +43,10 @@ export interface AnalyticsStoreOptions {
   dbPath?: string;
   /** When false, search_results.file is stored as NULL */
   logResultFiles?: boolean;
-  /** When false, search_events.query_text is stored as NULL */
+  /**
+   * When false, search_events.query_text is stored as NULL and query_tokens
+   * as keyed hashes of the words
+   */
   logQueryText?: boolean;
 }
 
@@ -51,6 +55,12 @@ export class AnalyticsStore implements TelemetrySink {
   private closed = false;
   private logResultFiles: boolean;
   private logQueryText: boolean;
+  /**
+   * Key for query_tokens when query text is off. Never stored: retry pairs are
+   * seconds apart, so they still compare, and once the process is gone the
+   * hashes cannot be matched against guessed words.
+   */
+  private readonly tokenKey = crypto.randomBytes(32);
 
   private insSearchEvent!: Database.Statement;
   private insSearchResult!: Database.Statement;
@@ -401,7 +411,9 @@ export class AnalyticsStore implements TelemetrySink {
         anchor_project: event.anchorProject,
         query_text: this.logQueryText ? event.queryText.slice(0, 1024) : null,
         query_hash: event.queryHash,
-        query_tokens: JSON.stringify(event.queryTokens),
+        query_tokens: JSON.stringify(
+          this.logQueryText ? event.queryTokens : event.queryTokens.map((t) => this.hideToken(t))
+        ),
         limit_param: event.limit,
         duration_ms: event.durationMs,
         result_count: event.resultCount,
@@ -429,6 +441,10 @@ export class AnalyticsStore implements TelemetrySink {
     } catch (err) {
       console.warn('[analytics] recordSearch failed:', (err as Error).message);
     }
+  }
+
+  private hideToken(token: string): string {
+    return crypto.createHmac('sha256', this.tokenKey).update(token).digest('hex').slice(0, 16);
   }
 
   recordChunkFetch(event: ChunkFetchEvent): void {
