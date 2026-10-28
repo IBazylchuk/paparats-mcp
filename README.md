@@ -177,14 +177,6 @@ that code; each result lists what the chunk defines and uses, with a chunk id fo
 `find_usages` and `change_impact`. Then the agent reads the exact places with grep and plain
 file reads.
 
-In a test on a large private codebase of 8 repositories (10 questions, 5 runs each, Claude
-Code with Opus), the agent with Paparats took 22–42% less time (medians) on the four
-questions it had to answer by meaning: two flows across many files and two "where do we do
-X". For an error message or a field name it gained nothing (one of the two took 25% longer),
-and when not told to use Paparats the agent did not call it there. Answers cost about the
-same or more (median +19% over all 10), because search returns whole chunks of code. On one
-small repository with a module map in `CLAUDE.md`, grep was enough.
-
 ### Which languages are supported?
 
 Syntax-based chunking and the call graph cover 11 languages: TypeScript (with TSX),
