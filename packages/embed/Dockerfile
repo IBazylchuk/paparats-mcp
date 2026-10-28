@@ -1,9 +1,8 @@
 # paparats-embed — llama.cpp (llama-server) + llama-swap with pre-baked embedding models
 # Published as ibaz/paparats-embed:latest
 #
-# Replaces the old ibaz/paparats-ollama image. llama-server is ~6.6x faster than
-# Ollama for embeddings on the same hardware and serves jina-code-embeddings,
-# which Ollama 0.30+ rejects with HTTP 501. llama-swap fronts on-demand
+# Replaces the old ibaz/paparats-ollama image. llama-server is ~5-9x faster than
+# Ollama for embeddings on the same hardware. llama-swap fronts on-demand
 # llama-server processes: one port, route by model name (like Ollama did), with
 # per-model lazy loading + idle unload (EMBED_TTL).
 #

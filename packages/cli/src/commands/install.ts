@@ -27,7 +27,7 @@ const EMBED_CONFIG_FILE = path.join(PAPARATS_HOME, 'llama-swap.yaml');
 /** Port the native embed server (llama-swap) listens on. Deliberately NOT
  *  11434 (Ollama's default): sharing that port means llama-swap can't start
  *  while Ollama is running, and — worse — an embed call could silently hit a
- *  running Ollama (which rejects the jina-code model). Using a dedicated port
+ *  running Ollama, which has none of these models. Using a dedicated port
  *  lets paparats and Ollama coexist. Must stay in sync with the compose
  *  generator's embed URL and every EMBED_URL default across packages. */
 const EMBED_PORT = 18434;

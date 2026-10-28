@@ -1,6 +1,6 @@
 # paparats-embed
 
-**Fast, zero-config embedding server for [Paparats MCP](https://github.com/ibaz/paparats-mcp) — code and text embeddings on CPU, no GPU required.**
+**Fast, zero-config embedding server for [Paparats MCP](https://github.com/IBazylchuk/paparats-mcp) — code and text embeddings on CPU, no GPU required.**
 
 `ibaz/paparats-embed` bundles [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server` behind [llama-swap](https://github.com/mostlygeek/llama-swap) with two embedding models **pre-baked and ready on first request**. Drop it in, point Paparats at it, and index code and docs — nothing to download, register, or warm up.
 
@@ -29,14 +29,14 @@ Swapping in a different model? Follow [docs/replacing-embedding-models.md](../..
 
 ```bash
 docker run -d --name paparats-embed \
-  -p 11434:8080 \
+  -p 18434:8080 \
   ibaz/paparats-embed:latest
 ```
 
 Then embed via the OpenAI-style API:
 
 ```bash
-curl http://localhost:11434/v1/embeddings \
+curl http://localhost:18434/v1/embeddings \
   -H 'Content-Type: application/json' \
   -d '{"model":"bge-code-v1","input":"def add(a, b): return a + b"}'
 ```
@@ -55,8 +55,8 @@ Memory footprint scales with `LLAMA_BATCH` × the two resident models. At the `2
 
 ## Ports
 
-llama-swap listens on `8080` inside the container. The examples map it to host `11434` for a painless migration from Ollama (same host port), but any host port works.
+llama-swap listens on `8080` inside the container. The examples map it to host `18434`, the port `paparats install` uses (not Ollama's `11434`, so both can run), but any host port works.
 
 ---
 
-Built for [Paparats MCP](https://github.com/ibaz/paparats-mcp) — semantic code search over your repositories.
+Built for [Paparats MCP](https://github.com/IBazylchuk/paparats-mcp) — semantic code search over your repositories.

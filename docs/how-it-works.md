@@ -25,17 +25,17 @@ or a `POST /trigger`) takes every file in scope through these steps:
 
 1. **Find files.** `indexing.paths`, `.gitignore`, the exclude patterns; binary files are
    skipped.
-2. **Skip what did not change.** The file's content hash, chunking and embedding format
-   are compared with what is stored; an unchanged file stops here.
-3. **Parse once.** tree-sitter (WASM) parses the file. The same tree is used for chunking
+2. **Parse once.** tree-sitter (WASM) parses the file. The same tree is used for chunking
    and for symbols.
-4. **Chunk.** Chunks follow functions, classes and methods. Small neighbours are merged,
-   large ones split. Files without a grammar are split by braces, indentation or blocks.
-   The reasons are in [chunking-strategy.md](chunking-strategy.md).
-5. **Symbols.** Each chunk records what it defines (top-level functions, classes and
+3. **Chunk.** Chunks follow functions, classes and methods. Small neighbours are merged,
+   large ones split. Files without a grammar are cut into runs of lines of a fixed size.
+4. **Symbols.** Each chunk records what it defines (top-level functions, classes and
    variables, methods with their class) and what it uses (calls and references), with the
    method each call is made from and the class it is called on. Names declared inside a
    function body stay out: no other file can reach them.
+5. **Skip what did not change.** The chunks (content and lines), the chunking and the
+   embedding format are compared with what is stored; an unchanged file stops here, before
+   anything is embedded or written.
 6. **Metadata.** Service, bounded context and tags from the config and the folder layout.
 7. **Embed.** Each chunk is embedded with its file path above it (`Filepath: <path>`); the
    cache (by content hash) skips text embedded before.
@@ -45,8 +45,8 @@ or a `POST /trigger`) takes every file in scope through these steps:
    diffs touch, ticket references taken from the messages.
 10. **Call graph.** Calls and references between chunks become edges in SQLite. Only the
     edges of changed files, and of the uses of the names they define, are worked out
-    again; the whole graph is built only for a new project or when more than 300 files
-    changed.
+    again; the whole graph is built only for a new project, when more than 300 files
+    changed, or when a file added, removed or re-parented a class.
 
 With `INDEX_DOCS=true` each repository's markdown also goes through a separate pass into
 the documentation layer ([documentation-search.md](documentation-search.md)).
@@ -114,7 +114,7 @@ are read from its `package.json` and `tsconfig*.json` files, so a workspace impo
 taken for a package.
 
 `change_impact` walks those edges backwards from what you are about to change: callers,
-then their callers, up to 3 steps. A caller passes the change on only through the methods
+then their callers, 2 steps by default and up to 3 (`depth`). A caller passes the change on only through the methods
 that actually make the call, and the methods of the same chunk that reach those through
 the chunk's own calls (a public `call` using a private helper that makes the call). Code
 holding the class as a value passes it on whatever method changed. Each dependent appears

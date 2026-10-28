@@ -13,18 +13,26 @@ The server exposes three MCP endpoints with different tool sets. The knowledge e
 serves `search_docs` and `get_document` only; the coding and support ones differ as
 follows:
 
-| Tool              | Coding (`/mcp`) | Support (`/support/mcp`) |
-| ----------------- | :-------------: | :----------------------: |
-| `search_code`     |       yes       |           yes            |
-| `get_chunk`       |       yes       |           yes            |
-| `find_usages`     |       yes       |           yes            |
-| `health_check`    |       yes       |           yes            |
-| `delete_project`  |       yes       |            —             |
-| `get_chunk_meta`  |        —        |           yes            |
-| `search_changes`  |        —        |           yes            |
-| `explain_feature` |        —        |           yes            |
-| `recent_changes`  |        —        |           yes            |
-| `impact_analysis` |        —        |           yes            |
-| `get_document`    |        —        |           yes            |
+| Tool | Coding (`/mcp`) | Support (`/support/mcp`) |
+| --- | :-: | :-: |
+| `search_code` | yes | yes |
+| `get_chunk` | yes | yes |
+| `find_usages` | yes | yes |
+| `change_impact` | yes | — |
+| `module_map` | yes | yes |
+| `health_check` | yes | yes |
+| `list_projects` | yes | yes |
+| `delete_project` | yes | — |
+| `search_docs` | yes | yes |
+| `get_document` | — | yes |
+| `term_search`, `term_list` | yes | yes |
+| `term_record`, `term_delete` | yes | — |
+| `arch_context`, `arch_list`, `arch_record_component`, `arch_record_decision`, `arch_record_lesson`, `arch_suggest_components`, `arch_delete` | yes | — |
+| `get_chunk_meta` | — | yes |
+| `search_changes` | — | yes |
+| `explain_feature` | — | yes |
+| `recent_changes` | — | yes |
+| `impact_analysis` | — | yes |
+| `token_savings_report`, `top_queries`, `slowest_searches`, `cross_project_share`, `retry_rate`, `failed_chunks` | — | yes |
 
 Changes apply after server restart. No rebuild needed for JSON edits (in dev with ts-node/watch).

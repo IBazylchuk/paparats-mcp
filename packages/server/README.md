@@ -34,7 +34,7 @@ http://<host>:9876/ui                      – operator console
 http://<host>:9876/api/analytics/...       – analytics REST API (UI backend)
 
 http://<host>:9876/mcp                     – MCP, coding mode (Streamable HTTP)
-http://<host>:9876/sse                     – MCP, coding mode (SSE / Cursor)
+http://<host>:9876/sse                     – MCP, coding mode (legacy SSE)
 http://<host>:9876/messages                – MCP, coding mode (SSE message channel)
 
 http://<host>:9876/support/mcp             – MCP, support mode
@@ -162,7 +162,7 @@ support-only — recording belongs to the architectural-review workflow.
 | `symbol-graph.ts`                   | Cross-chunk symbol edges                                                                                |
 | `embeddings.ts`                     | llama-server provider + SQLite cache + cached wrapper                                                   |
 | `indexer.ts`                        | Group-aware Qdrant indexing — `createQdrantClient()`, `toCollectionName()`, single-parse `chunkFile()`  |
-| `searcher.ts`                       | Vector search with query expansion, cache, metrics                                                      |
+| `searcher.ts`                       | Vector search, query expansion (support tools only), cache, metrics                                     |
 | `query-expansion.ts`                | Abbreviation / case / plural / filler expansion                                                         |
 | `task-prefixes.ts`                  | Query-type detection + bge-code-v1 / Qwen3 query instructions                                           |
 | `query-cache.ts`                    | In-memory LRU cache with TTL and per-group invalidation                                                 |
@@ -192,7 +192,7 @@ support-only — recording belongs to the architectural-review workflow.
 | `EMBEDDING_PROVIDER`        | `llama`                                | Code embedding provider: `llama` \| `openai` \| `voyage`    |
 | `EMBEDDING_MODEL`           | `bge-code-v1`                          | Code embedding model                                         |
 | `EMBEDDING_DIMENSIONS`      | `1536`                                 | Code embedding dimensions                                    |
-| `TEXT_EMBEDDING_PROVIDER`   | `llama`                                | `llama` or `openai` for the arch layer                      |
+| `TEXT_EMBEDDING_PROVIDER`   | `llama`                                | `llama`, `openai` or `voyage` for the arch layer            |
 | `TEXT_EMBEDDING_MODEL`      | `qwen3-embedding-0.6b`                 | Arch-layer text embedding model                              |
 | `TEXT_EMBEDDING_DIMENSIONS` | `1024`                                 | Arch-layer text embedding dimensions                         |
 | `PAPARATS_METRICS`          | `false`                                | Set to `true` to expose `/metrics`                           |

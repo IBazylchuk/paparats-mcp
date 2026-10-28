@@ -1,7 +1,8 @@
 # Configuration
 
 Two files, both optional: `~/.paparats/projects.yml` lists what to index, and a
-`.paparats.yml` in a repository tunes that repository. Then the CLI and the environment
+`.paparats.yml` in a repository tunes that repository (when present, it needs `group` and
+`language`). Then the CLI and the environment
 variables.
 
 ## `~/.paparats/projects.yml`: what to index
@@ -50,9 +51,9 @@ indexing: # all optional
   exclude: [node_modules, dist, '**/*.test.ts']
   exclude_extra: ['**/__fixtures__/**'] # on top of the language defaults
   chunkSize: 1500 # characters per chunk, 128–8192 (default 1024)
-  overlap: 100 # default 128
-  concurrency: 4 # parallel embedding requests (default 2)
-  batchSize: 8 # texts per embedding request (default 50)
+  overlap: 100 # characters shared by neighbouring fixed-size chunks, files without a grammar (default 128)
+  concurrency: 4 # files indexed in parallel (default 2)
+  batchSize: 8 # points per Qdrant write (default 50); texts per embedding request are EMBED_BATCH_SIZE (5)
 
 metadata:
   service: billing
@@ -116,7 +117,8 @@ curl -X POST http://localhost:9877/trigger -H 'Content-Type: application/json' \
 ```
 
 Leave out `repos` (or send `[]`) for every project. `"force": true` drops the existing
-chunks first; use it after changing the schema or the model. A trigger that arrives while a
+chunks first; use it after changing the schema. It keeps the collection, so it is not enough
+for a new embedding model: see [replacing-embedding-models.md](replacing-embedding-models.md). A trigger that arrives while a
 cycle runs is queued: the answer is `202` with `"status": "queued"`. From CI, the same
 `curl` in a job on push to `main` makes a push searchable right away.
 
@@ -134,8 +136,9 @@ paparats remove <name> [--yes]          Remove a project and delete its data.
 paparats start [--logs]                 Start the stack (--logs follows the logs).
 paparats stop                           Stop it; the data volumes stay.
 paparats restart                        Recreate the containers, picking up changes.
-paparats edit compose|projects          Open the file in $EDITOR; on save, check it,
-                                          regenerate the compose, restart, reindex.
+paparats edit compose|projects          Open the file in $EDITOR. For projects, on save:
+                                          check it, regenerate the compose, restart,
+                                          reindex. For compose, run `paparats restart`.
 
 paparats search <query> [flags]         Search from the terminal.
 paparats status                         Docker, embed server, server, indexer.

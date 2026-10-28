@@ -41,8 +41,10 @@ Query types in the shipped dataset:
 | `code`          | a code snippet whose near-duplicates should be found        |
 | `cross-package` | "how does the CLI search command reach the server's search API" |
 
-The per-type breakdown is the point: dense-only search is expected to be weakest on exact
-identifiers and error strings, and that is where a hybrid ranker should show its gain.
+The per-type breakdown is the point: dense-only search was expected to be weakest on exact
+identifiers and error strings, where a hybrid ranker would show its gain. On this
+repository's set it is not (`baselines/`: error MRR 1.000, identifier 0.950), so a ranker
+change has to show its gain on the other query types.
 
 ## Running it
 

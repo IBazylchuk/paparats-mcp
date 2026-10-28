@@ -28,7 +28,7 @@ Full steps are in the main repository README.
 
 The plugin runs nothing on its own. Claude sends your search questions to the
 Paparats server at the configured URL and reads back code chunks from your own
-index. With the default URL, nothing leaves your machine.
+index. With the default URL and local models, your code and queries stay on your machine (see [PRIVACY.md](../PRIVACY.md)).
 
 ## Install
 

@@ -8,4 +8,4 @@ indexing:
 
 embeddings:
   provider: "llama"
-  model: "jina-code-embeddings"  # llama-swap route → jinaai/jina-code-embeddings-1.5b-GGUF
+  model: "bge-code-v1"  # llama-swap route → bge-code-v1 GGUF (the default)

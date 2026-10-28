@@ -1,4 +1,4 @@
 {
   "name": "paparats",
-  "description": "Self-hosted semantic code search across all your repos. Connects to the Paparats server on localhost:9876; your code never leaves your machine."
+  "description": "Self-hosted semantic code search across all your repos. Connects to the Paparats server on localhost:9876; by default your code and queries stay on your machine."
 }
