@@ -85,7 +85,9 @@ function createMockMetadataStore(): MetadataStore {
     getTickets: vi.fn().mockReturnValue([]),
     getEdgesTo: vi.fn().mockReturnValue([]),
     getEdgesFrom: vi.fn().mockReturnValue([]),
-    getGroupDegreeSnapshot: vi.fn().mockReturnValue({ hubChunkIds: new Set() }),
+    getGroupDegreeSnapshot: vi
+      .fn()
+      .mockReturnValue({ hubChunkIds: new Set(), calledHubChunkIds: new Set() }),
     getNameUsage: vi.fn().mockReturnValue({ callerFiles: 0, filesUsing: new Map() }),
     getEdgesFromFile: vi.fn().mockReturnValue([]),
     getTestFiles: vi.fn().mockReturnValue(null),
@@ -1454,6 +1456,53 @@ describe('McpHandler', () => {
       });
     });
 
+    it('shows the line of the calling method and the methods of its chunk that reach it', async () => {
+      const { metadataStore, indexer } = mocks();
+      const VIEW = 'g1//p1//src/view.ts//0-9//h9';
+      const edges = [
+        {
+          ...edge(CALLER, SEED, 'authenticate'),
+          from_symbols: ['submit'],
+          reach_symbols: ['wizard'],
+        },
+        edge(VIEW, CALLER, 'wizard'),
+      ];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      // CALLER calls a lot (an out-degree hub) but few call it: its callers are followed.
+      vi.mocked(metadataStore.getGroupDegreeSnapshot).mockReturnValue({
+        hubChunkIds: new Set([CALLER]),
+        calledHubChunkIds: new Set(),
+      } as never);
+      const base = vi.mocked(indexer.getChunkById).getMockImplementation()!;
+      vi.mocked(indexer.getChunkById).mockImplementation(async (id: string) => {
+        const payload = await base(id);
+        if (id !== CALLER) return payload;
+        const content = [
+          'export class LoginForm {',
+          '  wizard() {',
+          '    return this.submit();',
+          '  }',
+          '',
+          '  async submit(): Promise<void> {',
+          '    await authenticate();',
+          '  }',
+          '}',
+        ].join('\n');
+        return { ...payload, content };
+      });
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        // The chunk starts at line 6 (1-indexed); `submit` is defined 5 lines in.
+        expect(text).toContain('**[p1] src/login.ts:11** `submit` — uses `authenticate`');
+        expect(text).toContain('further in this chunk, through it: `wizard` (line 7)');
+        expect(text).toContain('src/view.ts:1** — uses `wizard`');
+        expect(text).not.toContain('[hub]');
+        expect(text).toContain('Steps count chunks.');
+      });
+    });
+
     it('lists a barrel file as re-exporting the change, not as a caller', async () => {
       const { metadataStore, indexer } = mocks();
       const BARREL = 'g1//p1//src/lib.ts//0-40//h10';
@@ -2067,7 +2116,7 @@ describe('McpHandler', () => {
     ] as never);
     (metadataStore as unknown as { getGroupDegreeSnapshot: unknown }).getGroupDegreeSnapshot = vi
       .fn()
-      .mockReturnValue({ hubChunkIds: new Set() });
+      .mockReturnValue({ hubChunkIds: new Set(), calledHubChunkIds: new Set() });
 
     await withHandler({ searcher, indexer, metadataStore }, async (port) => {
       const seedHidden = await callTool(port, 'find_usages', { chunk_id: OUT_OF_SCOPE_CHUNK });
@@ -2099,7 +2148,7 @@ describe('McpHandler', () => {
     ] as never);
     (metadataStore as unknown as { getGroupDegreeSnapshot: unknown }).getGroupDegreeSnapshot = vi
       .fn()
-      .mockReturnValue({ hubChunkIds: new Set() });
+      .mockReturnValue({ hubChunkIds: new Set(), calledHubChunkIds: new Set() });
 
     await withHandler({ searcher, indexer, metadataStore }, async (port) => {
       const called = await callTool(port, 'find_usages', {

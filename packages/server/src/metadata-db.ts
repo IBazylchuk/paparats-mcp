@@ -747,6 +747,8 @@ export class MetadataStore {
        * fresh Sets per tool invocation.
        */
       hubChunkIds: Set<string>;
+      /** The hubs by in-degree only: called from many places (see `change_impact`). */
+      calledHubChunkIds: Set<string>;
       /**
        * Marked true when edges are written/deleted for the group. A stale
        * snapshot is still served immediately (stale-while-revalidate) while a
@@ -948,6 +950,7 @@ export class MetadataStore {
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
     hubChunkIds: Set<string>;
+    calledHubChunkIds: Set<string>;
     stale: boolean;
   } {
     // Threshold is `>= max(5, p95)`. Using `>` would never match anything
@@ -960,10 +963,11 @@ export class MetadataStore {
     for (const r of stats.topInDegree) {
       if (r.degree >= inFloor) hubChunkIds.add(r.chunkId);
     }
+    const calledHubChunkIds = new Set(hubChunkIds);
     for (const r of stats.topOutDegree) {
       if (r.degree >= outFloor) hubChunkIds.add(r.chunkId);
     }
-    return { ...stats, hubChunkIds, computedAt: Date.now(), stale: false };
+    return { ...stats, hubChunkIds, calledHubChunkIds, computedAt: Date.now(), stale: false };
   }
 
   /** Recompute degree stats off the request path and store them. Deduped per
@@ -989,6 +993,7 @@ export class MetadataStore {
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
     hubChunkIds: Set<string>;
+    calledHubChunkIds: Set<string>;
   } {
     const cached = this.degreeCache.get(group);
     if (cached) {
@@ -1019,6 +1024,7 @@ export class MetadataStore {
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
     hubChunkIds: Set<string>;
+    calledHubChunkIds: Set<string>;
   } {
     const stats = this.getGroupDegreeStats(group);
     return {
@@ -1027,6 +1033,7 @@ export class MetadataStore {
       topInDegree: stats.topInDegree,
       topOutDegree: stats.topOutDegree,
       hubChunkIds: stats.hubChunkIds,
+      calledHubChunkIds: stats.calledHubChunkIds,
     };
   }
 

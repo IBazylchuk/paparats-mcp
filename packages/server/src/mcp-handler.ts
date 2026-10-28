@@ -69,7 +69,7 @@ import {
   rankQuery,
 } from './ranking.js';
 import { testsNamedAfter } from './test-files.js';
-import { collectDependents, MAX_IMPACT_DEPTH } from './change-impact.js';
+import { collectDependents, definitionLine, MAX_IMPACT_DEPTH } from './change-impact.js';
 import { isCommonName } from './symbol-graph.js';
 import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map.js';
 
@@ -2541,7 +2541,8 @@ export class McpHandler {
               }
             }
 
-            const hubs = store.getGroupDegreeSnapshot(parsed.group).hubChunkIds;
+            // A chunk that calls a lot (a large class) has few dependents; only being called from many places stops the walk.
+            const hubs = store.getGroupDegreeSnapshot(parsed.group).calledHubChunkIds;
             const names = store.getNameUsage(parsed.group);
             // Per caller file: the files it reaches through a specific name.
             const specificLinks = new Map<string, Set<string>>();
@@ -2674,8 +2675,17 @@ export class McpHandler {
               const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
               const f = typeof ep['file'] === 'string' ? ep['file'] : r.file;
               const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : r.startLine;
+              const content = typeof ep['content'] === 'string' ? ep['content'] : '';
+              const at = (name: string) => definitionLine(content, sl, name, f) ?? sl;
+              const first = r.dep.callers[0];
+              const shownAt = first !== undefined && !r.dep.reexport ? at(first) : sl;
               const sym = r.dep.reexport ? '' : callerLabel(r.dep.callers, ep);
-              return `- **[${p}] ${f}:${shownLine(sl)}**${sym} — ${uses}${hop}${marks}\n  chunk: \`${r.dep.chunkId}\`\n`;
+              const reach = r.dep.reach.slice(0, 8);
+              const further =
+                reach.length > 0
+                  ? `  further in this chunk, through it: ${reach.map((n) => `\`${n}\` (line ${shownLine(at(n))})`).join(', ')}${r.dep.reach.length > reach.length ? `, +${r.dep.reach.length - reach.length} more` : ''}\n`
+                  : '';
+              return `- **[${p}] ${f}:${shownLine(shownAt)}**${sym} — ${uses}${hop}${marks}\n${further}  chunk: \`${r.dep.chunkId}\`\n`;
             };
 
             for (let hop = 1; hop <= depth; hop++) {
@@ -2700,6 +2710,11 @@ export class McpHandler {
             if (rows.some((r) => !r.dep.certain)) {
               notes.push(
                 '`[maybe]` — linked only through a common name (its file also uses something specific from the changed file), or through such a dependent; check it really uses this code.'
+              );
+            }
+            if (rows.some((r) => r.dep.reach.length > 0)) {
+              notes.push(
+                'Steps count chunks. "Further in this chunk" are methods of the same chunk that call the listed one: a step or more further than shown, and their callers were followed.'
               );
             }
             if (rows.some((r) => r.dep.hub)) {
