@@ -39,6 +39,12 @@ over many repositories at once, on one server that a whole team and its agents s
 - **[Serena](https://github.com/oraios/serena)**: drives language servers for precise
   symbol lookup, references and editing in the project you work on. Paparats finds code by
   meaning across many repositories and has no editing tools. They work well together.
+- **[ast-grep](https://github.com/ast-grep/ast-grep)**: structural search, lint and
+  rewrite by code patterns over the tree-sitter syntax tree. You write a pattern that looks
+  like code, with wildcards, and it finds code of the same shape; an experimental MCP server
+  gives agents its search. It answers "find code shaped like this" and can rewrite it.
+  Paparats answers "where is the code that does X" when you know neither its shape nor its
+  name, across many repositories.
 - **[Sourcegraph MCP](https://sourcegraph.com/docs/api/mcp)**: code search, navigation and
   history from a Sourcegraph Enterprise instance.
 

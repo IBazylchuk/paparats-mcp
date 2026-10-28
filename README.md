@@ -157,6 +157,34 @@ only the files that changed, call graph included; a full pass runs every few hou
 `POST /trigger` on the indexer updates it at once, for example from CI. There is no file
 watcher, so an edit is not searchable within seconds.
 
+### Which branch is indexed?
+
+A GitHub repository (`url:` in `projects.yml`) is indexed from its default branch. A local
+folder (`path:`) is reindexed when its files change, so after a branch switch the index
+follows the checkout at the next change check (every 10 minutes by default). Index main and
+let the agent read its own branch: with several worktrees open, indexing each copy is a full
+index per copy, and mixing branches in one index would answer from code that is not on the
+agent's branch. The index tells the agent
+where to look; the files on its branch give the current code. A team shares one server
+that reindexes main.
+
+### Does it replace grep?
+
+No. grep is fast and exact when the agent knows the word: an error message, a field name,
+every use of a name before a rename. When it does not, it has to guess words and finds
+nothing where the code is named differently from what it looks for. Search by meaning finds
+that code; each result lists what the chunk defines and uses, with a chunk id for
+`find_usages` and `change_impact`. Then the agent reads the exact places with grep and plain
+file reads.
+
+In a test on a large private codebase of 8 repositories (10 questions, 5 runs each, Claude
+Code with Opus), the agent with Paparats took 22–42% less time (medians) on the four
+questions it had to answer by meaning: two flows across many files and two "where do we do
+X". For an error message or a field name it gained nothing (one of the two took 25% longer),
+and when not told to use Paparats the agent did not call it there. Answers cost about the
+same or more (median +19% over all 10), because search returns whole chunks of code. On one
+small repository with a module map in `CLAUDE.md`, grep was enough.
+
 ### Which languages are supported?
 
 Syntax-based chunking and the call graph cover 11 languages: TypeScript (with TSX),
@@ -206,7 +234,7 @@ claude-context and Sourcegraph side by side: [comparison with alternatives](docs
 | [Documentation search](docs/documentation-search.md) | Docs indexing, audience labels, the knowledge endpoint |
 | [Embedding models](docs/embeddings.md) | Local and cloud models, how they were chosen |
 | [Monitoring](docs/observability.md) | Prometheus, OpenTelemetry, the `/ui` console, token-savings estimates |
-| [Comparison with alternatives](docs/comparison.md) | Graphify, codegraph, GitNexus, codebase-memory-mcp, claude-context, Serena, Sourcegraph side by side |
+| [Comparison with alternatives](docs/comparison.md) | Graphify, codegraph, GitNexus, codebase-memory-mcp, claude-context, Serena, ast-grep, Sourcegraph side by side |
 | [Benchmarking](docs/benchmarking.md), [Chunking](docs/chunking-strategy.md), [Replacing models](docs/replacing-embedding-models.md), [Releasing](docs/releasing.md) | For contributors |
 
 ## Contributing
