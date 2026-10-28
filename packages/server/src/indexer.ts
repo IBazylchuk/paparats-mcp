@@ -29,6 +29,7 @@ import {
   MAX_DEFINITION_FANOUT,
   buildSymbolEdges,
   mayBeCommonName,
+  moduleFileCandidates,
   type ChunkSymbols,
 } from './symbol-graph.js';
 import {
@@ -191,6 +192,15 @@ function classSignature(records: Iterable<readonly [string, ClassParent[]]>): st
   return JSON.stringify([...records].map(([path, parents]) => [path, parents]).sort());
 }
 
+/**
+ * The names a barrel's chunk makes public (`export { a as b } from` gives `b`,
+ * `export * from` gives `*`): an import of them links through it, so a change
+ * to them is a change of those names.
+ */
+function reexportedNames(sites: UseSite[] | undefined): string[] {
+  return (sites ?? []).filter((s) => s.reexport).map((s) => s.from);
+}
+
 function symbolSitePayload(result: SymbolExtractionResult | undefined): Record<string, unknown> {
   if (!result?.use_sites) return {};
   const owners: Record<string, string> = {};
@@ -204,6 +214,8 @@ function symbolSitePayload(result: SymbolExtractionResult | undefined): Record<s
     ...(local.length > 0 ? { local_defs: local } : {}),
     ...(classMethods.length > 0 ? { class_methods: classMethods } : {}),
     ...(classes.length > 0 ? { def_classes: Object.fromEntries(classes) } : {}),
+    ...(result.inner_calls ? { inner_calls: result.inner_calls } : {}),
+    ...(result.default_export !== undefined ? { default_export: result.default_export } : {}),
   };
 }
 
@@ -237,9 +249,11 @@ const SYMBOL_PAYLOAD_FIELDS = [
   'local_defs',
   'class_methods',
   'def_classes',
+  'inner_calls',
+  'default_export',
 ] as const;
 
-function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): ChunkSymbols {
+export function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): ChunkSymbols {
   const defs = payload['defines_symbols'];
   const uses = payload['uses_symbols'];
   const sites = payload['use_sites'];
@@ -247,6 +261,8 @@ function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): Chun
   const local = payload['local_defs'];
   const classMethods = payload['class_methods'];
   const classes = payload['def_classes'];
+  const inner = payload['inner_calls'];
+  const defaultExport = payload['default_export'];
   return {
     chunk_id: chunkId,
     defines_symbols: Array.isArray(defs) ? (defs as string[]) : [],
@@ -260,6 +276,10 @@ function toChunkSymbols(chunkId: string, payload: Record<string, unknown>): Chun
     ...(classes && typeof classes === 'object' && !Array.isArray(classes)
       ? { def_classes: classes as Record<string, ClassParent[]> }
       : {}),
+    ...(inner && typeof inner === 'object' && !Array.isArray(inner)
+      ? { inner_calls: inner as Record<string, string[]> }
+      : {}),
+    ...(typeof defaultExport === 'string' ? { default_export: defaultExport } : {}),
   };
 }
 
@@ -647,7 +667,7 @@ export class Indexer {
     try {
       const chunks = await this.readChunkSymbols(groupName, storedName, 'file', [relPath]);
       return {
-        names: chunks.flatMap((c) => c.defines_symbols),
+        names: chunks.flatMap((c) => [...c.defines_symbols, ...reexportedNames(c.use_sites)]),
         classes: classSignature(chunks.flatMap((c) => Object.entries(c.def_classes ?? {}))),
       };
     } catch (err) {
@@ -661,8 +681,13 @@ export class Indexer {
     before: { names: string[]; classes: string },
     after: SymbolExtractionResult[] = []
   ): string[] {
-    const names = [...before.names, ...after.flatMap((r) => r.defines_symbols)];
+    const names = [
+      ...before.names,
+      ...after.flatMap((r) => [...r.defines_symbols, ...reexportedNames(r.use_sites)]),
+    ];
     if (before.classes !== classSignature(after.flatMap(classRecords))) names.push(CLASSES_CHANGED);
+    // `export * from` re-exports names no list holds: build the graph again.
+    if (names.includes('*')) names.push(CLASSES_CHANGED);
     return names;
   }
 
@@ -1928,6 +1953,7 @@ export class Indexer {
     }
     await this.addClassChains(groupName, storedName, pool);
     this.resolveAliases(groupName, storedName, [...pool.values()]);
+    await this.addModuleFiles(groupName, storedName, pool);
     const changedIds = new Set(changed.map((c) => c.chunk_id));
     const { edges } = buildSymbolEdges(
       [...pool.values()],
@@ -1976,6 +2002,45 @@ export class Indexer {
       )) {
         if (pool.has(chunk.chunk_id)) continue;
         pool.set(chunk.chunk_id, chunk);
+        fresh.push(chunk);
+      }
+    }
+  }
+
+  /**
+   * Read into `pool` every file its chunks import by a relative path, and the
+   * files those re-export from, a few files deep: an import links to the file
+   * defining the name, through barrels, and to nothing when its module is not
+   * in the project — which only the module's own chunks can tell.
+   */
+  private async addModuleFiles(
+    groupName: string,
+    storedName: string,
+    pool: Map<string, ChunkSymbols>
+  ): Promise<void> {
+    const have = new Set([...pool.keys()].map((id) => id.split('//').slice(2, -2).join('//')));
+    const asked = new Set<string>();
+    let fresh = [...pool.values()];
+    for (let round = 0; round < 6 && fresh.length > 0; round++) {
+      const wanted = new Set<string>();
+      for (const chunk of fresh) {
+        const file = chunk.chunk_id.split('//').slice(2, -2).join('//');
+        for (const site of chunk.use_sites ?? []) {
+          if (site.module === undefined || site.on !== undefined) continue;
+          for (const path of moduleFileCandidates(file, site.module)) {
+            if (!have.has(path) && !asked.has(path)) wanted.add(path);
+          }
+        }
+      }
+      if (wanted.size === 0) break;
+      for (const path of wanted) asked.add(path);
+      const read = await this.readChunkSymbols(groupName, storedName, 'file', [...wanted]);
+      this.resolveAliases(groupName, storedName, read);
+      fresh = [];
+      for (const chunk of read) {
+        if (pool.has(chunk.chunk_id)) continue;
+        pool.set(chunk.chunk_id, chunk);
+        have.add(chunk.chunk_id.split('//').slice(2, -2).join('//'));
         fresh.push(chunk);
       }
     }

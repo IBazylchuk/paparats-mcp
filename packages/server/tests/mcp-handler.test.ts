@@ -1416,7 +1416,7 @@ describe('McpHandler', () => {
         expect(isError).toBe(false);
         expect(text).toContain('## Change impact of [p1] src/auth.ts:11-21 `authenticate`');
         expect(text).toContain(
-          '3 chunks in 3 files depend on it: 2 directly, 1 through other code. 1 of them are tests.'
+          '3 chunks in 3 files depend on it within 2 steps: 2 directly, 1 through other code. 1 of them are tests.'
         );
         expect(text).toContain('### Uses it directly (1)');
         expect(text).toContain('**[p1] src/login.ts:6** — uses `authenticate`');
@@ -1494,13 +1494,152 @@ describe('McpHandler', () => {
         return { ...payload, content };
       });
       await withHandler({ metadataStore, indexer }, async (port) => {
-        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED, depth: 3 });
         // The chunk starts at line 6 (1-indexed); `submit` is defined 5 lines in.
         expect(text).toContain('**[p1] src/login.ts:11** `submit` — uses `authenticate`');
-        expect(text).toContain('further in this chunk, through it: `wizard` (line 7)');
-        expect(text).toContain('src/view.ts:1** — uses `wizard`');
+        // Symbols stored without the chunk's own calls: only a lower bound for `wizard`.
+        expect(text).toContain(
+          '### At least 2 steps away (1)\n\n- **[p1] src/login.ts:7** `wizard` — reaches it through calls in this file'
+        );
+        // `wizard` is a step or more past `submit`, so what calls it is at least 3 steps away.
+        expect(text).toContain(
+          '### At least 3 steps away (1)\n\n- **[p1] src/view.ts:1** — uses `wizard`'
+        );
         expect(text).not.toContain('[hub]');
-        expect(text).toContain('Steps count chunks.');
+        expect(text).toContain('_Steps count calls between methods');
+      });
+    });
+
+    it('counts exact steps through the calls a chunk records between its methods', async () => {
+      const { metadataStore, indexer } = mocks();
+      const VIEW = 'g1//p1//src/view.ts//0-9//h9';
+      const edges = [
+        {
+          ...edge(CALLER, SEED, 'authenticate'),
+          from_symbols: ['submit'],
+          reach_symbols: ['wizard'],
+          reach_steps: [1],
+        },
+        edge(VIEW, CALLER, 'wizard'),
+      ];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      const base = vi.mocked(indexer.getChunkById).getMockImplementation()!;
+      vi.mocked(indexer.getChunkById).mockImplementation(async (id: string) => {
+        const payload = await base(id);
+        if (id !== CALLER) return payload;
+        return {
+          ...payload,
+          defines_symbols: ['wizard', 'submit'],
+          inner_calls: { submit: ['wizard'] },
+        };
+      });
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED, depth: 3 });
+        expect(text).toContain(
+          '### 2 steps away (1)\n\n- **[p1] src/login.ts:6** `wizard` — calls `submit` in this file'
+        );
+        expect(text).toContain('### 3 steps away (1)\n\n- **[p1] src/view.ts:1** — uses `wizard`');
+        expect(text).not.toContain('At least');
+        // Asked for 2 steps: the caller 3 steps away is counted, not listed.
+        const near = await callTool(port, 'change_impact', { chunk_id: SEED, depth: 2 });
+        expect(near.text).toContain('1 more chunk is further than 2 steps away, not listed.');
+        expect(near.text).not.toContain('src/view.ts');
+      });
+    });
+
+    it('follows the callers of a method that begins in an earlier chunk of its file', async () => {
+      const { metadataStore, indexer } = mocks();
+      const HEAD = 'g1//p1//src/login.ts//0-4//h0';
+      const VIEW = 'g1//p1//src/view.ts//0-9//h9';
+      const TAIL = 'g1//p1//src/login.ts//16-20//h3';
+      const edges = [
+        { ...edge(CALLER, SEED, 'authenticate'), from_symbols: ['submit'] },
+        { ...edge(TAIL, SEED, 'authenticate'), from_symbols: ['submit'] },
+        { ...edge(VIEW, HEAD, 'submit'), from_symbols: ['render'] },
+      ];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      const base = vi.mocked(indexer.getChunkById).getMockImplementation()!;
+      vi.mocked(indexer.getChunkById).mockImplementation(async (id: string) => {
+        const payload = await base(id);
+        if (id !== HEAD) return payload;
+        const content =
+          'export class LoginForm {\n  async submit(): Promise<void> {\n    const a = 1;';
+        return { ...payload, defines_symbols: ['LoginForm', 'submit'], content };
+      });
+      vi.mocked(indexer.getAdjacentChunks).mockResolvedValue([
+        { chunk_id: HEAD },
+        { chunk_id: CALLER },
+        { chunk_id: TAIL },
+      ]);
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', {
+          chunk_id: SEED,
+          symbol: 'authenticate',
+        });
+        // `submit` begins on line 2 of the file, in the chunk before the one calling the change.
+        expect(text).toContain('**[p1] src/login.ts:2** `submit` — uses `authenticate`');
+        // Both later chunks of `submit` share its row.
+        expect(text).toContain(`chunks: \`${CALLER}\`, \`${TAIL}\``);
+        expect(text).toContain('### Uses it directly (1)');
+        expect(text).toContain(
+          '### 2 steps away (1)\n\n- **[p1] src/view.ts:1** `render` — uses `submit`'
+        );
+      });
+    });
+
+    it('lists the methods of the changed chunk that call it, a step further each', async () => {
+      const { metadataStore, indexer } = mocks();
+      const VIEW = 'g1//p1//src/view.ts//0-9//h9';
+      const edges = [edge(VIEW, SEED, 'logout')];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      const base = vi.mocked(indexer.getChunkById).getMockImplementation()!;
+      vi.mocked(indexer.getChunkById).mockImplementation(async (id: string) => {
+        const payload = await base(id);
+        if (id !== SEED) return payload;
+        const content =
+          'export function authenticate() {}\nexport function logout() {\n  authenticate();\n}';
+        return { ...payload, content, inner_calls: { authenticate: ['logout'] } };
+      });
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', {
+          chunk_id: SEED,
+          symbol: 'authenticate',
+        });
+        expect(text).toContain('1 other method of the changed chunk calls it through the chunk');
+        expect(text).toContain(
+          '### Uses it directly (1)\n\n- **[p1] src/auth.ts:12** `logout` — calls `authenticate` in this file'
+        );
+        expect(text).toContain('### 2 steps away (1)\n\n- **[p1] src/view.ts:1** — uses `logout`');
+      });
+    });
+
+    it('says steps count from every name of the chunk when no symbol is given', async () => {
+      const { metadataStore, indexer } = mocks();
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) =>
+          [edge(CALLER, SEED, 'authenticate')].filter((e) => e.to_chunk_id === id) as never
+      );
+      const base = vi.mocked(indexer.getChunkById).getMockImplementation()!;
+      vi.mocked(indexer.getChunkById).mockImplementation(async (id: string) => {
+        const payload = await base(id);
+        return id === SEED ? { ...payload, defines_symbols: ['authenticate', 'logout'] } : payload;
+      });
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain(
+          'Steps are counted from any of the 2 names this chunk defines (`authenticate`, `logout`); pass `symbol` to count from one.'
+        );
+        const one = await callTool(port, 'change_impact', {
+          chunk_id: SEED,
+          symbol: 'authenticate',
+        });
+        expect(one.text).not.toContain('Steps are counted from any');
       });
     });
 
@@ -1552,7 +1691,7 @@ describe('McpHandler', () => {
       );
       await withHandler({ metadataStore, indexer }, async (port) => {
         const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
-        expect(text).toContain('No indexed test reaches it.');
+        expect(text).toContain('No test in the index reaches it.');
         expect(text).toContain('- `src/auth.test.ts`');
         expect(text).toContain('- `src/login.spec.ts`');
       });

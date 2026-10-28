@@ -195,6 +195,12 @@ export interface SymbolEdge {
    * follows their callers too; they are not named as making the call.
    */
   reach_symbols?: string[];
+  /**
+   * Per name of `reach_symbols`, the calls inside the chunk from it to the
+   * nearest calling method (1 = calls one directly). Absent on edges built
+   * from symbols stored before `inner_calls` were recorded.
+   */
+  reach_steps?: number[];
 }
 
 /**

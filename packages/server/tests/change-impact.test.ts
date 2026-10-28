@@ -49,6 +49,52 @@ describe('collectDependents', () => {
     ]);
   });
 
+  it('counts steps by method: past a method reaching the call in its chunk, a lower bound', () => {
+    const rows: SymbolEdge[] = [
+      {
+        from_chunk_id: 'form',
+        to_chunk_id: 'seed',
+        relation_type: 'calls',
+        symbol_name: 'f',
+        from_symbols: ['submit'],
+        reach_symbols: ['wizard'],
+      },
+      { from_chunk_id: 'page', to_chunk_id: 'form', relation_type: 'calls', symbol_name: 'submit' },
+      { from_chunk_id: 'view', to_chunk_id: 'form', relation_type: 'calls', symbol_name: 'wizard' },
+      { from_chunk_id: 'app', to_chunk_id: 'view', relation_type: 'calls', symbol_name: 'render' },
+    ];
+    const edgesTo = (id: string) => rows.filter((e) => e.to_chunk_id === id);
+    const { dependents } = collectDependents({ ...base, depth: 3, seeds: ['seed'], edgesTo });
+    expect(dependents.map((d) => [d.chunkId, d.hop, d.step, d.exact])).toEqual([
+      ['form', 1, 1, true],
+      ['page', 2, 2, true],
+      ['view', 2, 3, false],
+      ['app', 3, 4, false],
+    ]);
+  });
+
+  it('keeps a later exact path over a nearer lower bound of the same step', () => {
+    const rows: SymbolEdge[] = [
+      {
+        from_chunk_id: 'form',
+        to_chunk_id: 'seed',
+        relation_type: 'calls',
+        symbol_name: 'f',
+        from_symbols: ['submit'],
+        reach_symbols: ['wizard'],
+      },
+      { from_chunk_id: 'helper', to_chunk_id: 'seed', relation_type: 'calls', symbol_name: 'f' },
+      { from_chunk_id: 'mid', to_chunk_id: 'helper', relation_type: 'calls', symbol_name: 'g' },
+      // `view` calls `wizard` (at least 3 steps) and `mid` (exactly 3).
+      { from_chunk_id: 'view', to_chunk_id: 'form', relation_type: 'calls', symbol_name: 'wizard' },
+      { from_chunk_id: 'view', to_chunk_id: 'mid', relation_type: 'calls', symbol_name: 'h' },
+    ];
+    const edgesTo = (id: string) => rows.filter((e) => e.to_chunk_id === id);
+    const { dependents } = collectDependents({ ...base, depth: 3, seeds: ['seed'], edgesTo });
+    const view = dependents.find((d) => d.chunkId === 'view')!;
+    expect([view.hop, view.step, view.exact]).toEqual([2, 3, true]);
+  });
+
   it('follows a chunk again when a later hop reaches another of its methods', () => {
     const edgesTo = graph([
       ['config', 'seed', 'f', 'INFERRED', ['description']],

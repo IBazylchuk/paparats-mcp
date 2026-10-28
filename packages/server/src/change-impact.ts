@@ -6,16 +6,28 @@ export const MAX_IMPACT_DEPTH = 3;
 /** One chunk that depends, directly or through others, on the code being changed. */
 export interface Dependent {
   chunkId: string;
-  /** 1 = uses the changed code itself; 2 = uses a hop-1 dependent; and so on. */
+  /** Chunks from the change: 1 = uses the changed code itself; 2 = uses a hop-1 dependent; and so on. */
   hop: number;
+  /**
+   * Method calls from the change to the nearest of its methods: 1 calls the
+   * changed code, 2 calls a method that does, and so on, counting calls inside
+   * a chunk between its methods too.
+   */
+  step: number;
+  /**
+   * False when `step` is only a lower bound: the nearest path goes through
+   * calls inside a chunk whose symbols were stored before those were recorded.
+   */
+  exact: boolean;
+  /** Each affected method of the chunk with its step (`''` for code outside any method). */
+  methods: Array<{ name: string; step: number; exact: boolean }>;
   /** Names it uses from the chunks one hop closer to the change. */
   symbols: string[];
   /** The methods in it that make those calls; empty when the call is outside any method. */
   callers: string[];
   /**
    * Other methods of the chunk that reach `callers` through its own calls
-   * (`write` calling `record_entry`): affected a step or more further than
-   * `hop`, which counts chunks.
+   * (`write` calling `record_entry`), each at its own step in `methods`.
    */
   reach: string[];
   /**
@@ -57,10 +69,22 @@ export interface CollectDependentsOptions {
   seeds: string[];
   /** Incoming edges of a chunk (its callers), already filtered to what may be shown. */
   edgesTo: (chunkId: string) => SymbolEdge[];
+  /**
+   * Incoming edges through `method` to the other chunks of the chunk's file:
+   * a method too long for one chunk is called where it begins, while the call
+   * that makes it a dependent may sit in a later chunk.
+   */
+  edgesToMethod?: (chunkId: string, method: string) => SymbolEdge[];
   depth: number;
   maxDependents: number;
   /** Only callers using this name count at the first hop. */
   symbol?: string;
+  /**
+   * With `symbol`: the other methods of the changed chunks that call it through
+   * their own chunk (a wrapper), each with its steps from it. Their callers
+   * count at the first hop too, that many steps further.
+   */
+  seedSteps?: Map<string, number>;
   isHub: (chunkId: string) => boolean;
   /** Chunks whose dependents are not followed (tests: nothing meaningful calls them). */
   isLeaf?: (chunkId: string) => boolean;
@@ -129,11 +153,66 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
   const followed = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
   let frontier = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
   let truncated = false;
+  // Per reached chunk, the step of each of its affected methods: a calling
+  // method's own, one more at least for a method reaching it through the
+  // chunk's own calls; `''` for calls made outside any method (the whole chunk).
+  const methodSteps = new Map<string, Map<string, { step: number; exact: boolean }>>();
+  const setStep = (chunk: string, name: string, step: number, exact: boolean) => {
+    let steps = methodSteps.get(chunk);
+    if (!steps) methodSteps.set(chunk, (steps = new Map()));
+    const prev = steps.get(name);
+    if (!prev || step < prev.step || (step === prev.step && exact && !prev.exact)) {
+      steps.set(name, { step, exact });
+    }
+  };
+  const recordSteps = (edge: SymbolEdge, step: number, exact: boolean) => {
+    const from = edge.from_symbols ?? [];
+    if (from.length === 0) setStep(edge.from_chunk_id, '', step, exact);
+    for (const name of from) setStep(edge.from_chunk_id, name, step, exact);
+    const reach = edge.reach_symbols ?? [];
+    reach.forEach((name, i) => {
+      const more = edge.reach_steps?.[i];
+      // Without recorded steps (older symbols), only a lower bound is known.
+      setStep(edge.from_chunk_id, name, step + (more ?? 1), exact && more !== undefined);
+    });
+  };
+  const stepThrough = (target: string, edge: SymbolEdge): { step: number; exact: boolean } => {
+    if (seeds.has(target)) return { step: opts.seedSteps?.get(edge.symbol_name) ?? 0, exact: true };
+    const steps = methodSteps.get(target);
+    const own = steps?.get(edge.symbol_name) ?? steps?.get('');
+    if (own && edge.relation_type !== 'references') return own;
+    // A class held as a value: as near as the chunk's nearest method.
+    const all = [...(steps?.values() ?? [])].sort(
+      (x, y) => x.step - y.step || Number(y.exact) - Number(x.exact)
+    );
+    return all[0] ?? { step: found.get(target)?.step ?? 0, exact: false };
+  };
+  const better = (dep: Dependent, step: number, exact: boolean) =>
+    step < dep.step || (step === dep.step && exact && !dep.exact);
 
   const followsEdge = (edge: SymbolEdge, via: Via, hop: number): boolean => {
-    if (hop === 1 && opts.symbol !== undefined && edge.symbol_name !== opts.symbol) return false;
+    if (
+      hop === 1 &&
+      opts.symbol !== undefined &&
+      edge.symbol_name !== opts.symbol &&
+      !opts.seedSteps?.has(edge.symbol_name)
+    ) {
+      return false;
+    }
     // Code holding the class as a value may call any of its methods.
     return via === 'all' || via.has(edge.symbol_name) || edge.relation_type === 'references';
+  };
+
+  // A chunk's callers, and those of its methods that begin in an earlier chunk.
+  const incoming = (target: string, via: Via): SymbolEdge[] => {
+    const edges = opts.edgesTo(target);
+    if (via === 'all' || !opts.edgesToMethod || seeds.has(target)) return edges;
+    for (const method of via) {
+      for (const edge of opts.edgesToMethod(target, method)) {
+        if (edge.to_chunk_id !== target) edges.push({ ...edge, to_chunk_id: target });
+      }
+    }
+    return edges;
   };
 
   for (let hop = 1; hop <= opts.depth && frontier.size > 0 && !truncated; hop++) {
@@ -141,7 +220,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     const reached = new Map<string, Via>();
     for (const [target, via] of frontier) {
       const targetCertain = certainSoFar.get(target) ?? false;
-      for (const edge of opts.edgesTo(target)) {
+      for (const edge of incoming(target, via)) {
         if (!followsEdge(edge, via, hop)) continue;
         const caller = edge.from_chunk_id;
         if (seeds.has(caller)) continue;
@@ -160,8 +239,16 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
 
         const edgeVia = viaOf(edge);
         const certain = targetCertain && !commonName;
-        if (found.has(caller)) {
+        const through = stepThrough(target, edge);
+        const step = through.step + 1;
+        recordSteps(edge, step, through.exact);
+        const known = found.get(caller);
+        if (known) {
           // Already listed at a nearer hop: only its newly affected methods are followed.
+          if (better(known, step, through.exact)) {
+            known.step = step;
+            known.exact = through.exact;
+          }
           const prev = reached.get(caller);
           reached.set(caller, prev === undefined ? edgeVia : unionVia(prev, edgeVia));
           continue;
@@ -175,6 +262,9 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
           dep = {
             chunkId: caller,
             hop,
+            step,
+            exact: through.exact,
+            methods: [],
             symbols: [],
             callers: [],
             reach: [],
@@ -183,6 +273,10 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
             reexport: true,
           };
           level.set(caller, dep);
+        }
+        if (better(dep, step, through.exact)) {
+          dep.step = step;
+          dep.exact = through.exact;
         }
         if (!dep.symbols.includes(edge.symbol_name)) dep.symbols.push(edge.symbol_name);
         for (const name of edge.from_symbols ?? []) {
@@ -215,16 +309,14 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
   const deeper =
     !truncated &&
     [...frontier].some(([id, via]) =>
-      opts
-        .edgesTo(id)
-        .some(
-          (e) =>
-            (via === 'all' || via.has(e.symbol_name) || e.relation_type === 'references') &&
-            !seeds.has(e.from_chunk_id) &&
-            !found.has(e.from_chunk_id) &&
-            e.confidence !== 'AMBIGUOUS' &&
-            !opts.isCommonName?.(e.symbol_name)
-        )
+      incoming(id, via).some(
+        (e) =>
+          (via === 'all' || via.has(e.symbol_name) || e.relation_type === 'references') &&
+          !seeds.has(e.from_chunk_id) &&
+          !found.has(e.from_chunk_id) &&
+          e.confidence !== 'AMBIGUOUS' &&
+          !opts.isCommonName?.(e.symbol_name)
+      )
     );
   // A chunk also reached through a real link is a dependent, not a coincidence.
   const byName = (from: Map<string, Set<string>>) =>
@@ -233,7 +325,12 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
       .filter((c) => c.chunkIds.length > 0)
       .sort((a, b) => b.chunkIds.length - a.chunkIds.length || a.symbol.localeCompare(b.symbol));
   return {
-    dependents: [...found.values()],
+    dependents: [...found.values()].map((dep) => ({
+      ...dep,
+      methods: [...(methodSteps.get(dep.chunkId) ?? [])]
+        .map(([name, at]) => ({ name, ...at }))
+        .sort((a, b) => a.step - b.step || a.name.localeCompare(b.name)),
+    })),
     truncated,
     deeper,
     viaCommonNames: byName(common),
@@ -249,30 +346,45 @@ function unionVia(a: Via, b: Via): Via {
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
- * The line (0-indexed, as stored) where `name` is defined in a chunk that
- * starts at `startLine`: `def name` (Ruby, Python), `function name`, `func`,
- * `fn`, a `const`/`let`/`var`, or, outside Ruby and Python, a method header
- * ending in `{`. A dependent is shown at the method that makes the call, not
- * at the first line of a chunk holding a whole class. Null when the chunk
- * has no such line.
+ * The line `name` is defined on in a chunk (0-indexed, like `startLine`), or
+ * null when no definition of it is found there. With `calls`, of several
+ * definitions of the name (Ruby `def self.call` and `def call`), the one
+ * whose body uses one of those names: the one making the call.
  */
 export function definitionLine(
   content: string,
   startLine: number,
   name: string,
-  file: string
+  file: string,
+  calls: string[] = []
 ): number | null {
   const n = escapeRe(name);
   const keyword = new RegExp(
     `^\\s*(?:export\\s+)?(?:default\\s+)?(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?(?:def\\s+(?:self\\.)?|function\\s*\\*?\\s*|func\\s+(?:\\([^)]*\\)\\s*)?|fn\\s+|(?:const|let|var)\\s+)${n}(?![\\w?!])`
   );
   const lines = content.split('\n');
-  let i = lines.findIndex((l) => keyword.test(l));
-  if (i < 0 && !/\.(?:rb|rake|py)$/.test(file)) {
+  let found = lines.flatMap((l, i) => (keyword.test(l) ? [i] : []));
+  if (found.length === 0 && !/\.(?:rb|rake|py)$/.test(file)) {
     const method = new RegExp(
       `^\\s*(?:(?:public|private|protected|internal|static|async|readonly|override|abstract|final|get|set)\\s+)*\\*?${n}\\s*[(<].*\\{\\s*$`
     );
-    i = lines.findIndex((l) => method.test(l));
+    found = lines.flatMap((l, i) => (method.test(l) ? [i] : []));
   }
-  return i < 0 ? null : startLine + i;
+  if (found.length === 0) return null;
+  if (found.length > 1 && calls.length > 0) {
+    const used = new RegExp(`(?<![\\w$])(?:${calls.map(escapeRe).join('|')})(?![\\w$?!])`);
+    const indent = (l: string) => l.length - l.trimStart().length;
+    for (const i of found) {
+      const own = indent(lines[i]!);
+      let end = i + 1;
+      while (end < lines.length) {
+        const l = lines[end]!;
+        if (l.trim() !== '' && indent(l) <= own && !/^\s*[}\])]/.test(l) && !/^\s*end\b/.test(l))
+          break;
+        end++;
+      }
+      if (lines.slice(i + 1, end).some((l) => used.test(l))) return startLine + i;
+    }
+  }
+  return startLine + found[0]!;
 }

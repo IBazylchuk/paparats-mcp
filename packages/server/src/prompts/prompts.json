@@ -37,7 +37,7 @@
     },
     "change_impact": {
       "title": "Change Impact",
-      "description": "Everything that depends on a chunk you are about to change: callers, their callers (up to 3 steps), and the tests that reach it, with file:line and chunk ids — no code content. Use before changing a signature, renaming, deleting or changing behaviour, to know what else to update and which tests to run. Pass chunk_id from search_code; `symbol` narrows to one name the chunk defines, `whole_file` treats the chunk's whole file as changed. The graph links code by name, so dynamic calls are not in it."
+      "description": "Everything that depends on a chunk you are about to change: callers, their callers (`depth` steps, up to 3; a step is a call between methods, inside a file too), and the tests that reach it, with file:line and chunk ids — no code content. Use before changing a signature, renaming, deleting or changing behaviour, to know what else to update and which tests to run. Pass chunk_id from search_code; `symbol` narrows to one name the chunk defines, `whole_file` treats the chunk's whole file as changed. The graph links code by name, so dynamic calls are not in it."
     },
     "module_map": {
       "title": "Module Map",
