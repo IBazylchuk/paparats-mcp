@@ -25,12 +25,18 @@ import {
 import { resolveAstLanguage } from './ast-language.js';
 import type { SymbolExtractionResult } from './ast-symbol-extractor.js';
 import {
+  GRAPH_FORMAT,
   MAX_DEFINITION_FANOUT,
   buildSymbolEdges,
   mayBeCommonName,
   type ChunkSymbols,
 } from './symbol-graph.js';
-import { readLocalModules, type LocalModules } from './local-modules.js';
+import {
+  hasBareImports,
+  readLocalModules,
+  resolveAliasImports,
+  type LocalModules,
+} from './local-modules.js';
 
 /** Languages whose imports say which package a name comes from. */
 const ES_LANGUAGES = new Set(['typescript', 'tsx', 'javascript']);
@@ -951,16 +957,34 @@ export class Indexer {
   private localModules = new Map<string, LocalModules | null>();
 
   private localModulesOf(project: ProjectConfig): LocalModules | null {
-    let found = this.localModules.get(project.path);
+    return this.localModulesAt(project.path);
+  }
+
+  private localModulesAt(dir: string): LocalModules | null {
+    let found = this.localModules.get(dir);
     if (found === undefined) {
       try {
-        found = readLocalModules(project.path);
+        found = readLocalModules(dir);
       } catch {
         found = null;
       }
-      this.localModules.set(project.path, found);
+      this.localModules.set(dir, found);
     }
     return found;
+  }
+
+  /** Per project (`group\0stored name`), its directory, for the path aliases its graph resolves. */
+  private projectDirs = new Map<string, string>();
+
+  /**
+   * Resolve the path alias imports of a project's chunks before their edges
+   * are built (see `resolveAliasImports`). Without the project's directory
+   * (only files removed since the process started) they stay as written.
+   */
+  private resolveAliases(groupName: string, storedName: string, chunks: ChunkSymbols[]): void {
+    if (!hasBareImports(chunks)) return;
+    const dir = this.projectDirs.get(`${groupName}\0${storedName}`);
+    if (dir) resolveAliasImports(chunks, this.localModulesAt(dir));
   }
 
   /**
@@ -995,6 +1019,10 @@ export class Indexer {
         message,
       });
     };
+
+    if (fileContext) {
+      this.projectDirs.set(`${fileContext.groupName}\0${this.stored(project.name)}`, project.path);
+    }
 
     // Try AST-based chunking + symbol extraction (single parse)
     if (this.treeSitter) {
@@ -1427,6 +1455,7 @@ export class Indexer {
     this.localModules.delete(project.path);
     // Storage-layer project name (suffix applied) — see indexFile.
     const storedName = this.stored(project.name);
+    this.projectDirs.set(`${groupName}\0${storedName}`, project.path);
 
     if (!fs.existsSync(project.path)) {
       console.error(`  Project path not found: ${project.path}`);
@@ -1817,6 +1846,7 @@ export class Indexer {
     chunkSymbols: ChunkSymbols[]
   ): Promise<void> {
     try {
+      this.resolveAliases(groupName, storedName, chunkSymbols);
       const { edges, stats } = buildSymbolEdges(chunkSymbols);
       this.metadataStore!.deleteEdgesByProject(groupName, storedName);
       if (edges.length > 0) {
@@ -1849,7 +1879,10 @@ export class Indexer {
   private async updateSymbolGraph(groupName: string, storedName: string): Promise<void> {
     const store = this.metadataStore!;
     const changes = store.graphChanges(groupName, storedName);
-    const hasEdges = store.hasEdgesForProject(groupName, storedName);
+    // A graph built by older rules is built again, once, from the stored symbols.
+    const hasEdges =
+      store.hasEdgesForProject(groupName, storedName) &&
+      store.getGraphFormat(groupName, storedName) === GRAPH_FORMAT;
     if (!changes && hasEdges) return;
     if (
       changes &&
@@ -1869,6 +1902,7 @@ export class Indexer {
       true
     );
     await this.writeSymbolGraph(groupName, storedName, chunkSymbols);
+    store.setGraphFormat(groupName, storedName, GRAPH_FORMAT);
     if (changes) store.clearGraphChanges(groupName, storedName, changes.upTo);
   }
 
@@ -1893,6 +1927,7 @@ export class Indexer {
       pool.set(chunk.chunk_id, chunk);
     }
     await this.addClassChains(groupName, storedName, pool);
+    this.resolveAliases(groupName, storedName, [...pool.values()]);
     const changedIds = new Set(changed.map((c) => c.chunk_id));
     const { edges } = buildSymbolEdges(
       [...pool.values()],

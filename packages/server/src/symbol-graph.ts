@@ -81,6 +81,17 @@ export interface ChunkSymbols {
   def_classes?: Record<string, ClassParent[]>;
 }
 
+/**
+ * Stored per project when its graph is built (`graph_formats`). Bumping it
+ * after a change to how edges are built from the stored symbols has every
+ * project's graph built again on its next pass, with no file extracted again
+ * (unlike `SYMBOL_FORMAT`). Projects without a recorded format count as older.
+ *
+ *  1 — TypeScript and JavaScript path alias imports (`~/lib/dates`) link as
+ *      the relative import they resolve to (`resolveAliasImports()`).
+ */
+export const GRAPH_FORMAT = 1;
+
 /** TypeScript and JavaScript files: a class there is the one its file declares or imports. */
 const ES_FILE = /\.(?:[cm]?[jt]sx?)$/;
 

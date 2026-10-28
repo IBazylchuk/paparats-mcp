@@ -305,6 +305,17 @@ export class MetadataStore {
       );
     `);
 
+    // Per project, the rules its edges were built with (`GRAPH_FORMAT` in
+    // symbol-graph.ts): an older format has the whole graph built again.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS graph_formats (
+        grp TEXT NOT NULL,
+        project TEXT NOT NULL,
+        format INTEGER NOT NULL,
+        PRIMARY KEY (grp, project)
+      );
+    `);
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS file_names (
         grp TEXT NOT NULL,
@@ -465,6 +476,9 @@ export class MetadataStore {
       this.deleteProjectGitCacheStmt.run(group, project);
       this.db.prepare('DELETE FROM file_names WHERE grp = ? AND project = ?').run(group, project);
       this.db.prepare('DELETE FROM test_files WHERE grp = ? AND project = ?').run(group, project);
+      this.db
+        .prepare('DELETE FROM graph_formats WHERE grp = ? AND project = ?')
+        .run(group, project);
     });
     tx();
     // The in-degree cache would otherwise keep ranking the deleted chunks.
@@ -651,6 +665,20 @@ export class MetadataStore {
       .prepare('SELECT files FROM test_files WHERE grp = ? AND project = ?')
       .get(group, project) as { files: string } | undefined;
     return row ? (JSON.parse(row.files) as string[]) : null;
+  }
+
+  /** The format a project's graph was last built in (see `graph_formats`); null when never recorded. */
+  getGraphFormat(group: string, project: string): number | null {
+    const row = this.db
+      .prepare('SELECT format FROM graph_formats WHERE grp = ? AND project = ?')
+      .get(group, project) as { format: number } | undefined;
+    return row ? row.format : null;
+  }
+
+  setGraphFormat(group: string, project: string, format: number): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO graph_formats (grp, project, format) VALUES (?, ?, ?)')
+      .run(group, project, format);
   }
 
   /** Record the names a file's code uses that may be common (see `file_names`). */
