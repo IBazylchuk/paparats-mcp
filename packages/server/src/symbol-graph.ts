@@ -255,8 +255,8 @@ function relationOf(site: UseSite): RelationType {
  * The definitions of a name in the class a use names, if the index has one.
  *
  * - `exact`: the class found the way Ruby looks a constant up: a `::` path
- *   as it is; a relative `Parser` called from `Extraction::Pipeline` as
- *   `Extraction::Pipeline::Parser`, then `Extraction::Parser`, then `Parser`.
+ *   as it is; a relative `Parser` called from `Intake::Pipeline` as
+ *   `Intake::Pipeline::Parser`, then `Intake::Parser`, then `Parser`.
  * - `suffix`: no such class, but one class whose path ends with it
  *   (`Billing::Parser` for `Parser`) defines the name.
  * - `several`: several classes match, or the class defines the name in more

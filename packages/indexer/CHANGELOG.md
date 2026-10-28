@@ -82,8 +82,6 @@
   - Single-file updates now keep the graph current. `updateFile`, `POST /api/file-changed`, `POST /api/file-deleted` and content batches from the CLI (`POST /api/index`) replaced a file's chunks but left its edges alone, so edges pointed at chunks that were gone and the new chunks had none; a project indexed only through the CLI had no graph at all. Each of them now schedules a rebuild of the project's graph, a few seconds after the last change.
   - The module map is rebuilt after the indexer writes edges. Edge versions were kept in the server's memory, so edges written by the indexer container never reached the map until the server restarted. They are now stored per project in the metadata database; a group's map is put together from per-project maps, so only projects whose edges changed are mapped again.
 
-  On a private Ruby codebase, for 1,392 class methods whose class name is declared in one file only (so a grep for `Class.method` finds exactly their callers; migrations left out): callers found 76% → 97%, real among those found 65% → 80%. `change_impact` over whole files at depth 2 lists 37% fewer dependents.
-
   `symbol_format` goes to 3 and the indexer's reindex epoch to 5, so symbols are extracted again once after the upgrade.
 
 - Updated dependencies [69b36f7]
@@ -100,8 +98,6 @@
   - **Ruby namespaces.** A module that only wraps classes (`module Billing; class Invoice`) counted as a definition of `Billing` in every file under it, so any `Billing::X` linked to all of them. Such a module now defines nothing.
   - **React components.** `<PriceBadge />` and `<Ui.Button>` in `.tsx`/`.jsx` were not recorded as uses, so a component had no callers. Lowercase HTML tags are not counted.
   - **JavaScript projects.** The JavaScript query named TypeScript-only node types, so it failed to compile and files parsed with the JavaScript grammar got no symbols at all.
-
-  On a private Ruby codebase (4,962 files), calls of the form `Class.method` to a `def self.method` now link to the defining file for 63% of call sites instead of 42%, and to the method itself for 40% instead of 0.4%. Most of the rest are short class names defined in many namespaces, which the graph deliberately does not link to every candidate.
 
   Each code point now stores `symbol_format`, which indexing compares like `embed_format`, so unchanged files are rewritten once with their symbols extracted again (vectors come from the embedding cache). The indexer's reindex epoch is bumped, so the first run after the upgrade does a full pass and rebuilds the edges.
 
@@ -151,7 +147,7 @@
 
 - 3790ccb: Code chunks are embedded with their file path. A method chunk used to be embedded on its own, with nothing saying which file it belongs to; the embedded text is now `Filepath: <path>`, `---` and the chunk. What search returns is unchanged: results still show the plain chunk.
 
-  On the retrieval bench this helps most for questions asked in plain language. On support-style questions over a private Ruby codebase, the right file came first for 38% of queries instead of 21% in plain similarity order (as the support tools rank), and for 33% instead of 21% with `search_code`'s ranking. On this repository's support-style questions it was 55% instead of 45% with the ranking and unchanged without it. On three sets of real agent queries over the private codebase, with the ranking, it was as good or slightly better (71% vs 66%, 61% vs 58%, 82% vs 82%). Also adding the enclosing class and module lines won about as many queries as it lost, so the header carries the path only.
+  On the retrieval bench this helps most for questions asked in plain language. On this repository's support-style questions the right file came first for 55% of queries instead of 45% with `search_code`'s ranking, and as often without it. Also adding the enclosing class and module lines won about as many queries as it lost, so the header carries the path only.
 
   Every file is re-embedded once. Each code point now stores `embed_format`, which the indexer compares like the chunk ranges, so even unchanged files are rewritten, and the indexer's reindex epoch is bumped so the first run after the upgrade does a full pass.
 

@@ -31,7 +31,7 @@ export const FILE_NAMED_AFTER_IDENTIFIER_BOOST = 1.05;
  * asks for its definition, yet a short chunk that only imports, re-exports or
  * explains the name can score well above it. For such a query the defining chunk
  * gets this instead of {@link DEFINES_IDENTIFIER_BOOST}. On 50 such queries built
- * from a private Ruby codebase (a name defined in one file and used in at least two
+ * from a Ruby codebase (a name defined in one file and used in at least two
  * others) the defining file came first for 80% of them instead of 62%; on this
  * repository's query set for 79% of all queries instead of 75%; the other query
  * sets, which have no such queries, did not change.

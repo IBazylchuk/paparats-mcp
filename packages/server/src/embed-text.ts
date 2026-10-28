@@ -8,7 +8,7 @@
  *
  * A method chunk on its own says nothing about where it lives; the path gives
  * the vector that context. On the retrieval bench, plain-language support
- * questions over a private codebase found the right file first for 38% of
+ * questions found the right file first for 38% of
  * queries instead of 21% in plain similarity order, and 33% instead of 21%
  * with the `search_code` ranking. Adding the enclosing class and module lines
  * as well won and lost about as many queries, so the header carries the path

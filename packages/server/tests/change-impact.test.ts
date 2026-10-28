@@ -241,7 +241,7 @@ describe('collectDependents', () => {
   it('follows the methods that reach the call through the chunk’s own calls', () => {
     // `service` calls the seed from a private helper that only its `call` uses.
     const edgesTo = graph([
-      ['service', 'seed', 'signature_valid?', 'INFERRED', ['receipt']],
+      ['service', 'seed', 'signature_valid?', 'INFERRED', ['ledger_entry']],
       ['mutation', 'service', 'call'],
     ]);
     const plain = collectDependents({ ...base, seeds: ['seed'], edgesTo });
@@ -253,7 +253,7 @@ describe('collectDependents', () => {
       );
     const res = collectDependents({ ...base, seeds: ['seed'], edgesTo: withReach });
     expect(res.dependents.map((d) => [d.chunkId, d.hop, d.callers])).toEqual([
-      ['service', 1, ['receipt']],
+      ['service', 1, ['ledger_entry']],
       ['mutation', 2, []],
     ]);
   });

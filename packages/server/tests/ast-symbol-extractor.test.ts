@@ -873,18 +873,18 @@ end`;
     new(**args).preview
   end
   def preview
-    log = receipt
+    log = ledger_entry
     log && summary
   end
   def call
-    return unless receipt
+    return unless ledger_entry
     Notifier.deliver
   end
-  def summary(receipt = nil)
-    receipt
+  def summary(ledger_entry = nil)
+    ledger_entry
   end
   private
-  def receipt
+  def ledger_entry
     Receipt.find_by(id: 1).signature_valid?(token)
   end
 end`;
@@ -902,14 +902,14 @@ end`;
         .use_sites!.filter((u) => u.name === name && !!u.through === !!through)
         .map((u) => u.from)
         .sort();
-    // `receipt` is called bare, without arguments: `preview` and `call` reach the
+    // `ledger_entry` is called bare, without arguments: `preview` and `call` reach the
     // call through it, `self.preview` through `preview`. `summary` only has a parameter
     // of that name.
-    expect(from('signature_valid?')).toEqual(['receipt']);
+    expect(from('signature_valid?')).toEqual(['ledger_entry']);
     expect(from('signature_valid?', true)).toEqual(['call', 'preview']);
     expect(from('deliver', true)).toEqual([]);
     // Own methods stay out of the uses: they link to nothing outside the chunk.
-    expect(results[0]!.uses_symbols).not.toContain('receipt');
+    expect(results[0]!.uses_symbols).not.toContain('ledger_entry');
   });
 
   it('marks a Ruby class used as a value, not one called on or included', async () => {
@@ -1130,10 +1130,10 @@ end`;
   });
 
   it('resolves Ruby constants by namespace and skips the namespace part of a path', async () => {
-    const code = `module Search
+    const code = `module Orbit
   class Runner < Base
     def run
-      Search::Query.new
+      Orbit::Query.new
       ::Config.load
       Reports::Base
     end
@@ -1148,16 +1148,16 @@ class Billing::Invoice; end`;
       r.use_sites!.filter((u) => u.name === name).map(({ name: _n, from: _f, ...rest }) => rest);
     expect(sites('Base')).toEqual(
       expect.arrayContaining([
-        { lexical: true, in: 'Search::Runner', constant: true },
-        { on: 'Reports', in: 'Search::Runner', constant: true },
+        { lexical: true, in: 'Orbit::Runner', constant: true },
+        { on: 'Reports', in: 'Orbit::Runner', constant: true },
       ])
     );
-    // `Search::Query.new` is kept, not called on at once: a value.
+    // `Orbit::Query.new` is kept, not called on at once: a value.
     expect(sites('Query')).toEqual([
-      { on: 'Search', in: 'Search::Runner', constant: true, value: true },
+      { on: 'Orbit', in: 'Orbit::Runner', constant: true, value: true },
     ]);
     expect(sites('Config')).toEqual([{ lexical: true, constant: true }]);
-    // `Search` and `Reports` only qualify a path, `Billing` names the namespace of a definition.
+    // `Orbit` and `Reports` only qualify a path, `Billing` names the namespace of a definition.
     expect(r.uses_symbols).not.toContain('Reports');
     expect(r.uses_symbols).not.toContain('Billing');
     expect(r.defined_symbols.find((d) => d.name === 'Invoice')?.owner).toBe('Billing');
@@ -1203,8 +1203,8 @@ end`;
     const code = `module Billing
   class Refund
     def run
-      { Scanner::SCOPE_KEY => Limits::MAX }
-      AI::LLM::Schemas
+      { Lexer::MAX_DEPTH => Throttle::MAX }
+      Vendor::Sdk::Types
     end
   end
 end`;
@@ -1214,10 +1214,10 @@ end`;
     const r = results[0]!;
     const sites = (name: string) =>
       r.use_sites!.filter((u) => u.name === name).map(({ name: _n, from: _f, ...rest }) => rest);
-    expect(sites('Scanner')).toEqual([{ lexical: true, in: 'Billing::Refund', constant: true }]);
-    expect(sites('Limits')).toEqual([{ lexical: true, in: 'Billing::Refund', constant: true }]);
+    expect(sites('Lexer')).toEqual([{ lexical: true, in: 'Billing::Refund', constant: true }]);
+    expect(sites('Throttle')).toEqual([{ lexical: true, in: 'Billing::Refund', constant: true }]);
     // An upper-case name followed by `::` is a namespace, not a value.
-    expect(r.uses_symbols).not.toContain('AI');
+    expect(r.uses_symbols).not.toContain('Vendor');
   });
 
   it('extracts JavaScript definitions (its grammar has no type nodes)', async () => {
@@ -1312,10 +1312,10 @@ end`;
   it('reads a Ruby constant path through a class alias the file sets', async () => {
     const code = `module Crawl
   class AcmeBoard
-    Postings = ::Vendors::Acme::Postings
-    Local = Feeds
+    Ledgers = ::Vendors::Acme::Ledgers
+    Local = Ledgers
     def run
-      Postings::Fetcher.fetch
+      Ledgers::Fetcher.fetch
       Local::Parser.parse
       Other::Thing.go
     end
@@ -1333,8 +1333,8 @@ end`;
       results[0]!
         .use_sites!.filter((u) => u.name === name && u.constant)
         .map(({ name: _, from: __, ...rest }) => rest);
-    expect(site('Fetcher')).toEqual([{ on: '::Vendors::Acme::Postings', constant: true }]);
-    expect(site('Parser')).toEqual([{ on: 'Feeds', in: 'Crawl::AcmeBoard', constant: true }]);
+    expect(site('Fetcher')).toEqual([{ on: '::Vendors::Acme::Ledgers', constant: true }]);
+    expect(site('Parser')).toEqual([{ on: 'Ledgers', in: 'Crawl::AcmeBoard', constant: true }]);
     expect(site('Thing')).toEqual([{ on: 'Other', in: 'Crawl::AcmeBoard', constant: true }]);
   });
 
