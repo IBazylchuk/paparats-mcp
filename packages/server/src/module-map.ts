@@ -326,16 +326,56 @@ export function codeRoot(file: string): string {
   return CONTAINER_DIRS.has(parts[0]!) && parts.length > 2 ? `${parts[0]}/${parts[1]}` : parts[0]!;
 }
 
-/** The directory holding most of `files`; ties go to the shorter, then alphabetically first. */
-function dominantDir(files: string[]): string {
+/** Each folder with the number of `files` under it, at any depth; `.` holds them all. */
+function folderCounts(files: string[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const f of files) {
-    const d = path.posix.dirname(f);
-    counts.set(d, (counts.get(d) ?? 0) + 1);
+    const dir = path.posix.dirname(f);
+    const parts = dir === '.' ? [] : dir.split('/');
+    for (let i = 0; i <= parts.length; i++) {
+      const d = i === 0 ? '.' : parts.slice(0, i).join('/');
+      counts.set(d, (counts.get(d) ?? 0) + 1);
+    }
   }
-  return [...counts.entries()].sort(
-    (a, b) => b[1] - a[1] || a[0].length - b[0].length || a[0].localeCompare(b[0])
-  )[0]![0];
+  return counts;
+}
+
+/**
+ * The folders a module is named after: the one that best matches its files, by
+ * F1 of the share of the module's files inside it and the share of the folder's
+ * files in the module (ties go deeper), or two folders apart from each other,
+ * each holding at least a fifth of the module's files, when they match better. A folder holding most of the module but much else too names it
+ * vaguely; one it fills but that holds little of it names a part.
+ */
+function moduleFolders(files: string[], projectFolders: Map<string, number>): string[] {
+  const own = folderCounts(files);
+  const f1 = (inside: number, folderSize: number) =>
+    inside === 0 ? 0 : (2 * inside) / (files.length + folderSize);
+  const depth = (d: string) => (d === '.' ? 0 : d.split('/').length);
+  const ranked = [...own.entries()]
+    .map(([d, inside]) => ({ d, inside, f1: f1(inside, projectFolders.get(d) ?? inside) }))
+    .sort((a, b) => b.f1 - a.f1 || depth(b.d) - depth(a.d) || a.d.localeCompare(b.d));
+  const first = ranked[0];
+  if (!first) return ['.'];
+  const nested = (a: string, b: string) =>
+    a === '.' || b === '.' || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+  const parts = ranked.filter((c) => c.inside >= files.length / 5);
+  let pair: { folders: string[]; f1: number } | undefined;
+  for (let i = 0; i < parts.length; i++) {
+    for (let j = i + 1; j < parts.length; j++) {
+      const x = parts[i]!;
+      const y = parts[j]!;
+      if (nested(x.d, y.d)) continue;
+      const size = (projectFolders.get(x.d) ?? x.inside) + (projectFolders.get(y.d) ?? y.inside);
+      const score = f1(x.inside + y.inside, size);
+      if (!pair || score > pair.f1) pair = { folders: [x.d, y.d], f1: score };
+    }
+  }
+  return pair && pair.f1 > first.f1 ? pair.folders : [first.d];
+}
+
+function inFolders(file: string, folders: string[]): boolean {
+  return folders.some((d) => d === '.' || file.startsWith(`${d}/`));
 }
 
 function sortLinks(m: Map<number, number>, via?: Map<number, Map<FileKey, number>>): ModuleLink[] {
@@ -443,10 +483,13 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
   const moduleOf = new Map<FileKey, number>();
   groups.forEach((g, id) => g.forEach((k) => moduleOf.set(k, id)));
 
+  // Code files per folder of each project, for how well a folder names a module.
+  const projectFolders = new Map<string, Map<string, number>>();
+  for (const [p, keys] of byProject) {
+    projectFolders.set(p, folderCounts(keys.map((k) => splitKey(k).file)));
+  }
+
   const modules: CodeModule[] = groups.map((g, id) => {
-    const sorted = [...g].sort(
-      (a, b) => (inWeight.get(b) ?? 0) - (inWeight.get(a) ?? 0) || a.localeCompare(b)
-    );
     const projects = new Map<string, number>();
     for (const k of g) {
       const p = splitKey(k).project;
@@ -455,11 +498,25 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
     const project = [...projects.entries()].sort(
       (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
     )[0]![0];
+    const folders = moduleFolders(
+      g.filter((k) => splitKey(k).project === project).map((k) => splitKey(k).file),
+      projectFolders.get(project) ?? new Map()
+    );
+    // Files of the folders the module is named after first, so its main files
+    // are its own and not a widely called file of another folder it holds.
+    const home = (k: FileKey) => {
+      const { project: p, file } = splitKey(k);
+      return p === project && inFolders(file, folders);
+    };
+    const sorted = [...g].sort(
+      (a, b) =>
+        Number(home(b)) - Number(home(a)) ||
+        (inWeight.get(b) ?? 0) - (inWeight.get(a) ?? 0) ||
+        a.localeCompare(b)
+    );
     return {
       id,
-      name: dominantDir(
-        g.filter((k) => splitKey(k).project === project).map((k) => splitKey(k).file)
-      ),
+      name: folders.join(' + '),
       project,
       files: sorted,
       tests: [],
@@ -598,7 +655,7 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
       : '',
     map.migrations > 0 ? `${plural(map.migrations, 'migration', 'migrations')} left out` : '',
   ].filter(Boolean);
-  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder most of its files sit in, so it may hold files of other folders. When a used module is reached mostly through a file of another package or app than its name, that file follows in brackets.\n`;
+  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. When a used module is reached mostly through a file of another package or app than its name, that file follows in brackets.\n`;
 
   const number = (id: number) => `${id + 1}`;
   const name = opts.showName ?? ((m: CodeModule) => m.name);
@@ -607,15 +664,17 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
   // app holding files of another reads as that app otherwise.
   const elsewhere = (l: ModuleLink): boolean => {
     if (!l.via) return false;
-    const folder = map.modules[l.module]!.name.replace(/ \(.*\)$/, '');
-    return codeRoot(splitKey(l.via).file) !== codeRoot(folder);
+    const folders = map.modules[l.module]!.name.replace(/ \(.*\)$/, '').split(' + ');
+    const root = codeRoot(splitKey(l.via).file);
+    return folders.every((d) => codeRoot(`${d}/x`) !== root);
   };
   const linkList = (links: ModuleLink[], showVia: boolean) =>
     strongLinks(links)
       .slice(0, 4)
       .map(
         (l) =>
-          `${number(l.module)}. ${name(map.modules[l.module]!)}${showVia && elsewhere(l) ? ` (${opts.showFile(l.via!)})` : ''}`
+          // The number tells modules of one name apart, so links leave out the file after it.
+          `${number(l.module)}. ${name(map.modules[l.module]!).replace(/ \([^()]*\)$/, '')}${showVia && elsewhere(l) ? ` (${opts.showFile(l.via!)})` : ''}`
       )
       .join('; ');
 
