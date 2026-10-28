@@ -147,8 +147,9 @@ reindexed by completely different mechanisms — **don't forget the arch layer.*
   renderers used on write, re-embeds with the current text model, and rewrites
   in place (dropping/recreating the collection only if the dimension changed).
   Arch collections are tiny, so this is fast.
-- Easy to forget because it isn't automatic — put it in the cutover runbook next
-  to the code reindex.
+- The server also runs this on startup for every group whose cards were embedded
+  with another text model (`healAllArchModels()`), so a restart after the swap is
+  enough; the endpoint is for running it without one.
 
 ## 7. Docs + changeset
 

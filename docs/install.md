@@ -124,7 +124,7 @@ may use up to 6 GB (`EMBED_MEMORY`); `EMBED_CPUS` caps its CPUs (no cap by defau
 only works; on macOS the native build with Metal is much faster. With a cloud provider the
 stack is the server, the indexer and Qdrant.
 
-### Migrating from a v1 install
+### Migrating from a per-project install (before 0.4.0)
 
 `paparats install` recognises the old per-project compose (no `paparats-indexer` service),
 explains what will change and asks before replacing it. Qdrant collections, SQLite

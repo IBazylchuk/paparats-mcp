@@ -16,8 +16,8 @@ code stays with you.
 
 Your agent asks _"where do we retry failed payments?"_ and gets the few functions that do
 it, with file and line, instead of grepping and reading whole files. Before changing one,
-it asks what depends on it and gets the callers up to three steps out and the tests that
-reach them.
+it asks what depends on it and gets the callers two steps out (up to three) and the tests
+that reach them.
 
 <img src="docs/with-and-without.gif" alt="Claude Code answering the same question about this repository side by side: without Paparats it finishes in 1:46, with Paparats in 1:14" width="100%">
 
@@ -161,11 +161,12 @@ watcher, so an edit is not searchable within seconds.
 
 Syntax-based chunking and the call graph cover 11 languages: TypeScript (with TSX),
 JavaScript, Python, Go, Rust, Java, Ruby, C, C++, C# and Terraform/HCL. Other files are
-chunked by braces, indentation or blocks and have no call graph.
+cut into runs of lines of a fixed size and have no call graph.
 
 ### What hardware does it need?
 
-Docker with Compose v2 and Node.js 24+. Local models take about 2.3 GB of disk, and the
+Docker with Compose v2; the `paparats` CLI also needs Node.js 24+ (a plain `docker compose
+up` of the [examples](examples/docker-compose/) does not). Local models take about 2.3 GB of disk, and the
 embed container 2–6 GB of RAM. CPU only works; on macOS the native build with Metal is much
 faster. With a cloud provider there are no local models at all.
 

@@ -94,7 +94,7 @@ export interface IndexerConfig {
   repos: string;
   /** GitHub token for private repos */
   githubToken?: string;
-  /** Cron expression for scheduled indexing (default: every 6 hours) */
+  /** Cron expression for scheduled indexing (default: every 3 hours) */
   cron: string;
   /** Qdrant URL */
   qdrantUrl: string;

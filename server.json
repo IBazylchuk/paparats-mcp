@@ -44,7 +44,7 @@
       "version": "2.16.1",
       "transport": {
         "type": "streamable-http",
-        "url": "http://localhost:9876"
+        "url": "http://localhost:9876/mcp"
       }
     }
   ]

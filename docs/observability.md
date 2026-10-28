@@ -69,7 +69,7 @@ scrape_configs:
 
 The built-in `/ui` covers the current snapshot. For history (latency p99 over weeks, GC
 trends, CPU under indexing bursts) wire `/metrics` to Prometheus and import
-[`grafana/paparats.json`](grafana/paparats.json) — 15 panels across four rows:
+[`grafana/paparats.json`](grafana/paparats.json) — 14 panels across four rows:
 **Traffic & latency**, **Embeddings**, **Indexing**, **Process health**.
 
 1. Set `PAPARATS_METRICS: 'true'` on the `paparats` and `paparats-indexer` services (see
@@ -235,7 +235,7 @@ binary skips. `slowest_searches` ranks individual searches by latency.
 | `PAPARATS_ANALYTICS_RETENTION_RUN_HOUR` | `3`                        | Hour-of-day for prune (local time)                          |
 | `PAPARATS_IDENTITY_HEADER`              | `X-Paparats-User`          | Header name for user attribution                            |
 | `PAPARATS_LOG_RESULT_FILES`             | `true`                     | If `false`, store NULL for `search_results.file`            |
-| `PAPARATS_LOG_QUERY_TEXT`               | `true`                     | If `false`, store NULL for `search_events.query_text`       |
+| `PAPARATS_LOG_QUERY_TEXT`               | `true`                     | If `false`, store NULL for `search_events.query_text` and keyed hashes for `query_tokens` |
 | `PAPARATS_REFORMULATION_WINDOW_MS`      | `90000`                    | Reformulation detection window                              |
 | `PAPARATS_TELEMETRY_SAMPLE_RATE`        | `1.0`                      | Sampling rate (errors are always kept)                      |
 | `PAPARATS_OTEL_ENABLED`                 | `false`                    | Enable OTel SDK + OTLP exporter                             |
@@ -249,5 +249,9 @@ binary skips. `slowest_searches` ranks individual searches by latency.
 - File paths and query text are stored locally by default. For shared deployments where
   paths could leak sensitive info, set `PAPARATS_LOG_RESULT_FILES=false` and/or
   `PAPARATS_LOG_QUERY_TEXT=false`.
+- With query text off, the words of a query (`query_tokens`, used to spot retries) are
+  stored as hashes keyed by a random key that lives only in the server process. The
+  query's own hash (`query_hash`, used to group repeated queries) is a plain SHA-1 of the
+  normalized text: it hides the text, but anyone holding the database can check a guess.
 - OTel spans never carry full query text by default — only `paparats.query.hash` and
   length.

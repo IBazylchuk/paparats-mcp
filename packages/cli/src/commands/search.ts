@@ -108,7 +108,7 @@ export async function runSearch(
       } else {
         spinner?.stop();
         outputError(
-          'No group specified and could not infer one. Pass --group <name>, or run `paparats init` in a project directory to create a .paparats.yml.',
+          'No group specified and could not infer one. Pass --group <name>, or run it inside a project whose .paparats.yml sets `group`.',
           opts.json ?? false
         );
       }

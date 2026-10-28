@@ -170,7 +170,7 @@ export function readConfig(projectDir?: string): { config: PaparatsConfig; proje
   const dir = projectDir ?? findConfigDir();
   if (!dir) {
     throw new Error(
-      `No ${CONFIG_FILE} found in current directory or any parent.\nRun \`paparats init\` to create one.`
+      `No ${CONFIG_FILE} found in current directory or any parent.\nWrite one by hand (docs/configuration.md), or index the project with \`paparats add <path>\`, which needs none.`
     );
   }
 
