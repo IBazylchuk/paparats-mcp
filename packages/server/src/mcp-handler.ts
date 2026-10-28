@@ -68,6 +68,7 @@ import {
   rankKey,
   rankQuery,
 } from './ranking.js';
+import { testsNamedAfter } from './test-files.js';
 import { collectDependents, MAX_IMPACT_DEPTH } from './change-impact.js';
 import { isCommonName } from './symbol-graph.js';
 import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map.js';
@@ -273,12 +274,25 @@ function callerLabel(callers: string[], payload: Record<string, unknown>): strin
 /**
  * Said when no indexed test reaches the change: Ruby projects leave `spec/`
  * and `test/` out of the index by default, so "no tests" there means "not
- * indexed", not "untested". Lists where the tests of the changed file and of
- * its direct dependents would be by convention.
+ * indexed", not "untested". Lists the project's test files named after the
+ * changed file and its direct dependents (`testFiles`, recorded by the
+ * indexer); when the project's test files are not known, where they would be
+ * by convention.
  */
-function testsByConvention(files: string[]): string {
-  const paths = [...new Set(files.flatMap(conventionalTestPaths))].slice(0, 12);
+function testsByConvention(files: string[], testFiles: string[] | null): string {
   let text = '\n### Tests\n\nNo indexed test reaches it.';
+  if (testFiles) {
+    const named = [...new Set(files.flatMap((f) => testsNamedAfter(f, testFiles)))].slice(0, 12);
+    if (named.length === 0) {
+      return text + ' No test file of the project is named after it or its direct callers.\n';
+    }
+    return (
+      text +
+      ' These test files of the project are named after it or its direct callers:\n\n' +
+      named.map((p) => `- \`${p}\`\n`).join('')
+    );
+  }
+  const paths = [...new Set(files.flatMap(conventionalTestPaths))].slice(0, 12);
   if (paths.length === 0) return text + '\n';
   text +=
     " If the project's tests are not indexed (Ruby projects leave out `spec/` and `test/` by default), by convention they would be at:\n\n";
@@ -2521,9 +2535,9 @@ export class McpHandler {
             }
             if (viaAmbiguousNames.length > 0) {
               const count = viaAmbiguousNames.reduce((n, c) => n + c.chunkIds.length, 0);
-              commonSection += `\n### Further, only through a name defined in several places (${count}) — not followed\n\n`;
+              commonSection += `\n### Linked only through a name defined in several places (${count}) — probably not dependents\n\n`;
               commonSection +=
-                'These call a name that several classes define, on an object whose class the code does not show, and they would be at least two steps from the change. Most are calls to another class of the same name. Check with grep if one matters.\n\n';
+                'These call a name that several classes define, on an object whose class the code does not show. Most are calls to another class of the same name. They were not followed further. Check with grep if one matters.\n\n';
               for (const c of viaAmbiguousNames) {
                 const files = [
                   ...new Set(c.chunkIds.map((id) => parseChunkId(id)?.file ?? id)),
@@ -2614,17 +2628,17 @@ export class McpHandler {
               text += `\n### Tests (${tests.length}) — run these after the change\n\n`;
               for (const r of tests) text += line(r, true);
             } else {
-              text += testsByConvention([
-                file,
-                ...code.filter((r) => r.dep.hop === 1).map((r) => r.file),
-              ]);
+              text += testsByConvention(
+                [file, ...code.filter((r) => r.dep.hop === 1).map((r) => r.file)],
+                store.getTestFiles(parsed.group, parsed.project)
+              );
             }
             text += commonSection;
 
             const notes: string[] = [];
             if (rows.some((r) => !r.dep.certain)) {
               notes.push(
-                '`[maybe]` — linked only through a name defined in several places, or through a common name (its file also uses something specific from the changed file); check it really uses this code.'
+                '`[maybe]` — linked only through a common name (its file also uses something specific from the changed file), or through such a dependent; check it really uses this code.'
               );
             }
             if (rows.some((r) => r.dep.hub)) {

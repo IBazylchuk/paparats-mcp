@@ -519,10 +519,11 @@ describe('buildSymbolEdges', () => {
         ],
       }),
     ];
-    // A call on an interface reaches what implements it, and nothing else of that name.
+    // A call on an interface reaches what implements it, each of them, and
+    // nothing else of that name.
     expect(to(buildSymbolEdges(ts).edges)).toEqual([
-      ['memory.ts', 'AMBIGUOUS'],
-      ['file.ts', 'AMBIGUOUS'],
+      ['memory.ts', 'INFERRED'],
+      ['file.ts', 'INFERRED'],
     ]);
   });
 

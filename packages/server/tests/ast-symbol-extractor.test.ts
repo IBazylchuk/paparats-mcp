@@ -1268,6 +1268,8 @@ end`;
     [1].each { |report| report.close }
     plan = Plan.find_by(code: item)
     plan.renew
+    connection.select_rows("SELECT 1")
+    Invoice.connection.execute("SELECT 2")
   end
   def store = @store ||= Store.new
   def model = Invoice
@@ -1276,7 +1278,7 @@ end`;
     const results = extractSymbolsForChunks(
       tree,
       language,
-      [{ startLine: 0, endLine: 24 }],
+      [{ startLine: 0, endLine: 26 }],
       'ruby'
     );
     tree.delete();
@@ -1293,6 +1295,9 @@ end`;
     expect(site('strip')).toEqual([{ on: '::String', onObject: true }]);
     // A Rails finder returns an object of its class, as `new` does.
     expect(site('renew')).toEqual([{ on: 'Plan', ...scope, onObject: true }]);
+    // A database connection is ActiveRecord's, whatever the project names alike.
+    expect(site('select_rows')).toEqual([{ external: true }]);
+    expect(site('execute')).toEqual([{ external: true }]);
     // A parameter, a block's own `report`: not known.
     expect(site('title')).toEqual([{ onObject: true }]);
     expect(site('close')).toEqual([{ onObject: true }]);
@@ -1302,6 +1307,35 @@ end`;
       { name: 'Base' },
       { name: 'Retryable' },
     ]);
+  });
+
+  it('reads a Ruby constant path through a class alias the file sets', async () => {
+    const code = `module Crawl
+  class AcmeBoard
+    Postings = ::Vendors::Acme::Postings
+    Local = Feeds
+    def run
+      Postings::Fetcher.fetch
+      Local::Parser.parse
+      Other::Thing.go
+    end
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 10 }],
+      'ruby'
+    );
+    tree.delete();
+    const site = (name: string) =>
+      results[0]!
+        .use_sites!.filter((u) => u.name === name && u.constant)
+        .map(({ name: _, from: __, ...rest }) => rest);
+    expect(site('Fetcher')).toEqual([{ on: '::Vendors::Acme::Postings', constant: true }]);
+    expect(site('Parser')).toEqual([{ on: 'Feeds', in: 'Crawl::AcmeBoard', constant: true }]);
+    expect(site('Thing')).toEqual([{ on: 'Other', in: 'Crawl::AcmeBoard', constant: true }]);
   });
 
   it('records the class of a TypeScript receiver, its import, and builtins and packages as external', async () => {

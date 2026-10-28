@@ -86,6 +86,7 @@ function createMockMetadataStore(): MetadataStore {
     getGroupDegreeSnapshot: vi.fn().mockReturnValue({ hubChunkIds: new Set() }),
     getNameUsage: vi.fn().mockReturnValue({ callerFiles: 0, filesUsing: new Map() }),
     getEdgesFromFile: vi.fn().mockReturnValue([]),
+    getTestFiles: vi.fn().mockReturnValue(null),
     edgesVersion: vi.fn().mockReturnValue('0:0'),
     edgeProjects: vi.fn().mockReturnValue([]),
     iterateProjectEdges: vi.fn().mockReturnValue([]),
@@ -1356,18 +1357,21 @@ describe('McpHandler', () => {
       return { metadataStore, indexer };
     }
 
-    it('lists direct and further callers, tests apart, uncertain links marked', async () => {
+    it('lists direct and further callers, tests apart, ambiguous links set aside', async () => {
       const { metadataStore, indexer } = mocks();
       await withHandler({ metadataStore, indexer }, async (port) => {
         const { text, isError } = await callTool(port, 'change_impact', { chunk_id: SEED });
         expect(isError).toBe(false);
         expect(text).toContain('## Change impact of [p1] src/auth.ts:11-21 `authenticate`');
         expect(text).toContain(
-          '4 chunks in 4 files depend on it: 3 directly, 1 through other code. 1 of them are tests.'
+          '3 chunks in 3 files depend on it: 2 directly, 1 through other code. 1 of them are tests.'
         );
-        expect(text).toContain('### Uses it directly (2)');
+        expect(text).toContain('### Uses it directly (1)');
         expect(text).toContain('**[p1] src/login.ts:6** — uses `authenticate`');
-        expect(text).toContain('src/legacy.ts:1** — uses `authenticate` [maybe]');
+        expect(text).toContain(
+          '### Linked only through a name defined in several places (1) — probably not dependents'
+        );
+        expect(text).toContain('- `authenticate` — 1 file: src/legacy.ts');
         expect(text).toContain('### 2 steps away (1)');
         expect(text).toContain('src/routes.ts:1** — uses `handleLogin`');
         expect(text).toContain('### Tests (1)');
@@ -1376,7 +1380,7 @@ describe('McpHandler', () => {
         expect(text).not.toContain('tests/helpers.ts');
         // The sibling chunk of the same file is not part of a chunk-level change.
         expect(text).not.toContain('src/admin.ts');
-        expect(text).toContain('`[maybe]`');
+        expect(text).not.toContain('`[maybe]`');
         expect(text).not.toContain('```');
       });
     });
@@ -1422,7 +1426,7 @@ describe('McpHandler', () => {
       });
     });
 
-    it('lists links past the first step through a name defined in several places apart', async () => {
+    it('lists links further away through a name defined in several places apart', async () => {
       const { metadataStore, indexer } = mocks();
       const OTHER = 'g1//p1//src/feed.ts//0-9//h11';
       const edges = [
@@ -1436,7 +1440,7 @@ describe('McpHandler', () => {
         const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
         expect(text).toContain('### Uses it directly (1)');
         expect(text).not.toContain('### 2 steps away');
-        expect(text).toContain('### Further, only through a name defined in several places (1)');
+        expect(text).toContain('### Linked only through a name defined in several places (1)');
         expect(text).toContain('- `handleLogin` — 1 file: src/feed.ts');
       });
     });
@@ -1452,6 +1456,30 @@ describe('McpHandler', () => {
         expect(text).toContain('No indexed test reaches it.');
         expect(text).toContain('- `src/auth.test.ts`');
         expect(text).toContain('- `src/login.spec.ts`');
+      });
+    });
+
+    it("names the project's test files named after the change when they are recorded", async () => {
+      const { metadataStore, indexer } = mocks();
+      const edges = [edge(CALLER, SEED, 'authenticate')];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      vi.mocked(metadataStore.getTestFiles).mockReturnValue([
+        'test/unit/src/auth.test.ts',
+        'test/unit/other/auth.test.ts',
+        'test/unit/src/session.test.ts',
+      ]);
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(text).toContain('These test files of the project are named after it');
+        expect(text).toContain('- `test/unit/src/auth.test.ts`');
+        expect(text).not.toContain('other/auth.test.ts');
+        expect(text).not.toContain('src/auth.spec.ts');
+
+        vi.mocked(metadataStore.getTestFiles).mockReturnValue([]);
+        const none = await callTool(port, 'change_impact', { chunk_id: SEED });
+        expect(none.text).toContain('No test file of the project is named after it');
       });
     });
 
@@ -1503,7 +1531,7 @@ describe('McpHandler', () => {
       });
       await withHandler({ metadataStore, indexer }, async (port) => {
         const { text } = await callTool(port, 'change_impact', { chunk_id: SEED, depth: 1 });
-        expect(text).toContain('3 chunks in 3 files depend on it');
+        expect(text).toContain('2 chunks in 2 files depend on it');
         expect(text).toContain(
           '### Linked only through a common name (12) — probably not dependents'
         );

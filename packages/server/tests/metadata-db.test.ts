@@ -194,6 +194,16 @@ describe('MetadataStore', () => {
     expect(store.getTickets(chunkId)).toHaveLength(0);
   });
 
+  it("records a project's test files until the project is deleted", () => {
+    expect(store.getTestFiles('g', 'p')).toBeNull();
+    store.setTestFiles('g', 'p', ['spec/a_spec.rb']);
+    store.setTestFiles('g', 'p', ['spec/b_spec.rb']);
+    expect(store.getTestFiles('g', 'p')).toEqual(['spec/b_spec.rb']);
+    expect(store.getTestFiles('g', 'other')).toBeNull();
+    store.deleteByProject('g', 'p');
+    expect(store.getTestFiles('g', 'p')).toBeNull();
+  });
+
   it('deleteByProject removes all data for a project prefix', () => {
     store.upsertCommits('mygroup//proj1//a.ts//1-5//h1', [
       {

@@ -55,6 +55,7 @@ import { isMissingCollection } from './qdrant-errors.js';
 import { isTermsCollection } from './terminology/collection.js';
 import { EMBED_TEXT_FORMAT, chunkEmbedText } from './embed-text.js';
 import { churnPercentiles, readFileCommitCounts } from './file-churn.js';
+import { readTestFiles } from './test-files.js';
 
 // ── Collection name helpers ──────────────────────────────────────────────────
 
@@ -1454,6 +1455,10 @@ export class Indexer {
       files = filterFilesByGitignore(files, project.path);
     }
     console.log(`  ${files.length} files found`);
+    if (this.metadataStore) {
+      const tests = readTestFiles(project.path);
+      if (tests) this.metadataStore.setTestFiles(groupName, storedName, tests);
+    }
 
     const queue = new PQueue({ concurrency: project.indexing.concurrency });
     let totalChunks = 0;
