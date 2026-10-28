@@ -134,7 +134,9 @@ export interface SymbolExtractionResult {
  *      or a package's (`external`); TypeScript and JavaScript uses record the
  *      import they come from (`module`), and names read as values are uses;
  *      classes record what they inherit and mix in (`parents`).
- *  6 — a Ruby call on `connection` (ActiveRecord's adapter) is `external`.
+ *  6 — a Ruby call on `connection` (ActiveRecord's adapter) is `external`; a
+ *      Ruby constant path through a class alias (`Postings = A::Postings`) is
+ *      read through that class.
  */
 export const SYMBOL_FORMAT = 6;
 
@@ -837,9 +839,14 @@ const RUBY_VALUE_CONSTANT_RE = /^[A-Z][A-Z0-9_]+$/;
  * `Companies::X` to whichever file gives `module Companies` a method. A class
  * a value constant is read from (`Scanner` in `Scanner::SCOPE_KEY`) is used,
  * and resolved like a bare constant: Ruby constants holding values are not
- * definitions in the graph, so the class is what links.
+ * definitions in the graph, so the class is what links. A path through a
+ * constant the file sets to a class (`Postings = ::Vendors::Acme::Postings`)
+ * is read through that class.
  */
-function rubyConstant(node: Node): Pick<UseSite, 'on' | 'in' | 'lexical' | 'constant'> | null {
+function rubyConstant(
+  node: Node,
+  types: RubyReceiverTypes
+): Pick<UseSite, 'on' | 'in' | 'lexical' | 'constant'> | null {
   const parent = node.parent;
   const scope = enclosingClass(node);
   if (parent?.type === 'scope_resolution') {
@@ -857,6 +864,15 @@ function rubyConstant(node: Node): Pick<UseSite, 'on' | 'in' | 'lexical' | 'cons
     const written = parent.childForFieldName('scope');
     if (!written) return { lexical: true, constant: true }; // `::Base`: the top-level one
     const on = constantPath(written.text);
+    // `Postings::Fetcher` after `Postings = ::Vendors::Acme::Postings`: the alias's class.
+    const [head, ...rest] = on.split('::');
+    const alias = head ? types.constantClass(head) : undefined;
+    if (alias?.classValue) {
+      const path = [alias.on, ...rest].join('::');
+      return path.startsWith('::') || !alias.in
+        ? { on: path, constant: true }
+        : { on: path, in: alias.in, constant: true };
+    }
     return on.startsWith('::') || !scope
       ? { on, constant: true }
       : { on, in: scope, constant: true };
@@ -1468,7 +1484,7 @@ export function extractSymbolsForChunks(
         if (node.startPosition.row > chunk.endLine) break;
         const text = node.text;
         const constant =
-          lang === 'ruby' && node.type === 'constant' ? rubyConstant(node) : undefined;
+          lang === 'ruby' && node.type === 'constant' ? rubyConstant(node, rubyTypes!) : undefined;
         if (constant === null) continue;
         if (!isNoise(text)) {
           uses.add(text);

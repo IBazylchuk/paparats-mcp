@@ -1309,6 +1309,35 @@ end`;
     ]);
   });
 
+  it('reads a Ruby constant path through a class alias the file sets', async () => {
+    const code = `module Crawl
+  class AcmeBoard
+    Postings = ::Vendors::Acme::Postings
+    Local = Feeds
+    def run
+      Postings::Fetcher.fetch
+      Local::Parser.parse
+      Other::Thing.go
+    end
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 10 }],
+      'ruby'
+    );
+    tree.delete();
+    const site = (name: string) =>
+      results[0]!
+        .use_sites!.filter((u) => u.name === name && u.constant)
+        .map(({ name: _, from: __, ...rest }) => rest);
+    expect(site('Fetcher')).toEqual([{ on: '::Vendors::Acme::Postings', constant: true }]);
+    expect(site('Parser')).toEqual([{ on: 'Feeds', in: 'Crawl::AcmeBoard', constant: true }]);
+    expect(site('Thing')).toEqual([{ on: 'Other', in: 'Crawl::AcmeBoard', constant: true }]);
+  });
+
   it('records the class of a TypeScript receiver, its import, and builtins and packages as external', async () => {
     const code = `import { Store } from './store.js';
 import * as names from './names.js';
