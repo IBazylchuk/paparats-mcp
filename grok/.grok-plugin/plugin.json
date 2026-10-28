@@ -2,7 +2,7 @@
   "name": "paparats",
   "displayName": "Paparats",
   "description": "Self-hosted semantic code search across all your repos. Indexes code with tree-sitter and a local embedding model; by default your code and queries stay on your machine.",
-  "version": "2.16.1",
+  "version": "2.16.2",
   "author": {
     "name": "Ilya Bazylchuk"
   },

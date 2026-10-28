@@ -1,5 +1,14 @@
 # @paparats/server
 
+## 2.16.2
+
+### Patch Changes
+
+- c65ad9d: Descriptions and docs match the code again. Tool descriptions call the score a similarity, not a confidence, and drop the unmeasured "50-90% fewer tokens"; `impact_analysis` says it shows both what a feature depends on and what depends on it; support instructions format GitHub tickets as `#567`, as the extractor returns them. `server.json` points at `/mcp`. The CLI no longer suggests the removed `paparats init`. Docs: indexing steps in order (a file is parsed and chunked before the unchanged check), files without a grammar are cut into fixed-size runs of lines, `change_impact` follows 2 steps by default, `force` is not enough for a model change, the embed image's examples use port 18434, and smaller fixes.
+- 3d13f72: With `PAPARATS_LOG_QUERY_TEXT=false` the analytics database no longer keeps the words of a query: `query_tokens`, which the retry rate compares, now holds hashes keyed by a random key that lives only in the server process. Before, the column stored the query's words in plain text whatever the setting. `docs/observability.md` also says that `query_hash` is a plain SHA-1, which hides the text but lets anyone holding the database check a guess.
+- 79adaeb: `search_changes` and `recent_changes` read a relative `since` ("7 days ago", "2 weeks", "yesterday"), which their prompts suggest: before, it went to Qdrant as is and the query failed. A date neither ISO 8601 nor relative gets a message saying what to pass. `find_usages` reads a `called_by` / `referenced_by` filter as `calls` / `references`; those types were offered but no edge carried them, so the filter returned nothing.
+  - @paparats/shared@2.16.2
+
 ## 2.16.1
 
 ### Patch Changes
