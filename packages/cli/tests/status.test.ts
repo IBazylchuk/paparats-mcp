@@ -6,11 +6,12 @@ import {
   embedStatus,
   StatusDeps,
 } from '../src/commands/status.js';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 
 vi.mock('child_process');
 
 const mockedExecSync = vi.mocked(execSync);
+const mockedExecFileSync = vi.mocked(execFileSync);
 
 describe('status', () => {
   beforeEach(() => {
@@ -96,15 +97,20 @@ describe('status', () => {
 
   describe('embedStatus', () => {
     it('returns model ready when the embed server health check succeeds', () => {
-      mockedExecSync.mockReturnValue(Buffer.from(''));
+      mockedExecFileSync.mockReturnValue(Buffer.from(''));
 
-      const result = embedStatus();
+      const result = embedStatus('bge-code-v1', 'http://localhost:28434');
 
       expect(result).toBe('model ready');
+      expect(mockedExecFileSync).toHaveBeenCalledWith(
+        'curl',
+        ['-fsS', 'http://localhost:28434/health'],
+        expect.anything()
+      );
     });
 
     it('returns not running when the health check throws', () => {
-      mockedExecSync.mockImplementation(() => {
+      mockedExecFileSync.mockImplementation(() => {
         throw new Error('connection refused');
       });
 
@@ -139,12 +145,14 @@ describe('status', () => {
           projectDir: '/tmp/project',
         }),
         healthCheck,
+        indexerHealth: async () => true,
       };
 
       const result = await runStatus({ server: 'http://localhost:9876' }, deps);
 
       expect(result.docker).toEqual({ qdrant: 'Up 1h', mcp: 'Up 1h' });
       expect(result.embed).toBe('model ready');
+      expect(result.indexer).toBe('running');
       expect(result.config.found).toBe(true);
       expect(result.config.group).toBe('my-group');
       expect(result.config.language).toBe('typescript');

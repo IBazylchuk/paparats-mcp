@@ -50,6 +50,7 @@ indexing: # all optional
   paths: [src, packages] # only these folders
   exclude: [node_modules, dist, '**/*.test.ts']
   exclude_extra: ['**/__fixtures__/**'] # on top of the language defaults
+  extensions: [.ts, .vue] # index files with these extensions instead of the language's patterns
   chunkSize: 1500 # characters per chunk, 128–8192 (default 1024)
   overlap: 100 # characters shared by neighbouring fixed-size chunks, files without a grammar (default 128)
   concurrency: 4 # files indexed in parallel (default 2)

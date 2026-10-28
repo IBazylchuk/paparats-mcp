@@ -309,6 +309,17 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
   } else {
     patterns = [...new Set(mergedPatterns)];
   }
+  // Extensions given by the user pick the files instead of the language patterns.
+  if (userIndexing.extensions && userIndexing.extensions.length > 0) {
+    patterns = [];
+    for (const p of paths) {
+      for (const ext of userIndexing.extensions) {
+        const dotted = ext.startsWith('.') ? ext : `.${ext}`;
+        patterns.push(path.posix.join(p.replace(/\\/g, '/'), `**/*${dotted}`));
+      }
+    }
+    patterns = [...new Set(patterns)];
+  }
 
   const indexing: ResolvedIndexingConfig = {
     paths,

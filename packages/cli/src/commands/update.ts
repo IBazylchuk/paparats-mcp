@@ -186,10 +186,11 @@ function decideEmbedRefresh(deps: {
     if (composeHasEmbed) {
       return { refresh: false, reason: 'no embedMode; docker-compose.yml runs an embed service' };
     }
-    // Compose without an embed service means the embed runs natively — but
-    // native embed is only supported on macOS (Homebrew llama.cpp/llama-swap).
-    // On Linux/Windows this configuration is external/manual, so don't try to
-    // brew-install; fall through to the non-macOS default (refresh: false).
+    // Compose without an embed service: the embed runs natively or elsewhere.
+    // An install that recorded no embedMode predates `--embed-mode`, when
+    // native embed was the macOS default only; elsewhere it was external or
+    // manual, so don't brew-install (refresh: false). A recorded `native`
+    // refreshes on any OS (above).
     if (platform() === 'darwin') {
       return { refresh: true, reason: 'no embedMode; docker-compose.yml has no embed service' };
     }

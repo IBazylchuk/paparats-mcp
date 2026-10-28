@@ -1811,7 +1811,7 @@ export class McpHandler {
               content: [
                 {
                   type: 'text' as const,
-                  text: JSON.stringify({ status: 'ok', groups }, null, 2),
+                  text: JSON.stringify({ status: 'ok', version: PKG_VERSION, groups }, null, 2),
                 },
               ],
             };

@@ -569,6 +569,7 @@ describe('McpHandler', () => {
       expect(text).toBeDefined();
       const parsed = JSON.parse(text!);
       expect(parsed.status).toBe('ok');
+      expect(parsed.version).toMatch(/^\d+\.\d+\.\d+/);
       expect(parsed.groups).toEqual({ g1: 10, g2: 20 });
     } finally {
       server.close();

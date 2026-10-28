@@ -421,13 +421,16 @@ startPort: 10001
 captureBuffer: 0
 
 macros:
+  # --batch-size / --ubatch-size size the buffers llama-server allocates per
+  # model up front; chunks are hundreds of tokens, so 2048 (as in the Docker
+  # image) covers any chunk, where 8192 costs gigabytes for nothing.
   # --cache-ram 0: llama-server's prompt cache keeps up to 8 GiB per model of
   # KV state for prompts that come back. Embedding inputs never repeat, so it
   # only grows memory.
   llama-embed: >
     llama-server
     --host 127.0.0.1 --port \${PORT}
-    --embeddings --ctx-size 8192 --batch-size 8192 --ubatch-size 8192
+    --embeddings --ctx-size 8192 --batch-size 2048 --ubatch-size 2048
     --cache-ram 0
 
 models:

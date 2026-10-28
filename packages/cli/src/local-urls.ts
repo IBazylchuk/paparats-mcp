@@ -6,6 +6,8 @@ export interface LocalUrls {
   server: string;
   indexer: string;
   qdrant: string;
+  /** The embed server as the host reaches it (Docker mode publishes `EMBED_PORT`, native listens on 18434). */
+  embed: string;
 }
 
 /** `KEY=value` lines of a dotenv file; comments, blanks and malformed lines are skipped. */
@@ -24,7 +26,7 @@ export function parseDotenv(content: string): Record<string, string> {
  * `${PAPARATS_PORT:-9876}` and so on, read from `~/.paparats/.env`, so the CLI
  * reads the same file: a port changed there must not leave the health checks
  * and the client wiring on the default. `PAPARATS_SERVER_URL`,
- * `PAPARATS_INDEXER_URL` and `QDRANT_URL` in the environment replace a whole
+ * `PAPARATS_INDEXER_URL`, `QDRANT_URL` and `EMBED_URL` in the environment replace a whole
  * URL (the Codespaces workspace reaches the stack by service name).
  */
 export function localUrls(
@@ -42,5 +44,6 @@ export function localUrls(
     server: env['PAPARATS_SERVER_URL'] || `http://localhost:${port('PAPARATS_PORT', 9876)}`,
     indexer: env['PAPARATS_INDEXER_URL'] || `http://localhost:${port('INDEXER_PORT', 9877)}`,
     qdrant: env['QDRANT_URL'] || `http://localhost:${port('QDRANT_PORT', 6333)}`,
+    embed: env['EMBED_URL'] || `http://localhost:${port('EMBED_PORT', 18434)}`,
   };
 }

@@ -48,8 +48,9 @@ export async function runChecks(
   const results: CheckResult[] = [];
 
   // Resolve config for URLs/models
-  const qdrantUrl = localUrls().qdrant;
-  const embedUrl = process.env.EMBED_URL ?? 'http://localhost:18434';
+  const urls = localUrls();
+  const qdrantUrl = urls.qdrant;
+  const embedUrl = urls.embed;
   let embedModel = process.env.EMBEDDING_MODEL ?? 'bge-code-v1';
 
   const configDir = findConfigDir();
@@ -77,10 +78,11 @@ export async function runChecks(
       });
     }
   } else {
+    // Optional: the indexer reads projects.yml and detects the rest.
     results.push({
       name: CONFIG_FILE,
-      ok: false,
-      message: 'not found in current directory or parents',
+      ok: true,
+      message: 'none in this directory or its parents (optional)',
     });
   }
 
@@ -209,6 +211,21 @@ export async function runChecks(
       ok: false,
       message: `unreachable at ${serverUrl}`,
     });
+  }
+
+  // 8. Indexer
+  onCheckStart?.('Indexer');
+  try {
+    const res = await fetch(new URL('/health', urls.indexer).href, {
+      signal: createTimeoutSignal(3000),
+    });
+    results.push({
+      name: 'Indexer',
+      ok: res.ok,
+      message: res.ok ? `reachable at ${urls.indexer}` : `status ${res.status}`,
+    });
+  } catch {
+    results.push({ name: 'Indexer', ok: false, message: `unreachable at ${urls.indexer}` });
   }
 
   return results;

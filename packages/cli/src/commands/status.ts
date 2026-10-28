@@ -1,9 +1,10 @@
 import { Command } from 'commander';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import chalk from 'chalk';
 import { findConfigDir, readConfig, CONFIG_FILE } from '../config.js';
 import { ApiClient } from '../api-client.js';
 import { localUrls } from '../local-urls.js';
+import { createTimeoutSignal } from '../abort.js';
 
 export interface StatusOptions {
   server?: string;
@@ -42,6 +43,7 @@ export interface StatusDeps {
     config: { group: string; language: string | string[]; embeddings?: { model?: string } };
   };
   healthCheck?: (url: string, timeout: number) => Promise<{ status: number; data: unknown }>;
+  indexerHealth?: (url: string, timeout: number) => Promise<boolean>;
 }
 
 export function dockerStatus(): { qdrant: string; mcp: string } {
@@ -67,10 +69,10 @@ export function dockerStatus(): { qdrant: string; mcp: string } {
   return result;
 }
 
-export function embedStatus(_modelName = 'bge-code-v1'): string {
+export function embedStatus(_modelName = 'bge-code-v1', url = localUrls().embed): string {
   try {
-    // Static URL, no user input — checks the embed server /health endpoint
-    execSync('curl -fsS http://localhost:18434/health', {
+    // The URL goes to curl as an argument, never through a shell.
+    execFileSync('curl', ['-fsS', new URL('/health', url).href], {
       encoding: 'utf8',
       timeout: 5_000,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -98,6 +100,7 @@ function formatMemory(heapUsed: string): string {
 export interface StatusResult {
   docker: { qdrant: string; mcp: string };
   embed: string;
+  indexer: 'running' | 'not running';
   config: {
     found: boolean;
     group?: string;
@@ -129,6 +132,7 @@ export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise
   const result: StatusResult = {
     docker: { qdrant: 'not running', mcp: 'not running' },
     embed: 'not running',
+    indexer: 'not running',
     config: { found: false },
     server: { ok: false },
     timestamp: new Date().toISOString(),
@@ -151,6 +155,17 @@ export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise
   }
   const embed = getEmbedStatus(modelName);
   result.embed = embed;
+
+  // Indexer
+  const indexerHealth =
+    deps?.indexerHealth ??
+    (async (url: string, ms: number) =>
+      (await fetch(new URL('/health', url).href, { signal: createTimeoutSignal(ms) })).ok);
+  try {
+    if (await indexerHealth(localUrls().indexer, timeout)) result.indexer = 'running';
+  } catch {
+    // Not running or unreachable.
+  }
 
   // Config
   if (configDir) {
@@ -220,7 +235,7 @@ export async function runStatus(opts: StatusOptions, deps?: StatusDeps): Promise
 }
 
 function outputStatus(result: StatusResult, opts: StatusOptions): void {
-  const { docker, embed, config, server } = result;
+  const { docker, embed, indexer, config, server } = result;
   const qdrantOk = docker.qdrant !== 'not running';
   const mcpOk = docker.mcp !== 'not running';
   const embedOk = embed === 'model ready';
@@ -229,6 +244,7 @@ function outputStatus(result: StatusResult, opts: StatusOptions): void {
     const jsonData = {
       docker,
       embed,
+      indexer,
       config,
       server: server.ok
         ? {
@@ -253,6 +269,9 @@ function outputStatus(result: StatusResult, opts: StatusOptions): void {
 
   // Embeddings
   console.log(`  Embeddings: ${embedOk ? chalk.green(embed) : chalk.yellow(embed)}`);
+  console.log(
+    `  Indexer:  ${indexer === 'running' ? chalk.green(indexer) : chalk.yellow(indexer)}`
+  );
 
   // Config
   if (config.found) {

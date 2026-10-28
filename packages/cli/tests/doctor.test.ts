@@ -20,6 +20,7 @@ vi.mock('../src/local-urls.js', () => ({
     server: 'http://localhost:9876',
     indexer: 'http://localhost:9877',
     qdrant: process.env.QDRANT_URL ?? 'http://localhost:6333',
+    embed: process.env.EMBED_URL ?? 'http://localhost:18434',
   }),
 }));
 
@@ -84,14 +85,14 @@ describe('doctor', () => {
         expect(configCheck?.message).toContain(tmpDir);
       });
 
-      it('reports fail when config not found', async () => {
+      it('passes without a config: the file is optional', async () => {
         mockedFindConfigDir.mockReturnValue(null);
 
         const results = await runChecks('http://localhost:9876');
 
         const configCheck = results.find((r) => r.name === CONFIG_FILE);
-        expect(configCheck?.ok).toBe(false);
-        expect(configCheck?.message).toContain('not found');
+        expect(configCheck?.ok).toBe(true);
+        expect(configCheck?.message).toContain('optional');
       });
 
       it('reports fail when config invalid', async () => {
@@ -356,7 +357,8 @@ describe('doctor', () => {
         expect(names).toContain('Embeddings');
         expect(names).toContain('Qdrant');
         expect(names).toContain('MCP Server');
-        expect(results.length).toBe(7);
+        expect(names).toContain('Indexer');
+        expect(results.length).toBe(8);
       });
     });
   });

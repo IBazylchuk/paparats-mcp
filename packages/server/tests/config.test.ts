@@ -178,6 +178,24 @@ injection: !!js/function >
       expect(config.patterns).toContain('src/**/*.rb');
     });
 
+    it('picks files by the extensions the user lists, within the paths', () => {
+      const raw = {
+        group: 'g',
+        language: 'typescript',
+        indexing: { paths: ['src', 'lib'], extensions: ['.vue', 'ts'] },
+      };
+      const config = resolveProject(projectDir, raw);
+      expect(config.patterns).toEqual([
+        'src/**/*.vue',
+        'src/**/*.ts',
+        'lib/**/*.vue',
+        'lib/**/*.ts',
+      ]);
+      expect(
+        resolveProject(projectDir, { group: 'g', indexing: { extensions: ['.rb'] } }).patterns
+      ).toEqual(['**/*.rb']);
+    });
+
     describe('path validation', () => {
       it('rejects absolute paths', () => {
         const absolutePath = path.sep === '\\' ? 'C:\\tmp' : '/tmp';

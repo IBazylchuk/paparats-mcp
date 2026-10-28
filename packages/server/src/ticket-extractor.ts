@@ -6,8 +6,9 @@ export interface ExtractedTicket {
 // Jira: PROJECT-123
 const JIRA_PATTERN = /\b([A-Z]{2,}-\d+)\b/g;
 
-// GitHub: #123 (space/start-of-string anchored to avoid false positives)
-const GITHUB_ISSUE_PATTERN = /(?:^|\s)#(\d+)\b/g;
+// GitHub: #123 (after a space, an opening bracket or the start, to avoid
+// false positives); `(#123)` is how a squash merge names its pull request.
+const GITHUB_ISSUE_PATTERN = /(?:^|[\s([])#(\d+)\b/g;
 
 // GitHub cross-repo: org/repo#123
 const GITHUB_CROSS_REPO_PATTERN = /\b([\w.-]+\/[\w.-]+#\d+)\b/g;
