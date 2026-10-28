@@ -315,7 +315,10 @@ function resolveLexical(
  * `where`, a `delegate`): the call does not reach a namesake elsewhere.
  * Undefined when the use names no class the project has but its import may
  * still hold the name (a type from another package of the project): it is
- * linked by name.
+ * linked by name. `dispatch` when one known class reaches several
+ * definitions (an interface's implementations): each is a real target, so
+ * the edges are INFERRED, not AMBIGUOUS like a class name several classes
+ * share (`several`).
  */
 function resolveMember(
   site: UseSite,
@@ -324,7 +327,7 @@ function resolveMember(
   classes: ClassTable,
   byClass: Map<string, string[]> | undefined,
   topLevel: string[]
-): { chunks: string[]; match: 'exact' | 'suffix' | 'several' } | null | undefined {
+): { chunks: string[]; match: 'exact' | 'suffix' | 'several' | 'dispatch' } | null | undefined {
   const on = site.on!;
   const found = classes.find(on, site.in);
   if (found.paths.length === 0) return site.module !== undefined ? undefined : null;
@@ -344,7 +347,7 @@ function resolveMember(
     (byClass?.get(ref.path) ?? []).filter(
       (id) => defs.has(id) && (!ref.files || ref.files.has(fileKey(id)!))
     );
-  const several = (ids: string[]) => starts.length > 1 || new Set(ids.map(fileKey)).size > 1;
+  const files = (ids: string[]) => new Set(ids.map(fileKey)).size;
 
   const up = new Set<string>();
   for (const start of starts) {
@@ -359,25 +362,40 @@ function resolveMember(
     }
   }
   if (up.size > 0) {
+    // Up the ancestry one definition wins (Ruby's method lookup order).
     const ids = [...up];
-    return { chunks: ids, match: several(ids) ? 'several' : found.suffix ? 'suffix' : 'exact' };
+    const match =
+      starts.length > 1 || files(ids) > 1 ? 'several' : found.suffix ? 'suffix' : 'exact';
+    return { chunks: ids, match };
   }
-  const inferred = (ids: string[]) => ({
-    chunks: ids,
-    match: new Set(ids.map(fileKey)).size > 1 ? ('several' as const) : ('suffix' as const),
-  });
   if (on.startsWith('::') && !isEsFile(callerFile)) {
     const top = topLevel.filter((id) => defs.has(id));
-    if (top.length > 0) return inferred(top);
+    if (top.length > 0) {
+      return { chunks: top, match: files(top) > 1 ? 'several' : 'suffix' };
+    }
   }
   const startPaths = new Set(starts.map((ref) => ref.path));
   const below: string[] = [];
+  const owners = new Set<string>();
   for (const [owner, ids] of byClass ?? []) {
     if (startPaths.has(owner)) continue;
     if (!classes.ancestors({ path: owner }).refs.some((ref) => startPaths.has(ref.path))) continue;
-    for (const id of ids) if (defs.has(id)) below.push(id);
+    for (const id of ids) {
+      if (!defs.has(id)) continue;
+      below.push(id);
+      owners.add(owner);
+    }
   }
-  return below.length > 0 ? inferred(below) : null;
+  if (below.length === 0) return null;
+  // Several classes below one known class each answer it (an interface's
+  // implementations): the call reaches every one of them.
+  const match =
+    files(below) === 1
+      ? 'suffix'
+      : starts.length === 1 && owners.size === below.length
+        ? 'dispatch'
+        : 'several';
+  return { chunks: below, match };
 }
 
 /**
@@ -396,7 +414,9 @@ function resolveMember(
  *   correct, but not proven.
  * - `AMBIGUOUS`: the symbol is defined in multiple chunks (or the named class
  *   could be several). The caller could be hitting any of them; surface all
- *   candidates with low confidence.
+ *   candidates with low confidence. A call on an object of a known class that
+ *   several of its implementations or subclasses answer is `INFERRED`: the
+ *   call reaches each of them.
  *
  * A re-export (`export { x } from`) links as `reexports`, a class held as a
  * value (`UseSite.value`) as `references`, anything else as `calls`.
@@ -505,7 +525,10 @@ export function buildSymbolEdges(
       if (defs.size === 0) continue;
       if (only && !only(chunk.chunk_id, sym)) continue;
 
-      let onClass: ReturnType<typeof resolveClass> | ReturnType<typeof resolveLexical>;
+      let onClass:
+        | ReturnType<typeof resolveClass>
+        | ReturnType<typeof resolveLexical>
+        | NonNullable<ReturnType<typeof resolveMember>>;
       if (site.lexical) {
         onClass = resolveLexical(
           site,
