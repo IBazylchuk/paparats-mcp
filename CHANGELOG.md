@@ -4,6 +4,31 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.16.3] - 2026-10-28
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 2d895e7: Small fixes from the docs and code audit:
+
+  - **Server.** `health_check` reports the server version.
+  - **Server.** A pull request named in brackets, as a GitHub squash merge writes it (`feat: x (#123)`), is now read as a ticket.
+  - **Server.** `indexing.extensions` now selects the files to index within `indexing.paths`, in place of the language's patterns. Before, it was accepted and ignored.
+  - **CLI.** The native embed config allocates batch buffers of 2048 tokens instead of 8192, as the Docker image does. A chunk is a few hundred tokens, and the larger buffers cost gigabytes of memory.
+  - **CLI.** `paparats doctor` no longer fails without a `.paparats.yml`, which is optional, and it now checks the indexer.
+  - **CLI.** `paparats doctor` and `paparats status` find the embed server through `EMBED_URL` or `EMBED_PORT` in `~/.paparats/.env`, not a fixed `localhost:18434`.
+  - **CLI.** `paparats status` shows whether the indexer is running.
+
+- 8be321a: `change_impact`:
+
+  - A dependent is shown at the line where its calling method is defined, not at the first line of its chunk. Before, a method on line 63 of a class chunk starting at line 2 was shown as `:3`.
+  - Each dependent now lists the other methods of its chunk that call it, as "further in this chunk", with their lines. Before, those methods were followed but never named, so the steps they add were invisible. On the 20-item key of a "two and three steps out" question on a private Ruby codebase, 11 items were listed at the right step. Now 6 more appear among these methods, and 2 listed names are not in the key (both 4 steps out).
+  - Only a chunk called from many places stops the walk as `[hub]`. Before, a chunk that only calls a lot (a large class) stopped it too. On the same key this adds 1 item at the right step. Over 300 random seeds, the share of walks cut at the dependents limit goes from 6% to 7%.
+
+- 656cf0b: `module_map`: a used module now names, in brackets, the file it is mostly reached through when that file belongs to another package or app than the folder the module is named after (`Uses: 4. extensions/tracker/src/lib (src/components/RouteError.tsx)`). A module is named after the folder most of its files sit in, but it can also hold files of another app. On a private TS codebase, a module named after a browser extension also held 53 site files the extension imports. 82% of the calls from site modules into it landed on those site files, and agents read the link as "the site calls the extension". All 5 such links there now name a site file. The output grows by 3% on that codebase and 5% on the paparats repository.
+- e755bb4: TypeScript and JavaScript imports through a tsconfig path alias (`~/lib/dates`, `@/components/x`) now link only to the file they name, as relative imports already did. The alias is read from the nearest `tsconfig.json` / `jsconfig.json` above the file, following `extends`, `baseUrl` and a solution config's `references`. Before, such an import linked by name to every definition of it in the project. On a private TS codebase of 2,655 files that uses `~/` for most imports, 11,215 edges become EXTRACTED, and 464 AMBIGUOUS edges to same-named definitions in other files are dropped (a sample of 20 were all wrong). The paparats repository, which imports relatively, is unchanged. The aliases are resolved when the graph is built, from the symbols already stored. Each project's graph is built again once on its next pass, and no file is extracted or embedded again.
+
 ## [2.16.2] - 2026-10-28
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
