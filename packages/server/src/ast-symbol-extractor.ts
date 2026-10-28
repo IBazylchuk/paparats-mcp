@@ -63,7 +63,7 @@ export interface UseSite {
   /** For an `on` without `::`, the namespace the call is made in, to resolve it from. */
   in?: string;
   /**
-   * A bare Ruby constant (`Base`, not `Search::Base`): it means the class of
+   * A bare Ruby constant (`Base`, not `Orbit::Base`): it means the class of
    * that name in the nearest namespace around it (`in`, then its parents),
    * else the top-level one, as Ruby looks it up.
    */
@@ -135,7 +135,7 @@ export interface SymbolExtractionResult {
  *      import they come from (`module`), and names read as values are uses;
  *      classes record what they inherit and mix in (`parents`).
  *  6 — a Ruby call on `connection` (ActiveRecord's adapter) is `external`; a
- *      Ruby constant path through a class alias (`Postings = A::Postings`) is
+ *      Ruby constant path through a class alias (`Ledgers = A::Ledgers`) is
  *      read through that class.
  */
 export const SYMBOL_FORMAT = 6;
@@ -828,19 +828,19 @@ function rubyNamespaceOf(nameNode: Node): string | undefined {
   return parts.length > 0 ? parts.join('::') : undefined;
 }
 
-/** A Ruby constant holding a value (`SCOPE_KEY`, `MAX_RETRIES`), not a class. */
+/** A Ruby constant holding a value (`MAX_DEPTH`, `MAX_RETRIES`), not a class. */
 const RUBY_VALUE_CONSTANT_RE = /^[A-Z][A-Z0-9_]+$/;
 
 /**
- * How a Ruby constant use is resolved: `Search::Base` as `Base` in `Search`
+ * How a Ruby constant use is resolved: `Orbit::Base` as `Base` in `Orbit`
  * (from the namespace around it), a bare `Base` lexically. Null for the
- * namespace part of a path (`Search` in `Search::Base`): naming a namespace
+ * namespace part of a path (`Orbit` in `Orbit::Base`): naming a namespace
  * uses nothing of the file that defines it, and counting it linked every
  * `Companies::X` to whichever file gives `module Companies` a method. A class
- * a value constant is read from (`Scanner` in `Scanner::SCOPE_KEY`) is used,
+ * a value constant is read from (`Lexer` in `Lexer::MAX_DEPTH`) is used,
  * and resolved like a bare constant: Ruby constants holding values are not
  * definitions in the graph, so the class is what links. A path through a
- * constant the file sets to a class (`Postings = ::Vendors::Acme::Postings`)
+ * constant the file sets to a class (`Ledgers = ::Vendors::Acme::Ledgers`)
  * is read through that class.
  */
 function rubyConstant(
@@ -852,7 +852,7 @@ function rubyConstant(
   if (parent?.type === 'scope_resolution') {
     const name = parent.childForFieldName('name');
     if (name?.id !== node.id) {
-      // `AI::LLM::Schemas`: an upper-case namespace, not a value.
+      // `Vendor::Sdk::Types`: an upper-case namespace, not a value.
       const isScope =
         parent.parent?.type === 'scope_resolution' &&
         parent.parent.childForFieldName('scope')?.id === parent.id;
@@ -864,7 +864,7 @@ function rubyConstant(
     const written = parent.childForFieldName('scope');
     if (!written) return { lexical: true, constant: true }; // `::Base`: the top-level one
     const on = constantPath(written.text);
-    // `Postings::Fetcher` after `Postings = ::Vendors::Acme::Postings`: the alias's class.
+    // `Ledgers::Fetcher` after `Ledgers = ::Vendors::Acme::Ledgers`: the alias's class.
     const [head, ...rest] = on.split('::');
     const alias = head ? types.constantClass(head) : undefined;
     if (alias?.classValue) {
@@ -1073,7 +1073,7 @@ const RUBY_PARAMETER_NODES = new Set([
 ]);
 
 /**
- * Ruby calls a method without arguments by its bare name (`log = receipt`),
+ * Ruby calls a method without arguments by its bare name (`log = ledger_entry`),
  * which parses as an identifier, not a call, so the usage query misses it.
  * Here such a name counts as a call when the chunk defines a method of that
  * name and the method using it has no parameter or local of that name. Only for
@@ -1207,7 +1207,7 @@ function addTsValueUses(
 
 /**
  * Calls between a chunk's own methods, per method: the methods of the chunk
- * that call it (`receipt` → `call`, `preview`). Bare and self calls only, and
+ * that call it (`ledger_entry` → `call`, `preview`). Bare and self calls only, and
  * none from the class body or from a method to itself.
  */
 function innerCalls(

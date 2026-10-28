@@ -191,7 +191,7 @@ export interface SymbolEdge {
   from_symbols?: string[];
   /**
    * Further methods of the caller chunk that reach the call through the
-   * chunk's own calls (`call` → private `receipt` → the call). `change_impact`
+   * chunk's own calls (`call` → private `ledger_entry` → the call). `change_impact`
    * follows their callers too; they are not named as making the call.
    */
   reach_symbols?: string[];

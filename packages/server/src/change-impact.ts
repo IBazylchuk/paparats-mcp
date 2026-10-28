@@ -14,7 +14,7 @@ export interface Dependent {
   callers: string[];
   /**
    * Other methods of the chunk that reach `callers` through its own calls
-   * (`write` calling `added_change`): affected a step or more further than
+   * (`write` calling `record_entry`): affected a step or more further than
    * `hop`, which counts chunks.
    */
   reach: string[];

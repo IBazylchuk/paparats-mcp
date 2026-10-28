@@ -52,12 +52,12 @@ describe('buildSymbolEdges', () => {
       },
       {
         chunk_id: 'g//p//unsub.rb//0-9//b',
-        defines_symbols: ['receipt', 'call'],
+        defines_symbols: ['ledger_entry', 'call'],
         uses_symbols: ['signature_valid?', 'Receipt'],
         use_sites: [
-          { name: 'signature_valid?', from: 'receipt' },
+          { name: 'signature_valid?', from: 'ledger_entry' },
           { name: 'signature_valid?', from: 'call', through: true },
-          { name: 'Receipt', from: 'receipt' },
+          { name: 'Receipt', from: 'ledger_entry' },
           { name: 'Receipt', from: 'call', value: true },
         ],
       },
@@ -65,7 +65,7 @@ describe('buildSymbolEdges', () => {
     const edge = (name: string) => edges.find((e) => e.symbol_name === name);
     expect(edge('signature_valid?')).toMatchObject({
       relation_type: 'calls',
-      from_symbols: ['receipt'],
+      from_symbols: ['ledger_entry'],
       reach_symbols: ['call'],
     });
     // Held as a value anywhere in the chunk: `change_impact` follows it whatever changed.
@@ -175,10 +175,10 @@ describe('buildSymbolEdges', () => {
       use_sites: [{ name: 'Base', from: '', constant: true as const, ...site }],
     });
     const { edges } = buildSymbolEdges([
-      def('search/base.rb', 'Search'),
+      def('orbit/base.rb', 'Orbit'),
       def('reports/base.rb', 'Reports'),
       def('base.rb'),
-      use('search/runner.rb', { lexical: true, in: 'Search::Runner' }),
+      use('orbit/runner.rb', { lexical: true, in: 'Orbit::Runner' }),
       use('jobs/sync.rb', { lexical: true, in: 'Jobs::Sync' }),
       use('reports/view.rb', { on: 'Reports', in: 'Billing' }),
       use('models/user.rb', { on: 'ActiveRecord' }),
@@ -188,8 +188,8 @@ describe('buildSymbolEdges', () => {
     );
     expect(links.sort()).toEqual([
       'jobs/sync.rb -> base.rb EXTRACTED',
+      'orbit/runner.rb -> orbit/base.rb EXTRACTED',
       'reports/view.rb -> reports/base.rb EXTRACTED',
-      'search/runner.rb -> search/base.rb EXTRACTED',
     ]);
   });
 
@@ -244,7 +244,7 @@ describe('buildSymbolEdges', () => {
   it('resolves a relative class name from the namespace of the call, as Ruby does', () => {
     const defs = [
       ['api', 'Api::Parser'],
-      ['ext', 'Extraction::Parser'],
+      ['ext', 'Intake::Parser'],
       ['top', 'Parser'],
     ].map(([id, owner]) => ({
       chunk_id: `g//p//${id}.rb//1-5//h`,
@@ -261,8 +261,8 @@ describe('buildSymbolEdges', () => {
     const linked = (c: ReturnType<typeof caller>) =>
       buildSymbolEdges([...defs, c]).edges.map((e) => [e.to_chunk_id.split('//')[2], e.confidence]);
 
-    // From inside Extraction, `Parser` is Extraction::Parser, not the others of the same name.
-    expect(linked(caller('Parser', 'Extraction::Pipeline'))).toEqual([['ext.rb', 'EXTRACTED']]);
+    // From inside Intake, `Parser` is Intake::Parser, not the others of the same name.
+    expect(linked(caller('Parser', 'Intake::Pipeline'))).toEqual([['ext.rb', 'EXTRACTED']]);
     expect(linked(caller('Parser', 'Billing::Job'))).toEqual([['top.rb', 'EXTRACTED']]);
     expect(linked(caller('::Api::Parser'))).toEqual([['api.rb', 'EXTRACTED']]);
     // No class of the project is `V1::Parser`: a gem's, which links to nothing.
@@ -286,7 +286,7 @@ describe('buildSymbolEdges', () => {
       buildSymbolEdges([...defs, caller]).edges.map((e) => e.confidence);
 
     expect(confidences([def('a', 'Api::Parser'), def('x', 'Other')])).toEqual(['INFERRED']);
-    expect(confidences([def('a', 'Api::Parser'), def('b', 'Extraction::Parser')])).toEqual([
+    expect(confidences([def('a', 'Api::Parser'), def('b', 'Intake::Parser')])).toEqual([
       'AMBIGUOUS',
       'AMBIGUOUS',
     ]);

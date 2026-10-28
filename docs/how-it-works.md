@@ -87,7 +87,7 @@ object (`Rebuild.new(ids).call`, `new Queue().flush()`) links to that class's me
 Ruby class used as a value (passed, kept in a hash or a variable) is a `references` edge.
 A Ruby constant resolves as Ruby looks it up: `Base` inside `module Billing` is
 `Billing::Base` when that exists, otherwise the top-level `Base`; the `Billing` in
-`Billing::Base` is not a use of its own (the `Scanner` in `Scanner::SCOPE_KEY` is), and a constant defined nowhere in the project (a
+`Billing::Base` is not a use of its own (the `Lexer` in `Lexer::MAX_DEPTH` is), and a constant defined nowhere in the project (a
 gem's `ActiveRecord::Base`) links to nothing. A call on an object does not link to a Ruby
 `def self.x`, and reopening a library class (`Time`, `Date`, `ActiveSupport::...`) does
 not define it. A TypeScript or JavaScript function that is not exported is reached only
