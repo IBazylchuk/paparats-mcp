@@ -48,6 +48,12 @@ export interface ModuleLink {
   module: number;
   /** Summed edge weight in that direction. */
   weight: number;
+  /**
+   * The file of that module carrying most of the weight: the one used most
+   * (`uses`), or the one using this module most (`usedBy`). A module mixes
+   * folders, so its name alone can point the wrong way.
+   */
+  via?: FileKey;
 }
 
 export interface CodeModule {
@@ -302,6 +308,24 @@ export function splitLarge(
   return out;
 }
 
+/** Folders that hold one package or app per subfolder (`packages/server`). */
+const CONTAINER_DIRS = new Set([
+  'packages',
+  'apps',
+  'libs',
+  'services',
+  'extensions',
+  'modules',
+  'plugins',
+  'tools',
+]);
+
+/** The package or app a path belongs to: its top folder, or two levels under a container folder. */
+export function codeRoot(file: string): string {
+  const parts = file.split('/');
+  return CONTAINER_DIRS.has(parts[0]!) && parts.length > 2 ? `${parts[0]}/${parts[1]}` : parts[0]!;
+}
+
 /** The directory holding most of `files`; ties go to the shorter, then alphabetically first. */
 function dominantDir(files: string[]): string {
   const counts = new Map<string, number>();
@@ -314,9 +338,14 @@ function dominantDir(files: string[]): string {
   )[0]![0];
 }
 
-function sortLinks(m: Map<number, number>): ModuleLink[] {
+function sortLinks(m: Map<number, number>, via?: Map<number, Map<FileKey, number>>): ModuleLink[] {
   return [...m.entries()]
-    .map(([module, weight]) => ({ module, weight }))
+    .map(([module, weight]) => {
+      const files = via?.get(module);
+      if (!files) return { module, weight };
+      const top = [...files.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+      return top ? { module, weight, via: top[0] } : { module, weight };
+    })
     .sort((a, b) => b.weight - a.weight || a.module - b.module);
 }
 
@@ -452,6 +481,19 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
   // Links between modules, and each test to the module it calls most.
   const uses = modules.map(() => new Map<number, number>());
   const usedBy = modules.map(() => new Map<number, number>());
+  // Per link, the weight on each file of the other module.
+  const usesVia = modules.map(() => new Map<number, Map<FileKey, number>>());
+  const usedByVia = modules.map(() => new Map<number, Map<FileKey, number>>());
+  const addVia = (
+    links: Map<number, Map<FileKey, number>>,
+    m: number,
+    file: FileKey,
+    w: number
+  ) => {
+    let files = links.get(m);
+    if (!files) links.set(m, (files = new Map()));
+    files.set(file, (files.get(file) ?? 0) + w);
+  };
   const testTarget = new Map<FileKey, Map<number, number>>();
   for (const [from, row] of weights) {
     const a = moduleOf.get(from);
@@ -467,11 +509,13 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
       if (a === undefined || a === b) continue;
       uses[a]!.set(b, (uses[a]!.get(b) ?? 0) + w);
       usedBy[b]!.set(a, (usedBy[b]!.get(a) ?? 0) + w);
+      addVia(usesVia[a]!, b, to, w);
+      addVia(usedByVia[b]!, a, from, w);
     }
   }
   modules.forEach((m, i) => {
-    m.uses = sortLinks(uses[i]!);
-    m.usedBy = sortLinks(usedBy[i]!);
+    m.uses = sortLinks(uses[i]!, usesVia[i]);
+    m.usedBy = sortLinks(usedBy[i]!, usedByVia[i]);
   });
   for (const [test, targets] of [...testTarget.entries()].sort((a, b) =>
     a[0].localeCompare(b[0])
@@ -554,22 +598,33 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
       : '',
     map.migrations > 0 ? `${plural(map.migrations, 'migration', 'migrations')} left out` : '',
   ].filter(Boolean);
-  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder most of its files sit in.\n`;
+  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder most of its files sit in, so it may hold files of other folders. When a used module is reached mostly through a file of another package or app than its name, that file follows in brackets.\n`;
 
   const number = (id: number) => `${id + 1}`;
   const name = opts.showName ?? ((m: CodeModule) => m.name);
-  const linkList = (links: ModuleLink[]) =>
+  // The file a used module is reached through, when it lies in another
+  // package or app than the folder the module is named after: a module of one
+  // app holding files of another reads as that app otherwise.
+  const elsewhere = (l: ModuleLink): boolean => {
+    if (!l.via) return false;
+    const folder = map.modules[l.module]!.name.replace(/ \(.*\)$/, '');
+    return codeRoot(splitKey(l.via).file) !== codeRoot(folder);
+  };
+  const linkList = (links: ModuleLink[], showVia: boolean) =>
     strongLinks(links)
       .slice(0, 4)
-      .map((l) => `${number(l.module)}. ${name(map.modules[l.module]!)}`)
+      .map(
+        (l) =>
+          `${number(l.module)}. ${name(map.modules[l.module]!)}${showVia && elsewhere(l) ? ` (${opts.showFile(l.via!)})` : ''}`
+      )
       .join('; ');
 
   const shown = map.modules.slice(0, opts.limit);
   for (const m of shown) {
     text += `\n### ${number(m.id)}. ${name(m)} — ${plural(m.files.length, 'file', 'files')}${m.tests.length > 0 ? `, ${plural(m.tests.length, 'test', 'tests')}` : ''}\n\n`;
     text += `Main files: ${m.files.slice(0, 4).map(opts.showFile).join(', ')}\n`;
-    const uses = linkList(m.uses);
-    const usedBy = linkList(m.usedBy);
+    const uses = linkList(m.uses, true);
+    const usedBy = linkList(m.usedBy, false);
     if (uses) text += `Uses: ${uses}\n`;
     if (usedBy) text += `Used by: ${usedBy}\n`;
   }

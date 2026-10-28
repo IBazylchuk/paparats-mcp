@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectDependents } from '../src/change-impact.js';
+import { collectDependents, definitionLine } from '../src/change-impact.js';
 import { buildSymbolEdges } from '../src/symbol-graph.js';
 import type { EdgeConfidence, SymbolEdge } from '../src/types.js';
 
@@ -304,5 +304,43 @@ describe('collectDependents', () => {
       edgesTo: (id) => rows.filter((e) => e.to_chunk_id === id),
     });
     expect(res.dependents.map((d) => d.chunkId)).toEqual(['consumer', 'poll']);
+  });
+});
+
+describe('definitionLine', () => {
+  it('finds the line a method is defined on', () => {
+    const ruby = [
+      'class Prepare',
+      '  def call',
+      '    run',
+      '  end',
+      '',
+      '  def self.build(x)',
+      '  end',
+      '  def ready?',
+      '  end',
+    ].join('\n');
+    expect(definitionLine(ruby, 10, 'call', 'app/prepare.rb')).toBe(11);
+    expect(definitionLine(ruby, 10, 'build', 'app/prepare.rb')).toBe(15);
+    expect(definitionLine(ruby, 10, 'ready?', 'app/prepare.rb')).toBe(17);
+    // A bare call at the start of a line is not a definition in Ruby.
+    expect(definitionLine(ruby, 10, 'run', 'app/prepare.rb')).toBeNull();
+
+    const ts = [
+      'export class Store {',
+      '  private readonly items = new Map();',
+      '  async save(item: Item): Promise<void> {',
+      '    this.items.set(item.id, item);',
+      '  }',
+      '}',
+      'export function load() {}',
+      'export const parse = (s: string) => s;',
+    ].join('\n');
+    expect(definitionLine(ts, 0, 'save', 'src/store.ts')).toBe(2);
+    expect(definitionLine(ts, 0, 'load', 'src/store.ts')).toBe(6);
+    expect(definitionLine(ts, 0, 'parse', 'src/store.ts')).toBe(7);
+    expect(definitionLine(ts, 0, 'missing', 'src/store.ts')).toBeNull();
+    expect(definitionLine('def handle(event):\n    pass', 3, 'handle', 'a.py')).toBe(3);
+    expect(definitionLine('func (s *Server) Start() error {', 0, 'Start', 'a.go')).toBe(0);
   });
 });

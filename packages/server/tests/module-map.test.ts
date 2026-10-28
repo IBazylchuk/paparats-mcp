@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildModuleMap,
+  codeRoot,
   fileWeights,
   formatModuleMap,
   isMigrationPath,
@@ -263,6 +264,16 @@ describe('ModuleMapService', () => {
   });
 });
 
+describe('codeRoot', () => {
+  it('is the top folder, or the package under a folder of packages', () => {
+    expect(codeRoot('src/lib/dates.ts')).toBe('src');
+    expect(codeRoot('packages/server/src/indexer.ts')).toBe('packages/server');
+    expect(codeRoot('apps/web/page.tsx')).toBe('apps/web');
+    expect(codeRoot('packages/README.md')).toBe('packages');
+    expect(codeRoot('index.ts')).toBe('index.ts');
+  });
+});
+
 describe('formatModuleMap', () => {
   it('shows modules with main files and links, and summarises the rest', () => {
     const map = buildModuleMap(
@@ -287,6 +298,49 @@ describe('formatModuleMap', () => {
     expect(text).toContain(
       '_1 smaller module (2 files) not shown: src/b. Raise `limit` to see them._'
     );
+  });
+
+  it('names the file a used module is reached through when it is in another package or app', () => {
+    const built = buildModuleMap(
+      [
+        e('src/a/one.ts', 'src/a/two.ts', 'to_two'),
+        e('src/a/two.ts', 'src/a/one.ts', 'to_one'),
+        e('src/b/one.ts', 'src/b/two.ts', 'to_btwo'),
+        e('src/b/two.ts', 'src/b/one.ts', 'to_bone'),
+        e('src/a/one.ts', 'src/b/one.ts', 'to_bone2'),
+      ],
+      []
+    );
+    expect(built.modules[0]!.uses).toEqual([
+      expect.objectContaining({ module: 1, via: 'p//src/b/one.ts' }),
+    ]);
+    expect(built.modules[1]!.usedBy).toEqual([
+      expect.objectContaining({ module: 0, via: 'p//src/a/one.ts' }),
+    ]);
+
+    // The `ext/b` module also holds a file of src/, and src/a reaches it through that one.
+    const mod = (id: number, name: string, files: string[]) => ({
+      id,
+      name,
+      project: 'p',
+      files: files.map((f) => `p//${f}`),
+      tests: [],
+      uses: [],
+      usedBy: [],
+    });
+    const a = mod(0, 'src/a', ['src/a/one.ts', 'src/a/two.ts']);
+    const b = mod(1, 'ext/b', ['src/lib/shared.ts', 'ext/b/one.ts', 'ext/b/two.ts']);
+    a.uses = [{ module: 1, weight: 3, via: 'p//src/lib/shared.ts' }] as never;
+    b.usedBy = [{ module: 0, weight: 3, via: 'p//src/a/one.ts' }] as never;
+    b.uses = [{ module: 0, weight: 2, via: 'p//src/a/two.ts' }] as never;
+    const text = formatModuleMap(
+      { modules: [a, b], shared: [], unconnected: [], migrations: 0, weights: new Map() },
+      { title: '`g`', limit: 5, showFile: (k) => k.slice(3) }
+    );
+    expect(text).toContain('Uses: 2. ext/b (src/lib/shared.ts)\n');
+    // Within the package the module is named after, and never for `Used by`: nothing to add.
+    expect(text).toContain('Used by: 1. src/a\n');
+    expect(text).toContain('Uses: 1. src/a\n');
   });
 
   it('says so when there is nothing to map', () => {

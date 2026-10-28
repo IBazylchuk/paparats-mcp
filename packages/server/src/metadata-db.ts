@@ -305,6 +305,17 @@ export class MetadataStore {
       );
     `);
 
+    // Per project, the rules its edges were built with (`GRAPH_FORMAT` in
+    // symbol-graph.ts): an older format has the whole graph built again.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS graph_formats (
+        grp TEXT NOT NULL,
+        project TEXT NOT NULL,
+        format INTEGER NOT NULL,
+        PRIMARY KEY (grp, project)
+      );
+    `);
+
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS file_names (
         grp TEXT NOT NULL,
@@ -465,6 +476,9 @@ export class MetadataStore {
       this.deleteProjectGitCacheStmt.run(group, project);
       this.db.prepare('DELETE FROM file_names WHERE grp = ? AND project = ?').run(group, project);
       this.db.prepare('DELETE FROM test_files WHERE grp = ? AND project = ?').run(group, project);
+      this.db
+        .prepare('DELETE FROM graph_formats WHERE grp = ? AND project = ?')
+        .run(group, project);
     });
     tx();
     // The in-degree cache would otherwise keep ranking the deleted chunks.
@@ -653,6 +667,20 @@ export class MetadataStore {
     return row ? (JSON.parse(row.files) as string[]) : null;
   }
 
+  /** The format a project's graph was last built in (see `graph_formats`); null when never recorded. */
+  getGraphFormat(group: string, project: string): number | null {
+    const row = this.db
+      .prepare('SELECT format FROM graph_formats WHERE grp = ? AND project = ?')
+      .get(group, project) as { format: number } | undefined;
+    return row ? row.format : null;
+  }
+
+  setGraphFormat(group: string, project: string, format: number): void {
+    this.db
+      .prepare('INSERT OR REPLACE INTO graph_formats (grp, project, format) VALUES (?, ?, ?)')
+      .run(group, project, format);
+  }
+
   /** Record the names a file's code uses that may be common (see `file_names`). */
   setFileNames(group: string, project: string, file: string, names: Iterable<string>): void {
     this.db
@@ -719,6 +747,8 @@ export class MetadataStore {
        * fresh Sets per tool invocation.
        */
       hubChunkIds: Set<string>;
+      /** The hubs by in-degree only: called from many places (see `change_impact`). */
+      calledHubChunkIds: Set<string>;
       /**
        * Marked true when edges are written/deleted for the group. A stale
        * snapshot is still served immediately (stale-while-revalidate) while a
@@ -920,6 +950,7 @@ export class MetadataStore {
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
     hubChunkIds: Set<string>;
+    calledHubChunkIds: Set<string>;
     stale: boolean;
   } {
     // Threshold is `>= max(5, p95)`. Using `>` would never match anything
@@ -932,10 +963,11 @@ export class MetadataStore {
     for (const r of stats.topInDegree) {
       if (r.degree >= inFloor) hubChunkIds.add(r.chunkId);
     }
+    const calledHubChunkIds = new Set(hubChunkIds);
     for (const r of stats.topOutDegree) {
       if (r.degree >= outFloor) hubChunkIds.add(r.chunkId);
     }
-    return { ...stats, hubChunkIds, computedAt: Date.now(), stale: false };
+    return { ...stats, hubChunkIds, calledHubChunkIds, computedAt: Date.now(), stale: false };
   }
 
   /** Recompute degree stats off the request path and store them. Deduped per
@@ -961,6 +993,7 @@ export class MetadataStore {
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
     hubChunkIds: Set<string>;
+    calledHubChunkIds: Set<string>;
   } {
     const cached = this.degreeCache.get(group);
     if (cached) {
@@ -991,6 +1024,7 @@ export class MetadataStore {
     topInDegree: Array<{ chunkId: string; degree: number }>;
     topOutDegree: Array<{ chunkId: string; degree: number }>;
     hubChunkIds: Set<string>;
+    calledHubChunkIds: Set<string>;
   } {
     const stats = this.getGroupDegreeStats(group);
     return {
@@ -999,6 +1033,7 @@ export class MetadataStore {
       topInDegree: stats.topInDegree,
       topOutDegree: stats.topOutDegree,
       hubChunkIds: stats.hubChunkIds,
+      calledHubChunkIds: stats.calledHubChunkIds,
     };
   }
 

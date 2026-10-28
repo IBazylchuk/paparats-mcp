@@ -20,6 +20,7 @@ describe('localUrls', () => {
       server: 'http://localhost:9876',
       indexer: 'http://localhost:9877',
       qdrant: 'http://localhost:6333',
+      embed: 'http://localhost:18434',
     });
   });
 
@@ -42,6 +43,9 @@ describe('localUrls', () => {
     );
     expect(urls.server).toBe('http://paparats:9876');
     expect(urls.qdrant).toBe('http://localhost:16333');
+    expect(localUrls({ EMBED_URL: 'http://gpu:8080' }, home).embed).toBe('http://gpu:8080');
+    fs.writeFileSync(path.join(home, '.env'), 'EMBED_PORT=28434\n');
+    expect(localUrls({}, home).embed).toBe('http://localhost:28434');
   });
 });
 

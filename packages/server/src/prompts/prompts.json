@@ -13,7 +13,7 @@
     },
     "health_check": {
       "title": "Health Check",
-      "description": "Check indexing status: number of indexed chunks per group.\n\nUse to verify projects are indexed before searching or debugging empty results."
+      "description": "Check indexing status: the server version and the number of indexed chunks per group.\n\nUse to verify projects are indexed before searching or debugging empty results."
     },
     "delete_project": {
       "title": "Delete Project",

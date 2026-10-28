@@ -19,6 +19,14 @@ describe('extractTickets', () => {
     expect(tickets).toEqual([{ key: '#42', source: 'github' }]);
   });
 
+  it('extracts the pull request a squash merge names in brackets', () => {
+    expect(extractTickets('feat: faster search (#123)')).toEqual([
+      { key: '#123', source: 'github' },
+    ]);
+    expect(extractTickets('fix: crash [#7]')).toEqual([{ key: '#7', source: 'github' }]);
+    expect(extractTickets('see a#12 and x(#13a)')).toEqual([]);
+  });
+
   it('extracts GitHub issue at start of message', () => {
     const tickets = extractTickets('#42 fix login');
     expect(tickets).toEqual([{ key: '#42', source: 'github' }]);

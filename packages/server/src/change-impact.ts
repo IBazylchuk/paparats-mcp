@@ -13,6 +13,12 @@ export interface Dependent {
   /** The methods in it that make those calls; empty when the call is outside any method. */
   callers: string[];
   /**
+   * Other methods of the chunk that reach `callers` through its own calls
+   * (`write` calling `added_change`): affected a step or more further than
+   * `hop`, which counts chunks.
+   */
+  reach: string[];
+  /**
    * False when every path to the change goes through a common name kept by
    * `confirmsLink`: the graph links by name, so such a caller may be using a
    * different definition.
@@ -171,6 +177,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
             hop,
             symbols: [],
             callers: [],
+            reach: [],
             certain,
             hub: opts.isHub(caller),
             reexport: true,
@@ -181,6 +188,9 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
         for (const name of edge.from_symbols ?? []) {
           if (!dep.callers.includes(name)) dep.callers.push(name);
         }
+        for (const name of edge.reach_symbols ?? []) {
+          if (!dep.reach.includes(name)) dep.reach.push(name);
+        }
         dep.certain ||= certain;
         dep.reexport &&= edge.relation_type === 'reexports';
         const prev = reached.get(caller);
@@ -189,6 +199,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     }
 
     for (const dep of level.values()) {
+      dep.reach = dep.reach.filter((name) => !dep.callers.includes(name));
       found.set(dep.chunkId, dep);
       certainSoFar.set(dep.chunkId, dep.certain);
     }
@@ -233,4 +244,35 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
 function unionVia(a: Via, b: Via): Via {
   if (a === 'all' || b === 'all') return 'all';
   return new Set([...a, ...b]);
+}
+
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The line (0-indexed, as stored) where `name` is defined in a chunk that
+ * starts at `startLine`: `def name` (Ruby, Python), `function name`, `func`,
+ * `fn`, a `const`/`let`/`var`, or, outside Ruby and Python, a method header
+ * ending in `{`. A dependent is shown at the method that makes the call, not
+ * at the first line of a chunk holding a whole class. Null when the chunk
+ * has no such line.
+ */
+export function definitionLine(
+  content: string,
+  startLine: number,
+  name: string,
+  file: string
+): number | null {
+  const n = escapeRe(name);
+  const keyword = new RegExp(
+    `^\\s*(?:export\\s+)?(?:default\\s+)?(?:pub(?:\\([^)]*\\))?\\s+)?(?:async\\s+)?(?:def\\s+(?:self\\.)?|function\\s*\\*?\\s*|func\\s+(?:\\([^)]*\\)\\s*)?|fn\\s+|(?:const|let|var)\\s+)${n}(?![\\w?!])`
+  );
+  const lines = content.split('\n');
+  let i = lines.findIndex((l) => keyword.test(l));
+  if (i < 0 && !/\.(?:rb|rake|py)$/.test(file)) {
+    const method = new RegExp(
+      `^\\s*(?:(?:public|private|protected|internal|static|async|readonly|override|abstract|final|get|set)\\s+)*\\*?${n}\\s*[(<].*\\{\\s*$`
+    );
+    i = lines.findIndex((l) => method.test(l));
+  }
+  return i < 0 ? null : startLine + i;
 }

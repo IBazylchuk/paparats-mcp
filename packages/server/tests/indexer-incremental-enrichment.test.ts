@@ -6,7 +6,7 @@ import { execSync } from 'child_process';
 import { Indexer } from '../src/indexer.js';
 import { MetadataStore } from '../src/metadata-db.js';
 import { createTreeSitterManager } from '../src/tree-sitter-parser.js';
-import { buildSymbolEdges, type ChunkSymbols } from '../src/symbol-graph.js';
+import { GRAPH_FORMAT, buildSymbolEdges, type ChunkSymbols } from '../src/symbol-graph.js';
 import { EmbeddingCache, CachedEmbeddingProvider } from '../src/embeddings.js';
 import type { EmbeddingProvider, ProjectConfig } from '../src/types.js';
 
@@ -253,6 +253,50 @@ describe('indexProject incremental git enrichment', () => {
     expect(await indexer.indexProject(project)).toBe(0);
     expect(metadataStore.hasEdgesForProject('test-group', 'test-project')).toBe(true);
   });
+  it('links a path alias import to the file it names, and builds an older graph again', async () => {
+    fs.writeFileSync(path.join(projectDir, 'package.json'), '{ "name": "app" }');
+    fs.writeFileSync(
+      path.join(projectDir, 'tsconfig.json'),
+      '{\n  // aliases\n  "compilerOptions": { "paths": { "~/*": ["./src/*"] } }\n}'
+    );
+    fs.mkdirSync(path.join(projectDir, 'src', 'other'));
+    fs.writeFileSync(
+      path.join(projectDir, 'src', 'other', 'a.ts'),
+      'export function alpha() {\n  return 0;\n}\n'
+    );
+    fs.writeFileSync(
+      path.join(projectDir, 'src', 'c.ts'),
+      "import { alpha } from '~/a';\nexport function gamma() {\n  return alpha() + 1;\n}\n"
+    );
+    git(projectDir, 'add .');
+    git(projectDir, 'commit -m "alias import"');
+
+    const treeSitter = await createTreeSitterManager();
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+      metadataStore,
+      treeSitter,
+    });
+    const project = createProjectConfig(projectDir);
+    await indexer.indexProject(project);
+
+    const edges = metadataStore.getEdgesFromFile('test-group', 'test-project', 'src/c.ts');
+    expect(edges.map((e) => [e.symbol_name, e.to_chunk_id.split('//')[2], e.confidence])).toEqual([
+      ['alpha', 'src/a.ts', 'EXTRACTED'],
+    ]);
+    expect(metadataStore.getGraphFormat('test-group', 'test-project')).toBe(GRAPH_FORMAT);
+
+    // A graph built by older rules: the next pass builds it again with no file changed.
+    metadataStore.setGraphFormat('test-group', 'test-project', GRAPH_FORMAT - 1);
+    const before = metadataStore.edgesVersion('test-group', 'test-project');
+    expect(await indexer.indexProject(project)).toBe(0);
+    expect(metadataStore.edgesVersion('test-group', 'test-project')).not.toBe(before);
+    expect(metadataStore.getGraphFormat('test-group', 'test-project')).toBe(GRAPH_FORMAT);
+  });
+
   it('rebuilds the graph after a single file changes outside a project pass', async () => {
     const treeSitter = await createTreeSitterManager();
     const indexer = new Indexer({

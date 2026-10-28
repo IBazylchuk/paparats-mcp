@@ -10,7 +10,7 @@
 /**
  * A test that names a symbol tends to mention it more often than the code that
  * defines it, so for an identifier query the test outranked the definition. On
- * the retrieval bench a ×0.9 demotion moved file MRR 0.825 → 0.879 (R@1 0.66 →
+ * the retrieval bench a ×0.9 demotion moved file MRR 0.825 → 0.881 (R@1 0.66 →
  * 0.75) and changed nothing where tests are not indexed.
  */
 export const TEST_FILE_DEMOTION = 0.9;
