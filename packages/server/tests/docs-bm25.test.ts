@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
+import Database from 'better-sqlite3';
 import {
   tokenize,
   termToIndex,
@@ -28,6 +29,43 @@ describe('tokenize', () => {
 
   it('keeps underscores (identifiers)', () => {
     expect(tokenize('call index_project now')).toEqual(['call', 'index_project', 'now']);
+  });
+
+  it('keeps words of other scripts whole', () => {
+    expect(tokenize('Как работает очередь задач?')).toEqual([
+      'как',
+      'работает',
+      'очередь',
+      'задач',
+    ]);
+    expect(tokenize('Ελληνικά δοκιμή')).toEqual(['ελληνικά', 'δοκιμή']);
+    // Combining marks of an Indic script are part of the word, not a split.
+    expect(tokenize('हिन्दी भाषा')).toEqual(['हिन्दी', 'भाषा']);
+  });
+
+  it('drops accents on Latin letters only', () => {
+    expect(tokenize('Über café naïve')).toEqual(['uber', 'cafe', 'naive']);
+    expect(tokenize('ёлка')).toEqual(['ёлка']);
+  });
+
+  it('splits a CJK run into bigrams', () => {
+    expect(tokenize('検索設定')).toEqual(['検索', '索設', '設定']);
+    expect(tokenize('React组件 和')).toEqual(['react', '组件', '和']);
+  });
+
+  it('tokenises ASCII text as before', () => {
+    const before = (text: string) =>
+      text
+        .toLowerCase()
+        .split(/[^a-z0-9_]+/)
+        .filter((t) => t.length > 1);
+    const text =
+      'Deploy `feed-poster` v2.3 (see https://example.com/a_b?x=1); ' +
+      "CamelCase, snake_case & kebab-case — it's 42% done. #tag @user\n\tEND";
+    const tokens = tokenize(text);
+    expect(tokens.length).toBeGreaterThan(15);
+    // Stop-words aside (they never were tokens), the same tokens in the same order.
+    expect(tokens).toEqual(before(text).filter((t) => tokenize(t).length > 0));
   });
 });
 
@@ -161,6 +199,50 @@ describe('DocsIdfStore', () => {
     s.clearGroup('a');
     expect(s.getCorpusStats('a').docCount).toBe(0);
     expect(s.getCorpusStats('b').docCount).toBe(1);
+    s.close();
+  });
+
+  it('counts a new group as made with the current tokeniser', () => {
+    const s = mkStore();
+    expect(s.isCurrent('g')).toBe(false);
+    s.addDocument('g', new Set(['x']), 1);
+    expect(s.isCurrent('g')).toBe(true);
+    s.close();
+  });
+
+  it('treats counts made with another tokeniser as stale until replaced', () => {
+    const s = mkStore();
+    s.addDocument('g', new Set(['ber']), 1);
+    s.close();
+    const p = tmpFiles[tmpFiles.length - 1]!;
+    // An older store: counts without a recorded version.
+    const raw = new Database(p);
+    raw.prepare('DELETE FROM tokenizer').run();
+    raw.close();
+
+    const reopened = new DocsIdfStore(p);
+    expect(reopened.isCurrent('g')).toBe(false);
+    // A document added meanwhile does not make old counts current.
+    reopened.addDocument('g', new Set(['uber']), 1);
+    expect(reopened.isCurrent('g')).toBe(false);
+
+    expect(reopened.replaceGroup('g', [{ terms: new Set(['uber']), length: 1 }])).toBe(true);
+    const stats = reopened.getCorpusStats('g');
+    expect(stats.docCount).toBe(1);
+    expect(stats.docFreq('ber')).toBe(0);
+    expect(stats.docFreq('uber')).toBe(1);
+    expect(reopened.isCurrent('g')).toBe(true);
+    // A second process finding them current leaves them alone.
+    expect(reopened.replaceGroup('g', [{ terms: new Set(['x']), length: 1 }])).toBe(false);
+    expect(reopened.getCorpusStats('g').docFreq('uber')).toBe(1);
+    reopened.close();
+  });
+
+  it('keeps a partial replacement stale', () => {
+    const s = mkStore();
+    expect(s.replaceGroup('g', [{ terms: new Set(['x']), length: 1 }], false)).toBe(true);
+    expect(s.getCorpusStats('g').docCount).toBe(1);
+    expect(s.isCurrent('g')).toBe(false);
     s.close();
   });
 

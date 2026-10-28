@@ -124,6 +124,10 @@ if (INDEX_DOCS) {
     provider: textProvider,
     idf: new DocsIdfStore(),
   });
+  // BM25 stats made with an older tokeniser are rebuilt before the first docs
+  // pass removes documents through them (the server does the same when the two
+  // share the file; whichever comes second finds them current).
+  await docsStore.rebuildAllIdf();
 }
 
 // The indexer writes the `files` table (one row per indexed file, with its line

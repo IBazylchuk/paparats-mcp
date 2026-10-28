@@ -1004,7 +1004,7 @@ describe('DocsStore audience — payload + search filter', () => {
   });
 });
 
-describe('DocsStore.rebuildIdfIfEmpty', () => {
+describe('DocsStore.rebuildIdfIfStale', () => {
   let qdrant: ReturnType<typeof fakeQdrant>;
   let idf: DocsIdfStore;
   let store: DocsStore;
@@ -1027,7 +1027,7 @@ describe('DocsStore.rebuildIdfIfEmpty', () => {
       ],
       next_page_offset: null,
     });
-    const n = await store.rebuildIdfIfEmpty('g');
+    const n = await store.rebuildIdfIfStale('g');
     expect(n).toBe(2);
     const stats = idf.getCorpusStats('g');
     expect(stats.docCount).toBe(2);
@@ -1036,9 +1036,36 @@ describe('DocsStore.rebuildIdfIfEmpty', () => {
     expect(stats.docFreq('alpha')).toBe(1);
   });
 
+  it('rebuilds stats made with an older tokeniser', async () => {
+    // Old counts: no tokeniser version recorded, an ASCII-only fragment of "über".
+    idf.replaceGroup('g', [{ terms: new Set(['ber']), length: 1 }], false);
+    qdrant.scroll.mockResolvedValueOnce({
+      points: [{ id: 'a', payload: { content: 'über alles' } }],
+      next_page_offset: null,
+    });
+    const n = await store.rebuildIdfIfStale('g');
+    expect(n).toBe(1);
+    const stats = idf.getCorpusStats('g');
+    expect(stats.docFreq('ber')).toBe(0);
+    expect(stats.docFreq('uber')).toBe(1);
+    expect(idf.isCurrent('g')).toBe(true);
+  });
+
+  it('keeps stale stats when the scan fails', async () => {
+    idf.replaceGroup('g', [{ terms: new Set(['old']), length: 1 }], false);
+    qdrant.scroll
+      .mockResolvedValueOnce({
+        points: [{ id: 'a', payload: { content: 'one two' } }],
+        next_page_offset: 'next',
+      })
+      .mockRejectedValueOnce(new Error('qdrant down'));
+    expect(await store.rebuildIdfIfStale('g')).toBe(0);
+    expect(idf.getCorpusStats('g').docFreq('old')).toBe(1);
+  });
+
   it('does nothing when stats already exist', async () => {
     idf.addDocument('g', new Set(['already']), 1);
-    const n = await store.rebuildIdfIfEmpty('g');
+    const n = await store.rebuildIdfIfStale('g');
     expect(n).toBe(0);
     // No scan at all — a normal indexer restart must not pay for this.
     expect(qdrant.scroll).not.toHaveBeenCalled();
@@ -1049,7 +1076,7 @@ describe('DocsStore.rebuildIdfIfEmpty', () => {
       points: [{ id: 'a', payload: { content: 'real text' } }],
       next_page_offset: null,
     });
-    await store.rebuildIdfIfEmpty('g');
+    await store.rebuildIdfIfStale('g');
     const filter = qdrant.scroll.mock.calls[0]![1].filter as {
       must_not?: Array<Record<string, unknown>>;
     };
@@ -1063,7 +1090,7 @@ describe('DocsStore.rebuildIdfIfEmpty', () => {
         next_page_offset: 'next',
       })
       .mockRejectedValueOnce(new Error('qdrant down'));
-    const n = await store.rebuildIdfIfEmpty('g');
+    const n = await store.rebuildIdfIfStale('g');
     // Partial stats beat none: search stays hybrid, just less precisely weighted.
     expect(n).toBe(1);
   });

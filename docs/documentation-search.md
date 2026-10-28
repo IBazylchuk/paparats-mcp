@@ -13,7 +13,9 @@ nothing.
 
 Documents go into their own collection per group, `paparats_<group>_docs`, embedded with
 Qwen3-Embedding-0.6B (or the cloud provider's text model). Unlike code search, docs search
-is hybrid: vectors plus BM25 keywords, merged with reciprocal rank fusion. Results are
+is hybrid: vectors plus BM25 keywords, merged with reciprocal rank fusion. Keywords are
+words of any script (accents on Latin letters dropped, so `cafe` finds `café`); Chinese
+and Japanese text, written without spaces, is matched by two-character pieces. Results are
 excerpts with their heading path and source link; `get_document` returns a whole page
 section by section.
 

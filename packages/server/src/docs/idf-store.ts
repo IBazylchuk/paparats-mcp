@@ -2,7 +2,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import Database from 'better-sqlite3';
-import type { CorpusStats } from './bm25.js';
+import { TOKENIZER_VERSION, type CorpusStats } from './bm25.js';
 
 /**
  * Per-group corpus statistics (document frequencies + length totals) for BM25.
@@ -15,10 +15,14 @@ import type { CorpusStats } from './bm25.js';
  * Schema:
  *   - doc_freq(group, term, df)        — how many chunks in the group contain term
  *   - corpus(group, doc_count, total_length) — running totals for avgDocLength
+ *   - tokenizer(group, version)        — the `TOKENIZER_VERSION` the counts were made with
  *
  * Frequencies are maintained incrementally: indexing a chunk's term set bumps df
  * and the corpus totals; re-indexing a file first decrements the old chunks'
  * contribution (see removeDocument) so counts stay exact across updates.
+ * That decrement tokenises the stored chunk again, so it is exact only while the
+ * tokeniser is the one the counts were made with: a group counted with another
+ * one is stale (`isCurrent()`) and rebuilt from its chunks (`replaceGroup()`).
  */
 
 const PAPARATS_DIR = path.join(os.homedir(), '.paparats');
@@ -31,6 +35,8 @@ const CREATE_DOC_FREQ =
 const CREATE_CORPUS =
   `CREATE TABLE IF NOT EXISTS corpus (` +
   `"group" TEXT PRIMARY KEY, doc_count INTEGER NOT NULL, total_length INTEGER NOT NULL)`;
+const CREATE_TOKENIZER =
+  `CREATE TABLE IF NOT EXISTS tokenizer (` + `"group" TEXT PRIMARY KEY, version INTEGER NOT NULL)`;
 
 export class DocsIdfStore {
   private db: Database.Database;
@@ -45,6 +51,9 @@ export class DocsIdfStore {
   private setCorpusStmt: Database.Statement;
   private deleteGroupDfStmt: Database.Statement;
   private deleteGroupCorpusStmt: Database.Statement;
+  private getTokenizerStmt: Database.Statement;
+  private setTokenizerStmt: Database.Statement;
+  private deleteGroupTokenizerStmt: Database.Statement;
 
   constructor(dbPath?: string) {
     const p = dbPath ?? DEFAULT_DB_PATH;
@@ -60,6 +69,7 @@ export class DocsIdfStore {
 
     this.db.prepare(CREATE_DOC_FREQ).run();
     this.db.prepare(CREATE_CORPUS).run();
+    this.db.prepare(CREATE_TOKENIZER).run();
 
     this.bumpDfStmt = this.db.prepare(
       `INSERT INTO doc_freq ("group", term, df) VALUES (?, ?, 1)
@@ -84,6 +94,12 @@ export class DocsIdfStore {
     );
     this.deleteGroupDfStmt = this.db.prepare(`DELETE FROM doc_freq WHERE "group" = ?`);
     this.deleteGroupCorpusStmt = this.db.prepare(`DELETE FROM corpus WHERE "group" = ?`);
+    this.getTokenizerStmt = this.db.prepare(`SELECT version FROM tokenizer WHERE "group" = ?`);
+    this.setTokenizerStmt = this.db.prepare(
+      `INSERT INTO tokenizer ("group", version) VALUES (?, ?)
+       ON CONFLICT("group") DO UPDATE SET version = excluded.version`
+    );
+    this.deleteGroupTokenizerStmt = this.db.prepare(`DELETE FROM tokenizer WHERE "group" = ?`);
   }
 
   /**
@@ -93,6 +109,10 @@ export class DocsIdfStore {
    */
   addDocument(group: string, terms: Set<string>, length: number): void {
     const tx = this.db.transaction(() => {
+      // A group's first document starts its counts with the current tokeniser.
+      if (this.getCorpusStmt.get(group) === undefined) {
+        this.setTokenizerStmt.run(group, TOKENIZER_VERSION);
+      }
       for (const term of terms) this.bumpDfStmt.run(group, term);
       this.addCorpusStmt.run(group, 1, length);
     });
@@ -124,8 +144,49 @@ export class DocsIdfStore {
     const tx = this.db.transaction(() => {
       this.deleteGroupDfStmt.run(group);
       this.deleteGroupCorpusStmt.run(group);
+      this.deleteGroupTokenizerStmt.run(group);
     });
     tx();
+  }
+
+  /**
+   * Whether the group has counts made with the current tokeniser. False for a
+   * group with no documents, and for one counted before `TOKENIZER_VERSION`
+   * changed (or before it was recorded).
+   */
+  isCurrent(group: string): boolean {
+    const corpus = this.getCorpusStmt.get(group) as { doc_count: number } | undefined;
+    if (!corpus || corpus.doc_count <= 0) return false;
+    const row = this.getTokenizerStmt.get(group) as { version: number } | undefined;
+    return row?.version === TOKENIZER_VERSION;
+  }
+
+  /**
+   * Replace the group's counts with these documents in one transaction, unless
+   * another process sharing this file has made them current meanwhile (the
+   * server and the indexer both rebuild at startup). `current` false keeps the
+   * group stale, for a partial set, so the next start rebuilds it again.
+   *
+   * @returns whether the counts were replaced.
+   */
+  replaceGroup(
+    group: string,
+    docs: Array<{ terms: Set<string>; length: number }>,
+    current = true
+  ): boolean {
+    const tx = this.db.transaction((): boolean => {
+      if (this.isCurrent(group)) return false;
+      this.deleteGroupDfStmt.run(group);
+      this.deleteGroupCorpusStmt.run(group);
+      this.deleteGroupTokenizerStmt.run(group);
+      for (const d of docs) {
+        for (const term of d.terms) this.bumpDfStmt.run(group, term);
+        this.addCorpusStmt.run(group, 1, d.length);
+      }
+      if (current) this.setTokenizerStmt.run(group, TOKENIZER_VERSION);
+      return true;
+    });
+    return tx.immediate();
   }
 
   /**

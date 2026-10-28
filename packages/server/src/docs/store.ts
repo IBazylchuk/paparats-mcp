@@ -786,7 +786,7 @@ export class DocsStore {
 
   /**
    * Rebuild this group's BM25 corpus statistics from the chunks already in Qdrant,
-   * but only when they are missing.
+   * but only when they are missing or were made with another tokeniser.
    *
    * The stats live in a local SQLite file written by whoever indexes. A process
    * that only SEARCHES (the MCP server, in the usual split-container deployment)
@@ -795,17 +795,24 @@ export class DocsStore {
    * and returns an empty vector, so search silently degrades to dense-only:
    * correct, but it throws away the keyword half of a hybrid index.
    *
-   * Rebuilding is a pure function of the stored chunks, so it is safe to run on
-   * any process and idempotent. Skipped when stats already exist, so a normal
-   * indexer restart costs nothing.
+   * Stats made with an older `TOKENIZER_VERSION` are rebuilt too: removing a
+   * document tokenises its stored chunks again, so with a changed tokeniser it
+   * would subtract terms that were never added. The chunks' sparse vectors keep
+   * the old tokens until the next docs pass rewrites them; in plain ASCII text
+   * the tokens are the same as before.
    *
-   * @returns the number of chunks folded into the stats (0 when already present).
+   * Rebuilding is a pure function of the stored chunks, so it is safe to run on
+   * any process and idempotent. Skipped when stats are current, so a normal
+   * restart costs nothing; the counts are replaced in one transaction that
+   * skips them if another process made them current meanwhile.
+   *
+   * @returns the number of chunks folded into the stats (0 when already current).
    */
-  async rebuildIdfIfEmpty(group: string): Promise<number> {
-    if (this.idf.getCorpusStats(group).docCount > 0) return 0;
+  async rebuildIdfIfStale(group: string): Promise<number> {
+    if (this.idf.isCurrent(group)) return 0;
     const collection = toDocsCollectionName(group);
     let offset: string | number | Record<string, unknown> | undefined | null = undefined;
-    let folded = 0;
+    const docs: Array<{ terms: Set<string>; length: number }> = [];
     try {
       for (;;) {
         const page = await this.qdrant.scroll(collection, {
@@ -821,21 +828,24 @@ export class DocsStore {
           const tokens = tokenize(content);
           // Same split as the indexer: df counts DISTINCT terms, the corpus total
           // counts RAW tokens — mixing them corrupts avgDocLength.
-          this.idf.addDocument(group, new Set(tokens), tokens.length);
-          folded++;
+          docs.push({ terms: new Set(tokens), length: tokens.length });
         }
         if (!page.next_page_offset) break;
         offset = page.next_page_offset;
       }
     } catch (err) {
       console.warn(`[docs] IDF rebuild failed for group "${group}": ${(err as Error).message}`);
-      return folded;
+      // Partial stats beat none, but not stats that are only stale: they stay
+      // until a full scan succeeds, and the group stays stale for the next start.
+      if (docs.length === 0 || this.idf.getCorpusStats(group).docCount > 0) return 0;
+      return this.idf.replaceGroup(group, docs, false) ? docs.length : 0;
     }
-    return folded;
+    if (docs.length === 0) return 0;
+    return this.idf.replaceGroup(group, docs) ? docs.length : 0;
   }
 
   /**
-   * Rebuild missing BM25 stats for every docs collection. Best-effort: a failure
+   * Rebuild missing or stale BM25 stats for every docs collection. Best-effort: a failure
    * on one group leaves search dense-only there rather than failing startup.
    */
   async rebuildAllIdf(): Promise<void> {
@@ -853,7 +863,7 @@ export class DocsStore {
       const group = fromDocsCollectionName(name);
       if (group === null) continue;
       try {
-        const n = await this.rebuildIdfIfEmpty(group);
+        const n = await this.rebuildIdfIfStale(group);
         if (n > 0) {
           console.log(`[docs] rebuilt BM25 stats for group "${group}" from ${n} chunk(s)`);
         }
