@@ -7,6 +7,7 @@ import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
 import {
   McpHandler,
+  cleanChunkId,
   EXPLAIN_FEATURE_EDGES_PER_SEED,
   type McpHandlerConfig,
   describeExcerpt,
@@ -863,6 +864,9 @@ describe('McpHandler', () => {
       expect(text.indexOf('src/symbol-graph.ts')).toBeLessThan(
         text.indexOf('tests/symbol-graph.test.ts')
       );
+      // A chunk id is a code span: italics put a `_` an agent copies with it.
+      expect(text).toContain('chunk: `g1//p1//src/auth.ts//10-20//h1`');
+      expect(text).not.toContain('_chunk:');
       // The percentage is the similarity, not the demoted rank key.
       expect(text).toContain('(32.0%');
       expect(text).toContain('(29.5%');
@@ -1958,6 +1962,29 @@ describe('McpHandler', () => {
       const visible = await callTool(port, 'get_chunk', { chunk_id: IN_SCOPE_CHUNK });
       expect(visible.text).toContain('src/invoice.ts');
     });
+  });
+
+  it('reads a chunk id copied with the markup around it', async () => {
+    const { searcher, indexer } = scopedMocks();
+    await withHandler({ searcher, indexer }, async (port) => {
+      for (const copied of [
+        `${IN_SCOPE_CHUNK}_`,
+        `\`${IN_SCOPE_CHUNK}\``,
+        ` ${IN_SCOPE_CHUNK}. `,
+      ]) {
+        const { text } = await callTool(port, 'get_chunk', { chunk_id: copied });
+        expect(text).toContain('src/invoice.ts');
+      }
+      expect(
+        vi.mocked(indexer.getChunkById).mock.calls.every(([id]) => id === IN_SCOPE_CHUNK)
+      ).toBe(true);
+    });
+  });
+
+  it('cleanChunkId strips only the marks around an id', () => {
+    expect(cleanChunkId('g//p//a_b.rb//0-9//00ff_')).toBe('g//p//a_b.rb//0-9//00ff');
+    expect(cleanChunkId('*`g//p//f//0-9//ab`*')).toBe('g//p//f//0-9//ab');
+    expect(cleanChunkId('g//p//f//0-9//ab')).toBe('g//p//f//0-9//ab');
   });
 
   it('get_chunk_meta refuses an out-of-scope chunk', async () => {
