@@ -134,8 +134,9 @@ export interface SymbolExtractionResult {
  *      or a package's (`external`); TypeScript and JavaScript uses record the
  *      import they come from (`module`), and names read as values are uses;
  *      classes record what they inherit and mix in (`parents`).
+ *  6 — a Ruby call on `connection` (ActiveRecord's adapter) is `external`.
  */
-export const SYMBOL_FORMAT = 5;
+export const SYMBOL_FORMAT = 6;
 
 /** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
@@ -1273,6 +1274,9 @@ function typedSite(
       typed = held ?? undefined;
     } else {
       typed = ruby.classOf(receiver.node);
+      // `connection.select_rows`, `Model.connection.execute`: ActiveRecord's
+      // adapter (or an HTTP client's), not a namesake method of the project.
+      if (!typed && isRubyConnection(receiver.node)) return { external: true };
     }
     if (!typed) return { onObject: true };
     const { classValue, ...on } = typed;
@@ -1297,6 +1301,17 @@ function typedSite(
     ...(typed.module !== undefined ? { module: typed.module } : {}),
     ...(statically ? {} : { onObject: true as const }),
   };
+}
+
+/** `connection` or `x.connection`, read without arguments. */
+function isRubyConnection(node: Node): boolean {
+  if (node.type === 'identifier') return node.text === 'connection';
+  return (
+    node.type === 'call' &&
+    node.childForFieldName('method')?.text === 'connection' &&
+    !node.childForFieldName('arguments') &&
+    !node.childForFieldName('block')
+  );
 }
 
 /** `./names.js` for a name in `export { x } from './names.js'`. */

@@ -1268,6 +1268,8 @@ end`;
     [1].each { |report| report.close }
     plan = Plan.find_by(code: item)
     plan.renew
+    connection.select_rows("SELECT 1")
+    Invoice.connection.execute("SELECT 2")
   end
   def store = @store ||= Store.new
   def model = Invoice
@@ -1276,7 +1278,7 @@ end`;
     const results = extractSymbolsForChunks(
       tree,
       language,
-      [{ startLine: 0, endLine: 24 }],
+      [{ startLine: 0, endLine: 26 }],
       'ruby'
     );
     tree.delete();
@@ -1293,6 +1295,9 @@ end`;
     expect(site('strip')).toEqual([{ on: '::String', onObject: true }]);
     // A Rails finder returns an object of its class, as `new` does.
     expect(site('renew')).toEqual([{ on: 'Plan', ...scope, onObject: true }]);
+    // A database connection is ActiveRecord's, whatever the project names alike.
+    expect(site('select_rows')).toEqual([{ external: true }]);
+    expect(site('execute')).toEqual([{ external: true }]);
     // A parameter, a block's own `report`: not known.
     expect(site('title')).toEqual([{ onObject: true }]);
     expect(site('close')).toEqual([{ onObject: true }]);
