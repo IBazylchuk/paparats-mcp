@@ -326,6 +326,63 @@ export function codeRoot(file: string): string {
   return CONTAINER_DIRS.has(parts[0]!) && parts.length > 2 ? `${parts[0]}/${parts[1]}` : parts[0]!;
 }
 
+/** A module's files of another package or app than most of it, fewer than this, join a module of their own one. */
+const MIN_ROOT_PART = 3;
+
+/**
+ * Splits each community along packages and apps (`codeRoot()`): an app's
+ * module holding the files of another app it imports reads as that app using
+ * itself, or the other one using it. A part of at least `MIN_ROOT_PART` files
+ * becomes a module; a smaller one joins the module of its own package or app
+ * it is linked to most, and stays put when there is none.
+ */
+function splitByCodeRoot(
+  files: string[],
+  adj: Array<Map<number, number>>,
+  membership: number[]
+): number[] {
+  const out = [...membership];
+  let next = Math.max(-1, ...membership) + 1;
+  const roots = files.map((f) => codeRoot(f));
+  const byCommunity = new Map<number, number[]>();
+  membership.forEach((c, i) => {
+    let list = byCommunity.get(c);
+    if (!list) byCommunity.set(c, (list = []));
+    list.push(i);
+  });
+  const small: number[] = [];
+  for (const members of byCommunity.values()) {
+    const parts = new Map<string, number[]>();
+    for (const i of members) {
+      let list = parts.get(roots[i]!);
+      if (!list) parts.set(roots[i]!, (list = []));
+      list.push(i);
+    }
+    if (parts.size < 2) continue;
+    const sorted = [...parts.entries()].sort(
+      (a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0])
+    );
+    for (const [, part] of sorted.slice(1)) {
+      if (part.length < MIN_ROOT_PART) {
+        small.push(...part);
+        continue;
+      }
+      const id = next++;
+      for (const i of part) out[i] = id;
+    }
+  }
+  for (const i of small) {
+    const weight = new Map<number, number>();
+    for (const [j, w] of adj[i]!) {
+      if (roots[j] !== roots[i] || small.includes(j)) continue;
+      weight.set(out[j]!, (weight.get(out[j]!) ?? 0) + w);
+    }
+    const best = [...weight.entries()].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
+    if (best) out[i] = best[0];
+  }
+  return out;
+}
+
 /** Each folder with the number of `files` under it, at any depth; `.` holds them all. */
 function folderCounts(files: string[]): Map<string, number> {
   const counts = new Map<string, number>();
@@ -459,7 +516,11 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
     }
 
     unconnected.push(...nodes.filter((_, i) => adj[i]!.size === 0));
-    const membership = splitLarge(adj, louvain(adj), maxModuleFiles(nodes.length));
+    const membership = splitByCodeRoot(
+      nodes.map((k) => splitKey(k).file),
+      adj,
+      splitLarge(adj, louvain(adj), maxModuleFiles(nodes.length))
+    );
     const byCommunity = new Map<number, FileKey[]>();
     nodes.forEach((k, i) => {
       if (adj[i]!.size === 0) return;

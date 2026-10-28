@@ -236,6 +236,36 @@ describe('buildModuleMap', () => {
     ]);
   });
 
+  it('keeps the files of another app out of a module, a few of them with their own app', () => {
+    const edges = [
+      ...oneModule([
+        'packages/widget/src/view.ts',
+        'packages/widget/src/worker.ts',
+        'packages/widget/src/store.ts',
+        'packages/widget/src/api.ts',
+        'src/lib/items/types.ts',
+        'src/lib/items/reducer.ts',
+        'src/lib/items/format.ts',
+        'src/lib/items/parse.ts',
+      ]),
+      ...oneModule(['src/app/home.tsx', 'src/app/layout.tsx', 'src/app/nav.tsx']),
+      // One app file the widget calls most, linked a little to the app's module.
+      ...oneModule([
+        'packages/widget/src/view.ts',
+        'packages/widget/src/store.ts',
+        'src/components/Banner.tsx',
+      ]),
+      e('src/components/Banner.tsx', 'src/app/layout.tsx', 'to_layout'),
+    ];
+    const map = buildModuleMap(edges, []);
+    const moduleOf = (file: string) => map.modules.find((m) => m.files.includes(`p//${file}`))!;
+    expect(moduleOf('src/lib/items/types.ts')).not.toBe(moduleOf('packages/widget/src/view.ts'));
+    expect(moduleOf('src/components/Banner.tsx')).toBe(moduleOf('src/app/home.tsx'));
+    const widget = moduleOf('packages/widget/src/view.ts');
+    expect(widget.files.every((f) => f.startsWith('p//packages/widget/'))).toBe(true);
+    expect(widget.uses.map((l) => l.module)).toContain(moduleOf('src/lib/items/types.ts').id);
+  });
+
   it('tells apart two modules in the same folder by their most called file', () => {
     const edges: MapEdge[] = [];
     for (const g of ['x', 'y']) {
