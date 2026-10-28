@@ -8,6 +8,7 @@ import type { Indexer } from '../src/indexer.js';
 import {
   McpHandler,
   cleanChunkId,
+  resolveSince,
   EXPLAIN_FEATURE_EDGES_PER_SEED,
   type McpHandlerConfig,
   describeExcerpt,
@@ -1158,6 +1159,50 @@ describe('McpHandler', () => {
     }
   });
 
+  it('resolveSince turns a relative date into the ISO date Qdrant filters on', () => {
+    const now = Date.parse('2026-10-28T12:00:00Z');
+    expect(resolveSince('7 days ago', now)).toBe('2026-10-21T12:00:00.000Z');
+    expect(resolveSince('2 weeks', now)).toBe('2026-10-14T12:00:00.000Z');
+    expect(resolveSince('last month', now)).toBe('2026-09-28T12:00:00.000Z');
+    expect(resolveSince('yesterday', now)).toBe('2026-10-27');
+    expect(resolveSince('2024-01-01', now)).toBe('2024-01-01');
+    expect(resolveSince('2024-01-01 10:00+03:00', now)).toBe('2024-01-01T07:00:00.000Z');
+    expect(resolveSince('since the release', now)).toBeNull();
+  });
+
+  it('recent_changes filters on a relative since and refuses one it cannot read', async () => {
+    const searcher = createMockSearcher();
+    vi.mocked(searcher.searchWithFilter).mockResolvedValue({
+      results: [],
+      total: 0,
+      metrics: { tokensReturned: 0, estimatedFullFileTokens: 0, tokensSaved: 0, savingsPercent: 0 },
+    });
+    await withHandler({ searcher }, async (port) => {
+      await callTool(
+        port,
+        'recent_changes',
+        { question: 'auth', since: '7 days ago' },
+        '/support/mcp'
+      );
+      const filter = vi.mocked(searcher.searchWithFilter).mock.calls[0]![2] as {
+        must: Array<{ range: { gte: string } }>;
+      };
+      const gte = filter.must[0]!.range.gte;
+      expect(gte).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(Math.abs(Date.now() - 7 * 86_400_000 - Date.parse(gte))).toBeLessThan(60_000);
+
+      vi.mocked(searcher.searchWithFilter).mockClear();
+      const { text } = await callTool(
+        port,
+        'recent_changes',
+        { question: 'auth', since: 'since the release' },
+        '/support/mcp'
+      );
+      expect(text).toContain('Cannot read since');
+      expect(searcher.searchWithFilter).not.toHaveBeenCalled();
+    });
+  });
+
   it('recent_changes without metadataStore still returns code locations', async () => {
     const searcher = createMockSearcher();
     vi.mocked(searcher.searchWithFilter).mockResolvedValue({
@@ -2032,6 +2077,44 @@ describe('McpHandler', () => {
       expect(text).toContain('src/checkout.ts');
       expect(text).not.toContain('handbook');
       expect(text).toContain('Incoming (1)');
+    });
+  });
+
+  it('find_usages reads called_by and referenced_by as the stored edge types', async () => {
+    const { searcher, indexer } = scopedMocks();
+    const metadataStore = createMockMetadataStore();
+    vi.mocked(metadataStore.getEdgesTo).mockReturnValue([
+      {
+        from_chunk_id: 'g1//billing-v3//src/checkout.ts//5-9//h3',
+        to_chunk_id: IN_SCOPE_CHUNK,
+        relation_type: 'calls',
+        symbol_name: 'charge',
+      },
+      {
+        from_chunk_id: 'g1//billing-v3//src/registry.ts//0-4//h4',
+        to_chunk_id: IN_SCOPE_CHUNK,
+        relation_type: 'references',
+        symbol_name: 'Invoice',
+      },
+    ] as never);
+    (metadataStore as unknown as { getGroupDegreeSnapshot: unknown }).getGroupDegreeSnapshot = vi
+      .fn()
+      .mockReturnValue({ hubChunkIds: new Set() });
+
+    await withHandler({ searcher, indexer, metadataStore }, async (port) => {
+      const called = await callTool(port, 'find_usages', {
+        chunk_id: IN_SCOPE_CHUNK,
+        relation_types: ['called_by'],
+      });
+      expect(called.text).toContain('src/checkout.ts');
+      expect(called.text).not.toContain('src/registry.ts');
+
+      const referenced = await callTool(port, 'find_usages', {
+        chunk_id: IN_SCOPE_CHUNK,
+        relation_types: ['referenced_by'],
+      });
+      expect(referenced.text).toContain('src/registry.ts');
+      expect(referenced.text).not.toContain('src/checkout.ts');
     });
   });
 

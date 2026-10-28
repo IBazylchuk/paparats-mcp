@@ -148,7 +148,7 @@ export interface ChunkResult {
  * hash, `Foo.new` kept in a variable), so any of its methods may be called.
  * `reexports`: a TS/JS `export { x } from` in a barrel file.
  */
-export type RelationType = 'calls' | 'called_by' | 'references' | 'referenced_by' | 'reexports';
+export type RelationType = 'calls' | 'references' | 'reexports';
 
 /**
  * Confidence label for symbol-graph edges, mirroring the EXTRACTED/INFERRED/

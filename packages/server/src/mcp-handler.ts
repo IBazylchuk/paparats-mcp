@@ -316,6 +316,39 @@ export function cleanChunkId(chunkId: string): string {
     .replace(/[`_*.,;]+$/, '');
 }
 
+const SINCE_UNIT_MS: Record<string, number> = {
+  minute: 60_000,
+  hour: 3_600_000,
+  day: 86_400_000,
+  week: 7 * 86_400_000,
+  month: 30 * 86_400_000,
+  year: 365 * 86_400_000,
+};
+
+/**
+ * A `since` argument as a date Qdrant's datetime range takes: an ISO 8601 date
+ * or time as is, a relative one ("7 days ago", "2 weeks", "yesterday") from
+ * `now`. Null when it is neither — Qdrant would refuse the whole query.
+ */
+export function resolveSince(since: string, now = Date.now()): string | null {
+  const text = since.trim().toLowerCase();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return Number.isNaN(Date.parse(text)) ? null : text;
+  if (/^\d{4}-\d{2}-\d{2}[t ][\d:.]+(z|[+-]\d{2}:?\d{2})?$/.test(text)) {
+    const at = Date.parse(text.replace(' ', 'T').toUpperCase());
+    return Number.isNaN(at) ? null : new Date(at).toISOString();
+  }
+  if (text === 'today') return new Date(now).toISOString().slice(0, 10);
+  if (text === 'yesterday') return new Date(now - SINCE_UNIT_MS.day!).toISOString().slice(0, 10);
+  const m = /^(?:last\s+)?(\d+)?\s*(minute|hour|day|week|month|year)s?(?:\s+ago)?$/.exec(text);
+  if (!m) return null;
+  const count = m[1] ? Number(m[1]) : 1;
+  return new Date(now - count * SINCE_UNIT_MS[m[2]!]!).toISOString();
+}
+
+function badSinceText(since: string): string {
+  return `Cannot read since "${since}": pass an ISO 8601 date ("2024-01-01") or a relative one ("7 days ago").`;
+}
+
 function chunkNotFoundText(chunkId: string): string {
   return `Chunk not found: ${chunkId}\n\nThe chunk may have been removed during reindexing. Try searching again.`;
 }
@@ -2028,7 +2061,7 @@ export class McpHandler {
               .string()
               .optional()
               .describe(
-                'ISO 8601 date string (e.g. "2024-01-01") — only return chunks modified after this date'
+                'Only chunks modified after this date: ISO 8601 ("2024-01-01") or relative ("7 days ago")'
               ),
             group: z.string().optional().describe('Specific group or omit for all'),
             project: z.string().default('all').describe('Project name or "all"'),
@@ -2036,8 +2069,12 @@ export class McpHandler {
           },
           annotations: READ_ONLY,
         },
-        async ({ query, since, group, project, limit }) => {
+        async ({ query, since: sinceArg, group, project, limit }) => {
           try {
+            const since = sinceArg ? resolveSince(sinceArg) : undefined;
+            if (sinceArg && !since) {
+              return { content: [{ type: 'text' as const, text: badSinceText(sinceArg) }] };
+            }
             const groupNames = group ? [group] : this.getGroupNames();
 
             if (groupNames.length === 0) {
@@ -2220,7 +2257,9 @@ export class McpHandler {
             relation_types: z
               .array(z.enum(['calls', 'called_by', 'references', 'referenced_by', 'reexports']))
               .optional()
-              .describe('Filter by relation types (default: all)'),
+              .describe(
+                'Filter by relation types (default: all). Edges are calls, references and reexports; called_by and referenced_by are read as calls and references'
+              ),
             limit: z.coerce
               .number()
               .min(1)
@@ -2280,7 +2319,12 @@ export class McpHandler {
               : [];
 
             if (relation_types && relation_types.length > 0) {
-              const allowed = new Set(relation_types);
+              // Edges are stored one way; `called_by` / `referenced_by` name the same edges seen from the other end.
+              const allowed = new Set(
+                relation_types.map((t) =>
+                  t === 'called_by' ? 'calls' : t === 'referenced_by' ? 'references' : t
+                )
+              );
               edgesTo = edgesTo.filter((e) => allowed.has(e.relation_type));
               edgesFrom = edgesFrom.filter((e) => allowed.has(e.relation_type));
             }
@@ -3088,15 +3132,22 @@ export class McpHandler {
           description: prompts.tools.recent_changes.description,
           inputSchema: {
             question: z.string().describe('Semantic search query'),
-            since: z.string().optional().describe('ISO 8601 date filter (e.g. "2024-01-01")'),
+            since: z
+              .string()
+              .optional()
+              .describe('Date filter: ISO 8601 ("2024-01-01") or relative ("7 days ago")'),
             group: z.string().optional().describe('Specific group or omit for all'),
             project: z.string().default('all').describe('Project name or "all"'),
             limit: z.coerce.number().min(1).max(20).default(10).describe('Max seed chunks'),
           },
           annotations: READ_ONLY,
         },
-        async ({ question, since, group, project, limit }) => {
+        async ({ question, since: sinceArg, group, project, limit }) => {
           try {
+            const since = sinceArg ? resolveSince(sinceArg) : undefined;
+            if (sinceArg && !since) {
+              return { content: [{ type: 'text' as const, text: badSinceText(sinceArg) }] };
+            }
             const groupNames = group ? [group] : this.getGroupNames();
 
             if (groupNames.length === 0) {

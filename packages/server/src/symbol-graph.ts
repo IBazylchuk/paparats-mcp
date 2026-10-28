@@ -232,8 +232,6 @@ const CONFIDENCE_RANK: Record<EdgeConfidence, number> = { AMBIGUOUS: 0, INFERRED
 const RELATION_RANK: Record<RelationType, number> = {
   reexports: 0,
   calls: 1,
-  called_by: 1,
-  referenced_by: 1,
   references: 2,
 };
 
