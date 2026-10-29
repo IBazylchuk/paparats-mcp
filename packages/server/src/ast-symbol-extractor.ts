@@ -153,8 +153,10 @@ export interface SymbolExtractionResult {
  *  8 — a Ruby `Foo.new` is a value only when passed or stored, not when a
  *      method returns it; a Ruby key without a value (`f(total:)`) calls
  *      the method of its name like a bare call.
+ *  9 — a TS/JS member read from a module held whole (`ns.Card`, the `m` of
+ *      `import('./m').then((m) => m.Card)`) is a use of that module's name.
  */
-export const SYMBOL_FORMAT = 8;
+export const SYMBOL_FORMAT = 9;
 
 /** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
@@ -1263,6 +1265,36 @@ function addTsValueUses(
       ...(bound.module !== undefined ? { module: bound.module } : {}),
     };
     uses.add(bound.name);
+    if (!sites.has(siteKey(site))) sites.set(siteKey(site), site);
+  }
+  // `ns.Card` read from a module held whole (`import * as ns`, `require`, the
+  // `m` of `import('./m').then((m) => m.Card)`): a use of that module's `Card`.
+  // A call (`ns.load()`) is recorded with the calls.
+  const members = tree.rootNode.descendantsOfType(
+    'member_expression',
+    { row: chunk.startLine, column: 0 },
+    { row: chunk.endLine + 1, column: 0 }
+  );
+  for (const node of members) {
+    if (!node || node.startPosition.row > chunk.endLine) continue;
+    const object = node.childForFieldName('object');
+    const property = node.childForFieldName('property');
+    if (object?.type !== 'identifier' || property?.type !== 'property_identifier') continue;
+    const parent = node.parent;
+    if (
+      parent?.type === 'call_expression' &&
+      parent.childForFieldName('function')?.id === node.id
+    ) {
+      continue;
+    }
+    const imported = ts.importOf(object);
+    if (!imported?.namespace || ts.isPackage(imported.spec)) continue;
+    const site: UseSite = {
+      name: property.text,
+      from: callerOf(node, callers),
+      module: imported.spec,
+    };
+    uses.add(property.text);
     if (!sites.has(siteKey(site))) sites.set(siteKey(site), site);
   }
   // `export * from './names.js'`: every name of that module, re-exported. Kept
