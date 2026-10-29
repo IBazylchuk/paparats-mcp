@@ -1868,16 +1868,16 @@ describe('McpHandler', () => {
   });
 
   describe('module_map', () => {
-    /** Two tight clusters of files, `a*` and `b*`, with one link from a to b. */
+    /** Two tight clusters of files, `a*` and `b*`, with one link (imports) from a to b. */
     function clusterEdges(project = 'p1') {
       const edges: Array<Record<string, string>> = [];
-      const link = (from: string, to: string, symbol: string) =>
+      const link = (from: string, to: string, symbol: string, confidence = 'INFERRED') =>
         edges.push({
           from_chunk_id: `g1//${project}//${from}//0-5//h`,
           to_chunk_id: `g1//${project}//${to}//0-5//h`,
           relation_type: 'calls',
           symbol_name: symbol,
-          confidence: 'INFERRED',
+          confidence,
         });
       for (const [x, y] of [
         ['a1', 'a2'],
@@ -1890,8 +1890,8 @@ describe('McpHandler', () => {
         link(`src/${x![0]}/${x}.ts`, `src/${y![0]}/${y}.ts`, `use_${y}`);
         link(`src/${y![0]}/${y}.ts`, `src/${x![0]}/${x}.ts`, `use_${x}`);
       }
-      link('src/a/a1.ts', 'src/b/b1.ts', 'crossOne');
-      link('src/a/a2.ts', 'src/b/b2.ts', 'crossTwo');
+      link('src/a/a1.ts', 'src/b/b1.ts', 'crossOne', 'EXTRACTED');
+      link('src/a/a2.ts', 'src/b/b2.ts', 'crossTwo', 'EXTRACTED');
       link('tests/a.test.ts', 'src/a/a1.ts', 'use_a1');
       return edges;
     }

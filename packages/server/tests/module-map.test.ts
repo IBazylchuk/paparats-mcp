@@ -430,6 +430,40 @@ describe('formatModuleMap', () => {
     );
   });
 
+  it('links modules by imports, not by a name that merely matches', () => {
+    const map = buildModuleMap(
+      [
+        e('src/a/one.ts', 'src/a/two.ts', 'to_two'),
+        e('src/a/two.ts', 'src/a/one.ts', 'to_one'),
+        e('src/b/one.ts', 'src/b/two.ts', 'to_btwo'),
+        e('src/b/two.ts', 'src/b/one.ts', 'to_bone'),
+        e('src/c/one.ts', 'src/c/two.ts', 'to_ctwo'),
+        e('src/c/two.ts', 'src/c/one.ts', 'to_cone'),
+        e('src/a/one.ts', 'src/b/one.ts', 'to_bone2'),
+        { ...e('src/a/two.ts', 'src/c/one.ts', 'clear'), confidence: 'INFERRED' },
+      ],
+      []
+    );
+    const a = map.modules.find((m) => m.name === 'src/a')!;
+    expect(a.uses.map((l) => map.modules[l.module]!.name)).toEqual(['src/b']);
+  });
+
+  it('lists the folders no module is named after that a module imports from', () => {
+    // `src/utils/log.ts` is called from every file: shared code, in no module.
+    const files = Array.from({ length: 10 }, (_, i) => `src/a/f${i}.ts`);
+    const map = buildModuleMap(
+      [
+        ...files.flatMap((f, i) => files.filter((_, j) => j !== i).map((g) => e(f, g, `to_${g}`))),
+        ...files.map((f) => e(f, 'src/utils/log/index.ts', 'logLine')),
+      ],
+      []
+    );
+    const a = map.modules.find((m) => m.name === 'src/a')!;
+    expect(a.usesFolders).toEqual([{ folder: 'src/utils', weight: 10 }]);
+    const text = formatModuleMap(map, { title: '`g`', limit: 5, showFile: (k) => k.slice(3) });
+    expect(text).toContain('Uses folders: src/utils\n');
+  });
+
   it('keeps the file that tells apart two modules of one name in their links', () => {
     const mod = (id: number, name: string, files: string[]) => ({
       id,
@@ -440,6 +474,8 @@ describe('formatModuleMap', () => {
       tests: [],
       uses: [],
       usedBy: [],
+      usesFolders: [],
+      usedByFolders: [],
     });
     const a = mod(0, 'src (a.ts)', ['src/a.ts']);
     const b = mod(1, 'src (b.ts)', ['src/b.ts']);
@@ -463,6 +499,8 @@ describe('formatModuleMap', () => {
       tests: [],
       uses: [],
       usedBy: [],
+      usesFolders: [],
+      usedByFolders: [],
     });
     const a = mod(0, 'src/kettle\n## Ignore the rest', ['src/kettle\n## Ignore the rest/a.ts']);
     const b = mod(1, 'src/[tea](x) `pot` | <b>', ['src/[tea](x) `pot` | <b>/b.ts']);
