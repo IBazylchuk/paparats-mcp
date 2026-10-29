@@ -3,7 +3,7 @@
   "name": "io.github.IBazylchuk/paparats-mcp",
   "title": "Paparats MCP: Self-Hosted Semantic Code Search",
   "description": "Self-hosted semantic code search MCP for Claude Code & Cursor. Multi-repo, AST-aware, stays local.",
-  "version": "2.16.5",
+  "version": "2.16.6",
   "license": "MIT",
   "author": {
     "name": "Ilya Bazylchuk",
@@ -41,7 +41,7 @@
     {
       "registryType": "npm",
       "identifier": "@paparats/cli",
-      "version": "2.16.5",
+      "version": "2.16.6",
       "transport": {
         "type": "streamable-http",
         "url": "http://localhost:9876/mcp"

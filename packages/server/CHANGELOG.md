@@ -1,5 +1,21 @@
 # @paparats/server
 
+## 2.16.6
+
+### Patch Changes
+
+- bade586: Call graph and `change_impact`:
+
+  - A call on self links to the overrides in the classes below too, found through the classes rather than by name, so `change_impact` follows a template method: a base class method calling the step its subclasses define now depends on each subclass's version. This also holds for a call between two methods of one chunk.
+  - A Ruby key without a value (`Report.new(total:)`) calls the method of its name, like a bare call.
+  - A Ruby `Foo.new` counts as holding the class only when it is passed or stored. A method that returns a new object (a factory) no longer counts as a dependent of every method of that class, so it is no longer listed a step too near.
+
+  Every Ruby and TypeScript file is extracted again, and every graph is built again, on the next index pass.
+
+- 60baadc: Invented names in the examples of comments, tests and changelog entries. `scripts/check-no-private-refs.sh` now matches patterns with Perl regexes when git supports them (on macOS a `\b` in an extended regex matched nothing, so such a pattern never fired) and checks `CLAUDE.md` too.
+- 91deaac: `module_map`: a module's Uses and Used by are calls between the folders the modules are named after. A module also holds files of other folders, and those files used to link it too, so a link read as one between two folders often had no import between them. Now a file counts for the module whose folder holds it most closely, whichever module it was grouped into, and a file in no module's folder links nothing. Two modules named after the same folder are named after a folder below it each when those are apart, else after their most called file, which links now show too, so no two modules share a name. The note naming the file a used module is reached through is gone: a link's files are now always inside the folders it names.
+  - @paparats/shared@2.16.6
+
 ## 2.16.5
 
 ### Patch Changes
