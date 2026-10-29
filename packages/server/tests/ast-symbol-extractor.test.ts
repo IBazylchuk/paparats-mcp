@@ -1,6 +1,7 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { Parser, Language } from 'web-tree-sitter';
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
 import { extractSymbolsForChunks } from '../src/ast-symbol-extractor.js';
 
 const require = createRequire(import.meta.url);
@@ -25,8 +26,12 @@ const GRAMMAR_MAP: Record<string, string> = {
 async function setup() {
   await Parser.init();
   parser = new Parser();
+  // The server's own grammars where it ships them (see grammars/README.md).
+  const local = new Set(['typescript', 'tsx', 'javascript']);
   for (const [lang, grammar] of Object.entries(GRAMMAR_MAP)) {
-    const wasmPath = require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammar}.wasm`);
+    const wasmPath = local.has(grammar)
+      ? fileURLToPath(new URL(`../grammars/tree-sitter-${grammar}.wasm`, import.meta.url))
+      : require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammar}.wasm`);
     languages.set(lang, await Language.load(wasmPath));
   }
 }
@@ -1539,5 +1544,43 @@ export function g(HOME: string) { return HOME; }`;
       ]);
       expect(sitesNamed(r, 'settings').map((u) => u.module)).toEqual(['./settings']);
     });
+
+    it('records the component a wrapper exports by default, as exported', () => {
+      const memo = extract('const Card = () => null;\nexport default memo(Card);\n');
+      expect(memo.default_export).toBe('Card');
+      expect(memo.defined_symbols.find((d) => d.name === 'Card')?.local).toBeUndefined();
+      expect(
+        extract('function Page() {}\nexport default withAuth(withLayout(Page));\n').default_export
+      ).toBe('Page');
+      expect(
+        extract('function List() {}\nexport default connect(mapState)(List);\n').default_export
+      ).toBe('List');
+    });
+
+    it('keeps an import named like a definition of its own file as a use of the module', () => {
+      const r = extract(
+        "import { Drawer as Trapdoor } from './trapdoor';\nexport function Drawer() {\n  return Trapdoor();\n}\n"
+      );
+      expect(sitesNamed(r, 'Drawer')).toEqual([
+        { name: 'Drawer', from: 'Drawer', module: './trapdoor' },
+      ]);
+      expect(r.inner_calls).toBeUndefined();
+    });
+  });
+
+  it('parses a JSX attribute string holding `&`, so a component keeps its closures', () => {
+    const code = [
+      'export const Quill = () => {',
+      '  const onTap = () => chooseOne();',
+      '  return <div className="[&>dt]:italic [&_kbd]:ml-2">{onTap}</div>;',
+      '};',
+      '',
+    ].join('\n');
+    const { tree, language } = parse('tsx', code);
+    expect(tree.rootNode.hasError).toBe(false);
+    const [r] = extractSymbolsForChunks(tree, language, [{ startLine: 0, endLine: 4 }], 'tsx');
+    tree.delete();
+    expect(r!.defines_symbols).toEqual(['Quill']);
+    expect(r!.use_sites?.find((u) => u.name === 'chooseOne')?.from).toBe('Quill');
   });
 });

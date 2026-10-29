@@ -450,6 +450,48 @@ describe('buildSymbolEdges', () => {
     ]);
   });
 
+  it('links an import under another name to the definition, by the name it has there', () => {
+    const chunk = (file: string, extra: Partial<ChunkSymbols>): ChunkSymbols => ({
+      chunk_id: `g//p//${file}//0-9//${file}`,
+      defines_symbols: [],
+      uses_symbols: [],
+      ...extra,
+    });
+    const { edges } = buildSymbolEdges([
+      chunk('ctx/Provider.tsx', {
+        defines_symbols: ['LedgerProvider'],
+        default_export: 'LedgerProvider',
+      }),
+      chunk('ctx/index.ts', {
+        use_sites: [{ name: 'default', from: 'Provider', module: './Provider', reexport: true }],
+      }),
+      chunk('ui/Card.tsx', { defines_symbols: ['Card'], default_export: 'Card' }),
+      chunk('ui/Drawer.tsx', { defines_symbols: ['Drawer'] }),
+      chunk('pages/home.tsx', {
+        use_sites: [
+          { name: 'Provider', from: 'Home', module: '../ctx' },
+          { name: 'Item', from: 'Home', module: '../ui/Card' },
+        ],
+      }),
+      // `import { Drawer as Trapdoor } from '../ui/Drawer'` in a file declaring its own `Drawer`.
+      chunk('pages/Drawer.tsx', {
+        defines_symbols: ['Drawer'],
+        use_sites: [{ name: 'Drawer', from: 'Drawer', module: '../ui/Drawer' }],
+      }),
+    ]);
+    const links = edges
+      .filter((e) => e.relation_type === 'calls')
+      .map(
+        (e) =>
+          `${e.from_chunk_id.split('//')[2]} ${e.symbol_name} -> ${e.to_chunk_id.split('//')[2]}`
+      );
+    expect(links.sort()).toEqual([
+      'pages/Drawer.tsx Drawer -> ui/Drawer.tsx',
+      'pages/home.tsx Card -> ui/Card.tsx',
+      'pages/home.tsx LedgerProvider -> ctx/Provider.tsx',
+    ]);
+  });
+
   it('links a member of an imported value only within the module it comes from', () => {
     const { edges } = buildSymbolEdges([
       { chunk_id: 'g//p//ctx/theme.ts//0-9//a', defines_symbols: ['Provider'], uses_symbols: [] },

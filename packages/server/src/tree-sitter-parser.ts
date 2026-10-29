@@ -1,5 +1,7 @@
 import { Parser, Language, type Tree } from 'web-tree-sitter';
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+import { existsSync } from 'fs';
 
 const require = createRequire(import.meta.url);
 
@@ -17,14 +19,16 @@ export interface TreeSitterManager {
 /**
  * Map from our language identifiers to WASM grammar sources.
  * A string resolves from tree-sitter-wasms; a `{ pkg, file }` resolves the WASM
- * from another package. `null` means no WASM grammar (symbol extraction skipped).
+ * from another package; a `{ local }` is one of this package's `grammars/`
+ * (newer builds than tree-sitter-wasms has, see `grammars/README.md`).
+ * `null` means no WASM grammar (symbol extraction skipped).
  */
-type GrammarRef = string | { pkg: string; file: string };
+type GrammarRef = string | { pkg: string; file: string } | { local: string };
 
 const LANGUAGE_GRAMMAR_MAP: Record<string, GrammarRef | null> = {
-  typescript: 'typescript',
-  javascript: 'javascript',
-  tsx: 'tsx',
+  typescript: { local: 'tree-sitter-typescript.wasm' },
+  javascript: { local: 'tree-sitter-javascript.wasm' },
+  tsx: { local: 'tree-sitter-tsx.wasm' },
   python: 'python',
   go: 'go',
   rust: 'rust',
@@ -54,10 +58,18 @@ export async function createTreeSitterManager(): Promise<TreeSitterManager> {
     }
 
     try {
-      const wasmPath =
+      let wasmPath =
         typeof grammarName === 'string'
           ? require.resolve(`tree-sitter-wasms/out/tree-sitter-${grammarName}.wasm`)
-          : require.resolve(`${grammarName.pkg}/${grammarName.file}`);
+          : 'local' in grammarName
+            ? fileURLToPath(new URL(`../grammars/${grammarName.local}`, import.meta.url))
+            : require.resolve(`${grammarName.pkg}/${grammarName.file}`);
+      if (typeof grammarName !== 'string' && 'local' in grammarName && !existsSync(wasmPath)) {
+        console.warn(
+          `[tree-sitter] ${wasmPath} is missing; using the older ${grammarName.local} of tree-sitter-wasms`
+        );
+        wasmPath = require.resolve(`tree-sitter-wasms/out/${grammarName.local}`);
+      }
       const lang = await Language.load(wasmPath);
       languageCache.set(language, lang);
       return lang;

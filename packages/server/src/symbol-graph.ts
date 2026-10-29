@@ -668,12 +668,18 @@ export function buildSymbolEdges(
       const sym = site.name;
       // A string's `strip`, a `Map`'s `get`, `JSON.parse`: nothing of the project.
       if (site.external) continue;
-      const allDefs = definedBy.get(sym);
+      // An imported name need not be defined anywhere under it: `import Provider
+      // from './provider'` names that module's default export, whatever it is called.
+      const allDefs = definedBy.get(sym) ?? (site.module !== undefined ? new Set<string>() : null);
       if (!allDefs) continue;
       // A file-private definition is reachable only from its file, and there it
-      // is the one meant: a module cannot also import a name it declares.
+      // is the one meant: a module cannot also import a name it declares (an
+      // imported name is the exported one, `import { Drawer as Trapdoor }`).
       const private_ = localIn.get(sym);
-      const own = private_ ? [...private_].filter((id) => fileKey(id) === callerFile) : [];
+      const own =
+        private_ && site.module === undefined
+          ? [...private_].filter((id) => fileKey(id) === callerFile)
+          : [];
       let defs =
         own.length > 0
           ? new Set(own)
@@ -685,7 +691,13 @@ export function buildSymbolEdges(
       if (classOnly) defs = new Set([...defs].filter((id) => !classOnly.has(id)));
       // A bare call next to a top-level definition of the name in the same file
       // (a script's helper `pairs(a, b)`) means that one.
-      if (site.on === undefined && !site.lexical && !site.onObject && defs.size > 1) {
+      if (
+        site.on === undefined &&
+        site.module === undefined &&
+        !site.lexical &&
+        !site.onObject &&
+        defs.size > 1
+      ) {
         const owned = ownedIn.get(sym);
         const beside = [...defs].filter((id) => fileKey(id) === callerFile && !owned?.has(id));
         if (beside.length > 0) defs = new Set(beside);
@@ -727,7 +739,9 @@ export function buildSymbolEdges(
         // In an ES module a name it does not import is its own, or a global.
         defs = new Set([...defs].filter((id) => fileKey(id) === callerFile));
       }
-      // Imported under another name (`export { parse as parseName } from`).
+      // Imported under another name (`export { parse as parseName } from`,
+      // `export { default as Provider } from`): the edge carries the name the
+      // definition has, so the methods of the chunk it reaches are told apart.
       const aliased =
         importedAs && defs.size === 0 ? [...importedAs].filter(([, name]) => name !== sym) : [];
       if (aliased.length > 0) {
@@ -735,7 +749,7 @@ export function buildSymbolEdges(
           for (const id of definedBy.get(name) ?? []) {
             if (fileKey(id) !== file || id === chunk.chunk_id) continue;
             if (only && !only(chunk.chunk_id, sym)) continue;
-            addEdge(chunk.chunk_id, id, sym, site, 'EXTRACTED');
+            addEdge(chunk.chunk_id, id, name, site, 'EXTRACTED');
           }
         }
         continue;

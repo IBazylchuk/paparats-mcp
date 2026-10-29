@@ -987,6 +987,11 @@ function moduleExports(root: Node): Set<string> | null {
     if (stmt.childForFieldName('source')) continue;
     for (const child of stmt.namedChildren) {
       if (child?.type === 'identifier') names.add(child.text);
+      // `export default memo(Card)`: `Card` is what the module exports.
+      if (child?.type === 'call_expression') {
+        const wrapped = wrappedName(child);
+        if (wrapped) names.add(wrapped);
+      }
       if (child?.type !== 'export_clause') continue;
       for (const spec of child.namedChildren) {
         const name = spec?.childForFieldName('name')?.text;
@@ -1279,7 +1284,31 @@ function defaultExportIn(
     if (named) return named;
     const value =
       stmt.childForFieldName('value') ?? stmt.namedChildren.find((c) => c?.type === 'identifier');
-    if (value?.type === 'identifier') return value.text;
+    const name = value ? wrappedName(value) : undefined;
+    if (name) return name;
+  }
+  return undefined;
+}
+
+/**
+ * The declaration an exported value is: a name, or the one a wrapper is called
+ * with (`memo(Card)`, `forwardRef(Field)`, `withAuth(withLayout(Page))`,
+ * `connect(mapState)(List)`).
+ */
+function wrappedName(node: Node): string | undefined {
+  let current: Node | null = node;
+  for (let depth = 0; current && depth < 6; depth++) {
+    if (current.type === 'identifier') return current.text;
+    if (
+      current.type === 'parenthesized_expression' ||
+      current.type === 'as_expression' ||
+      current.type === 'satisfies_expression'
+    ) {
+      current = current.namedChildren[0] ?? null;
+      continue;
+    }
+    if (current.type !== 'call_expression') return undefined;
+    current = current.childForFieldName('arguments')?.namedChildren[0] ?? null;
   }
   return undefined;
 }
@@ -1296,13 +1325,26 @@ function innerCalls(
 ): Map<string, Set<string>> {
   const calledFrom = new Map<string, Set<string>>();
   for (const [key, site] of sites) {
-    if (!defines.has(site.name) || otherSites.has(key)) continue;
+    if (!callsOwnDefinition(key, site, defines, otherSites)) continue;
     if (site.from === '' || site.from === site.name) continue;
     let from = calledFrom.get(site.name);
     if (!from) calledFrom.set(site.name, (from = new Set()));
     from.add(site.from);
   }
   return calledFrom;
+}
+
+/**
+ * A use of a name its own chunk defines: not called on another object, and not
+ * imported (`import { Drawer as Trapdoor }` in a file declaring its own `Drawer`).
+ */
+function callsOwnDefinition(
+  key: string,
+  site: UseSite,
+  defines: Map<string, DefinedSymbol>,
+  otherSites: Set<string>
+): boolean {
+  return defines.has(site.name) && !otherSites.has(key) && site.module === undefined;
 }
 
 function siteKey(site: UseSite): string {
@@ -1573,7 +1615,7 @@ export function extractSymbolsForChunks(
       }
       if (tsTypes) addTsValueUses(tree, chunk, tsTypes, callers, sites, uses);
       const outside = [...sites.entries()]
-        .filter(([key, site]) => !defines.has(site.name) || otherSites.has(key))
+        .filter(([key, site]) => !callsOwnDefinition(key, site, defines, otherSites))
         .map(([, site]) => site);
       const inner = innerCalls(sites, defines, otherSites);
       const defaultExport = tsTypes ? defaultExportIn(tree, chunk) : undefined;
