@@ -1,5 +1,35 @@
 # @paparats/server
 
+## 2.16.4
+
+### Patch Changes
+
+- cb973f7: `change_impact` counts steps by method call, so "3 steps away" means three calls from the change, calls between the methods of one file included:
+
+  - Each chunk records the calls between its own methods, and each edge the steps from its calling method to the other methods of its chunk that reach it. Methods of the changed chunk that call it are listed at their steps, and a dependent's other methods that reach the call are listed as "calls `x` in this file", one step further.
+  - `depth` limits steps: what lies further is counted, not listed. Before, it limited chunks, so dependents 4 to 6 calls away were listed under a three-step question.
+  - A method too long for one chunk is one dependent, shown on the line where it begins, and its callers are followed from there. Before, its callers were lost when the call sat in a later chunk.
+  - A Ruby method called by its bare name without arguments from another method of its class (`total: subtotal`) is a call. A `Foo.new` stored in a variable is no longer read as the class held as a value (which passed on any change to the class); its calls link one by one.
+  - When no indexed test reaches the change, the output says the index may leave tests out, not that the code is untested.
+
+  Checked offline on 8 targets drawn at random, against answer keys written from the source by reviewers who did not see the output: 71 of 73 dependents in the keys are listed (47 before). Nearly all of the gain, 22 of 24, comes from two Ruby targets whose callers sit in the same file and were not seen before; on the four TypeScript targets 18 of 19 are listed (16 before). 1 is listed at a step the key disagrees with (7 before), and 3 shown lines are wrong (13 before). Symbols are extracted again once on the next pass; no file is embedded again.
+
+- 420e501: Docs search matches keywords in any script, not only plain Latin letters: Cyrillic, Greek and other words are kept whole, accents on Latin letters are dropped (`cafe` finds `café`, where `über` used to become `ber`), and Chinese and Japanese text is matched by two-character pieces. The keyword statistics are rebuilt once from the stored documents at startup; the documents' own keyword vectors catch up on the next docs pass. Plain ASCII text is tokenised as before.
+- cc381d6: `module_map` names a module after the folder that best matches it, holding much of the module and little else of the project (or two folders joined by `+` when they match better), instead of the folder with the most of its files, which often held a small part of the module. Its main files are the most called files of that folder, so a widely called file of another folder the module holds no longer heads them. On the paparats repository, the median F1 of a module against the folder it is named after went from 0.71 to 0.76.
+- a27d281: `module_map` keeps each package or app in modules of its own. A module holding the files of another app it imports read as the app using itself, or the other app using it; such a module is now split along packages and apps, and a part of fewer than 3 files joins the module of its own app it links to most. On the paparats repository, files sitting in a module of another package went from 11 to 5, and the output did not grow.
+- cb973f7: The TypeScript and JavaScript call graph links a name through its import. It follows barrels (`export * from`, `export { default } from`, `export { default as X } from`), default exports, `import { a as b }` and names destructured from `await import('./x')`. A name the module neither imports nor declares links to nothing in another file (the global `Error` no longer links to a component named `Error`), a member of an imported value (`ThemeContext.Provider`) only to the module it comes from, and nothing links to a `.d.ts` declaration. A call on an object of unknown type is a method call on an object, not a bare name. Checked against the TypeScript compiler on the paparats repository, 94.2% of the edges `change_impact` follows are backed by a real import (92.9% before). Against the compiler's references on 150 exported functions and constants drawn at random from a TypeScript project, `change_impact` lists 85.3% of the dependents in other files within three steps (69.2% before). With fewer false links `module_map` finds more modules there (11 instead of 9) and its output grows by about a third. Symbols are extracted again once on the next pass.
+- 0f3d8c5: The TypeScript call graph finds more of what depends on a change:
+
+  - TypeScript, TSX and JavaScript are parsed with tree-sitter-typescript 0.23.2 and tree-sitter-javascript 0.25.0, shipped in `packages/server/grammars`. The older builds failed on a JSX attribute string holding `&` (`className="[&>dt]:italic"`) and read the rest of the file as an error, so a component's inner callbacks were taken for its functions and its callers were lost.
+  - A name imported under another one links to its definition under the name it has there: `import Provider from './Provider'` of a `LedgerProvider`, `export { default as Provider } from`. Before, such an import linked to nothing when no definition had the local name, and otherwise `change_impact` did not follow it.
+  - `export default memo(Card)`, `forwardRef(Field)` or `withAuth(Page)` exports the component it wraps.
+  - `import { Drawer as Trapdoor }` in a file that declares its own `Drawer` is a use of the imported one.
+  - A method split over chunks is one row of `change_impact`, the chunk where it begins included.
+  - An incremental graph update links again the imports into a changed file that use another name, which it dropped before until the next full rebuild.
+
+  Checked against the TypeScript compiler's references on 150 exported functions and constants drawn at random from a TypeScript project, held out while fixing: of the dependents in other files within three steps, 95.3% are listed (92.3% before, 78.0% in the last release); rows naming the wrong function went from 2.2% to 0.6%, and listed files that depend on nothing stay at 2.2%. Symbols are extracted again once on the next pass; files whose chunks change are embedded again.
+  - @paparats/shared@2.16.4
+
 ## 2.16.3
 
 ### Patch Changes
