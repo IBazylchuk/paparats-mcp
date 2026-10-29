@@ -46,6 +46,8 @@ export interface DependentsResult {
   dependents: Dependent[];
   /** The walk stopped at `maxDependents` with more left to visit. */
   truncated: boolean;
+  /** More leaves (tests) than `maxDependents` reached it; the rest are not listed. */
+  testsTruncated: boolean;
   /** Chunks at the last hop have callers of their own that `depth` left unwalked. */
   deeper: boolean;
   /**
@@ -76,6 +78,7 @@ export interface CollectDependentsOptions {
    */
   edgesToMethod?: (chunkId: string, method: string) => SymbolEdge[];
   depth: number;
+  /** At most this many dependents, and apart from them at most this many leaves. */
   maxDependents: number;
   /** Only callers using this name count at the first hop. */
   symbol?: string;
@@ -153,6 +156,11 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
   const followed = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
   let frontier = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
   let truncated = false;
+  let testsTruncated = false;
+  // Leaves (tests) have a cap of their own: they are never walked, so they
+  // must not take the places of code the walk would follow.
+  let codeCount = 0;
+  let leafCount = 0;
   // Per reached chunk, the step of each of its affected methods: a calling
   // method's own, one more at least for a method reaching it through the
   // chunk's own calls; `''` for calls made outside any method (the whole chunk).
@@ -255,10 +263,14 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
         }
         let dep = level.get(caller);
         if (!dep) {
-          if (found.size + level.size >= opts.maxDependents) {
-            truncated = true;
+          const leaf = opts.isLeaf?.(caller) ?? false;
+          if ((leaf ? leafCount : codeCount) >= opts.maxDependents) {
+            if (leaf) testsTruncated = true;
+            else truncated = true;
             continue;
           }
+          if (leaf) leafCount++;
+          else codeCount++;
           dep = {
             chunkId: caller,
             hop,
@@ -332,6 +344,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
         .sort((a, b) => a.step - b.step || a.name.localeCompare(b.name)),
     })),
     truncated,
+    testsTruncated,
     deeper,
     viaCommonNames: byName(common),
     viaAmbiguousNames: byName(ambiguous),

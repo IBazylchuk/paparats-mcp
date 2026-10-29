@@ -192,6 +192,26 @@ describe('collectDependents', () => {
     expect(res.truncated).toBe(true);
   });
 
+  it('keeps a cap of its own for tests, so they do not take the places of code', () => {
+    const edgesTo = graph([
+      ['test1', 'seed', 'f'],
+      ['test2', 'seed', 'f'],
+      ['test3', 'seed', 'f'],
+      ['a', 'seed', 'f'],
+      ['b', 'a', 'g'],
+    ]);
+    const res = collectDependents({
+      ...base,
+      seeds: ['seed'],
+      edgesTo,
+      maxDependents: 2,
+      isLeaf: (id) => id.startsWith('test'),
+    });
+    expect(res.dependents.map((d) => d.chunkId).sort()).toEqual(['a', 'b', 'test1', 'test2']);
+    expect(res.truncated).toBe(false);
+    expect(res.testsTruncated).toBe(true);
+  });
+
   it('sets aside callers linked only through a common name, and does not follow them', () => {
     const edgesTo = graph([
       ['real', 'seed', 'enqueue'],
