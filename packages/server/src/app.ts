@@ -482,7 +482,10 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
       try {
         // Throws on a Qdrant failure — indexing on top of the old chunks would
         // silently leave stale ones behind.
-        if (force) {
+        // Force on a collection built with another embedding model drops the whole
+        // collection (its vectors cannot be mixed with new ones); otherwise just
+        // this project's chunks.
+        if (force && !(await indexer.dropCollectionIfModelChanged(group))) {
           await indexer.deleteProjectChunks(group, projectName);
         }
 

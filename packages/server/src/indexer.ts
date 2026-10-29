@@ -397,7 +397,8 @@ export class CollectionMetaMismatchError extends Error {
       `Embedding mismatch for collection ${collection}: ` +
         `indexed with ${existing.provider}/${existing.model} (${existing.dimensions}d), ` +
         `but current process is ${current.provider}/${current.model} (${current.dimensions}d). ` +
-        `Drop the collection and reindex, or run with matching EMBEDDING_PROVIDER/EMBEDDING_MODEL.`
+        `Reindex with force (the indexer's /trigger with "force": true, or \`paparats add --force\`), ` +
+        `which drops the collection, or run with matching EMBEDDING_PROVIDER/EMBEDDING_MODEL.`
     );
     this.name = 'CollectionMetaMismatchError';
     this.collection = collection;
@@ -2415,6 +2416,32 @@ export class Indexer {
     await this.deleteStoredFile(groupName, this.stored(projectName), relPath);
     console.log(`[indexer] Removed ${groupName}/${projectName}/${relPath}`);
     this.scheduleSymbolGraph(groupName, this.stored(projectName));
+  }
+
+  /**
+   * Drop the group's collection when it was built with another embedding model,
+   * so it can be built again with the current one: old and new vectors cannot be
+   * mixed, and every write would fail on the mismatch. Returns what the
+   * collection was built with, or null when it matches, has no record or does
+   * not exist. Every project of the group loses its chunks.
+   */
+  async dropCollectionIfModelChanged(groupName: string): Promise<CollectionMeta | null> {
+    validateGroupName(groupName);
+    const existing = await this.readCollectionMeta(groupName);
+    if (
+      !existing ||
+      (existing.provider === this.providerId &&
+        existing.model === this.modelId &&
+        existing.dimensions === this.dimensions)
+    ) {
+      return null;
+    }
+    await this.retryQdrant(() => this.qdrant.deleteCollection(this.col(groupName)));
+    console.log(
+      `[indexer] Dropped ${this.col(groupName)}: built with ${existing.provider}/${existing.model} ` +
+        `(${existing.dimensions}d), now ${this.providerId}/${this.modelId} (${this.dimensions}d)`
+    );
+    return existing;
   }
 
   /** Delete entire group collection and re-index all its projects */

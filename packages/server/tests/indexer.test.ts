@@ -1609,6 +1609,30 @@ describe('Indexer collection metadata sentinel', () => {
     await expect(wrong.ensureCollection('g2')).rejects.toBeInstanceOf(CollectionMetaMismatchError);
   });
 
+  it('drops a collection built with another model, and only that one', async () => {
+    const make = (model: string) =>
+      new Indexer({
+        qdrantUrl: 'http://127.0.0.1:6333',
+        embeddingProvider: provider,
+        dimensions: 4,
+        embeddingProviderId: 'llama',
+        embeddingModelId: model,
+        qdrantClient: mockQdrant.client as never,
+      });
+    await make('old-model').ensureCollection('g3');
+
+    const same = make('old-model');
+    expect(await same.dropCollectionIfModelChanged('g3')).toBeNull();
+    expect(mockQdrant.collections.has(toCollectionName('g3'))).toBe(true);
+
+    const next = make('new-model');
+    expect(await next.dropCollectionIfModelChanged('g3')).toMatchObject({ model: 'old-model' });
+    expect(mockQdrant.collections.has(toCollectionName('g3'))).toBe(false);
+    await next.ensureCollection('g3');
+    expect(await next.readCollectionMeta('g3')).toMatchObject({ model: 'new-model' });
+    expect(await next.dropCollectionIfModelChanged('missing')).toBeNull();
+  });
+
   it('backfills the sentinel for a legacy collection that has none', async () => {
     // Pre-create the collection without the sentinel — simulates an upgrade
     // from a pre-metadata version.

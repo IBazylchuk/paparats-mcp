@@ -84,6 +84,7 @@ function createMockIndexer(suffix = ''): Indexer {
     updateFileContent: vi.fn().mockResolvedValue(0),
     deleteFileByPath: vi.fn().mockResolvedValue(undefined),
     deleteProjectChunks: vi.fn().mockResolvedValue(undefined),
+    dropCollectionIfModelChanged: vi.fn().mockResolvedValue(null),
     purgeProject: vi.fn().mockResolvedValue(undefined),
     getChunkById: vi.fn().mockResolvedValue(null),
     getAdjacentChunks: vi.fn().mockResolvedValue([]),
@@ -302,6 +303,21 @@ describe('Server API', () => {
       const res = await postIndex({});
       expect(res.status).toBe(200);
       expect(mockSearcher.invalidateGroupCache).toHaveBeenCalledWith('test-group');
+    });
+
+    it('drops the collection instead of the project chunks when force meets a new model', async () => {
+      vi.mocked(mockIndexer.dropCollectionIfModelChanged).mockResolvedValueOnce({
+        provider: 'llama',
+        model: 'old-model',
+        dimensions: 4,
+        createdAt: 0,
+        metaVersion: 1,
+      });
+      const res = await postIndex({ force: true });
+      expect(res.status).toBe(200);
+      expect(mockIndexer.dropCollectionIfModelChanged).toHaveBeenCalledWith('test-group');
+      expect(mockIndexer.deleteProjectChunks).not.toHaveBeenCalled();
+      expect(mockIndexer.indexFilesContent).toHaveBeenCalled();
     });
 
     it('returns 500 without indexing when force cannot clear the old chunks', async () => {

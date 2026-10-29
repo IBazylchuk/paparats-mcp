@@ -118,8 +118,10 @@ curl -X POST http://localhost:9877/trigger -H 'Content-Type: application/json' \
 ```
 
 Leave out `repos` (or send `[]`) for every project. `"force": true` drops the existing
-chunks first; use it after changing the schema. It keeps the collection, so it is not enough
-for a new embedding model: see [replacing-embedding-models.md](replacing-embedding-models.md). A trigger that arrives while a
+chunks first; use it after changing the schema. After a change of embedding model it drops
+the group's whole collection instead, since old and new vectors cannot be mixed, and
+indexes every repository again once the cycle ends
+([replacing-embedding-models.md](replacing-embedding-models.md)). A trigger that arrives while a
 cycle runs is queued: the answer is `202` with `"status": "queued"`. From CI, the same
 `curl` in a job on push to `main` makes a push searchable right away.
 
@@ -174,7 +176,7 @@ path) or a GitHub repository (`owner/repo`, an https or ssh URL).
 - `--language <lang>`: instead of detecting it
 - `--no-restart`: no container restart after adding a folder (for scripts)
 - `--no-reindex`: do not index it now
-- `--force`: drop its existing chunks before indexing
+- `--force`: drop its existing chunks before indexing (the group's whole collection when another embedding model built it)
 - `--non-interactive`: no prompts
 
 **`paparats search <query>`**: `-n, --limit <n>` (default 5), `-p, --project <name>`,

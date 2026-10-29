@@ -131,8 +131,11 @@ reindexed by completely different mechanisms — **don't forget the arch layer.*
 
 **Code layer** (`paparats_<group>`) — rebuilt from source:
 
-- **OSS / self-hosted:** reindex on the next indexer cycle (drop the old
-  collection so it rebuilds; bump `REINDEX_EPOCH` in the indexer to force it).
+- **OSS / self-hosted:** trigger the indexer with force (`POST /trigger` with
+  `"force": true`, or `paparats add <repo> --force`). A collection built with another
+  model is dropped, and every repository is indexed again after that cycle. Without
+  force, writes keep failing with `CollectionMetaMismatchError`. (Bumping
+  `REINDEX_EPOCH` in the indexer reindexes every repo, but does not drop the collection.)
 - **Shared remote Qdrant (single instance):** blue-green via a **new
   collection** — index into it in parallel, cut over when full, drop the old
   one. Never dual-run two Qdrants.
