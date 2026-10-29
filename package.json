@@ -1,6 +1,6 @@
 {
   "name": "paparats-mcp-monorepo",
-  "version": "2.16.6",
+  "version": "2.16.7",
   "type": "module",
   "private": true,
   "workspaces": [

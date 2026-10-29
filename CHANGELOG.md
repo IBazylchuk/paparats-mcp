@@ -4,6 +4,20 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.16.7] - 2026-10-29
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 7199e2c: `search_code` answers shorter and says where code runs from: the first three results show their whole chunk, the rest their first 15 lines (`get_chunk` reads the whole one); the list of every name a chunk uses is gone, and each result lists the files it is called from (`Called from:`, through links the graph is sure of; paths and names in it, and after `Defines:`, are shown as plain text, so a file named like Markdown stays on its line). The coding instructions and `paparats instructions` ask to follow those callers when the question is where something is checked or triggered.
+- 5b5f18e: `change_impact` follows code called from many places (`[hub]`) instead of stopping there: through the methods it is reached by, after the rest of its step, so when `limit` runs out what lies behind hubs goes first. A hub reached as a whole chunk is still not followed.
+- bb81677: `change_impact`: tests have a `limit` of their own, apart from code. Before, the tests reaching a change took places in the same list as the code depending on it, so a change with many tests stopped listing code early; now up to `limit` code dependents and, apart from them, up to `limit` tests are listed.
+- 1c95690: TS/JS: `import('./panel').then((m) => m.Panel)` and `.then(({ Panel }) => Panel)` link to `./panel`'s `Panel`, as `const { Panel } = await import('./panel')` already did, and a member read from a module held whole (`ns.Panel` after `import * as ns`) is a use of that module's `Panel`. Every TS/JS file is extracted again on the next index pass.
+- a44222e: `module_map` prints module names and file paths as plain text: a line break in a name becomes a space and backticks, brackets, pipes and angle brackets are escaped, so a file named like a heading or a link stays on its line. The Mermaid diagram keeps each label on one line too. Ordinary paths look as before.
+- 2f43279: `module_map`: Uses and Used by are imports between the folders modules are named after, counted in importing files. A call matched only by its name (`x.clear()` on an object of unknown type) no longer makes a link, and an import into a folder no module is named after is no longer dropped: such folders are listed on their own line, `Uses folders`.
+- b646ada: A call on self reaching an override in a class below is stored as `overrides` instead of `calls` (`find_usages` can filter on it). `change_impact` follows it as before; `module_map` no longer reads it as the base class's folder using the subclass's folder, the other way round from what the code says. Every graph is built again on the next index pass.
+
 ## [2.16.6] - 2026-10-29
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
