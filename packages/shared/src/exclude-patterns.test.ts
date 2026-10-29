@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { glob } from 'glob';
-import { normalizeExcludePatterns } from './exclude-patterns.js';
+import { anchorBuildOutputExcludes, normalizeExcludePatterns } from './exclude-patterns.js';
 import { LANGUAGE_EXCLUDE_DEFAULTS } from './language-excludes.js';
 
 describe('normalizeExcludePatterns', () => {
@@ -115,5 +115,33 @@ describe('normalizeExcludePatterns', () => {
       expect(found).not.toContain('build/Foo.class');
       expect(found).toContain('app/models/user.rb');
     });
+  });
+});
+
+describe('anchorBuildOutputExcludes', () => {
+  it('excludes build output folders at the root and package roots only', () => {
+    const normalized = normalizeExcludePatterns(['node_modules', 'build', 'dist', 'spec/fixtures']);
+    expect(anchorBuildOutputExcludes(normalized, ['packages/api', './apps/web/'])).toEqual([
+      '**/node_modules',
+      '**/node_modules/**',
+      'spec/fixtures',
+      'spec/fixtures/**',
+      'build/**',
+      'packages/api/build/**',
+      'apps/web/build/**',
+      'dist/**',
+      'packages/api/dist/**',
+      'apps/web/dist/**',
+    ]);
+  });
+
+  it('leaves patterns that only look alike', () => {
+    const patterns = ['**/build.gradle', 'build/**', '**/*.out', 'storage/logs', '**/.next/**'];
+    expect(anchorBuildOutputExcludes(patterns, ['x'])).toEqual(patterns);
+  });
+
+  it('keeps its output stable through normalizeExcludePatterns', () => {
+    const anchored = anchorBuildOutputExcludes(normalizeExcludePatterns(['tmp']), ['engines/a']);
+    expect(normalizeExcludePatterns(anchored)).toEqual(anchored);
   });
 });

@@ -82,6 +82,14 @@ docs: # documentation search, needs INDEX_DOCS=true
   audience: client # default label for this repo's docs; leave out for internal
 ```
 
+Without `exclude`, each language's defaults apply: dependencies (`node_modules`,
+`vendor`, ...) at any depth, and build output folders (`build`, `dist`, `out`,
+`coverage`, `tmp`, `log`, `storage`, `bin`, `target`, ...) only at the project root and at
+each package root, a folder holding a `package.json`, `Gemfile`, `go.mod`, `Cargo.toml`
+or another manifest. A source folder of that name deeper down, such as
+`src/app/build/page.tsx`, is indexed. An `exclude` you write replaces the defaults, and a
+bare name in it matches at any depth.
+
 Exclude patterns follow `.gitignore` rules: a bare name (`dist`, `*.log`) matches at any
 depth, a pattern with `/` (`spec/fixtures`, `/tmp`) is relative to the project root, and
 either excludes everything under a matching folder. `indexing.paths` takes folders

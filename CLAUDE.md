@@ -56,7 +56,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 **packages/shared**
 
 - `path-validation.ts` — `validateIndexingPaths()` — rejects absolute paths and path traversal in `indexing.paths` (used by server and CLI)
-- `exclude-patterns.ts` — `normalizeExcludePatterns()` — bare dir names (e.g. `node_modules`) become `**/node_modules/**` for glob
+- `exclude-patterns.ts` — `normalizeExcludePatterns()` — bare dir names (e.g. `node_modules`) become `**/node_modules/**` for glob; `anchorBuildOutputExcludes()` narrows the default exclusion of build output folders (`BUILD_OUTPUT_DIRS`: `build`, `dist`, `tmp`, `storage`, ...) to the project root and each package root (a folder with a `PACKAGE_MANIFESTS` file, found by `findPackageDirs()` in the server's `config.ts`), so source folders of those names stay indexed; a user-written `exclude` is used as is
 - `gitignore.ts` — `createGitignoreFilter()` (per-file checks), `filterFilesByGitignore()` (bulk filter) — used by CLI collectProjectFiles, server indexer, watch
 - `language-excludes.ts` — `LANGUAGE_EXCLUDE_DEFAULTS`, `getDefaultExcludeForLanguages()` — per-language exclude patterns
 

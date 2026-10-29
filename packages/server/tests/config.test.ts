@@ -790,3 +790,49 @@ describe('docs.audience', () => {
     expect(() => loadProject(dir)).toThrow(/docs\.audience/);
   });
 });
+
+describe('build output folders in the default excludes', () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = createTempDir();
+    const files = [
+      'package.json',
+      'build/bundle.js',
+      'coverage/report.ts',
+      'src/app/build/page.tsx',
+      'src/lib/coverage/meter.ts',
+      'packages/api/package.json',
+      'packages/api/dist/index.js',
+      'packages/api/src/dist/format.ts',
+      'node_modules/dep/package.json',
+      'node_modules/dep/build/x.js',
+    ];
+    for (const f of files) {
+      fs.mkdirSync(path.dirname(path.join(dir, f)), { recursive: true });
+      fs.writeFileSync(path.join(dir, f), f.endsWith('.json') ? '{}' : 'export {};\n');
+    }
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('excludes them at the project and package roots, and keeps source folders of those names', async () => {
+    const project = resolveProject(dir, { group: 'g', language: 'typescript' });
+    const { glob } = await import('glob');
+    const files = (
+      await glob(project.patterns, { cwd: dir, ignore: project.exclude, nodir: true, posix: true })
+    ).sort();
+    expect(files).toEqual([
+      'packages/api/src/dist/format.ts',
+      'src/app/build/page.tsx',
+      'src/lib/coverage/meter.ts',
+    ]);
+  });
+
+  it('uses an exclude the user wrote as is, at any depth', () => {
+    const project = resolveProject(dir, {
+      group: 'g',
+      language: 'typescript',
+      indexing: { exclude: ['build'] },
+    });
+    expect(project.exclude).toEqual(['**/build', '**/build/**']);
+  });
+});
