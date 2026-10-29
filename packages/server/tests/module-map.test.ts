@@ -266,6 +266,45 @@ describe('buildModuleMap', () => {
     expect(widget.uses.map((l) => l.module)).toContain(moduleOf('src/lib/items/types.ts').id);
   });
 
+  it('links modules by the folders they are named after, not by the files they were grouped with', () => {
+    const edges = [
+      ...oneModule([...[1, 2, 3, 4, 5].map((i) => `src/a/${i}.ts`), 'src/other/glue.ts']),
+      ...oneModule([1, 2, 3].map((i) => `src/b/${i}.ts`)),
+      ...oneModule([...[1, 2, 3, 4, 5].map((i) => `src/c/${i}.ts`), 'src/b/stray.ts']),
+      // From a file of no module's folder: links nothing.
+      e('src/other/glue.ts', 'src/c/1.ts', 'to_c'),
+      // Into a file of src/b grouped with src/c: a link to src/b.
+      e('src/a/1.ts', 'src/b/stray.ts', 'to_stray'),
+    ];
+    const map = buildModuleMap(edges, []);
+    const named = (name: string) => map.modules.find((m) => m.name === name)!;
+    const a = named('src/a');
+    expect(a.files).toContain('p//src/other/glue.ts');
+    expect(named('src/c').files).toContain('p//src/b/stray.ts');
+    const names = (links: Array<{ module: number }>) =>
+      links.map((l) => map.modules[l.module]!.name);
+    expect(names(a.uses)).toEqual(['src/b']);
+    // src/c is called from its stray file of src/b, not from src/a's glue file.
+    expect(names(named('src/c').usedBy)).toEqual(['src/b']);
+  });
+
+  it('names two modules of one folder after a folder below it each, when those are apart', () => {
+    // Each holds three files of one folder and four of folders of their own: src/app names both.
+    const spread = (sub: string, singles: string) => [
+      ...['a', 'b', 'c'].map((f) => `src/app/${sub}/${f}.ts`),
+      ...[1, 2, 3, 4].map((i) => `src/app/${singles}${i}/page.ts`),
+    ];
+    const edges = [
+      ...oneModule(spread('pricing', 'p')),
+      ...oneModule(spread('blog', 'q')),
+      e('src/app/pricing/a.ts', 'src/app/blog/a.ts', 'to_blog'),
+    ];
+    const names = buildModuleMap(edges, [])
+      .modules.map((m) => m.name)
+      .sort();
+    expect(names).toEqual(['src/app/blog', 'src/app/pricing']);
+  });
+
   it('tells apart two modules in the same folder by their most called file', () => {
     const edges: MapEdge[] = [];
     for (const g of ['x', 'y']) {
@@ -390,47 +429,27 @@ describe('formatModuleMap', () => {
     );
   });
 
-  it('names the file a used module is reached through when it is in another package or app', () => {
-    const built = buildModuleMap(
-      [
-        e('src/a/one.ts', 'src/a/two.ts', 'to_two'),
-        e('src/a/two.ts', 'src/a/one.ts', 'to_one'),
-        e('src/b/one.ts', 'src/b/two.ts', 'to_btwo'),
-        e('src/b/two.ts', 'src/b/one.ts', 'to_bone'),
-        e('src/a/one.ts', 'src/b/one.ts', 'to_bone2'),
-      ],
-      []
-    );
-    expect(built.modules[0]!.uses).toEqual([
-      expect.objectContaining({ module: 1, via: 'p//src/b/one.ts' }),
-    ]);
-    expect(built.modules[1]!.usedBy).toEqual([
-      expect.objectContaining({ module: 0, via: 'p//src/a/one.ts' }),
-    ]);
-
-    // The `ext/b` module also holds a file of src/, and src/a reaches it through that one.
+  it('keeps the file that tells apart two modules of one name in their links', () => {
     const mod = (id: number, name: string, files: string[]) => ({
       id,
       name,
+      folders: ['src'],
       project: 'p',
       files: files.map((f) => `p//${f}`),
       tests: [],
       uses: [],
       usedBy: [],
     });
-    const a = mod(0, 'src/a', ['src/a/one.ts', 'src/a/two.ts']);
-    const b = mod(1, 'ext/b', ['src/lib/shared.ts', 'ext/b/one.ts', 'ext/b/two.ts']);
-    a.uses = [{ module: 1, weight: 3, via: 'p//src/lib/shared.ts' }] as never;
-    b.usedBy = [{ module: 0, weight: 3, via: 'p//src/a/one.ts' }] as never;
-    b.uses = [{ module: 0, weight: 2, via: 'p//src/a/two.ts' }] as never;
+    const a = mod(0, 'src (a.ts)', ['src/a.ts']);
+    const b = mod(1, 'src (b.ts)', ['src/b.ts']);
+    a.uses = [{ module: 1, weight: 3 }] as never;
+    b.usedBy = [{ module: 0, weight: 3 }] as never;
     const text = formatModuleMap(
       { modules: [a, b], shared: [], unconnected: [], migrations: 0, weights: new Map() },
       { title: '`g`', limit: 5, showFile: (k) => k.slice(3) }
     );
-    expect(text).toContain('Uses: 2. ext/b (src/lib/shared.ts)\n');
-    // Within the package the module is named after, and never for `Used by`: nothing to add.
-    expect(text).toContain('Used by: 1. src/a\n');
-    expect(text).toContain('Uses: 1. src/a\n');
+    expect(text).toContain('Uses: 2. src (b.ts)\n');
+    expect(text).toContain('Used by: 1. src (a.ts)\n');
   });
 
   it('says so when there is nothing to map', () => {
