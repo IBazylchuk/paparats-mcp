@@ -2813,7 +2813,7 @@ describe('GLOSSARY_MIN_SCORE', () => {
 describe('TERM_LOOKUP_MIN_SCORE', () => {
   it('clears the highest negative measured on the instructed path', () => {
     // Swept over 40 negatives — invented acronyms, off-domain questions, and
-    // recruiting-adjacent concepts the glossary genuinely lacks. The highest scored
+    // in-domain concepts the glossary genuinely lacks. The highest scored
     // 0.515 (an invented acronym pulled toward a real one by letter overlap).
     expect(TERM_LOOKUP_MIN_SCORE).toBeGreaterThan(0.515);
   });

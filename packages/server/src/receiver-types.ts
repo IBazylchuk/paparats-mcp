@@ -1,10 +1,10 @@
 import type { Node } from 'web-tree-sitter';
 import { isLocalModule, type LocalModules } from './local-modules.js';
 
-/** `Usage`, `Billing::Usage`, `::Billing::Usage`, `Billing.Usage`: a receiver that names a class. */
+/** `Grove`, `Orchard::Grove`, `::Orchard::Grove`, `Orchard.Grove`: a receiver that names a class. */
 export const CONSTANT_PATH = /^(?:::)?[A-Z][A-Za-z0-9_]*(?:(?:::|\.)[A-Z][A-Za-z0-9_]*)*$/;
 
-/** `Billing.Usage` and `Billing::Usage` alike, as `Billing::Usage`. */
+/** `Orchard.Grove` and `Orchard::Grove` alike, as `Orchard::Grove`. */
 export function constantPath(text: string): string {
   return text.replace(/\./g, '::');
 }
@@ -27,8 +27,8 @@ export const CLASS_LIKE_NODES = new Set([
 
 /**
  * The full path of the classes and modules enclosing a node, outermost first:
- * `Billing::Usage` inside `module Billing; class Usage`, and for `class
- * Billing::Usage` too. A name written with a leading `::` starts from the top.
+ * `Orchard::Grove` inside `module Orchard; class Grove`, and for `class
+ * Orchard::Grove` too. A name written with a leading `::` starts from the top.
  */
 export function enclosingClass(node: Node): string | undefined {
   const names: string[] = [];

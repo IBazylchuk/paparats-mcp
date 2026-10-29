@@ -388,7 +388,7 @@ export const GLOSSARY_MIN_SCORE = 0.5;
  * `TerminologyStore.search`), which is the only thing this floor judges: exact
  * name/alias matches short-circuit with `score: 1` and never reach it. Swept over 75
  * paraphrase queries and 40 negatives (invented acronyms, off-domain questions, and
- * recruiting-adjacent concepts the glossary genuinely lacks):
+ * in-domain concepts the glossary genuinely lacks):
  *
  *   floor   right answer shown   wrong answer shown   negatives leaking
  *   0.50           68/75                  7                 1/40

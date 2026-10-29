@@ -21,7 +21,7 @@ afterAll(() => {
   parser?.delete();
 });
 
-// Real snippet shapes from ../terraforms (inlined so tests are hermetic).
+// Common Terraform block shapes (inlined so tests are hermetic).
 const SAMPLE = `terraform {
   required_version = ">= 1.14.0"
 }

@@ -283,7 +283,7 @@ export interface GlossaryMatch {
  * The glossary lookup is dependency-injected (a function returning matched
  * terms) so this module keeps no hard dependency on TerminologyStore. For each
  * matched term it appends a variant that folds the definition and aliases into
- * the query text, so a query mentioning an opaque acronym ("what does CLIC do")
+ * the query text, so a query mentioning an opaque acronym ("what does QRV do")
  * also searches with the acronym's expansion. Returns the base expansion first,
  * then up to `maxGlossary` glossary-enriched variants.
  */

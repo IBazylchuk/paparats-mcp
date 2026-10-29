@@ -38,10 +38,17 @@ fi
 # Paths that legitimately contain a matching string, or that we cannot rewrite.
 EXCLUDE_PATHS=(
   ':(exclude)scripts/check-no-private-refs.sh'
-  ':(exclude)CLAUDE.md'
   ':(exclude)yarn.lock'
   ':(exclude).yarn'
 )
+
+# git grep reads -E patterns with the platform's regex library, and the one on
+# macOS has no `\b`: a pattern using it silently matches nothing there. Perl
+# regexes behave the same everywhere, so use them when git has them.
+GIT_GREP_MODE=-E
+if git grep -q -P -e '^' -- README.md > /dev/null 2>&1; then
+  GIT_GREP_MODE=-P
+fi
 
 fail=0
 
@@ -58,8 +65,8 @@ report() {
 # --untracked matters: a newly added fixture is the most likely place for a leak
 # and is not yet in the index, so a default git grep would not see it.
 for pat in ${PATTERNS[@]+"${PATTERNS[@]}"}; do
-  # -I skips binaries; -E for the ticket-id alternation; -n for line numbers.
-  if hits=$(git grep --untracked -nIE -i -e "$pat" -- . "${EXCLUDE_PATHS[@]}" 2>/dev/null); then
+  # -I skips binaries; -n for line numbers.
+  if hits=$(git grep --untracked -nI "$GIT_GREP_MODE" -i -e "$pat" -- . "${EXCLUDE_PATHS[@]}" 2>/dev/null); then
     report
     echo "  pattern: $pat"
     printf '%s\n' "$hits" | sed 's/^/    /' | head -20
