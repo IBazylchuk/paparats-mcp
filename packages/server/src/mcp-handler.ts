@@ -2489,7 +2489,12 @@ export class McpHandler {
               .max(MAX_IMPACT_DEPTH)
               .default(2)
               .describe('How many steps of callers to follow (1-3)'),
-            limit: z.coerce.number().min(1).max(100).default(40).describe('Max dependents to list'),
+            limit: z.coerce
+              .number()
+              .min(1)
+              .max(100)
+              .default(40)
+              .describe('Max dependents to list, and apart from them max tests'),
           },
           annotations: READ_ONLY,
         },

@@ -205,7 +205,8 @@ export async function changeImpactReport(
     if (!more) break;
     walked = walk();
   }
-  const { dependents, truncated, deeper, viaCommonNames, viaAmbiguousNames } = walked;
+  const { dependents, truncated, testsTruncated, deeper, viaCommonNames, viaAmbiguousNames } =
+    walked;
 
   // Linked only by a name like `add` or `get`: listed by file, not followed.
   let commonSection = '';
@@ -524,6 +525,11 @@ export async function changeImpactReport(
   if (truncated) {
     notes.push(
       `Stopped at ${limit} dependents. Narrow with \`symbol\`, lower \`depth\`, or raise \`limit\` (max 100).`
+    );
+  }
+  if (testsTruncated) {
+    notes.push(
+      `More tests reach it than the ${limit} listed; raise \`limit\` (max 100) for the rest.`
     );
   }
   if (deeper) {
