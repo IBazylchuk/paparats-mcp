@@ -59,12 +59,14 @@ export interface ModuleLink {
 export interface CodeModule {
   id: number;
   name: string;
+  /** The folders it is named after; only calls between files inside them count as its links. */
+  folders: string[];
   project: string;
   /** Non-test files, the most called first. */
   files: string[];
   /** Test files whose calls land mostly in this module. */
   tests: string[];
-  /** Modules this one calls, heaviest first. */
+  /** Modules this one calls, heaviest first: calls from its folders into theirs. */
   uses: ModuleLink[];
   /** Modules that call this one, heaviest first. */
   usedBy: ModuleLink[];
@@ -403,17 +405,34 @@ function folderCounts(files: string[]): Map<string, number> {
  * files in the module (ties go deeper), or two folders apart from each other,
  * each holding at least a fifth of the module's files, when they match better. A folder holding most of the module but much else too names it
  * vaguely; one it fills but that holds little of it names a part.
+ *
+ * With `below`, only folders under one of those are taken (none of them
+ * itself): to tell apart two modules named after the same folder. Null when
+ * no folder there holds a fifth of the module.
  */
-function moduleFolders(files: string[], projectFolders: Map<string, number>): string[] {
+function moduleFolders(files: string[], projectFolders: Map<string, number>): string[];
+function moduleFolders(
+  files: string[],
+  projectFolders: Map<string, number>,
+  below: string[]
+): string[] | null;
+function moduleFolders(
+  files: string[],
+  projectFolders: Map<string, number>,
+  below?: string[]
+): string[] | null {
   const own = folderCounts(files);
   const f1 = (inside: number, folderSize: number) =>
     inside === 0 ? 0 : (2 * inside) / (files.length + folderSize);
   const depth = (d: string) => (d === '.' ? 0 : d.split('/').length);
+  const under = (d: string) =>
+    !below || below.some((b) => d !== b && (b === '.' || d.startsWith(`${b}/`)));
   const ranked = [...own.entries()]
+    .filter(([d, inside]) => under(d) && (!below || inside >= files.length / 5))
     .map(([d, inside]) => ({ d, inside, f1: f1(inside, projectFolders.get(d) ?? inside) }))
     .sort((a, b) => b.f1 - a.f1 || depth(b.d) - depth(a.d) || a.d.localeCompare(b.d));
   const first = ranked[0];
-  if (!first) return ['.'];
+  if (!first) return below ? null : ['.'];
   const nested = (a: string, b: string) =>
     a === '.' || b === '.' || a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
   const parts = ranked.filter((c) => c.inside >= files.length / 5);
@@ -456,7 +475,11 @@ function sortLinks(m: Map<number, number>, via?: Map<number, Map<FileKey, number
  * edges are reported as unconnected instead of vanishing.
  */
 export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey>): ModuleMap {
-  const graph = fileWeights(edges);
+  return moduleMapOfGraph(fileWeights(edges), files);
+}
+
+/** {@link buildModuleMap} from the file graph its edges give. */
+export function moduleMapOfGraph(graph: FileGraph, files: Iterable<FileKey>): ModuleMap {
   const weights = graph.weights;
   const all = new Set<FileKey>(files);
   for (const [from, row] of weights) {
@@ -550,19 +573,53 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
     projectFolders.set(p, folderCounts(keys.map((k) => splitKey(k).file)));
   }
 
-  const modules: CodeModule[] = groups.map((g, id) => {
+  const projectOf = (g: FileKey[]) => {
     const projects = new Map<string, number>();
     for (const k of g) {
       const p = splitKey(k).project;
       projects.set(p, (projects.get(p) ?? 0) + 1);
     }
-    const project = [...projects.entries()].sort(
-      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
-    )[0]![0];
-    const folders = moduleFolders(
-      g.filter((k) => splitKey(k).project === project).map((k) => splitKey(k).file),
-      projectFolders.get(project) ?? new Map()
+    return [...projects.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]![0];
+  };
+  const named = groups.map((g) => {
+    const project = projectOf(g);
+    const own = g.filter((k) => splitKey(k).project === project).map((k) => splitKey(k).file);
+    const projectFolderCounts = projectFolders.get(project) ?? new Map<string, number>();
+    return {
+      g,
+      project,
+      own,
+      projectFolderCounts,
+      folders: moduleFolders(own, projectFolderCounts),
+    };
+  });
+
+  // Modules named after the same folder: each is named after a folder under
+  // it instead, when that tells them all apart.
+  const sameName = new Map<string, typeof named>();
+  for (const n of named) {
+    const key = `${n.project}//${n.folders.join(' + ')}`;
+    const list = sameName.get(key);
+    if (list) list.push(n);
+    else sameName.set(key, [n]);
+  }
+  for (const list of sameName.values()) {
+    if (list.length < 2) continue;
+    const deeper = list.map((n) => moduleFolders(n.own, n.projectFolderCounts, n.folders));
+    // Apart from each other too: `x/a` next to `x/a/b` would still read as one folder.
+    const all = deeper.flatMap((d, i) => (d ?? []).map((f) => ({ f, i })));
+    const apart = all.every(({ f, i }) =>
+      all.every(
+        (o) => o.i === i || (o.f !== f && !o.f.startsWith(`${f}/`) && !f.startsWith(`${o.f}/`))
+      )
     );
+    if (apart && deeper.every((d) => d !== null)) {
+      list.forEach((n, i) => (n.folders = deeper[i]!));
+    }
+  }
+
+  const modules: CodeModule[] = named.map((n, id) => {
+    const { g, project, folders } = n;
     // Files of the folders the module is named after first, so its main files
     // are its own and not a widely called file of another folder it holds.
     const home = (k: FileKey) => {
@@ -578,6 +635,7 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
     return {
       id,
       name: folders.join(' + '),
+      folders,
       project,
       files: sorted,
       tests: [],
@@ -585,16 +643,47 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
       usedBy: [],
     };
   });
-
-  // Same directory named twice: tell them apart by their most called file.
-  const nameCount = new Map<string, number>();
-  for (const m of modules)
-    nameCount.set(`${m.project}//${m.name}`, (nameCount.get(`${m.project}//${m.name}`) ?? 0) + 1);
+  // Still one name twice: tell them apart by their most called file, then by number.
+  const taken = new Map<string, number>();
   for (const m of modules) {
-    if ((nameCount.get(`${m.project}//${m.name}`) ?? 0) > 1) {
-      m.name = `${m.name} (${path.posix.basename(splitKey(m.files[0]!).file)})`;
+    const key = `${m.project}//${m.name}`;
+    taken.set(key, (taken.get(key) ?? 0) + 1);
+  }
+  const given = new Set<string>();
+  for (const m of modules) {
+    if ((taken.get(`${m.project}//${m.name}`) ?? 0) < 2) continue;
+    let name = `${m.name} (${path.posix.basename(splitKey(m.files[0]!).file)})`;
+    for (let i = 2; given.has(`${m.project}//${name}`) || taken.has(`${m.project}//${name}`); i++) {
+      name = `${m.name} (${path.posix.basename(splitKey(m.files[0]!).file)}, ${i})`;
+    }
+    given.add(`${m.project}//${name}`);
+    m.name = name;
+  }
+
+  // For links, a file counts for the module whose folder holds it most
+  // closely, whichever module it was grouped into: a module is read as its
+  // folders, so a link between two modules must be one between those folders.
+  // A file in no module's folder links nothing.
+  const byFolder = new Map<string, number[]>();
+  for (const m of modules) {
+    for (const d of m.folders) {
+      const key = `${m.project}//${d}`;
+      const list = byFolder.get(key);
+      if (list) list.push(m.id);
+      else byFolder.set(key, [m.id]);
     }
   }
+  const folderModule = (k: FileKey): number | undefined => {
+    const { project, file } = splitKey(k);
+    const own = moduleOf.get(k);
+    const pick = (ids: number[]) => (own !== undefined && ids.includes(own) ? own : ids[0]);
+    for (let d = path.posix.dirname(file); d !== '.'; d = path.posix.dirname(d)) {
+      const ids = byFolder.get(`${project}//${d}`);
+      if (ids) return pick(ids);
+    }
+    // A module named after the project root holds only its own files.
+    return own !== undefined && modules[own]!.folders.includes('.') ? own : undefined;
+  };
 
   // Links between modules, and each test to the module it calls most.
   const uses = modules.map(() => new Map<number, number>());
@@ -614,17 +703,19 @@ export function buildModuleMap(edges: Iterable<MapEdge>, files: Iterable<FileKey
   };
   const testTarget = new Map<FileKey, Map<number, number>>();
   for (const [from, row] of weights) {
-    const a = moduleOf.get(from);
+    const test = isTest(from);
+    const a = test || !moduleOf.has(from) ? undefined : folderModule(from);
     for (const [to, w] of row) {
-      const b = moduleOf.get(to);
-      if (b === undefined) continue;
-      if (isTest(from)) {
+      if (!moduleOf.has(to)) continue;
+      if (test) {
+        const target = moduleOf.get(to)!;
         let t = testTarget.get(from);
         if (!t) testTarget.set(from, (t = new Map()));
-        t.set(b, (t.get(b) ?? 0) + w);
+        t.set(target, (t.get(target) ?? 0) + w);
         continue;
       }
-      if (a === undefined || a === b) continue;
+      const b = folderModule(to);
+      if (a === undefined || b === undefined || a === b) continue;
       uses[a]!.set(b, (uses[a]!.get(b) ?? 0) + w);
       usedBy[b]!.set(a, (usedBy[b]!.get(a) ?? 0) + w);
       addVia(usesVia[a]!, b, to, w);
@@ -716,35 +807,22 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
       : '',
     map.migrations > 0 ? `${plural(map.migrations, 'migration', 'migrations')} left out` : '',
   ].filter(Boolean);
-  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. When a used module is reached mostly through a file of another package or app than its name, that file follows in brackets.\n`;
+  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. Uses and Used by are calls between the folders modules are named after: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into.\n`;
 
   const number = (id: number) => `${id + 1}`;
   const name = opts.showName ?? ((m: CodeModule) => m.name);
-  // The file a used module is reached through, when it lies in another
-  // package or app than the folder the module is named after: a module of one
-  // app holding files of another reads as that app otherwise.
-  const elsewhere = (l: ModuleLink): boolean => {
-    if (!l.via) return false;
-    const folders = map.modules[l.module]!.name.replace(/ \(.*\)$/, '').split(' + ');
-    const root = codeRoot(splitKey(l.via).file);
-    return folders.every((d) => codeRoot(`${d}/x`) !== root);
-  };
-  const linkList = (links: ModuleLink[], showVia: boolean) =>
+  const linkList = (links: ModuleLink[]) =>
     strongLinks(links)
       .slice(0, 4)
-      .map(
-        (l) =>
-          // The number tells modules of one name apart, so links leave out the file after it.
-          `${number(l.module)}. ${name(map.modules[l.module]!).replace(/ \([^()]*\)$/, '')}${showVia && elsewhere(l) ? ` (${opts.showFile(l.via!)})` : ''}`
-      )
+      .map((l) => `${number(l.module)}. ${name(map.modules[l.module]!)}`)
       .join('; ');
 
   const shown = map.modules.slice(0, opts.limit);
   for (const m of shown) {
     text += `\n### ${number(m.id)}. ${name(m)} — ${plural(m.files.length, 'file', 'files')}${m.tests.length > 0 ? `, ${plural(m.tests.length, 'test', 'tests')}` : ''}\n\n`;
     text += `Main files: ${m.files.slice(0, 4).map(opts.showFile).join(', ')}\n`;
-    const uses = linkList(m.uses, true);
-    const usedBy = linkList(m.usedBy, false);
+    const uses = linkList(m.uses);
+    const usedBy = linkList(m.usedBy);
     if (uses) text += `Uses: ${uses}\n`;
     if (usedBy) text += `Used by: ${usedBy}\n`;
   }
