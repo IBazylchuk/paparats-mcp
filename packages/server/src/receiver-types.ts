@@ -736,13 +736,18 @@ export class TsReceiverTypes {
       else bindings.set(name, [binding]);
     };
     if (fn) {
-      for (const param of fn.childForFieldName('parameters')?.namedChildren ?? []) {
+      // `import('./m').then((m) => m.X)`: the first parameter holds the module.
+      const loaded = thenOfImport(fn);
+      const whole =
+        loaded === undefined ? undefined : { spec: loaded, name: null, namespace: true };
+      const params = fn.childForFieldName('parameters')?.namedChildren ?? [];
+      params.forEach((param, i) => {
         const pattern = param?.childForFieldName('pattern');
-        if (!param || pattern?.type !== 'identifier') continue;
-        add(pattern.text, param.childForFieldName('type'), null);
-      }
+        if (!param || pattern?.type !== 'identifier') return;
+        add(pattern.text, param.childForFieldName('type'), null, i === 0 ? whole : undefined);
+      });
       const single = fn.childForFieldName('parameter');
-      if (single?.type === 'identifier') add(single.text, null, null);
+      if (single?.type === 'identifier') add(single.text, null, null, whole);
     }
     for (const id of scope.descendantsOfType([
       'identifier',
@@ -958,14 +963,36 @@ function destructuredImport(id: Node): TsImport | undefined {
   const pair = id.parent?.type === 'pair_pattern' ? id.parent : null;
   const pattern = pair ? pair.parent : id.parent;
   const declarator = pattern?.parent;
-  if (pattern?.type !== 'object_pattern' || declarator?.type !== 'variable_declarator') {
-    return undefined;
+  if (pattern?.type !== 'object_pattern') return undefined;
+  const name = pair ? pair.childForFieldName('key')?.text : id.text;
+  // `import('./m').then(({ Card }) => ...)`: fields of the module handed to `.then`.
+  if (declarator?.type === 'required_parameter') {
+    const params = declarator.parent;
+    const fn = params?.parent;
+    if (params?.namedChild(0)?.id !== declarator.id || !fn) return undefined;
+    const spec = thenOfImport(fn);
+    return spec === undefined || name === undefined ? undefined : { spec, name, namespace: false };
   }
+  if (declarator?.type !== 'variable_declarator') return undefined;
   if (declarator.childForFieldName('name')?.id !== pattern.id) return undefined;
   const spec = dynamicImport(declarator.childForFieldName('value'));
   if (spec === undefined) return undefined;
-  const name = pair ? pair.childForFieldName('key')?.text : id.text;
   return name === undefined ? undefined : { spec, name, namespace: false };
+}
+
+/** `import('./m').then((m) => ...)`: the module a callback's first parameter is handed. */
+function thenOfImport(fn: Node): string | undefined {
+  const args = fn.parent;
+  if (args?.type !== 'arguments' || args.namedChild(0)?.id !== fn.id) return undefined;
+  const callee =
+    args.parent?.type === 'call_expression' ? args.parent.childForFieldName('function') : null;
+  if (
+    callee?.type !== 'member_expression' ||
+    callee.childForFieldName('property')?.text !== 'then'
+  ) {
+    return undefined;
+  }
+  return dynamicImport(callee.childForFieldName('object'));
 }
 
 /** `await import('./store')`: the module a dynamic import loads. */

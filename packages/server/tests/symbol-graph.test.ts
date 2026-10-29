@@ -383,19 +383,19 @@ describe('buildSymbolEdges', () => {
       buildSymbolEdges(chunks, undefined, only)
         .edges.map(
           (e) =>
-            `${e.from_chunk_id.split('//')[2]}:${e.from_symbols?.join(',')} -> ${e.to_chunk_id.split('//')[2]} ${e.confidence}`
+            `${e.from_chunk_id.split('//')[2]}:${e.from_symbols?.join(',')} -> ${e.to_chunk_id.split('//')[2]} ${e.relation_type} ${e.confidence}`
         )
         .sort();
     expect(links()).toEqual([
-      'book.rb:publish -> draft.rb EXTRACTED',
-      'book.rb:reflow -> book.rb EXTRACTED',
-      'book.rb:reflow -> draft.rb EXTRACTED',
+      'book.rb:publish -> draft.rb overrides EXTRACTED',
+      'book.rb:reflow -> book.rb calls EXTRACTED',
+      'book.rb:reflow -> draft.rb overrides EXTRACTED',
       // Called on the class from elsewhere: no object of a class below.
-      'shelf.rb:stack -> book.rb EXTRACTED',
+      'shelf.rb:stack -> book.rb calls EXTRACTED',
     ]);
     // An update for the name alone builds the link of the chunk's own call too.
     expect(links((_id, name) => name === 'render')).toContain(
-      'book.rb:publish -> draft.rb EXTRACTED'
+      'book.rb:publish -> draft.rb overrides EXTRACTED'
     );
   });
 

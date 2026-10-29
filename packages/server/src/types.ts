@@ -146,9 +146,12 @@ export interface ChunkResult {
 /**
  * `calls`: a call. `references`: a class held as a value (passed, stored in a
  * hash, `Foo.new` kept in a variable), so any of its methods may be called.
- * `reexports`: a TS/JS `export { x } from` in a barrel file.
+ * `reexports`: a TS/JS `export { x } from` in a barrel file. `overrides`: a call
+ * on self reaching the override a class below defines (a template method
+ * calling the step its subclasses implement): the base depends on the
+ * subclass's code, while the subclass's file is the one naming the base.
  */
-export type RelationType = 'calls' | 'references' | 'reexports';
+export type RelationType = 'calls' | 'references' | 'reexports' | 'overrides';
 
 /**
  * Confidence label for symbol-graph edges, mirroring the EXTRACTED/INFERRED/

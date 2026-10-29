@@ -1558,6 +1558,23 @@ export function g(HOME: string) { return HOME; }`;
       expect(sitesNamed(r, 'settings').map((u) => u.module)).toEqual(['./settings']);
     });
 
+    it('records names a dynamic import hands to `.then`', () => {
+      const r = extract(
+        [
+          "const Panel = lazy(() => import('./panel').then((m) => ({ default: m.Panel })));",
+          "export const Chart = dynamic(() => import('./chart').then((mod) => mod.Chart));",
+          "export const Editor = dynamic(() => import('./form').then(({ Form: View }) => View));",
+          'export function show(m) { return m.Panel; }',
+          '',
+        ].join('\n')
+      );
+      expect(sitesNamed(r, 'Panel').map((u) => u.module)).toContain('./panel');
+      expect(sitesNamed(r, 'Chart').map((u) => u.module)).toContain('./chart');
+      expect(sitesNamed(r, 'Form').map((u) => u.module)).toContain('./form');
+      // A parameter of another function is not the module.
+      expect(sitesNamed(r, 'Panel').filter((u) => u.from === 'show' && u.module)).toEqual([]);
+    });
+
     it('records the component a wrapper exports by default, as exported', () => {
       const memo = extract('const Card = () => null;\nexport default memo(Card);\n');
       expect(memo.default_export).toBe('Card');

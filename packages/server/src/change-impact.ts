@@ -132,8 +132,10 @@ function mergeVia(into: Map<string, Via>, id: string, more: Via): Via | null {
  * Breadth-first walk over incoming symbol edges from `seeds`: everything that
  * would have to be checked if the seeds changed. Each chunk is reported once,
  * at the hop it is first reached, with every name it uses from the previous
- * level. Hubs and leaves are reported but not expanded, which keeps one
- * widely-called helper from pulling in half the codebase.
+ * level. Leaves are reported but not expanded. Hubs are expanded through the
+ * methods they are reached by, after the rest of their hop, so a widely-called
+ * helper fills the places left, not those of nearer code; a hub reached as a
+ * whole chunk is not expanded.
  *
  * The walk follows methods, not whole chunks: a chunk reached because its
  * method `a` calls the change passes the change on only to callers of `a`, not
@@ -309,13 +311,19 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
       found.set(dep.chunkId, dep);
       certainSoFar.set(dep.chunkId, dep.certain);
     }
+    // A hub is followed through the methods it is reached by, after the rest of
+    // its hop, so when the walk runs out of places, what lies behind hubs goes
+    // first. Reached as a whole chunk, every caller of any name in it would
+    // count: a hub is not followed that way.
     frontier = new Map();
+    const hubsNext = new Map<string, Via>();
     for (const [id, via] of reached) {
       const dep = found.get(id);
-      if (!dep || dep.hub || opts.isLeaf?.(id)) continue;
+      if (!dep || opts.isLeaf?.(id) || (dep.hub && via === 'all')) continue;
       const added = mergeVia(followed, id, via);
-      if (added) frontier.set(id, added);
+      if (added) (dep.hub ? hubsNext : frontier).set(id, added);
     }
+    for (const [id, via] of hubsNext) frontier.set(id, via);
   }
 
   const deeper =

@@ -520,7 +520,9 @@ export async function changeImpactReport(
     );
   }
   if (rows.some((r) => r.dep.hub)) {
-    notes.push('`[hub]` — called from many places; what depends on it was not followed.');
+    notes.push(
+      '`[hub]` — called from many places; what depends on it is followed after the rest, through its methods only.'
+    );
   }
   if (truncated) {
     notes.push(

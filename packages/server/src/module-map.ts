@@ -1,5 +1,5 @@
 import path from 'node:path';
-import type { EdgeConfidence, SymbolEdge } from './types.js';
+import type { EdgeConfidence, RelationType, SymbolEdge } from './types.js';
 import type { MetadataStore } from './metadata-db.js';
 import { isTestPath } from './ranking.js';
 import { isCommonName } from './symbol-graph.js';
@@ -10,6 +10,7 @@ export interface MapEdge {
   to_chunk_id: string;
   symbol_name: string;
   confidence?: EdgeConfidence;
+  relation_type?: RelationType;
 }
 
 /** A file as the map knows it: `<project>//<file>`, so equal paths in two projects stay apart. */
@@ -46,7 +47,7 @@ export function isMigrationPath(file: string): boolean {
 
 export interface ModuleLink {
   module: number;
-  /** Summed edge weight in that direction. */
+  /** Files importing in that direction. */
   weight: number;
   /**
    * The file of that module carrying most of the weight: the one used most
@@ -54,6 +55,13 @@ export interface ModuleLink {
    * folders, so its name alone can point the wrong way.
    */
   via?: FileKey;
+}
+
+/** A folder no module is named after (in the module's project), linked to a module by imports. */
+export interface FolderLink {
+  folder: string;
+  /** Files importing in that direction. */
+  weight: number;
 }
 
 export interface CodeModule {
@@ -66,10 +74,12 @@ export interface CodeModule {
   files: string[];
   /** Test files whose calls land mostly in this module. */
   tests: string[];
-  /** Modules this one calls, heaviest first: calls from its folders into theirs. */
+  /** Modules this one imports from, most importing files first: from its folders into theirs. */
   uses: ModuleLink[];
-  /** Modules that call this one, heaviest first. */
+  /** Modules that import from this one, most importing files first. */
   usedBy: ModuleLink[];
+  /** Folders no module is named after that its folders import from. */
+  usesFolders: FolderLink[];
 }
 
 export interface ModuleMap {
@@ -117,6 +127,12 @@ export interface FileGraph {
    * unscaled, so a logger every file calls is still seen as called by all.
    */
   callers: Map<FileKey, Set<FileKey>>;
+  /**
+   * Per file, the other files it imports from: edges through an import or a
+   * known class (`EXTRACTED`, or given without a confidence), not those of a
+   * name that merely matches. Links between modules come from these alone.
+   */
+  imports?: Map<FileKey, Set<FileKey>>;
 }
 
 export function fileWeights(edges: Iterable<MapEdge>): FileGraph {
@@ -126,6 +142,7 @@ export function fileWeights(edges: Iterable<MapEdge>): FileGraph {
   // nothing about how specific it is in another.
   const usersOf = new Map<string, Map<string, Set<FileKey>>>();
   const callers = new Map<string, Set<FileKey>>();
+  const imports = new Map<FileKey, Set<FileKey>>();
   for (const e of edges) {
     const key = `${e.from_chunk_id}\0${e.symbol_name}`;
     let list = uses.get(key);
@@ -133,6 +150,19 @@ export function fileWeights(edges: Iterable<MapEdge>): FileGraph {
     list.push(e);
     const from = fileKeyOf(e.from_chunk_id);
     if (!from) continue;
+    const to = fileKeyOf(e.to_chunk_id);
+    // A base class reaching its subclasses' overrides is no import of theirs:
+    // the subclass's file is the one naming the base.
+    if (
+      to &&
+      to !== from &&
+      (e.confidence ?? 'EXTRACTED') === 'EXTRACTED' &&
+      e.relation_type !== 'overrides'
+    ) {
+      const set = imports.get(from);
+      if (set) set.add(to);
+      else imports.set(from, new Set([to]));
+    }
     const project = splitKey(from).project;
     let projectCallers = callers.get(project);
     if (!projectCallers) callers.set(project, (projectCallers = new Set()));
@@ -183,7 +213,7 @@ export function fileWeights(edges: Iterable<MapEdge>): FileGraph {
       row.set(to, (row.get(to) ?? 0) + share);
     }
   }
-  return { weights: out, callers: clearCallers };
+  return { weights: out, callers: clearCallers, imports };
 }
 
 /**
@@ -641,6 +671,7 @@ export function moduleMapOfGraph(graph: FileGraph, files: Iterable<FileKey>): Mo
       tests: [],
       uses: [],
       usedBy: [],
+      usesFolders: [],
     };
   });
   // Still one name twice: tell them apart by their most called file, then by number.
@@ -660,10 +691,10 @@ export function moduleMapOfGraph(graph: FileGraph, files: Iterable<FileKey>): Mo
     m.name = name;
   }
 
-  // For links, a file counts for the module whose folder holds it most
-  // closely, whichever module it was grouped into: a module is read as its
-  // folders, so a link between two modules must be one between those folders.
-  // A file in no module's folder links nothing.
+  // Links are imports between folders: a module is read as its folders, so a
+  // file counts there for the module whose folder holds it most closely,
+  // whichever module it was grouped into, and an import into a file in no
+  // module's folder for the folder it sits in (`folderPlace`).
   const byFolder = new Map<string, number[]>();
   for (const m of modules) {
     for (const d of m.folders) {
@@ -685,47 +716,89 @@ export function moduleMapOfGraph(graph: FileGraph, files: Iterable<FileKey>): Mo
     return own !== undefined && modules[own]!.folders.includes('.') ? own : undefined;
   };
 
-  // Links between modules, and each test to the module it calls most.
-  const uses = modules.map(() => new Map<number, number>());
-  const usedBy = modules.map(() => new Map<number, number>());
-  // Per link, the weight on each file of the other module.
-  const usesVia = modules.map(() => new Map<number, Map<FileKey, number>>());
-  const usedByVia = modules.map(() => new Map<number, Map<FileKey, number>>());
-  const addVia = (
-    links: Map<number, Map<FileKey, number>>,
-    m: number,
-    file: FileKey,
-    w: number
-  ) => {
-    let files = links.get(m);
-    if (!files) links.set(m, (files = new Map()));
-    files.set(file, (files.get(file) ?? 0) + w);
-  };
-  const testTarget = new Map<FileKey, Map<number, number>>();
-  for (const [from, row] of weights) {
-    const test = isTest(from);
-    const a = test || !moduleOf.has(from) ? undefined : folderModule(from);
-    for (const [to, w] of row) {
-      if (!moduleOf.has(to)) continue;
-      if (test) {
-        const target = moduleOf.get(to)!;
-        let t = testTarget.get(from);
-        if (!t) testTarget.set(from, (t = new Map()));
-        t.set(target, (t.get(target) ?? 0) + w);
-        continue;
-      }
-      const b = folderModule(to);
-      if (a === undefined || b === undefined || a === b) continue;
-      uses[a]!.set(b, (uses[a]!.get(b) ?? 0) + w);
-      usedBy[b]!.set(a, (usedBy[b]!.get(a) ?? 0) + w);
-      addVia(usesVia[a]!, b, to, w);
-      addVia(usedByVia[b]!, a, from, w);
+  // Per project, the module folders and every folder above one.
+  const occupied = new Map<string, Set<string>>();
+  for (const m of modules) {
+    let set = occupied.get(m.project);
+    if (!set) occupied.set(m.project, (set = new Set()));
+    for (const d of m.folders) {
+      for (let f = d; f !== '.' && !set.has(f); f = path.posix.dirname(f)) set.add(f);
     }
   }
+  // A file in no module's folder: the topmost folder above it holding no
+  // module's folder, so `src/utils/dates/x.ts` counts for `src/utils`.
+  const folderPlace = (k: FileKey): string => {
+    const { project, file } = splitKey(k);
+    const taken = occupied.get(project) ?? new Set<string>();
+    const parts = file.split('/');
+    for (let i = 1; i < parts.length; i++) {
+      const d = parts.slice(0, i).join('/');
+      if (!taken.has(d)) return d;
+    }
+    return path.posix.dirname(file);
+  };
+
+  // Links between modules: the files of one importing from the other (edges
+  // through an import or a known class, `EXTRACTED`; a name that merely
+  // matches is no link), and imports into folders no module is named after.
+  const uses = modules.map(() => new Map<number, Set<FileKey>>());
+  const usedBy = modules.map(() => new Map<number, Set<FileKey>>());
+  const usesFolders = modules.map(() => new Map<string, Set<FileKey>>());
+  // Per link, the files of the other module it reaches or comes from.
+  const usesVia = modules.map(() => new Map<number, Map<FileKey, number>>());
+  const usedByVia = modules.map(() => new Map<number, Map<FileKey, number>>());
+  const add = <K>(links: Map<K, Set<FileKey>>, key: K, file: FileKey) => {
+    const set = links.get(key);
+    if (set) set.add(file);
+    else links.set(key, new Set([file]));
+  };
+  const addVia = (links: Map<number, Map<FileKey, number>>, m: number, file: FileKey) => {
+    let files = links.get(m);
+    if (!files) links.set(m, (files = new Map()));
+    files.set(file, (files.get(file) ?? 0) + 1);
+  };
+  const mapped = (k: FileKey) => all.has(k) && !isTest(k);
+  for (const [from, targets] of graph.imports ?? []) {
+    if (!mapped(from)) continue;
+    const a = folderModule(from);
+    for (const to of targets) {
+      if (!mapped(to)) continue;
+      const b = folderModule(to);
+      if (a !== undefined && b !== undefined) {
+        if (a === b) continue;
+        add(uses[a]!, b, from);
+        add(usedBy[b]!, a, from);
+        addVia(usesVia[a]!, b, to);
+        addVia(usedByVia[b]!, a, from);
+      } else if (a !== undefined) {
+        add(usesFolders[a]!, folderPlace(to), from);
+      }
+    }
+  }
+  const counted = (links: Map<number, Set<FileKey>>) =>
+    new Map([...links].map(([m, files]) => [m, files.size]));
+  const folderLinks = (links: Map<string, Set<FileKey>>): FolderLink[] =>
+    [...links]
+      .map(([folder, files]) => ({ folder, weight: files.size }))
+      .sort((x, y) => y.weight - x.weight || x.folder.localeCompare(y.folder));
   modules.forEach((m, i) => {
-    m.uses = sortLinks(uses[i]!, usesVia[i]);
-    m.usedBy = sortLinks(usedBy[i]!, usedByVia[i]);
+    m.uses = sortLinks(counted(uses[i]!), usesVia[i]);
+    m.usedBy = sortLinks(counted(usedBy[i]!), usedByVia[i]);
+    m.usesFolders = folderLinks(usesFolders[i]!);
   });
+
+  // Each test to the module it calls most.
+  const testTarget = new Map<FileKey, Map<number, number>>();
+  for (const [from, row] of weights) {
+    if (!isTest(from)) continue;
+    for (const [to, w] of row) {
+      const target = moduleOf.get(to);
+      if (target === undefined) continue;
+      let t = testTarget.get(from);
+      if (!t) testTarget.set(from, (t = new Map()));
+      t.set(target, (t.get(target) ?? 0) + w);
+    }
+  }
   for (const [test, targets] of [...testTarget.entries()].sort((a, b) =>
     a[0].localeCompare(b[0])
   )) {
@@ -736,10 +809,15 @@ export function moduleMapOfGraph(graph: FileGraph, files: Iterable<FileKey>): Mo
   return { modules, shared, unconnected, migrations, weights };
 }
 
+/** Modules listed per module and direction in `module_map`. */
+export const LINKS_SHOWN = 4;
+/** Folders no module is named after listed per module and direction, apart from the modules. */
+export const FOLDER_LINKS_SHOWN = 2;
+
 /**
- * Links shown per module: at least this weight (about one specific call) and
- * at least {@link LINK_MIN_SHARE} of the module's strongest link that way —
- * the weak tail is mostly names that happen to match.
+ * Links drawn in the diagram: at least this many importing files and at least
+ * {@link LINK_MIN_SHARE} of the module's strongest link that way, so the
+ * picture keeps the main lines.
  */
 export const LINK_MIN_WEIGHT = 1;
 export const LINK_MIN_SHARE = 0.2;
@@ -764,6 +842,14 @@ const LINE_BREAKS = /[\u0000-\u001f\u007f-\u0085\u2028\u2029]+/g;
  */
 export function markdownText(value: string): string {
   return value.replace(LINE_BREAKS, ' ').replace(MARKDOWN_ESCAPED, (c) => `\\${c}`);
+}
+
+/**
+ * A name from the indexed code as a code span: a backslash escapes nothing in
+ * one, so line breaks and backticks become a space instead.
+ */
+export function codeSpan(value: string): string {
+  return `\`${value.replace(LINE_BREAKS, ' ').replace(/`+/g, ' ')}\``;
 }
 
 export interface FormatModuleMapOptions {
@@ -829,14 +915,19 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
       : '',
     map.migrations > 0 ? `${plural(map.migrations, 'migration', 'migrations')} left out` : '',
   ].filter(Boolean);
-  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. Uses and Used by are calls between the folders modules are named after: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into.\n`;
+  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. Uses and Used by are imports between the folders modules are named after, most importing files first: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into; Uses folders lists folders no module is named after that it imports from.\n`;
 
   const number = (id: number) => `${id + 1}`;
   const name = opts.showName ?? ((m: CodeModule) => markdownText(m.name));
   const linkList = (links: ModuleLink[]) =>
-    strongLinks(links)
-      .slice(0, 4)
+    links
+      .slice(0, LINKS_SHOWN)
       .map((l) => `${number(l.module)}. ${name(map.modules[l.module]!)}`)
+      .join('; ');
+  const folderList = (folders: FolderLink[]) =>
+    folders
+      .slice(0, FOLDER_LINKS_SHOWN)
+      .map((f) => markdownText(f.folder))
       .join('; ');
 
   const shown = map.modules.slice(0, opts.limit);
@@ -845,7 +936,9 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
     text += `Main files: ${m.files.slice(0, 4).map(opts.showFile).join(', ')}\n`;
     const uses = linkList(m.uses);
     const usedBy = linkList(m.usedBy);
+    const usesFolders = folderList(m.usesFolders);
     if (uses) text += `Uses: ${uses}\n`;
+    if (usesFolders) text += `Uses folders: ${usesFolders}\n`;
     if (usedBy) text += `Used by: ${usedBy}\n`;
   }
   const rest = map.modules.slice(opts.limit);
