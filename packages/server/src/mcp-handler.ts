@@ -69,7 +69,13 @@ import {
 } from './ranking.js';
 import { MAX_IMPACT_DEPTH } from './change-impact.js';
 import { callerLabel, changeImpactReport, shownLine } from './change-impact-report.js';
-import { formatModuleMap, markdownText, ModuleMapService, type CodeModule } from './module-map.js';
+import {
+  codeSpan,
+  formatModuleMap,
+  markdownText,
+  ModuleMapService,
+  type CodeModule,
+} from './module-map.js';
 import { fetchIndexerHealth, indexerUrlFromEnv, type IndexerSection } from './indexer-health.js';
 
 /**
@@ -167,7 +173,7 @@ export function searchResultContent(content: string, rank: number): string {
 function definesLine(defines: string[]): string {
   if (defines.length === 0) return '';
   const more = defines.length - SEARCH_DEFINES_SHOWN;
-  return `\nDefines: ${defines.slice(0, SEARCH_DEFINES_SHOWN).join(', ')}${more > 0 ? ` (+${more})` : ''}`;
+  return `\nDefines: ${defines.slice(0, SEARCH_DEFINES_SHOWN).map(markdownText).join(', ')}${more > 0 ? ` (+${more})` : ''}`;
 }
 
 /**
@@ -198,8 +204,8 @@ export function calledFromLine(edges: SymbolEdge[], file: string): string {
       a.localeCompare(b)
   );
   const shown = rows.slice(0, SEARCH_CALLERS_SHOWN).map(([f, row]) => {
-    const names = [...row.names].slice(0, 2).map((n) => `\`${n}\``);
-    return names.length > 0 ? `${f} ${names.join(', ')}` : f;
+    const names = [...row.names].slice(0, 2).map(codeSpan);
+    return names.length > 0 ? `${markdownText(f)} ${names.join(', ')}` : markdownText(f);
   });
   const more = rows.length - shown.length;
   return `\nCalled from: ${shown.join('; ')}${more > 0 ? ` (+${more} more file${more === 1 ? '' : 's'}: find_usages)` : ''}`;

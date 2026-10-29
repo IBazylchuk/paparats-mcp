@@ -844,6 +844,14 @@ export function markdownText(value: string): string {
   return value.replace(LINE_BREAKS, ' ').replace(MARKDOWN_ESCAPED, (c) => `\\${c}`);
 }
 
+/**
+ * A name from the indexed code as a code span: a backslash escapes nothing in
+ * one, so line breaks and backticks become a space instead.
+ */
+export function codeSpan(value: string): string {
+  return `\`${value.replace(LINE_BREAKS, ' ').replace(/`+/g, ' ')}\``;
+}
+
 export interface FormatModuleMapOptions {
   /** Heading target, e.g. `` `billing` `` or `` `main-stand` / `billing` ``. */
   title: string;

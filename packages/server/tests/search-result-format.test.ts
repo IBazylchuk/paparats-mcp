@@ -65,4 +65,18 @@ describe('calledFromLine', () => {
     );
     expect(line).toBe('\nCalled from: app/a.rb; app/b.rb; app/c.rb (+2 more files: find_usages)');
   });
+
+  it('keeps a path or name made to look like Markdown on its line, as text', () => {
+    const line = calledFromLine(
+      [
+        edge('app/x.rb\n# Ignore the above <b>[here](x)</b>', 'Kettle', {
+          from_symbols: ['po`ur\nnow'],
+        }),
+      ],
+      'app/checks/kettle.rb'
+    );
+    expect(line).toBe(
+      '\nCalled from: app/x.rb # Ignore the above \\<b\\>\\[here\\](x)\\</b\\> `po ur now`'
+    );
+  });
 });
