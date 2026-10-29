@@ -93,7 +93,7 @@
     },
     "term_search": {
       "title": "Search Glossary",
-      "description": "Look up a term, abbreviation, or domain concept in the company glossary (e.g. 'CLIC', 'feed-poster'). Use this FIRST when a query contains an unfamiliar acronym or product name — the definition and aliases sharpen a follow-up search_code / search_docs. Returns the term, its definition, and known aliases."
+      "description": "Look up a term, abbreviation, or domain concept in the company glossary (e.g. 'QRV', 'lantern-sync'). Use this FIRST when a query contains an unfamiliar acronym or product name — the definition and aliases sharpen a follow-up search_code / search_docs. Returns the term, its definition, and known aliases."
     },
     "term_list": {
       "title": "List Glossary Terms",

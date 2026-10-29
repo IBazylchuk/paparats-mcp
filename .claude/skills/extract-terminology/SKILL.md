@@ -68,7 +68,7 @@ Prefer 20 terms a newcomer genuinely could not guess over 200 that merely exist.
 Record a term when ALL of these hold:
 
 - It's **domain- or org-specific** — a name, acronym, product, service, or concept a
-  newcomer wouldn't know from general knowledge. ("feed-poster", "CLIC", "the stand",
+  newcomer wouldn't know from general knowledge. ("lantern-sync", "QRV", "the kiln",
   "bounded context X".)
 - It has a **stable, statable meaning** you can define in one or two plain sentences.
 - Knowing it would **change how you search or read the code/docs** (disambiguates a

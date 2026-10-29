@@ -4581,7 +4581,7 @@ export class McpHandler {
             'Record a glossary term. Goes through a duplicate/similar gate — reconcile with the matched term if one is returned.',
           inputSchema: {
             group: z.string().min(1).describe('Group the term belongs to.'),
-            term: z.string().min(1).describe('The canonical term, e.g. "feed-poster".'),
+            term: z.string().min(1).describe('The canonical term, e.g. "lantern-sync".'),
             definition: z.string().min(1).describe('Plain-language definition.'),
             aliases: z
               .array(z.string())

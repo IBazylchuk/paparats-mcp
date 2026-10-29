@@ -4,14 +4,14 @@ import { expandQueryWithGlossary, type GlossaryMatch } from '../src/query-expans
 describe('expandQueryWithGlossary', () => {
   it('appends a glossary-enriched variant with definition + aliases', async () => {
     const lookup = async (): Promise<GlossaryMatch[]> => [
-      { term: 'CLIC', definition: 'the candidate platform', aliases: ['clic-platform'] },
+      { term: 'QRV', definition: 'the request validation service', aliases: ['qrv-platform'] },
     ];
-    const out = await expandQueryWithGlossary('what does CLIC do', lookup);
+    const out = await expandQueryWithGlossary('what does QRV do', lookup);
     // Base expansion first; the enriched variant folds in the definition + alias.
-    expect(out[0]).toBe('what does CLIC do');
+    expect(out[0]).toBe('what does QRV do');
     const enriched = out[out.length - 1];
-    expect(enriched).toContain('the candidate platform');
-    expect(enriched).toContain('clic-platform');
+    expect(enriched).toContain('the request validation service');
+    expect(enriched).toContain('qrv-platform');
   });
 
   it('falls back to the base expansion when no terms match', async () => {

@@ -64,15 +64,15 @@ describe('TerminologyStore.recordTerm', () => {
 
   it('creates a new term when no near match', async () => {
     const res = await store.recordTerm('g', {
-      term: 'feed-poster',
-      definition: 'service that posts feeds',
+      term: 'lantern-sync',
+      definition: 'service that syncs lanterns',
       aliases: ['fp'],
     });
     expect(res.status).toBe('created');
     const call = qdrant.upsert.mock.calls.at(-1)![1] as {
       points: Array<{ payload: Record<string, unknown> }>;
     };
-    expect(call.points[0]!.payload['term']).toBe('feed-poster');
+    expect(call.points[0]!.payload['term']).toBe('lantern-sync');
     expect(call.points[0]!.payload['aliases']).toEqual(['fp']);
   });
 
@@ -81,7 +81,7 @@ describe('TerminologyStore.recordTerm', () => {
       points: [{ id: 'existing-id', payload: { createdAt: 111 } }],
       next_page_offset: null,
     });
-    const res = await store.recordTerm('g', { term: 'feed-poster', definition: 'new def' });
+    const res = await store.recordTerm('g', { term: 'lantern-sync', definition: 'new def' });
     expect(res.status).toBe('updated');
     expect(res.id).toBe('existing-id');
   });
@@ -92,7 +92,7 @@ describe('TerminologyStore.recordTerm', () => {
     // createdAt. Failing loudly is the only safe answer.
     qdrant.scroll.mockRejectedValueOnce(Object.assign(new Error('Unauthorized'), { status: 401 }));
     await expect(
-      store.recordTerm('g', { term: 'feed-poster', definition: 'new def' })
+      store.recordTerm('g', { term: 'lantern-sync', definition: 'new def' })
     ).rejects.toThrow('Unauthorized');
     expect(qdrant.upsert).not.toHaveBeenCalled();
   });
@@ -102,9 +102,9 @@ describe('TerminologyStore.recordTerm', () => {
     // two texts are effectively the same entry.
     qdrant.scroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
     qdrant.query.mockResolvedValueOnce({
-      points: [{ id: 'dup-id', score: 0.97, payload: { term: 'poster', project: undefined } }],
+      points: [{ id: 'dup-id', score: 0.97, payload: { term: 'lantern', project: undefined } }],
     });
-    const res = await store.recordTerm('g', { term: 'feed-poster', definition: 'posts feeds' });
+    const res = await store.recordTerm('g', { term: 'lantern-sync', definition: 'syncs lanterns' });
     expect(res.status).toBe('duplicate');
     expect(res.id).toBe('dup-id');
     expect(qdrant.upsert).not.toHaveBeenCalled();
@@ -146,13 +146,13 @@ describe('TerminologyStore.search', () => {
         { score: 1, payload: { __meta: true } },
         {
           score: 0.8,
-          payload: { id: 't1', term: 'CLIC', definition: 'the platform', aliases: [] },
+          payload: { id: 't1', term: 'QRV', definition: 'the platform', aliases: [] },
         },
       ],
     });
-    const hits = await store.search('g', 'what is CLIC');
+    const hits = await store.search('g', 'what is QRV');
     expect(hits).toHaveLength(1);
-    expect(hits[0]!.term).toBe('CLIC');
+    expect(hits[0]!.term).toBe('QRV');
     expect(hits[0]!.score).toBe(0.8);
   });
 

@@ -1748,7 +1748,7 @@ describe('listProjectsInGroup with projectSuffix', () => {
   it('strips the suffix from returned names but keeps the stored name in the lang sub-filter', async () => {
     const client = facetMock([
       { value: 'billing-v3', count: 12 },
-      { value: 'feed-poster-v3', count: 5 },
+      { value: 'lantern-sync-v3', count: 5 },
     ]);
 
     const indexer = new Indexer({
@@ -1762,7 +1762,7 @@ describe('listProjectsInGroup with projectSuffix', () => {
     const projects = await indexer.listProjectsInGroup('main-stand-v3');
 
     // Clients see clean names.
-    expect(projects.map((p) => p.name).sort()).toEqual(['billing', 'feed-poster']);
+    expect(projects.map((p) => p.name).sort()).toEqual(['billing', 'lantern-sync']);
     expect(projects.find((p) => p.name === 'billing')!.chunks).toBe(12);
 
     // The language sub-facet must filter by the STORED (suffixed) name, else it
@@ -1774,7 +1774,7 @@ describe('listProjectsInGroup with projectSuffix', () => {
       ([, opts]) => opts.filter?.must?.map((m) => m.match.value) ?? []
     );
     expect(filterValues).toContain('billing-v3');
-    expect(filterValues).toContain('feed-poster-v3');
+    expect(filterValues).toContain('lantern-sync-v3');
     expect(filterValues).not.toContain('billing'); // never the clean name
   });
 
