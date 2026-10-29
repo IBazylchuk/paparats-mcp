@@ -462,7 +462,7 @@ describe('indexProject incremental git enrichment', () => {
     await update('src/b.ts', null);
     // Imported under another name: an update of the file defining it links the import again.
     const provider =
-      'function LedgerProvider() {\n  return 1;\n}\nexport default LedgerProvider;\n';
+      'function PlanterProvider() {\n  return 1;\n}\nexport default PlanterProvider;\n';
     const page =
       "import Provider from './provider';\nexport function page() {\n  return Provider();\n}\n";
     fs.writeFileSync(path.join(projectDir, 'src', 'provider.ts'), provider);
@@ -470,7 +470,7 @@ describe('indexProject incremental git enrichment', () => {
     await update('src/provider.ts', provider);
     await update('src/page.ts', page);
     const providerLink = () =>
-      stored().filter((e) => e.includes('src/page.ts') && e.includes(' LedgerProvider '));
+      stored().filter((e) => e.includes('src/page.ts') && e.includes(' PlanterProvider '));
     expect(providerLink()).toHaveLength(1);
     await update('src/provider.ts', provider.replace('return 1', 'return 2'));
     expect(providerLink()).toHaveLength(1);

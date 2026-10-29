@@ -28,7 +28,7 @@ export interface StoredFingerprint {
  *      uses, and skips namespace-only Ruby modules: extract every file's symbols
  *      again (`symbol_format` makes unchanged files rewrite) and rebuild edges.
  *  5 — a name a chunk defines stays a use when called on another object
- *      (`def self.claim` calling `Other.claim`): extract symbols again.
+ *      (`def self.water` calling `Other.water`): extract symbols again.
  */
 const REINDEX_EPOCH = 5;
 

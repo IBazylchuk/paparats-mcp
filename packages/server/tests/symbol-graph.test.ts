@@ -117,13 +117,13 @@ describe('buildSymbolEdges', () => {
       },
       { chunk_id: 'g//p//scripts/other.rb//0-9//c', defines_symbols: ['pairs'], uses_symbols: [] },
       {
-        chunk_id: 'g//p//lib/ledger.rb//0-9//d',
+        chunk_id: 'g//p//lib/planter.rb//0-9//d',
         defines_symbols: ['pairs'],
         uses_symbols: [],
-        def_owners: { pairs: 'Ledger' },
+        def_owners: { pairs: 'Planter' },
       },
       {
-        chunk_id: 'g//p//lib/ledger.rb//10-19//e',
+        chunk_id: 'g//p//lib/planter.rb//10-19//e',
         defines_symbols: [],
         uses_symbols: ['pairs'],
         use_sites: [{ name: 'pairs', from: '', onObject: true }],
@@ -138,7 +138,7 @@ describe('buildSymbolEdges', () => {
       ['scripts/compare.rb', 'scripts/compare.rb', 'EXTRACTED'],
     ]);
     // A call on an object, or beside a method of a class, is not narrowed.
-    expect(links.filter((l) => l[0] === 'lib/ledger.rb')).toHaveLength(3);
+    expect(links.filter((l) => l[0] === 'lib/planter.rb')).toHaveLength(3);
   });
 
   it('does not link a call on an object to a Ruby class method', () => {
@@ -184,7 +184,7 @@ describe('buildSymbolEdges', () => {
       def('reports/base.rb', 'Reports'),
       def('base.rb'),
       use('orbit/runner.rb', { lexical: true, in: 'Orbit::Runner' }),
-      use('jobs/sync.rb', { lexical: true, in: 'Jobs::Sync' }),
+      use('tasks/sync.rb', { lexical: true, in: 'Tasks::Sync' }),
       use('reports/view.rb', { on: 'Reports', in: 'Billing' }),
       use('models/user.rb', { on: 'ActiveRecord' }),
     ]);
@@ -192,9 +192,9 @@ describe('buildSymbolEdges', () => {
       (e) => `${e.from_chunk_id.split('//')[2]} -> ${e.to_chunk_id.split('//')[2]} ${e.confidence}`
     );
     expect(links.sort()).toEqual([
-      'jobs/sync.rb -> base.rb EXTRACTED',
       'orbit/runner.rb -> orbit/base.rb EXTRACTED',
       'reports/view.rb -> reports/base.rb EXTRACTED',
+      'tasks/sync.rb -> base.rb EXTRACTED',
     ]);
   });
 
@@ -218,28 +218,28 @@ describe('buildSymbolEdges', () => {
   it('links a call that names its class only to that class, as EXTRACTED', () => {
     const { edges } = buildSymbolEdges([
       {
-        chunk_id: 'g//p//usage.rb//1-5//h1',
-        defines_symbols: ['claim'],
+        chunk_id: 'g//p//grove.rb//1-5//h1',
+        defines_symbols: ['water'],
         uses_symbols: [],
-        def_owners: { claim: 'Usage' },
+        def_owners: { water: 'Grove' },
       },
       {
-        chunk_id: 'g//p//quota.rb//1-5//h2',
-        defines_symbols: ['claim'],
+        chunk_id: 'g//p//sprout.rb//1-5//h2',
+        defines_symbols: ['water'],
         uses_symbols: [],
-        def_owners: { claim: 'Quota' },
+        def_owners: { water: 'Sprout' },
       },
       {
         chunk_id: 'g//p//caller.rb//1-5//h3',
         defines_symbols: [],
-        uses_symbols: ['claim'],
-        use_sites: [{ name: 'claim', from: 'run', on: 'Usage' }],
+        uses_symbols: ['water'],
+        use_sites: [{ name: 'water', from: 'run', on: 'Grove' }],
       },
     ]);
 
     expect(edges).toEqual([
       expect.objectContaining({
-        to_chunk_id: 'g//p//usage.rb//1-5//h1',
+        to_chunk_id: 'g//p//grove.rb//1-5//h1',
         confidence: 'EXTRACTED',
         from_symbols: ['run'],
       }),
@@ -305,15 +305,15 @@ describe('buildSymbolEdges', () => {
     const defs = [
       {
         chunk_id: 'g//p//a.rb//0-9//a',
-        defines_symbols: ['claim'],
+        defines_symbols: ['water'],
         uses_symbols: [],
-        def_owners: { claim: 'A' },
+        def_owners: { water: 'A' },
       },
       {
         chunk_id: 'g//p//b.rb//0-9//b',
-        defines_symbols: ['claim'],
+        defines_symbols: ['water'],
         uses_symbols: [],
-        def_owners: { claim: 'B' },
+        def_owners: { water: 'B' },
       },
       {
         chunk_id: 'g//p//child.rb//0-9//c',
@@ -325,8 +325,8 @@ describe('buildSymbolEdges', () => {
     const caller = (on: string) => ({
       chunk_id: 'g//p//run.rb//0-9//d',
       defines_symbols: [],
-      uses_symbols: ['claim'],
-      use_sites: [{ name: 'claim', from: 'run', on }],
+      uses_symbols: ['water'],
+      use_sites: [{ name: 'water', from: 'run', on }],
     });
     const linked = (on: string) =>
       buildSymbolEdges([...defs, caller(on)]).edges.map((e) => [
@@ -335,7 +335,7 @@ describe('buildSymbolEdges', () => {
       ]);
 
     expect(linked('Child')).toEqual([['a.rb', 'EXTRACTED']]);
-    // `ActiveRecord::Base.claim`, `Gem.claim`: not the project's, so not its namesakes either.
+    // `ActiveRecord::Base.water`, `Gem.water`: not the project's, so not its namesakes either.
     expect(linked('Gem')).toEqual([]);
   });
 
@@ -459,8 +459,8 @@ describe('buildSymbolEdges', () => {
     });
     const { edges } = buildSymbolEdges([
       chunk('ctx/Provider.tsx', {
-        defines_symbols: ['LedgerProvider'],
-        default_export: 'LedgerProvider',
+        defines_symbols: ['PlanterProvider'],
+        default_export: 'PlanterProvider',
       }),
       chunk('ctx/index.ts', {
         use_sites: [{ name: 'default', from: 'Provider', module: './Provider', reexport: true }],
@@ -488,7 +488,7 @@ describe('buildSymbolEdges', () => {
     expect(links.sort()).toEqual([
       'pages/Drawer.tsx Drawer -> ui/Drawer.tsx',
       'pages/home.tsx Card -> ui/Card.tsx',
-      'pages/home.tsx LedgerProvider -> ctx/Provider.tsx',
+      'pages/home.tsx PlanterProvider -> ctx/Provider.tsx',
     ]);
   });
 
@@ -568,13 +568,13 @@ describe('buildSymbolEdges', () => {
 
   it('with `only`, gives the edges of the uses it accepts exactly as the full graph has them', () => {
     const chunks = [
-      { chunk_id: 'g//p//a.rb//1-5//h1', defines_symbols: ['claim'], uses_symbols: ['save'] },
-      { chunk_id: 'g//p//b.rb//1-5//h2', defines_symbols: ['claim', 'save'], uses_symbols: [] },
-      { chunk_id: 'g//p//c.rb//1-5//h3', defines_symbols: [], uses_symbols: ['claim', 'save'] },
+      { chunk_id: 'g//p//a.rb//1-5//h1', defines_symbols: ['water'], uses_symbols: ['save'] },
+      { chunk_id: 'g//p//b.rb//1-5//h2', defines_symbols: ['water', 'save'], uses_symbols: [] },
+      { chunk_id: 'g//p//c.rb//1-5//h3', defines_symbols: [], uses_symbols: ['water', 'save'] },
       { chunk_id: 'g//p//d.rb//1-5//h4', defines_symbols: [], uses_symbols: ['save'] },
     ];
     const only = (chunkId: string, name: string) =>
-      chunkId.includes('//a.rb//') || name === 'claim';
+      chunkId.includes('//a.rb//') || name === 'water';
     const full = buildSymbolEdges(chunks).edges.filter((e) => only(e.from_chunk_id, e.symbol_name));
     const part = buildSymbolEdges(chunks, undefined, only).edges;
     expect(part).toEqual(full);

@@ -895,12 +895,12 @@ describe('MetadataStore', () => {
 
   it('keeps graph changes until they are applied; later ones wait for the next update', () => {
     expect(store.graphChanges('g', 'p')).toBeNull();
-    store.markGraphChanged('g', 'p', 'a.rb', ['claim', 'Ledger']);
-    store.markGraphChanged('g', 'p', 'b.rb', ['claim']);
+    store.markGraphChanged('g', 'p', 'a.rb', ['water', 'Planter']);
+    store.markGraphChanged('g', 'p', 'b.rb', ['water']);
     store.markGraphChanged('g', 'q', 'c.rb', ['other']);
     const changes = store.graphChanges('g', 'p')!;
     expect([...changes.files].sort()).toEqual(['a.rb', 'b.rb']);
-    expect([...changes.names].sort()).toEqual(['Ledger', 'claim']);
+    expect([...changes.names].sort()).toEqual(['Planter', 'water']);
 
     store.markGraphChanged('g', 'p', 'd.rb', ['late']);
     store.applyGraphChanges('g', 'p', changes, []);
@@ -921,11 +921,11 @@ describe('MetadataStore', () => {
     });
     await store.upsertSymbolEdges([
       edge('a.rb//1-5//h1', 'z.rb//1-5//h9', 'save'), // leaves the changed file
-      edge('y.rb//1-5//h2', 'z.rb//1-5//h9', 'claim'), // through a changed name
-      edge('y.rb//1-5//h2', 'a.rb//1-5//h1', 'claim'), // into the changed file
+      edge('y.rb//1-5//h2', 'z.rb//1-5//h9', 'water'), // through a changed name
+      edge('y.rb//1-5//h2', 'a.rb//1-5//h1', 'water'), // into the changed file
       edge('y.rb//1-5//h2', 'z.rb//1-5//h9', 'save'), // neither: kept
       {
-        ...edge('y.rb//1-5//h2', 'z.rb//1-5//h9', 'claim'),
+        ...edge('y.rb//1-5//h2', 'z.rb//1-5//h9', 'water'),
         from_chunk_id: 'g//other//y.rb//1-5//h2',
       },
     ]);
@@ -934,16 +934,16 @@ describe('MetadataStore', () => {
     store.applyGraphChanges(
       'g',
       'p',
-      { upTo: 0, files: new Set(['a.rb']), names: new Set(['claim']) },
-      [edge('y.rb//1-5//h2', 'a.rb//6-9//h5', 'claim')]
+      { upTo: 0, files: new Set(['a.rb']), names: new Set(['water']) },
+      [edge('y.rb//1-5//h2', 'a.rb//6-9//h5', 'water')]
     );
 
     const left = [...store.iterateProjectEdges('g', 'p')]
       .map((e) => `${e.from_chunk_id} ${e.symbol_name} ${e.to_chunk_id}`)
       .sort();
     expect(left).toEqual([
-      'g//p//y.rb//1-5//h2 claim g//p//a.rb//6-9//h5',
       'g//p//y.rb//1-5//h2 save g//p//z.rb//1-5//h9',
+      'g//p//y.rb//1-5//h2 water g//p//a.rb//6-9//h5',
     ]);
     expect([...store.iterateProjectEdges('g', 'other')]).toHaveLength(1);
     expect(store.edgesVersion('g', 'p')).not.toBe(version);

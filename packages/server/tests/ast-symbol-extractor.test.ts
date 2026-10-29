@@ -684,9 +684,9 @@ end`;
   });
 
   it('keeps a name the chunk defines when it is called on another object (Ruby)', async () => {
-    const code = `class Quota
-  def self.claim(user)
-    Ledger.claim(user)
+    const code = `class Sprout
+  def self.water(plot)
+    Planter.water(plot)
   end
 end
 class Retry
@@ -707,8 +707,8 @@ end`;
     );
     tree.delete();
 
-    expect(results[0]!.defines_symbols).toContain('claim');
-    expect(results[0]!.uses_symbols).toEqual(expect.arrayContaining(['Ledger', 'claim']));
+    expect(results[0]!.defines_symbols).toContain('water');
+    expect(results[0]!.uses_symbols).toEqual(expect.arrayContaining(['Planter', 'water']));
     // Recursion through self or a bare call is not a use.
     expect(results[1]!.uses_symbols).not.toContain('run');
   });
@@ -752,13 +752,13 @@ end`;
   });
 
   it('records the method each use is made from, also in a later chunk of that method (Ruby)', async () => {
-    const code = `class Quota
-  has_many :limits
+    const code = `class Sprout
+  has_many :leaves
   def first
-    Ledger.post
+    Planter.post
   end
   def second
-    Ledger.post
+    Planter.post
     Audit.record
     Notifier.ping
   end
@@ -785,14 +785,14 @@ end`;
   });
 
   it('records the class a use is called on, and the class of each method (Ruby)', async () => {
-    const code = `module Billing
-  class Usage
-    def self.claim(user)
-      Billing::Ledger.claim(user)
-      ::Wallet.claim(user)
-      self.remaining(user)
-      remaining(user)
-      user.claim
+    const code = `module Orchard
+  class Grove
+    def self.water(plot)
+      Orchard::Planter.water(plot)
+      ::Well.water(plot)
+      self.remaining(plot)
+      remaining(plot)
+      plot.water
     end
   end
 end`;
@@ -806,21 +806,21 @@ end`;
     tree.delete();
 
     const r = results[0]!;
-    expect(r.defined_symbols.find((d) => d.name === 'claim')?.owner).toBe('Billing::Usage');
+    expect(r.defined_symbols.find((d) => d.name === 'water')?.owner).toBe('Orchard::Grove');
     // A class records the namespace it is declared in, to resolve constants by.
-    expect(r.defined_symbols.find((d) => d.name === 'Usage')?.owner).toBe('Billing');
+    expect(r.defined_symbols.find((d) => d.name === 'Grove')?.owner).toBe('Orchard');
     const on = (name: string) =>
       r.use_sites!.filter((u) => u.name === name).map((u) => [u.on ?? null, u.in ?? null]);
     // A relative name keeps the namespace it is resolved from; `::` and self are full paths.
-    // `user.claim`: called on something that is not a class, so no class.
-    expect(on('claim')).toEqual([
-      ['Billing::Ledger', 'Billing::Usage'],
-      ['::Wallet', null],
+    // `plot.water`: called on something that is not a class, so no class.
+    expect(on('water')).toEqual([
+      ['Orchard::Planter', 'Orchard::Grove'],
+      ['::Well', null],
       [null, null],
     ]);
-    expect(on('remaining')).toEqual([['::Billing::Usage', null]]);
+    expect(on('remaining')).toEqual([['::Orchard::Grove', null]]);
     // A constant is not tied to the class it is mentioned in.
-    expect(on('Wallet')).toEqual([[null, null]]);
+    expect(on('Well')).toEqual([[null, null]]);
   });
 
   it('treats a call on a new object as a call on its class', async () => {
@@ -1346,12 +1346,12 @@ end`;
   });
 
   it('reads a Ruby constant path through a class alias the file sets', async () => {
-    const code = `module Crawl
-  class AcmeBoard
-    Ledgers = ::Vendors::Acme::Ledgers
-    Local = Ledgers
+    const code = `module Seedbed
+  class AcmeBeds
+    Saplings = ::Vendors::Acme::Saplings
+    Local = Saplings
     def run
-      Ledgers::Fetcher.fetch
+      Saplings::Shears.trim
       Local::Parser.parse
       Other::Thing.go
     end
@@ -1369,9 +1369,9 @@ end`;
       results[0]!
         .use_sites!.filter((u) => u.name === name && u.constant)
         .map(({ name: _, from: __, ...rest }) => rest);
-    expect(site('Fetcher')).toEqual([{ on: '::Vendors::Acme::Ledgers', constant: true }]);
-    expect(site('Parser')).toEqual([{ on: 'Ledgers', in: 'Crawl::AcmeBoard', constant: true }]);
-    expect(site('Thing')).toEqual([{ on: 'Other', in: 'Crawl::AcmeBoard', constant: true }]);
+    expect(site('Shears')).toEqual([{ on: '::Vendors::Acme::Saplings', constant: true }]);
+    expect(site('Parser')).toEqual([{ on: 'Saplings', in: 'Seedbed::AcmeBeds', constant: true }]);
+    expect(site('Thing')).toEqual([{ on: 'Other', in: 'Seedbed::AcmeBeds', constant: true }]);
   });
 
   it('records the class of a TypeScript receiver, its import, and builtins and packages as external', async () => {

@@ -1953,7 +1953,7 @@ export class Indexer {
       pool.set(chunk.chunk_id, chunk);
     }
     // A name imported from a changed file under another one (`import Provider
-    // from './Provider'` of a `LedgerProvider`, `export { a as b }`) is not
+    // from './Provider'` of a `PlanterProvider`, `export { a as b }`) is not
     // among its names: the chunks linking into the changed files are read and
     // their imported names linked again, or their edges there would be lost.
     const imported = new Map<string, Set<string>>();

@@ -422,8 +422,8 @@ function resolveLexical(
 }
 
 /**
- * The definitions a call on a class or an object reaches (`Usage.claim`,
- * `x.claim` after `x = Usage.new`, `this.claim()`, a bare Ruby call): those of
+ * The definitions a call on a class or an object reaches (`Grove.water`,
+ * `x.water` after `x = Grove.new`, `this.water()`, a bare Ruby call): those of
  * the nearest class up its ancestry that defines the name; in Ruby, for a call
  * on self, else a method defined at the top of a file (Object's, which every
  * class inherits); else those of its subclasses and implementations (a call
@@ -520,7 +520,7 @@ function resolveMember(
  *
  * For each use in a chunk, finds the chunks that define the name and creates a
  * `'calls'` edge (from_chunk → to_chunk via symbol). When the call names the
- * class it is made on (`Usage.claim`, `self.claim`) and {@link resolveClass}
+ * class it is made on (`Grove.water`, `self.water`) and {@link resolveClass}
  * finds that class's definitions, only those are linked.
  *
  * Each edge is tagged with a confidence label:

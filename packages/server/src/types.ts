@@ -156,7 +156,7 @@ export type RelationType = 'calls' | 'references' | 'reexports';
  *
  * - `EXTRACTED`: the edge is structurally certain: caller and definition are
  *   in the same file, or the call names the class that defines the method
- *   (`Usage.claim`, or `self.claim` / a bare Ruby call inside that class).
+ *   (`Grove.water`, or `self.water` / a bare Ruby call inside that class).
  * - `INFERRED`: cross-file edge resolved by name match where exactly one
  *   chunk defines the symbol — likely correct but not proven.
  * - `AMBIGUOUS`: name resolved to multiple defining chunks; the caller could

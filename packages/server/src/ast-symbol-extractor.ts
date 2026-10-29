@@ -17,7 +17,7 @@ export interface DefinedSymbol {
   kind: ChunkKind;
   /**
    * The class or module a method is declared in, with its namespaces:
-   * `Billing::Usage` for a method of `class Usage` inside `module Billing`.
+   * `Orchard::Grove` for a method of `class Grove` inside `module Orchard`.
    */
   owner?: string;
   /**
@@ -54,10 +54,10 @@ export interface UseSite {
    */
   from: string;
   /**
-   * The class it is called on, as written: `Usage` for `Usage.claim`,
-   * `Billing::Usage` for `Billing::Usage.claim`. A leading `::` marks a full
-   * path: `::Billing::Usage` as written, or the enclosing class for
-   * `self.claim` / `this.claim` (and a bare `claim` in Ruby).
+   * The class it is called on, as written: `Grove` for `Grove.water`,
+   * `Orchard::Grove` for `Orchard::Grove.water`. A leading `::` marks a full
+   * path: `::Orchard::Grove` as written, or the enclosing class for
+   * `self.water` / `this.water` (and a bare `water` in Ruby).
    */
   on?: string;
   /** For an `on` without `::`, the namespace the call is made in, to resolve it from. */
@@ -144,7 +144,7 @@ export interface SymbolExtractionResult {
  *      import they come from (`module`), and names read as values are uses;
  *      classes record what they inherit and mix in (`parents`).
  *  6 — a Ruby call on `connection` (ActiveRecord's adapter) is `external`; a
- *      Ruby constant path through a class alias (`Ledgers = A::Ledgers`) is
+ *      Ruby constant path through a class alias (`Saplings = A::Saplings`) is
  *      read through that class.
  *  7 — calls between a chunk's own methods are recorded (`inner_calls`), not
  *      copied onto every use as `through` sites, so steps can be counted per
@@ -799,10 +799,10 @@ function exportedAs(node: Node): string | undefined {
 }
 
 /**
- * Where a use points, as far as the code says: the class for `Usage.claim`
+ * Where a use points, as far as the code says: the class for `Grove.water`
  * (with the namespace the call is in, to resolve a relative name), the
- * enclosing class for `self.claim` and `this.claim`, and in Ruby for a bare
- * `claim` too (a bare call there is a call on self). Lowercase names only for
+ * enclosing class for `self.water` and `this.water`, and in Ruby for a bare
+ * `water` too (a bare call there is a call on self). Lowercase names only for
  * the implicit cases, so a constant like `Invoice` is not tied to the class
  * it is mentioned in.
  */
@@ -849,11 +849,11 @@ const RUBY_VALUE_CONSTANT_RE = /^[A-Z][A-Z0-9_]+$/;
  * (from the namespace around it), a bare `Base` lexically. Null for the
  * namespace part of a path (`Orbit` in `Orbit::Base`): naming a namespace
  * uses nothing of the file that defines it, and counting it linked every
- * `Companies::X` to whichever file gives `module Companies` a method. A class
+ * `Seedbed::X` to whichever file gives `module Seedbed` a method. A class
  * a value constant is read from (`Lexer` in `Lexer::MAX_DEPTH`) is used,
  * and resolved like a bare constant: Ruby constants holding values are not
  * definitions in the graph, so the class is what links. A path through a
- * constant the file sets to a class (`Ledgers = ::Vendors::Acme::Ledgers`)
+ * constant the file sets to a class (`Saplings = ::Vendors::Acme::Saplings`)
  * is read through that class.
  */
 function rubyConstant(
@@ -877,7 +877,7 @@ function rubyConstant(
     const written = parent.childForFieldName('scope');
     if (!written) return { lexical: true, constant: true }; // `::Base`: the top-level one
     const on = constantPath(written.text);
-    // `Ledgers::Fetcher` after `Ledgers = ::Vendors::Acme::Ledgers`: the alias's class.
+    // `Saplings::Shears` after `Saplings = ::Vendors::Acme::Saplings`: the alias's class.
     const [head, ...rest] = on.split('::');
     const alias = head ? types.constantClass(head) : undefined;
     if (alias?.classValue) {
@@ -1604,8 +1604,8 @@ export function extractSymbolsForChunks(
 
       // Remove self-references: a name both defined and used in the chunk is
       // usually a recursive call or a type annotation on its own definition.
-      // Not when it is called on another object: `def self.claim` calling
-      // `Ledger.claim(...)` delegates to a different class's method.
+      // Not when it is called on another object: `def self.water` calling
+      // `Planter.water(...)` delegates to a different class's method.
       for (const sym of defines.keys()) {
         if (!calledOnOther.has(sym)) uses.delete(sym);
       }
