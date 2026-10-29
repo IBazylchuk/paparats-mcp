@@ -1591,6 +1591,40 @@ describe('McpHandler', () => {
       });
     });
 
+    it('lists a method calling the change from where it begins and a later chunk once', async () => {
+      const { metadataStore, indexer } = mocks();
+      const HEAD = 'g1//p1//src/login.ts//0-4//h0';
+      const edges = [
+        { ...edge(HEAD, SEED, 'authenticate'), from_symbols: ['submit'] },
+        { ...edge(CALLER, SEED, 'authenticate'), from_symbols: ['submit'] },
+      ];
+      vi.mocked(metadataStore.getEdgesTo).mockImplementation(
+        (id: string) => edges.filter((e) => e.to_chunk_id === id) as never
+      );
+      const base = vi.mocked(indexer.getChunkById).getMockImplementation()!;
+      vi.mocked(indexer.getChunkById).mockImplementation(async (id: string) => {
+        const payload = await base(id);
+        if (id !== HEAD) return payload;
+        const content =
+          'export class LoginForm {\n  async submit(): Promise<void> {\n    const a = 1;';
+        return { ...payload, defines_symbols: ['LoginForm', 'submit'], content };
+      });
+      vi.mocked(indexer.getAdjacentChunks).mockResolvedValue([
+        { chunk_id: HEAD },
+        { chunk_id: CALLER },
+      ]);
+      await withHandler({ metadataStore, indexer }, async (port) => {
+        const { text } = await callTool(port, 'change_impact', {
+          chunk_id: SEED,
+          symbol: 'authenticate',
+        });
+        expect(text).toContain('### Uses it directly (1)');
+        expect(text).toContain('**[p1] src/login.ts:2** `submit` — uses `authenticate`');
+        expect(text).toContain(`chunks: \`${HEAD}\`, \`${CALLER}\``);
+        expect(text).toContain('2 chunks in 1 files depend on it');
+      });
+    });
+
     it('lists the methods of the changed chunk that call it, a step further each', async () => {
       const { metadataStore, indexer } = mocks();
       const VIEW = 'g1//p1//src/view.ts//0-9//h9';

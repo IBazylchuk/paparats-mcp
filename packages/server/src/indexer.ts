@@ -1951,6 +1951,31 @@ export class Indexer {
     ]) {
       pool.set(chunk.chunk_id, chunk);
     }
+    // A name imported from a changed file under another one (`import Provider
+    // from './Provider'` of a `LedgerProvider`, `export { a as b }`) is not
+    // among its names: the chunks linking into the changed files are read and
+    // their imported names linked again, or their edges there would be lost.
+    const imported = new Map<string, Set<string>>();
+    const linking = new Set<string>();
+    for (const file of changes.files) {
+      for (const id of this.metadataStore!.getChunksLinkingTo(groupName, storedName, file)) {
+        if (!changes.files.has(id.split('//').slice(2, -2).join('//'))) linking.add(id);
+      }
+    }
+    const linkingFiles = [
+      ...new Set([...linking].map((id) => id.split('//').slice(2, -2).join('//'))),
+    ];
+    for (const chunk of await this.readChunkSymbols(groupName, storedName, 'file', linkingFiles)) {
+      if (!linking.has(chunk.chunk_id)) continue;
+      const own = new Set(
+        (chunk.use_sites ?? [])
+          .filter((site) => site.module !== undefined && site.on === undefined)
+          .map((site) => site.name)
+      );
+      if (own.size === 0) continue;
+      imported.set(chunk.chunk_id, own);
+      pool.set(chunk.chunk_id, chunk);
+    }
     await this.addClassChains(groupName, storedName, pool);
     this.resolveAliases(groupName, storedName, [...pool.values()]);
     await this.addModuleFiles(groupName, storedName, pool);
@@ -1958,7 +1983,8 @@ export class Indexer {
     const { edges } = buildSymbolEdges(
       [...pool.values()],
       MAX_DEFINITION_FANOUT,
-      (chunkId, name) => changedIds.has(chunkId) || names.has(name)
+      (chunkId, name) =>
+        changedIds.has(chunkId) || names.has(name) || (imported.get(chunkId)?.has(name) ?? false)
     );
     this.metadataStore!.applyGraphChanges(groupName, storedName, { ...changes, names }, edges);
     console.log(

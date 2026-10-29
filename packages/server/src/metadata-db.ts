@@ -579,6 +579,17 @@ export class MetadataStore {
     return this.getEdgesToStmt.all(chunkId).map((row) => toEdge(row as EdgeRow));
   }
 
+  /** The chunks with an edge into a file of a project. */
+  getChunksLinkingTo(group: string, project: string, file: string): string[] {
+    return (
+      this.db
+        .prepare(
+          'SELECT DISTINCT from_chunk_id FROM symbol_edges WHERE to_chunk_id >= ? AND to_chunk_id < ?'
+        )
+        .all(...idRange(`${group}//${project}//${file}//`)) as Array<{ from_chunk_id: string }>
+    ).map((row) => row.from_chunk_id);
+  }
+
   deleteEdgesForChunk(chunkId: string): void {
     this.deleteChunkEdgesStmt.run(chunkId, chunkId);
     const [group, project] = chunkId.split('//');

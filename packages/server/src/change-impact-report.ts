@@ -371,21 +371,34 @@ export async function changeImpactReport(
     row.through.push({ name, calls });
   }
   rows.push(...wrappers.values());
-  // A long method split over chunks is one dependent: its chunks share a row.
+  // A long method split over chunks is one dependent: its chunks share a row,
+  // the one where it begins or, when its chunks are at different steps, the nearest.
+  const defines = (r: Row) =>
+    Array.isArray(r.payload?.['defines_symbols']) ? (r.payload['defines_symbols'] as string[]) : [];
   const byHead = new Map<string, Row>();
   for (let i = rows.length - 1; i >= 0; i--) {
     const r = rows[i]!;
+    if (r.dep.hop === 0) continue;
     const method = r.own.length === 1 && r.through.length === 0 ? r.own[0]! : undefined;
-    const head = method !== undefined ? heads.get(r.dep.chunkId)?.get(method) : undefined;
+    if (method === undefined) continue;
+    const head =
+      heads.get(r.dep.chunkId)?.get(method) ??
+      (defines(r).includes(method) ? r.dep.chunkId : undefined);
     if (!head) continue;
-    const key = `${head}\0${method}\0${r.step}\0${r.exact}`;
+    const key = `${head}\0${method}`;
     const kept = byHead.get(key);
     if (!kept) {
       byHead.set(key, r);
       continue;
     }
-    // Keep the earlier chunk's row, with this one's chunk under it.
-    const [first, later] = r.startLine < kept.startLine ? [r, kept] : [kept, r];
+    // Keep the nearer row, else the earlier chunk's, with the other chunk under it.
+    const nearer = (a: Row, b: Row) =>
+      a.step !== b.step
+        ? a.step < b.step
+        : a.exact !== b.exact
+          ? a.exact
+          : a.startLine < b.startLine;
+    const [first, later] = nearer(r, kept) ? [r, kept] : [kept, r];
     first.more = [...(first.more ?? []), later.dep.chunkId, ...(later.more ?? [])];
     for (const name of later.dep.symbols)
       if (!first.dep.symbols.includes(name)) first.dep.symbols.push(name);
@@ -404,9 +417,14 @@ export async function changeImpactReport(
   // `depth` counts steps; the walk counts chunks, and a chunk's own calls add
   // steps, so what lies further than `depth` steps is counted, not listed.
   const shown = rows.filter((r) => r.step <= depth);
-  const listed = new Set(shown.filter((r) => r.dep.hop > 0).map((r) => r.dep.chunkId));
+  const listed = new Set(
+    shown.filter((r) => r.dep.hop > 0).flatMap((r) => [r.dep.chunkId, ...(r.more ?? [])])
+  );
   const further = new Set(
-    rows.filter((r) => r.dep.hop > 0 && !listed.has(r.dep.chunkId)).map((r) => r.dep.chunkId)
+    rows
+      .filter((r) => r.dep.hop > 0)
+      .flatMap((r) => [r.dep.chunkId, ...(r.more ?? [])])
+      .filter((id) => !listed.has(id))
   ).size;
   const code = shown.filter((r) => !r.test);
   const tests = shown.filter((r) => r.test);

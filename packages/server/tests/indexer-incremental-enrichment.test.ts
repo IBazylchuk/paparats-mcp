@@ -460,6 +460,20 @@ describe('indexProject incremental git enrichment', () => {
       "import { beta } from './b';\nimport { delta } from './d';\nexport function gamma() {\n  return beta() + delta();\n}\n"
     );
     await update('src/b.ts', null);
+    // Imported under another name: an update of the file defining it links the import again.
+    const provider =
+      'function LedgerProvider() {\n  return 1;\n}\nexport default LedgerProvider;\n';
+    const page =
+      "import Provider from './provider';\nexport function page() {\n  return Provider();\n}\n";
+    fs.writeFileSync(path.join(projectDir, 'src', 'provider.ts'), provider);
+    fs.writeFileSync(path.join(projectDir, 'src', 'page.ts'), page);
+    await update('src/provider.ts', provider);
+    await update('src/page.ts', page);
+    const providerLink = () =>
+      stored().filter((e) => e.includes('src/page.ts') && e.includes(' LedgerProvider '));
+    expect(providerLink()).toHaveLength(1);
+    await update('src/provider.ts', provider.replace('return 1', 'return 2'));
+    expect(providerLink()).toHaveLength(1);
     // A project pass applies what it changed the same way.
     fs.writeFileSync(
       path.join(projectDir, 'src', 'd.ts'),
