@@ -220,7 +220,7 @@ describe('Searcher', () => {
       qdrantUrl: 'http://127.0.0.1:6333',
       embeddingProvider,
       qdrantClient: mockQdrant.client as never,
-      allowedProjects: ['billing', 'feed-poster'], // clean names from PAPARATS_PROJECTS
+      allowedProjects: ['billing', 'lantern-sync'], // clean names from PAPARATS_PROJECTS
       projectSuffix: '-v3',
     });
 
@@ -232,7 +232,7 @@ describe('Searcher', () => {
       toCollectionName('test-group'),
       expect.objectContaining({
         filter: {
-          must: [{ key: 'project', match: { any: ['billing-v3', 'feed-poster-v3'] } }],
+          must: [{ key: 'project', match: { any: ['billing-v3', 'lantern-sync-v3'] } }],
           must_not: META_NOT,
         },
       })

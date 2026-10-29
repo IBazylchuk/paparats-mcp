@@ -2,7 +2,7 @@
  * Terminology (glossary) layer types.
  *
  * A company glossary — abbreviations, service names, domain terms — that dense
- * embeddings alone retrieve poorly ("CLIC", "feed-poster", "the stand"). Stored
+ * embeddings alone retrieve poorly ("QRV", "lantern-sync", "the kiln"). Stored
  * in a separate Qdrant collection (`paparats_<group>_terms`, qwen3 1024d) and
  * authored by the AGENT via MCP tools (like arch memory), not by the file
  * indexer. A bulk-extraction skill can seed it by walking the docs.
@@ -11,7 +11,7 @@
 /** A glossary entry as stored/returned. */
 export interface Term {
   id: string;
-  /** The canonical term, e.g. "feed-poster". */
+  /** The canonical term, e.g. "lantern-sync". */
   term: string;
   /** Plain-language definition. */
   definition: string;

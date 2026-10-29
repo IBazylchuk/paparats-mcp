@@ -77,18 +77,18 @@ describe('parseChunkId', () => {
 
 describe('applyProjectSuffix', () => {
   it('is a no-op when the suffix is empty (upstream behavior)', () => {
-    expect(applyProjectSuffix('feed-poster', '')).toBe('feed-poster');
+    expect(applyProjectSuffix('lantern-sync', '')).toBe('lantern-sync');
   });
 
   it('appends the suffix when set', () => {
-    expect(applyProjectSuffix('feed-poster', '-v3')).toBe('feed-poster-v3');
+    expect(applyProjectSuffix('lantern-sync', '-v3')).toBe('lantern-sync-v3');
   });
 
   it('appends unconditionally — callers always pass a clean name', () => {
     // Every call-site (write chokepoint, delete_project, eviction) passes the
     // un-suffixed name, so a plain append is correct and there is no
     // double-append to guard against.
-    expect(applyProjectSuffix('feed-poster', '-v3')).toBe('feed-poster-v3');
+    expect(applyProjectSuffix('lantern-sync', '-v3')).toBe('lantern-sync-v3');
   });
 
   it('leaves an empty project name empty when suffix is empty', () => {
@@ -126,16 +126,16 @@ describe('applyProjectSuffix', () => {
 
 describe('stripProjectSuffix', () => {
   it('is a no-op when the suffix is empty', () => {
-    expect(stripProjectSuffix('feed-poster', '')).toBe('feed-poster');
+    expect(stripProjectSuffix('lantern-sync', '')).toBe('lantern-sync');
   });
 
   it('strips the suffix when present', () => {
-    expect(stripProjectSuffix('feed-poster-v3', '-v3')).toBe('feed-poster');
+    expect(stripProjectSuffix('lantern-sync-v3', '-v3')).toBe('lantern-sync');
   });
 
   it('leaves names that do not carry the suffix untouched', () => {
     // e.g. a chunk written by the OLD stand (no suffix) surfacing on the new one
-    expect(stripProjectSuffix('feed-poster', '-v3')).toBe('feed-poster');
+    expect(stripProjectSuffix('lantern-sync', '-v3')).toBe('lantern-sync');
   });
 
   it('round-trips with applyProjectSuffix', () => {

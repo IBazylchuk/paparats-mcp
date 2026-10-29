@@ -15,10 +15,10 @@ import { DocsIdfStore } from '../src/docs/idf-store.js';
 
 describe('tokenize', () => {
   it('lowercases and splits on non-alphanumeric', () => {
-    expect(tokenize('Deploy the Feed-Poster service!')).toEqual([
+    expect(tokenize('Deploy the Lantern-Sync service!')).toEqual([
       'deploy',
-      'feed',
-      'poster',
+      'lantern',
+      'sync',
       'service',
     ]);
   });
@@ -60,7 +60,7 @@ describe('tokenize', () => {
         .split(/[^a-z0-9_]+/)
         .filter((t) => t.length > 1);
     const text =
-      'Deploy `feed-poster` v2.3 (see https://example.com/a_b?x=1); ' +
+      'Deploy `lantern-sync` v2.3 (see https://example.com/a_b?x=1); ' +
       "CamelCase, snake_case & kebab-case — it's 42% done. #tag @user\n\tEND";
     const tokens = tokenize(text);
     expect(tokens.length).toBeGreaterThan(15);
