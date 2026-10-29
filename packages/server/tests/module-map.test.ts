@@ -176,6 +176,96 @@ describe('buildModuleMap', () => {
     expect(map.modules.flatMap((m) => m.files)).not.toContain('p//src/lib/log.ts');
   });
 
+  /** Every file calling every other one, so they form one module. */
+  function oneModule(files: string[]): MapEdge[] {
+    const edges: MapEdge[] = [];
+    for (const a of files) for (const b of files) if (a !== b) edges.push(e(a, b, `to_${b}`));
+    return edges;
+  }
+
+  it('names a module after the folder it fills, its own files first', () => {
+    const edges = [
+      ...oneModule([
+        'src/features/editor/canvas/model.ts',
+        'src/features/editor/canvas/panel.tsx',
+        'src/features/editor/canvas/editor.tsx',
+        'src/features/editor/hooks/useDraft.ts',
+        'src/features/editor/hooks/useLayout.ts',
+        'src/features/editor/lib/draft.ts',
+        'src/features/theme/colors.ts',
+      ]),
+      // Another module in src/features, so that folder holds much else.
+      ...oneModule([
+        'src/features/billing/plans.ts',
+        'src/features/billing/checkout.ts',
+        'src/features/billing/invoice.ts',
+      ]),
+    ];
+    // The other folder's file is the most called one.
+    for (const f of ['canvas/model.ts', 'canvas/panel.tsx', 'hooks/useDraft.ts']) {
+      edges.push(e(`src/features/editor/${f}`, 'src/features/theme/colors.ts', 'btn'));
+    }
+    const editor = buildModuleMap(edges, []).modules.find((m) => m.files.length === 7)!;
+    expect(editor.name).toBe('src/features/editor');
+    expect(editor.files.at(-1)).toBe('p//src/features/theme/colors.ts');
+  });
+
+  it('names a module split between two folders after both', () => {
+    const map = buildModuleMap(
+      [
+        ...oneModule([
+          'src/lib/auth/a.ts',
+          'src/lib/auth/b.ts',
+          'src/lib/auth/c.ts',
+          'src/components/Form/d.tsx',
+          'src/components/Form/e.tsx',
+          'src/components/Form/f.tsx',
+        ]),
+        ...oneModule([
+          'src/lib/http/a.ts',
+          'src/lib/http/b.ts',
+          'src/components/List/c.tsx',
+          'src/components/List/d.tsx',
+        ]),
+      ],
+      []
+    );
+    expect(map.modules.map((m) => m.name)).toEqual([
+      'src/components/Form + src/lib/auth',
+      'src/components/List + src/lib/http',
+    ]);
+  });
+
+  it('keeps the files of another app out of a module, a few of them with their own app', () => {
+    const edges = [
+      ...oneModule([
+        'packages/widget/src/view.ts',
+        'packages/widget/src/worker.ts',
+        'packages/widget/src/store.ts',
+        'packages/widget/src/api.ts',
+        'src/lib/items/types.ts',
+        'src/lib/items/reducer.ts',
+        'src/lib/items/format.ts',
+        'src/lib/items/parse.ts',
+      ]),
+      ...oneModule(['src/app/home.tsx', 'src/app/layout.tsx', 'src/app/nav.tsx']),
+      // One app file the widget calls most, linked a little to the app's module.
+      ...oneModule([
+        'packages/widget/src/view.ts',
+        'packages/widget/src/store.ts',
+        'src/components/Banner.tsx',
+      ]),
+      e('src/components/Banner.tsx', 'src/app/layout.tsx', 'to_layout'),
+    ];
+    const map = buildModuleMap(edges, []);
+    const moduleOf = (file: string) => map.modules.find((m) => m.files.includes(`p//${file}`))!;
+    expect(moduleOf('src/lib/items/types.ts')).not.toBe(moduleOf('packages/widget/src/view.ts'));
+    expect(moduleOf('src/components/Banner.tsx')).toBe(moduleOf('src/app/home.tsx'));
+    const widget = moduleOf('packages/widget/src/view.ts');
+    expect(widget.files.every((f) => f.startsWith('p//packages/widget/'))).toBe(true);
+    expect(widget.uses.map((l) => l.module)).toContain(moduleOf('src/lib/items/types.ts').id);
+  });
+
   it('tells apart two modules in the same folder by their most called file', () => {
     const edges: MapEdge[] = [];
     for (const g of ['x', 'y']) {

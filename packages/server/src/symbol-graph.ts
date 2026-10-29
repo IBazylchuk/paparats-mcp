@@ -79,6 +79,10 @@ export interface ChunkSymbols {
   class_methods?: string[];
   /** The classes, modules and interfaces it defines, by full path, with their parents (see `DefinedSymbol.parents`). */
   def_classes?: Record<string, ClassParent[]>;
+  /** Calls between its own methods: each method with the methods of the chunk calling it (see `SymbolExtractionResult.inner_calls`). */
+  inner_calls?: Record<string, string[]>;
+  /** TS/JS: the name its module exports by default (see `SymbolExtractionResult.default_export`). */
+  default_export?: string;
 }
 
 /**
@@ -89,8 +93,12 @@ export interface ChunkSymbols {
  *
  *  1 — TypeScript and JavaScript path alias imports (`~/lib/dates`) link as
  *      the relative import they resolve to (`resolveAliasImports()`).
+ *  2 — in an ES module a name not imported links only within its file; an
+ *      import follows re-exports to the file defining the name, and links to
+ *      nothing when its module is not in the project; `.d.ts` declarations
+ *      are not linked to; edges carry the steps of `reach_symbols`.
  */
-export const GRAPH_FORMAT = 1;
+export const GRAPH_FORMAT = 2;
 
 /** TypeScript and JavaScript files: a class there is the one its file declares or imports. */
 const ES_FILE = /\.(?:[cm]?[jt]sx?)$/;
@@ -110,7 +118,7 @@ function moduleFiles(from: string | null, spec: string): Set<string> | null {
   if (!from || !spec.startsWith('.')) return null;
   const parts = from.split('//');
   const file = parts.slice(2).join('//');
-  const base = posix.normalize(posix.join(posix.dirname(file), spec));
+  const base = posix.normalize(posix.join(posix.dirname(file), spec)).replace(/\/$/, '');
   const stem = base.replace(/\.(?:[cm]?[jt]sx?)$/, '');
   const prefix = `${parts[0]}//${parts[1]}//`;
   const files = new Set<string>([prefix + base]);
@@ -119,6 +127,106 @@ function moduleFiles(from: string | null, spec: string): Set<string> | null {
     files.add(`${prefix}${base}/index${ext}`);
   }
   return files;
+}
+
+/** A re-export of a barrel file: `exported` is the public name (`*` for `export * from`). */
+interface Reexport {
+  exported: string;
+  name: string;
+  module: string;
+  file: string;
+}
+
+/**
+ * Where `name`, imported from `module` in the file of chunk `from`, is
+ * defined: the module's files when they define it, else through the
+ * re-exports of those files (`export { x as y } from`, `export * from`), up
+ * to five files deep. Each file with the name it defines there (another one
+ * after `as`). Null when the module is not a relative import; empty when it
+ * names no file of the project (generated, or not indexed) or none defines it.
+ */
+function importedDefinitions(
+  from: string,
+  module: string,
+  name: string,
+  definesIn: (file: string, name: string) => boolean,
+  reexports: Map<string, Reexport[]>,
+  indexedFiles: Set<string>,
+  defaultOf: Map<string, string>
+): Map<string, string> | null {
+  const start = moduleFiles(from, module);
+  if (!start) return null;
+  const found = new Map<string, string>();
+  const seen = new Set<string>();
+  const queue: Array<{ files: Set<string>; name: string; depth: number }> = [
+    { files: start, name, depth: 0 },
+  ];
+  while (queue.length > 0) {
+    const { files, name: wanted, depth } = queue.shift()!;
+    for (const file of files) {
+      if (!indexedFiles.has(file) || seen.has(`${file}\0${wanted}`)) continue;
+      seen.add(`${file}\0${wanted}`);
+      if (wanted !== 'default' && definesIn(file, wanted)) {
+        found.set(file, wanted);
+        continue;
+      }
+      let through = (reexports.get(file) ?? []).filter(
+        (r) => r.exported === wanted || r.exported === '*'
+      );
+      // `export { default as x } from`, or `import x from` a module that does
+      // not define `x`: its default export, declared there or re-exported
+      // (`export { default } from './x'`).
+      if (wanted === 'default' || (depth === 0 && through.length === 0)) {
+        const byDefault = defaultOf.get(file);
+        if (byDefault !== undefined) {
+          if (definesIn(file, byDefault)) found.set(file, byDefault);
+          continue;
+        }
+        through = (reexports.get(file) ?? []).filter((r) => r.exported === 'default');
+      }
+      if (depth >= 5) continue;
+      for (const r of through) {
+        const next = moduleFiles(file, r.module);
+        if (next)
+          queue.push({ files: next, name: r.exported === '*' ? wanted : r.name, depth: depth + 1 });
+      }
+    }
+  }
+  return found;
+}
+
+/** Steps from each of `methods` back to every method of the chunk reaching one of them through its own calls. */
+export function innerReach(
+  inner: Record<string, string[]> | undefined,
+  methods: Iterable<string>
+): Map<string, number> {
+  const steps = new Map<string, number>();
+  if (!inner) return steps;
+  let frontier = [...methods];
+  for (const m of frontier) steps.set(m, 0);
+  for (let d = 1; frontier.length > 0; d++) {
+    const next: string[] = [];
+    for (const m of frontier) {
+      for (const caller of Object.hasOwn(inner, m) ? inner[m]! : []) {
+        if (steps.has(caller)) continue;
+        steps.set(caller, d);
+        next.push(caller);
+      }
+    }
+    frontier = next;
+  }
+  for (const m of methods) steps.delete(m);
+  return steps;
+}
+
+/**
+ * The project paths a relative import in the file `fromFile` (a path, not a
+ * chunk id) may name: the file itself, with each module extension, or the
+ * folder's index. Empty for a package or alias specifier.
+ */
+export function moduleFileCandidates(fromFile: string, spec: string): string[] {
+  const files = moduleFiles(`g//p//${fromFile}`, spec);
+  return files ? [...files].map((f) => f.split('//').slice(2).join('//')) : [];
 }
 
 /** A class as a use resolves it: its full path and, for a TS/JS class from a known file, that file. */
@@ -485,9 +593,71 @@ export function buildSymbolEdges(
 
   const classes = new ClassTable(chunkSymbols);
 
+  // ES module facts per file: what it re-exports, and whether it imports at
+  // all (a script's top-level names are global, a module's are imported).
+  const indexedFiles = new Set<string>();
+  const reexports = new Map<string, Reexport[]>();
+  const esModules = new Set<string>();
+  for (const chunk of chunkSymbols) {
+    const file = fileKey(chunk.chunk_id);
+    if (!file) continue;
+    indexedFiles.add(file);
+    if (!isEsFile(file)) continue;
+    for (const site of chunk.use_sites ?? []) {
+      if (site.module === undefined && !site.external) continue;
+      esModules.add(file);
+      if (!site.reexport || site.module === undefined) continue;
+      let list = reexports.get(file);
+      if (!list) reexports.set(file, (list = []));
+      list.push({ exported: site.from, name: site.name, module: site.module, file });
+    }
+    if (/\.[cm]?tsx?$/.test(file)) esModules.add(file);
+  }
+  const defaultOf = new Map<string, string>();
+  for (const chunk of chunkSymbols) {
+    const file = fileKey(chunk.chunk_id);
+    if (file && chunk.default_export !== undefined) defaultOf.set(file, chunk.default_export);
+  }
+  const definesIn = (file: string, name: string) =>
+    [...(definedBy.get(name) ?? [])].some((id) => fileKey(id) === file);
+  const isDeclarationFile = (id: string) => /\.d\.[cm]?ts$/.test(fileKey(id) ?? '');
+  const innerOf = new Map<string, Record<string, string[]>>();
+  for (const chunk of chunkSymbols)
+    if (chunk.inner_calls) innerOf.set(chunk.chunk_id, chunk.inner_calls);
+
   const edges = new Map<string, SymbolEdge & { callers: Set<string>; reach: Set<string> }>();
   const skipped = new Set<string>();
   const stats: SymbolEdgeStats = { skippedSymbols: 0, skippedEdges: 0 };
+
+  const addEdge = (
+    from: string,
+    to: string,
+    sym: string,
+    site: UseSite,
+    confidence: EdgeConfidence
+  ): void => {
+    const key = `${from}\0${to}\0${sym}`;
+    let edge = edges.get(key);
+    if (!edge) {
+      edge = {
+        from_chunk_id: from,
+        to_chunk_id: to,
+        relation_type: relationOf(site),
+        symbol_name: sym,
+        confidence,
+        callers: new Set(),
+        reach: new Set(),
+      };
+      edges.set(key, edge);
+    } else if (CONFIDENCE_RANK[confidence] > CONFIDENCE_RANK[edge.confidence!]) {
+      edge.confidence = confidence;
+    }
+    // One edge per (from, to, name), as the most telling of its uses.
+    if (RELATION_RANK[relationOf(site)] > RELATION_RANK[edge.relation_type]) {
+      edge.relation_type = relationOf(site);
+    }
+    (site.through ? edge.reach : edge.callers).add(site.from);
+  };
 
   for (const chunk of chunkSymbols) {
     const sites: UseSite[] =
@@ -520,16 +690,55 @@ export function buildSymbolEdges(
         const beside = [...defs].filter((id) => fileKey(id) === callerFile && !owned?.has(id));
         if (beside.length > 0) defs = new Set(beside);
       }
-      // An imported name is its module's when the module defines it
-      // (`import { parse } from './names.js'`); a barrel re-exporting it does not.
+      // A `.d.ts` file declares what exists elsewhere (globals, a package's
+      // types): nothing there is called.
+      if (callerFile && !isDeclarationFile(callerFile)) {
+        defs = new Set([...defs].filter((id) => !isDeclarationFile(id)));
+      }
+      // An imported name is the one its module defines (`import { parse } from
+      // './names.js'`), through the barrels re-exporting it. A module the
+      // project does not hold (generated code, not indexed) defines nothing here.
       let imported = false;
-      if (site.module !== undefined && site.on === undefined) {
-        const files = moduleFiles(callerFile, site.module);
-        const there = files ? [...defs].filter((id) => files.has(fileKey(id)!)) : [];
-        if (there.length > 0) {
-          defs = new Set(there);
-          imported = true;
+      let importedAs: Map<string, string> | null = null;
+      if (site.module !== undefined && site.on === undefined && callerFile) {
+        importedAs = importedDefinitions(
+          callerFile,
+          site.module,
+          sym,
+          definesIn,
+          reexports,
+          indexedFiles,
+          defaultOf
+        );
+        if (importedAs) {
+          const there = [...defs].filter((id) => importedAs!.get(fileKey(id)!) === sym);
+          if (there.length > 0 || importedAs.size > 0 || isEsFile(callerFile)) {
+            defs = new Set(there);
+            imported = there.length > 0;
+          }
         }
+      } else if (
+        callerFile &&
+        esModules.has(callerFile) &&
+        site.on === undefined &&
+        !site.onObject &&
+        !site.reexport
+      ) {
+        // In an ES module a name it does not import is its own, or a global.
+        defs = new Set([...defs].filter((id) => fileKey(id) === callerFile));
+      }
+      // Imported under another name (`export { parse as parseName } from`).
+      const aliased =
+        importedAs && defs.size === 0 ? [...importedAs].filter(([, name]) => name !== sym) : [];
+      if (aliased.length > 0) {
+        for (const [file, name] of aliased) {
+          for (const id of definedBy.get(name) ?? []) {
+            if (fileKey(id) !== file || id === chunk.chunk_id) continue;
+            if (only && !only(chunk.chunk_id, sym)) continue;
+            addEdge(chunk.chunk_id, id, sym, site, 'EXTRACTED');
+          }
+        }
+        continue;
       }
       if (defs.size === 0) continue;
       if (only && !only(chunk.chunk_id, sym)) continue;
@@ -555,6 +764,23 @@ export function buildSymbolEdges(
         );
         if (member === null) continue;
         onClass = member ?? null;
+        // `ThemeContext.Provider`, `api.fetch`: a member of an imported value,
+        // defined (if anywhere in the project) in the file that value comes from.
+        if (!member && site.module !== undefined && callerFile && isEsFile(callerFile)) {
+          const home = importedDefinitions(
+            callerFile,
+            site.module,
+            site.on,
+            definesIn,
+            reexports,
+            indexedFiles,
+            defaultOf
+          );
+          if (home) {
+            defs = new Set([...defs].filter((id) => home.has(fileKey(id)!)));
+            if (defs.size === 0) continue;
+          }
+        }
       } else {
         onClass = resolveClass(site, definedIn.get(sym));
       }
@@ -597,27 +823,7 @@ export function buildSymbolEdges(
               : 'INFERRED';
         }
 
-        const key = `${chunk.chunk_id}\0${defChunkId}\0${sym}`;
-        let edge = edges.get(key);
-        if (!edge) {
-          edge = {
-            from_chunk_id: chunk.chunk_id,
-            to_chunk_id: defChunkId,
-            relation_type: relationOf(site),
-            symbol_name: sym,
-            confidence,
-            callers: new Set(),
-            reach: new Set(),
-          };
-          edges.set(key, edge);
-        } else if (CONFIDENCE_RANK[confidence] > CONFIDENCE_RANK[edge.confidence!]) {
-          edge.confidence = confidence;
-        }
-        // One edge per (from, to, name), as the most telling of its uses.
-        if (RELATION_RANK[relationOf(site)] > RELATION_RANK[edge.relation_type]) {
-          edge.relation_type = relationOf(site);
-        }
-        (site.through ? edge.reach : edge.callers).add(site.from);
+        addEdge(chunk.chunk_id, defChunkId, sym, site, confidence);
       }
     }
   }
@@ -626,10 +832,26 @@ export function buildSymbolEdges(
     edges: [...edges.values()].map(({ callers, reach, ...edge }) => {
       // A use outside any method makes the whole chunk the caller.
       const whole = callers.has('');
-      const further = whole ? [] : [...reach].filter((name) => !callers.has(name));
+      if (whole) return { ...edge, from_symbols: [] };
+      const inner = innerOf.get(edge.from_chunk_id);
+      if (inner) {
+        // The chunk's other methods reaching the calling ones, with their steps.
+        const steps = [...innerReach(inner, callers)].sort(
+          (a, b) => a[1] - b[1] || a[0].localeCompare(b[0])
+        );
+        return {
+          ...edge,
+          from_symbols: [...callers],
+          ...(steps.length > 0
+            ? { reach_symbols: steps.map(([n]) => n), reach_steps: steps.map(([, d]) => d) }
+            : {}),
+        };
+      }
+      // Symbols stored by an older extraction: `through` uses, steps unknown.
+      const further = [...reach].filter((name) => !callers.has(name));
       return {
         ...edge,
-        from_symbols: whole ? [] : [...callers],
+        from_symbols: [...callers],
         ...(further.length > 0 ? { reach_symbols: further } : {}),
       };
     }),

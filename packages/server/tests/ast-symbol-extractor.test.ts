@@ -897,19 +897,49 @@ end`;
     );
     tree.delete();
 
-    const from = (name: string, through?: boolean) =>
-      results[0]!
-        .use_sites!.filter((u) => u.name === name && !!u.through === !!through)
-        .map((u) => u.from)
-        .sort();
-    // `ledger_entry` is called bare, without arguments: `preview` and `call` reach the
-    // call through it, `self.preview` through `preview`. `summary` only has a parameter
-    // of that name.
-    expect(from('signature_valid?')).toEqual(['ledger_entry']);
-    expect(from('signature_valid?', true)).toEqual(['call', 'preview']);
-    expect(from('deliver', true)).toEqual([]);
+    const r = results[0]!;
+    // The call is recorded once, from the method making it; the chunk's own
+    // calls are kept apart. `ledger_entry` is called bare, without arguments, by
+    // `preview` and `call`; `summary` only has a parameter of that name.
+    expect(r.use_sites!.filter((u) => u.name === 'signature_valid?').map((u) => u.from)).toEqual([
+      'ledger_entry',
+    ]);
+    expect(r.use_sites!.some((u) => u.through)).toBe(false);
+    expect(r.inner_calls?.['ledger_entry']).toEqual(['call', 'preview']);
+    expect(r.inner_calls?.['summary']).toEqual(['preview']);
     // Own methods stay out of the uses: they link to nothing outside the chunk.
-    expect(results[0]!.uses_symbols).not.toContain('ledger_entry');
+    expect(r.uses_symbols).not.toContain('ledger_entry');
+  });
+
+  it('records a bare Ruby call to a method its class defines in another chunk of the file', async () => {
+    const code = `module Shop
+  class Cart
+    def row
+      { t: subtotal, n: name }
+    end
+
+    def subtotal
+      name = 1
+      name
+    end
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [
+        { startLine: 0, endLine: 5 },
+        { startLine: 6, endLine: 11 },
+      ],
+      'ruby'
+    );
+    tree.delete();
+    // `subtotal` is a method of the class; `name` is no method of it.
+    expect(results[0]!.use_sites!.filter((u) => u.name !== 'Shop')).toEqual([
+      { name: 'subtotal', from: 'row', on: '::Shop::Cart' },
+    ]);
+    expect(results[1]!.use_sites).toEqual([]);
   });
 
   it('marks a Ruby class used as a value, not one called on or included', async () => {
@@ -920,10 +950,11 @@ end`;
   end
   def run
     dispatch(queue, Fallback)
-    keep = Holder.new(1)
+    register(Holder.new(1))
+    @store = Store.new(2)
     Invoice.overdue
     Rebuild.new(ids).call
-    raise Failed unless keep.is_a?(Holder)
+    raise Failed unless @store.is_a?(Store)
   end
 end`;
     const { tree, language } = parse('ruby', code);
@@ -1399,7 +1430,7 @@ function handler() {}`;
     ]);
     // Without the project's packages known, \`express\` may be one of them.
     const unknown = sites(null).use_sites!.filter((u) => u.name === 'listen');
-    expect(unknown).toEqual([{ name: 'listen', from: 'run' }]);
+    expect(unknown).toEqual([{ name: 'listen', from: 'run', onObject: true }]);
   });
 
   it('counts TypeScript names read as values when the file imports or declares them', async () => {
@@ -1442,5 +1473,71 @@ export function g(HOME: string) { return HOME; }`;
 
     const r = results[0]!;
     expect(r.defines_symbols).toEqual(r.defined_symbols.map((d) => d.name));
+  });
+
+  describe('TS/JS imports and exports', () => {
+    const extract = (code: string) => {
+      const { tree, language } = parse('typescript', code);
+      const lines = code.split('\n').length;
+      const results = extractSymbolsForChunks(
+        tree,
+        language,
+        [{ startLine: 0, endLine: lines - 1 }],
+        'typescript'
+      );
+      tree.delete();
+      return results[0]!;
+    };
+    const sitesNamed = (r: ReturnType<typeof extract>, name: string) =>
+      (r.use_sites ?? []).filter((u) => u.name === name);
+
+    it('records the name a module exports by default', () => {
+      expect(extract('function Link() {}\nexport default Link;\n').default_export).toBe('Link');
+      expect(extract('export default function Card() {}\n').default_export).toBe('Card');
+    });
+
+    it('records `export * from` and re-exports of a default', () => {
+      const r = extract(
+        "export * from './format';\nexport { default } from './Link';\nexport { default as Card } from './Card';\n"
+      );
+      expect(sitesNamed(r, '*')).toEqual([
+        { name: '*', from: '*', reexport: true, module: './format' },
+      ]);
+      expect(sitesNamed(r, 'default').map((u) => [u.from, u.module])).toEqual([
+        ['default', './Link'],
+        ['Card', './Card'],
+      ]);
+    });
+
+    it('records a call through `import { a as b }` under the exported name', () => {
+      const r = extract(
+        "import { createStore as mk } from './store';\nexport function run() { mk(1); }\n"
+      );
+      expect(sitesNamed(r, 'createStore')).toEqual([
+        { name: 'createStore', from: 'run', module: './store' },
+      ]);
+      expect(sitesNamed(r, 'mk')).toEqual([]);
+    });
+
+    it('records names destructured from a dynamic import, at the top level and in a function', () => {
+      const r = extract(
+        [
+          "import { it } from 'vitest';",
+          "const { settings } = await import('./settings');",
+          "it('x', async () => {",
+          "  const { createStore: mk } = await import('./store');",
+          '  mk(settings);',
+          '});',
+          'function local(createStore) { createStore(); }',
+          '',
+        ].join('\n')
+      );
+      expect(sitesNamed(r, 'createStore').map((u) => u.module)).toContain('./store');
+      // A parameter of the same name is not the import.
+      expect(sitesNamed(r, 'createStore').filter((u) => u.from === 'local')).toEqual([
+        { name: 'createStore', from: 'local' },
+      ]);
+      expect(sitesNamed(r, 'settings').map((u) => u.module)).toEqual(['./settings']);
+    });
   });
 });

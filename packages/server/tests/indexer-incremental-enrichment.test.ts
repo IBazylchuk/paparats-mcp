@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { execSync } from 'child_process';
-import { Indexer } from '../src/indexer.js';
+import { Indexer, toChunkSymbols } from '../src/indexer.js';
 import { MetadataStore } from '../src/metadata-db.js';
 import { createTreeSitterManager } from '../src/tree-sitter-parser.js';
 import { GRAPH_FORMAT, buildSymbolEdges, type ChunkSymbols } from '../src/symbol-graph.js';
@@ -320,7 +320,7 @@ describe('indexProject incremental git enrichment', () => {
       'test-group',
       'test-project',
       'src/c.ts',
-      'export function gamma() {\n  return alpha() + beta();\n}\n',
+      "import { alpha } from './a';\nimport { beta } from './b';\nexport function gamma() {\n  return alpha() + beta();\n}\n",
       'typescript',
       project
     );
@@ -332,7 +332,7 @@ describe('indexProject incremental git enrichment', () => {
       'test-group',
       'test-project',
       'src/c.ts',
-      'export function gamma() {\n  return beta();\n}\n',
+      "import { beta } from './b';\nexport function gamma() {\n  return beta();\n}\n",
       'typescript',
       project
     );
@@ -364,11 +364,11 @@ describe('indexProject incremental git enrichment', () => {
     const project = createProjectConfig(projectDir);
     fs.writeFileSync(
       path.join(projectDir, 'src', 'c.ts'),
-      'export function gamma() {\n  return alpha() + beta();\n}\n'
+      "import { alpha } from './a';\nimport { beta } from './b';\nexport function gamma() {\n  return alpha() + beta();\n}\n"
     );
     fs.writeFileSync(
       path.join(projectDir, 'src', 'd.ts'),
-      'export function delta() {\n  return gamma() + alpha();\n}\n'
+      "import { alpha } from './a';\nimport { gamma } from './c';\nexport function delta() {\n  return gamma() + alpha();\n}\n"
     );
     await indexer.indexProject(project);
 
@@ -377,13 +377,7 @@ describe('indexProject incremental git enrichment', () => {
         [...points.values()].flatMap((p) => {
           const payload = (p as { payload?: Record<string, unknown> }).payload ?? {};
           if (typeof payload['chunk_id'] !== 'string') return [];
-          return {
-            chunk_id: payload['chunk_id'] as string,
-            defines_symbols: (payload['defines_symbols'] as string[]) ?? [],
-            uses_symbols: (payload['uses_symbols'] as string[]) ?? [],
-            use_sites: payload['use_sites'] as ChunkSymbols['use_sites'],
-            def_owners: payload['def_owners'] as Record<string, string>,
-          };
+          return toChunkSymbols(payload['chunk_id'] as string, payload);
         })
       );
     const key = (e: {
@@ -437,23 +431,43 @@ describe('indexProject incremental git enrichment', () => {
 
     expect(stored()).toEqual(rebuilt());
     const scansBefore = fullScans();
-    // A second definition of `alpha`: its callers in c.ts and d.ts become ambiguous.
+    // A second definition of `alpha`: its callers import the one in a.ts and stay with it.
+    const alphaLinks = () => stored().filter((e) => e.includes(' alpha '));
+    expect(alphaLinks()).toHaveLength(2);
     await update('src/e.ts', 'export function alpha() {\n  return 2;\n}\n');
-    expect(stored().filter((e) => e.includes(' alpha AMBIGUOUS'))).toHaveLength(4);
-    // The first one goes: they link to the one left.
+    expect(alphaLinks()).toHaveLength(2);
+    expect(alphaLinks().every((e) => e.includes('src/a.ts') && e.includes('EXTRACTED'))).toBe(true);
+    // a.ts stops defining it: the imports name nothing, so they link to nothing.
     await update('src/a.ts', 'export function alphaOld() {\n  return 1;\n}\n');
     await update('src/e.ts', null);
-    expect(stored().some((e) => e.includes(' alpha '))).toBe(false);
-    await update('src/c.ts', 'export function gamma() {\n  return beta() + delta();\n}\n');
+    expect(alphaLinks()).toEqual([]);
+    // Through a barrel: an update reads the modules it re-exports from. A new
+    // `export *` re-exports names no list holds, so that one builds the graph again.
+    const barrel = "export * from './d';\n";
+    const phi = "import { delta } from './index';\nexport function phi() {\n  return delta();\n}\n";
+    fs.writeFileSync(path.join(projectDir, 'src', 'index.ts'), barrel);
+    fs.writeFileSync(path.join(projectDir, 'src', 'f.ts'), phi);
+    await update('src/index.ts', barrel);
+    expect(fullScans()).toBe(scansBefore + 1);
+    await update('src/f.ts', phi);
+    expect(
+      stored().some(
+        (e) => e.includes('src/f.ts') && e.includes('src/d.ts') && e.includes(' delta ')
+      )
+    ).toBe(true);
+    await update(
+      'src/c.ts',
+      "import { beta } from './b';\nimport { delta } from './d';\nexport function gamma() {\n  return beta() + delta();\n}\n"
+    );
     await update('src/b.ts', null);
     // A project pass applies what it changed the same way.
     fs.writeFileSync(
       path.join(projectDir, 'src', 'd.ts'),
-      'export function delta() {\n  return gamma();\n}\nexport function alpha() {\n  return 3;\n}\n'
+      "import { gamma } from './c';\nexport function delta() {\n  return gamma();\n}\nexport function alpha() {\n  return 3;\n}\n"
     );
     await indexer.indexProject(project);
     expect(stored()).toEqual(rebuilt());
-    expect(fullScans()).toBe(scansBefore);
+    expect(fullScans()).toBe(scansBefore + 1);
     expect(metadataStore.graphChanges('test-group', 'test-project')).toBeNull();
   });
 

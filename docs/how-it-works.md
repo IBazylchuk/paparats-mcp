@@ -84,7 +84,9 @@ Each edge records the methods that make the call. In TypeScript and JavaScript a
 re-export (`export { x } from './x.js'`, the usual barrel `index.ts` or `lib.ts`) is a
 `reexports` edge, so a change to `x` lists the files that publish it. A call on a new
 object (`Rebuild.new(ids).call`, `new Queue().flush()`) links to that class's method. A
-Ruby class used as a value (passed, kept in a hash or a variable) is a `references` edge.
+Ruby class used as a value (passed, kept in a hash, an array or a variable) is a
+`references` edge; `Foo.new` stored in a variable is not, since the variable's calls link
+one by one.
 A Ruby constant resolves as Ruby looks it up: `Base` inside `module Billing` is
 `Billing::Base` when that exists, otherwise the top-level `Base`; the `Billing` in
 `Billing::Base` is not a use of its own (the `Lexer` in `Lexer::MAX_DEPTH` is), and a constant defined nowhere in the project (a
@@ -93,7 +95,10 @@ gem's `ActiveRecord::Base`) links to nothing. A call on an object does not link 
 not define it. A TypeScript or JavaScript function that is not exported is reached only
 from its own file, where it wins over same-named functions elsewhere, and a bare call next
 to a top-level definition of the name in the same file means that one. Ruby code kept in a
-heredoc tagged `RUBY` (`<<~'RUBY_SOURCE'` in a data migration) is read for its calls.
+heredoc tagged `RUBY` (`<<~'RUBY_SOURCE'` in a data migration) is read for its calls. A
+Ruby method called by its bare name without arguments (`total: subtotal`) is a
+call when its class defines that method in the file. Calls between the methods of one
+chunk are recorded too, so steps inside a chunk are counted.
 
 A call on a variable or a field links to its class's method when the file shows the class:
 `report = Report.new(...)`, `plan = Plan.find_by(...)` (Rails' finders),
@@ -108,19 +113,29 @@ on a Node module or an installed package (`fs.readFileSync`, an `express()` app)
 class the project has but that defines no such method anywhere up or down its ancestry
 (Rails' `where`, a `delegate`) links to nothing, instead of to whatever else is named
 alike. In TypeScript and JavaScript an imported name links to the module it is imported
-from, and a name read as a value (`retry(fetchPage)`, a constant, `{ handler }`) is a use
-when the file imports or declares it. The project's own packages and tsconfig path aliases
+from, through barrels (`export { x } from`, `export * from`, `export { default as X }
+from`) and default exports, also for `import { a as b }` and names destructured from
+`await import('./x')`; a name read as a value (`retry(fetchPage)`, a constant, `{ handler
+}`) is a use when the file imports or declares it. A name a module neither imports nor
+declares (the global `Error`) links to nothing in other files, a member of an imported
+value (`ThemeContext.Provider`) only to the module it comes from, and nothing links to a
+`.d.ts` declaration. The project's own packages and tsconfig path aliases
 are read from its `package.json` and `tsconfig*.json` files, so a workspace import is not
 taken for a package.
 
 `change_impact` walks those edges backwards from what you are about to change: callers,
-then their callers, 2 steps by default and up to 3 (`depth`). A caller passes the change on only through the methods
+then their callers, 2 steps by default and up to 3 (`depth`). Steps count calls between
+methods, calls inside a file included; what lies further than `depth` steps is counted,
+not listed. A caller passes the change on only through the methods
 that actually make the call, and the methods of the same chunk that reach those through
-the chunk's own calls (a public `call` using a private helper that makes the call). Code
+the chunk's own calls (a public `call` using a private helper that makes the call), each a
+step further; the methods of the changed chunk that call it are listed the same way. A
+method too long for one chunk is one dependent, shown where it begins, and its callers are
+followed from there. Code
 holding the class as a value passes it on whatever method changed. Each dependent appears
 once, at its nearest step. Links only through a name several classes define, on an object
-whose class the code does not show, are listed apart and not followed: in a blind check on a
-Ruby codebase 15% of them were real. Very widely used files and tests are listed
+whose class the code does not show, are listed apart and not followed: in a blind check
+15% of them were real. Very widely used files and tests are listed
 but not followed. Callers linked only through a common name (a single lowercase word such
 as `add`, `get`, `create`, used from more than 8 files, counting the uses the graph links
 nowhere) are set apart unless their file

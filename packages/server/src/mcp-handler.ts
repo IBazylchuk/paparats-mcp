@@ -61,20 +61,14 @@ import { validateGroupName } from './config.js';
 import { describeQdrantError } from './qdrant-errors.js';
 import {
   DEFINITION_CANDIDATES,
-  conventionalTestPaths,
   definitionCandidatesFilter,
   identifierTokens,
-  isTestPath,
   rankKey,
   rankQuery,
 } from './ranking.js';
-import { testsNamedAfter } from './test-files.js';
-import { collectDependents, definitionLine, MAX_IMPACT_DEPTH } from './change-impact.js';
-import { isCommonName } from './symbol-graph.js';
+import { MAX_IMPACT_DEPTH } from './change-impact.js';
+import { callerLabel, changeImpactReport, shownLine } from './change-impact-report.js';
 import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map.js';
-
-/** Chunks store 0-indexed lines; output shows them 1-indexed, as editors and grep do. */
-const shownLine = (line: number): number => line + 1;
 
 /**
  * Below this best similarity `search_code` warns that the index may have nothing
@@ -262,47 +256,6 @@ function outOfScopeProjectResult(
 }
 
 /** Same text as a genuinely missing chunk, so an out-of-scope id is indistinguishable from one. */
-/**
- * How a caller is named in `find_usages` and `change_impact`: the methods that
- * make the call when the edge records them, else the chunk's first symbol.
- */
-function callerLabel(callers: string[], payload: Record<string, unknown>): string {
-  if (callers.length > 0) return ` ${callers.map((n) => `\`${n}\``).join(', ')}`;
-  return typeof payload['symbol_name'] === 'string' ? ` \`${payload['symbol_name']}\`` : '';
-}
-
-/**
- * Said when no indexed test reaches the change: Ruby projects leave `spec/`
- * and `test/` out of the index by default, so "no tests" there means "not
- * indexed", not "untested". Lists the project's test files named after the
- * changed file and its direct dependents (`testFiles`, recorded by the
- * indexer); when the project's test files are not known, where they would be
- * by convention.
- */
-function testsByConvention(files: string[], testFiles: string[] | null): string {
-  let text = '\n### Tests\n\nNo indexed test reaches it.';
-  if (testFiles) {
-    const named = [...new Set(files.flatMap((f) => testsNamedAfter(f, testFiles)))].slice(0, 12);
-    if (named.length === 0) {
-      return text + ' No test file of the project is named after it or its direct callers.\n';
-    }
-    return (
-      text +
-      ' These test files of the project are named after it or its direct callers:\n\n' +
-      named.map((p) => `- \`${p}\`\n`).join('')
-    );
-  }
-  const paths = [...new Set(files.flatMap(conventionalTestPaths))].slice(0, 12);
-  if (paths.length === 0) return text + '\n';
-  text +=
-    " If the project's tests are not indexed (Ruby projects leave out `spec/` and `test/` by default), by convention they would be at:\n\n";
-  return (
-    text +
-    paths.map((p) => `- \`${p}\`\n`).join('') +
-    '\nCheck which exist before relying on them.\n'
-  );
-}
-
 /**
  * A chunk id as an agent passes it back: copied from tool output, it can carry
  * the markup around it — backticks, or the closing `_` of the italics older
@@ -2525,215 +2478,32 @@ export class McpHandler {
               };
             }
 
-            const seeds = [chunk_id];
-            if (whole_file) {
-              const fileChunks = await this.indexer.getAdjacentChunks(
-                parsed.group,
-                parsed.project,
-                parsed.file,
-                0,
-                Number.MAX_SAFE_INTEGER,
-                0
-              );
-              for (const c of fileChunks) {
-                const id = c['chunk_id'];
-                if (typeof id === 'string' && !seeds.includes(id)) seeds.push(id);
-              }
-            }
-
-            // A chunk that calls a lot (a large class) has few dependents; only being called from many places stops the walk.
-            const hubs = store.getGroupDegreeSnapshot(parsed.group).calledHubChunkIds;
-            const names = store.getNameUsage(parsed.group);
-            // Per caller file: the files it reaches through a specific name.
-            const specificLinks = new Map<string, Set<string>>();
-            const chunkFileKey = (id: string) => id.split('//').slice(0, 3).join('//');
-            const { dependents, truncated, deeper, viaCommonNames, viaAmbiguousNames } =
-              collectDependents({
-                seeds,
+            const text = await changeImpactReport(
+              {
+                getChunk: (id) => this.indexer.getChunkById(id),
+                fileChunkIds: async (group, project, file) =>
+                  (
+                    await this.indexer.getAdjacentChunks(
+                      group,
+                      project,
+                      file,
+                      0,
+                      Number.MAX_SAFE_INTEGER,
+                      0
+                    )
+                  )
+                    .map((c) => c['chunk_id'])
+                    .filter((id): id is string => typeof id === 'string'),
                 edgesTo: (id) =>
                   store.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id)),
-                depth,
-                maxDependents: limit,
-                symbol,
-                isHub: (id) => hubs.has(id),
-                isLeaf: (id) => isTestPath(parseChunkId(id)?.file ?? ''),
-                isCommonName: (name) => isCommonName(name, names),
-                confirmsLink: (caller, target) => {
-                  const callerFile = chunkFileKey(caller);
-                  if (callerFile === chunkFileKey(target)) return true;
-                  let linked = specificLinks.get(callerFile);
-                  if (!linked) {
-                    const loc = parseChunkId(caller);
-                    linked = new Set(
-                      loc
-                        ? store
-                            .getEdgesFromFile(loc.group, loc.project, loc.file)
-                            .filter((e) => !isCommonName(e.symbol_name, names))
-                            .map((e) => chunkFileKey(e.to_chunk_id))
-                        : []
-                    );
-                    specificLinks.set(callerFile, linked);
-                  }
-                  return linked.has(chunkFileKey(target));
-                },
-              });
-
-            // Linked only by a name like `add` or `get`: listed by file, not followed.
-            let commonSection = '';
-            if (viaCommonNames.length > 0) {
-              const count = viaCommonNames.reduce((n, c) => n + c.chunkIds.length, 0);
-              commonSection += `\n### Linked only through a common name (${count}) — probably not dependents\n\n`;
-              commonSection +=
-                'The graph links by name, and these names are used all over the code, so most of these are calls on other objects (`set.add(...)`, `map.get(...)`). They were not followed further. Confirm with grep before relying on one.\n\n';
-              for (const c of viaCommonNames) {
-                const files = [
-                  ...new Set(c.chunkIds.map((id) => parseChunkId(id)?.file ?? id)),
-                ].sort();
-                const shown = files.slice(0, 5).join(', ');
-                const more = files.length > 5 ? ` (+${files.length - 5} more)` : '';
-                const used = names.filesUsing.get(c.symbol) ?? 0;
-                commonSection += `- \`${c.symbol}\` (used in ${used} files) — ${c.chunkIds.length} chunks in ${files.length} files: ${shown}${more}\n`;
-              }
-            }
-            if (viaAmbiguousNames.length > 0) {
-              const count = viaAmbiguousNames.reduce((n, c) => n + c.chunkIds.length, 0);
-              commonSection += `\n### Linked only through a name defined in several places (${count}) — probably not dependents\n\n`;
-              commonSection +=
-                'These call a name that several classes define, on an object whose class the code does not show. Most are calls to another class of the same name. They were not followed further. Check with grep if one matters.\n\n';
-              for (const c of viaAmbiguousNames) {
-                const files = [
-                  ...new Set(c.chunkIds.map((id) => parseChunkId(id)?.file ?? id)),
-                ].sort();
-                const shown = files.slice(0, 5).join(', ');
-                const more = files.length > 5 ? ` (+${files.length - 5} more)` : '';
-                const n = `${files.length} file${files.length === 1 ? '' : 's'}`;
-                commonSection += `- \`${c.symbol}\` — ${n}: ${shown}${more}\n`;
-              }
-            }
-
-            const project = typeof payload['project'] === 'string' ? payload['project'] : 'unknown';
-            const file = typeof payload['file'] === 'string' ? payload['file'] : parsed.file;
-            const ownSymbol =
-              typeof payload['symbol_name'] === 'string' ? ` \`${payload['symbol_name']}\`` : '';
-            const target = whole_file
-              ? `[${project}] ${file} (whole file, ${seeds.length} chunks)`
-              : `[${project}] ${file}:${shownLine(parsed.startLine)}-${shownLine(parsed.endLine)}${ownSymbol}`;
-            let text = `## Change impact of ${target}\n\n`;
-
-            const defSymbols = Array.isArray(payload['defines_symbols'])
-              ? (payload['defines_symbols'] as string[])
-              : [];
-            if (symbol !== undefined && !whole_file && !defSymbols.includes(symbol)) {
-              text += `This chunk does not define \`${symbol}\`${defSymbols.length > 0 ? `; it defines ${defSymbols.map((s) => `\`${s}\``).join(', ')}` : ''}.\n\n`;
-            }
-
-            const caveat =
-              '_The graph links code by name. Calls made dynamically — reflection, string dispatch, routes, config — are not in it._\n';
-
-            if (dependents.length === 0) {
-              const clearly = viaCommonNames.length > 0 ? 'clearly ' : '';
-              text += `Nothing in the indexed code ${clearly}depends on it${symbol !== undefined ? ` through \`${symbol}\`` : ''}.\n`;
-              text += commonSection + '\n' + caveat;
-              return { content: [{ type: 'text' as const, text }] };
-            }
-
-            const payloads = await Promise.all(
-              dependents.map((d) => this.indexer.getChunkById(d.chunkId))
+                edgesFromFile: (group, project, file) =>
+                  store.getEdgesFromFile(group, project, file),
+                hubs: (group) => store.getGroupDegreeSnapshot(group).calledHubChunkIds,
+                names: (group) => store.getNameUsage(group),
+                testFiles: (group, project) => store.getTestFiles(group, project),
+              },
+              { chunkId: chunk_id, payload, wholeFile: whole_file, symbol, depth, limit }
             );
-            const rows = dependents.map((dep, i) => {
-              const loc = parseChunkId(dep.chunkId);
-              return {
-                dep,
-                payload: payloads[i] ?? null,
-                file: loc?.file ?? '',
-                fileKey: loc ? `${loc.project}//${loc.file}` : dep.chunkId,
-                startLine: loc?.startLine ?? 0,
-                test: isTestPath(loc?.file ?? ''),
-              };
-            });
-            rows.sort(
-              (a, b) =>
-                a.dep.hop - b.dep.hop ||
-                Number(b.dep.certain) - Number(a.dep.certain) ||
-                a.fileKey.localeCompare(b.fileKey) ||
-                a.startLine - b.startLine
-            );
-
-            const code = rows.filter((r) => !r.test);
-            const tests = rows.filter((r) => r.test);
-            const direct = rows.filter((r) => r.dep.hop === 1).length;
-            const files = new Set(rows.map((r) => r.fileKey)).size;
-            text += `${rows.length} chunks in ${files} files depend on it: ${direct} directly, ${rows.length - direct} through other code. ${tests.length} of them are tests.\n`;
-
-            const line = (r: (typeof rows)[number], showHop: boolean): string => {
-              const ep = r.payload;
-              const names = r.dep.symbols.map((s) => `\`${s}\``).join(', ');
-              const uses = `${r.dep.reexport ? 're-exports' : 'uses'} ${names}`;
-              const marks = `${r.dep.certain ? '' : ' [maybe]'}${r.dep.hub ? ' [hub]' : ''}`;
-              const hop = showHop ? `, ${r.dep.hop} step${r.dep.hop === 1 ? '' : 's'} away` : '';
-              if (!ep) return `- chunk: \`${r.dep.chunkId}\` — ${uses}${hop}${marks}\n`;
-              const p = typeof ep['project'] === 'string' ? ep['project'] : 'unknown';
-              const f = typeof ep['file'] === 'string' ? ep['file'] : r.file;
-              const sl = typeof ep['startLine'] === 'number' ? ep['startLine'] : r.startLine;
-              const content = typeof ep['content'] === 'string' ? ep['content'] : '';
-              const at = (name: string) => definitionLine(content, sl, name, f) ?? sl;
-              const first = r.dep.callers[0];
-              const shownAt = first !== undefined && !r.dep.reexport ? at(first) : sl;
-              const sym = r.dep.reexport ? '' : callerLabel(r.dep.callers, ep);
-              const reach = r.dep.reach.slice(0, 8);
-              const further =
-                reach.length > 0
-                  ? `  further in this chunk, through it: ${reach.map((n) => `\`${n}\` (line ${shownLine(at(n))})`).join(', ')}${r.dep.reach.length > reach.length ? `, +${r.dep.reach.length - reach.length} more` : ''}\n`
-                  : '';
-              return `- **[${p}] ${f}:${shownLine(shownAt)}**${sym} — ${uses}${hop}${marks}\n${further}  chunk: \`${r.dep.chunkId}\`\n`;
-            };
-
-            for (let hop = 1; hop <= depth; hop++) {
-              const level = code.filter((r) => r.dep.hop === hop);
-              if (level.length === 0) continue;
-              const heading = hop === 1 ? 'Uses it directly' : `${hop} steps away`;
-              text += `\n### ${heading} (${level.length})\n\n`;
-              for (const r of level) text += line(r, false);
-            }
-            if (tests.length > 0) {
-              text += `\n### Tests (${tests.length}) — run these after the change\n\n`;
-              for (const r of tests) text += line(r, true);
-            } else {
-              text += testsByConvention(
-                [file, ...code.filter((r) => r.dep.hop === 1).map((r) => r.file)],
-                store.getTestFiles(parsed.group, parsed.project)
-              );
-            }
-            text += commonSection;
-
-            const notes: string[] = [];
-            if (rows.some((r) => !r.dep.certain)) {
-              notes.push(
-                '`[maybe]` — linked only through a common name (its file also uses something specific from the changed file), or through such a dependent; check it really uses this code.'
-              );
-            }
-            if (rows.some((r) => r.dep.reach.length > 0)) {
-              notes.push(
-                'Steps count chunks. "Further in this chunk" are methods of the same chunk that call the listed one: a step or more further than shown, and their callers were followed.'
-              );
-            }
-            if (rows.some((r) => r.dep.hub)) {
-              notes.push('`[hub]` — called from many places; what depends on it was not followed.');
-            }
-            if (truncated) {
-              notes.push(
-                `Stopped at ${limit} dependents. Narrow with \`symbol\`, lower \`depth\`, or raise \`limit\` (max 100).`
-              );
-            }
-            if (deeper) {
-              notes.push(
-                depth < MAX_IMPACT_DEPTH
-                  ? `More code depends on the last step; raise \`depth\` (max ${MAX_IMPACT_DEPTH}) to follow it.`
-                  : `More code depends on the last step; callers past ${MAX_IMPACT_DEPTH} steps are not followed.`
-              );
-            }
-            text += '\n' + notes.map((n) => `_${n}_\n`).join('') + caveat;
-
             return { content: [{ type: 'text' as const, text }] };
           } catch (err) {
             return {

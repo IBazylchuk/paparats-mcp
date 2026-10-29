@@ -17,23 +17,26 @@ const DEFAULT_DB_PATH = path.join(PAPARATS_DIR, 'metadata.db');
 const EDGE_INSERT_BATCH_SIZE = 5000;
 
 const EDGE_COLUMNS =
-  'from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, from_symbols, reach_symbols';
+  'from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, from_symbols, reach_symbols, reach_steps';
 
-type EdgeRow = Omit<SymbolEdge, 'from_symbols' | 'reach_symbols'> & {
+type EdgeRow = Omit<SymbolEdge, 'from_symbols' | 'reach_symbols' | 'reach_steps'> & {
   from_symbols: string;
   reach_symbols: string;
+  reach_steps: string;
 };
 
 /**
  * `from_symbols` is stored as a JSON array, or '' when the whole chunk is the
- * caller; `reach_symbols` as a JSON array, or '' when there are none.
+ * caller; `reach_symbols` and `reach_steps` as JSON arrays, or '' when there
+ * are none (steps also on edges built before they were recorded).
  */
 function toEdge(row: EdgeRow): SymbolEdge {
-  const { from_symbols, reach_symbols, ...edge } = row;
+  const { from_symbols, reach_symbols, reach_steps, ...edge } = row;
   return {
     ...edge,
     from_symbols: from_symbols ? (JSON.parse(from_symbols) as string[]) : [],
     ...(reach_symbols ? { reach_symbols: JSON.parse(reach_symbols) as string[] } : {}),
+    ...(reach_steps ? { reach_steps: JSON.parse(reach_steps) as number[] } : {}),
   };
 }
 
@@ -252,6 +255,9 @@ export class MetadataStore {
     if (!cols.some((c) => c.name === 'reach_symbols')) {
       this.db.exec("ALTER TABLE symbol_edges ADD COLUMN reach_symbols TEXT NOT NULL DEFAULT ''");
     }
+    if (!cols.some((c) => c.name === 'reach_steps')) {
+      this.db.exec("ALTER TABLE symbol_edges ADD COLUMN reach_steps TEXT NOT NULL DEFAULT ''");
+    }
 
     // Edge versions live in the file, not in memory: the indexer is another
     // process writing to it, and the server's derived maps must see its writes.
@@ -360,7 +366,7 @@ export class MetadataStore {
     this.deleteChunkTicketsStmt = this.db.prepare('DELETE FROM chunk_tickets WHERE chunk_id = ?');
 
     this.insertEdgeStmt = this.db.prepare(
-      'INSERT OR REPLACE INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, grp, from_symbols, reach_symbols) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT OR REPLACE INTO symbol_edges (from_chunk_id, to_chunk_id, relation_type, symbol_name, confidence, grp, from_symbols, reach_symbols, reach_steps) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     this.bumpEdgeVersionStmt = this.db.prepare(
       'INSERT INTO edge_versions (grp, project, version) VALUES (?, ?, 1) ON CONFLICT (grp, project) DO UPDATE SET version = version + 1'
@@ -529,7 +535,8 @@ export class MetadataStore {
       e.confidence ?? 'INFERRED',
       grp,
       jsonList(e.from_symbols),
-      jsonList(e.reach_symbols)
+      jsonList(e.reach_symbols),
+      e.reach_steps && e.reach_steps.length > 0 ? JSON.stringify(e.reach_steps) : ''
     );
   }
 

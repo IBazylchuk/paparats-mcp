@@ -95,8 +95,9 @@ export interface UseSite {
   external?: true;
   /**
    * `from` does not make the call itself but reaches it through the chunk's
-   * own calls (see `withInnerCallers`): followed by `change_impact`, not
-   * named as the caller.
+   * own calls. Written by format 4–6 extractions (copies of a use per method
+   * reaching it); format 7 records `inner_calls` instead. Read so a graph
+   * built from older stored symbols still follows them.
    */
   through?: true;
 }
@@ -107,6 +108,14 @@ export interface SymbolExtractionResult {
   defined_symbols: DefinedSymbol[];
   /** Absent where the language has no methods to attribute uses to (Terraform). */
   use_sites?: UseSite[];
+  /**
+   * Calls between the chunk's own methods: each method with the methods of the
+   * chunk calling it (`ledger_entry` → `call`, `preview`). Bare and self calls only.
+   * `change_impact` counts steps through them; omitted when there are none.
+   */
+  inner_calls?: Record<string, string[]>;
+  /** TS/JS: the name its module exports by default, when the chunk holds that `export default`. */
+  default_export?: string;
 }
 
 /**
@@ -137,8 +146,12 @@ export interface SymbolExtractionResult {
  *  6 — a Ruby call on `connection` (ActiveRecord's adapter) is `external`; a
  *      Ruby constant path through a class alias (`Ledgers = A::Ledgers`) is
  *      read through that class.
+ *  7 — calls between a chunk's own methods are recorded (`inner_calls`), not
+ *      copied onto every use as `through` sites, so steps can be counted per
+ *      method; `export * from` is a `*` re-export of its module, and a TS/JS
+ *      chunk records the name its module exports by default.
  */
-export const SYMBOL_FORMAT = 6;
+export const SYMBOL_FORMAT = 7;
 
 /** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
@@ -912,7 +925,8 @@ const RUBY_NON_VALUE_CALLS = new Set([
 
 /**
  * A Ruby constant used as a value: passed (`dispatch(queue, Worker)`), stored
- * in a hash, array or variable, or `Worker.new` kept for later. The code
+ * in a hash, array or variable, or `Worker.new` passed or stored in a hash or
+ * array (one stored in a variable is typed: its calls link one by one). The code
  * holding it may call any of its methods, which the graph cannot see, so
  * `change_impact` follows such a link whatever method of the class changed.
  * Not a namespace (`Billing` in `Billing::Invoice`), not a class called on at
@@ -931,6 +945,14 @@ function isRubyValue(node: Node): boolean {
   if (parent.type === 'call' && parent.childForFieldName('receiver')?.id === expr.id) {
     if (parent.childForFieldName('method')?.text !== 'new') return false;
     const outer = parent.parent;
+    // `@store = Store.new(...)`: the variable's calls are typed one by one (`receiver-types.ts`).
+    if (
+      (outer?.type === 'assignment' || outer?.type === 'operator_assignment') &&
+      outer.childForFieldName('right')?.id === parent.id &&
+      /^(?:identifier|instance_variable)$/.test(outer.childForFieldName('left')?.type ?? '')
+    ) {
+      return false;
+    }
     return !(outer?.type === 'call' && outer.childForFieldName('receiver')?.id === parent.id);
   }
   if (parent.type === 'argument_list') {
@@ -1072,27 +1094,36 @@ const RUBY_PARAMETER_NODES = new Set([
   'block_parameter',
 ]);
 
+/** The methods a Ruby file defines, per class or module they are in (`''` at the top level). */
+function rubyMethodsByClass(tree: Tree): Map<string, Set<string>> {
+  const byClass = new Map<string, Set<string>>();
+  for (const method of tree.rootNode.descendantsOfType('method')) {
+    const name = method?.childForFieldName('name')?.text;
+    if (!method || !name) continue;
+    const owner = enclosingClass(method) ?? '';
+    let names = byClass.get(owner);
+    if (!names) byClass.set(owner, (names = new Set()));
+    names.add(name);
+  }
+  return byClass;
+}
+
 /**
  * Ruby calls a method without arguments by its bare name (`log = ledger_entry`),
  * which parses as an identifier, not a call, so the usage query misses it.
- * Here such a name counts as a call when the chunk defines a method of that
- * name and the method using it has no parameter or local of that name. Only for
- * calls among the chunk's own methods (`innerCalls`): to another file, a bare
- * name is as likely a local variable or an attribute.
+ * Here such a name counts as a call on self when the class around it defines
+ * a method of that name in this file and the method using it has no parameter
+ * or local of that name. Not to another file: there a bare name is as likely
+ * a local variable or an attribute.
  */
 function addBareRubyCalls(
   tree: Tree,
   chunk: { startLine: number; endLine: number },
-  defines: Map<string, DefinedSymbol>,
+  fileMethods: Map<string, Set<string>>,
   callers: Map<number, string | null>,
   sites: Map<string, UseSite>
 ): void {
-  const methods = new Set(
-    [...defines.values()]
-      .filter((d) => d.kind === 'method' || d.kind === 'function')
-      .map((d) => d.name)
-  );
-  if (methods.size === 0) return;
+  if (fileMethods.size === 0) return;
   const locals = new Map<number, Set<string>>();
   const assignedIn = (method: Node): Set<string> => {
     let names = locals.get(method.id);
@@ -1116,7 +1147,9 @@ function addBareRubyCalls(
     { row: chunk.endLine + 1, column: 0 }
   );
   for (const node of ids) {
-    if (!node || !methods.has(node.text)) continue;
+    if (!node) continue;
+    const own = enclosingClass(node) ?? '';
+    if (!fileMethods.get(own)?.has(node.text)) continue;
     const parent = node.parent;
     if (!parent || RUBY_PARAMETER_NODES.has(parent.type)) continue;
     if (parent.childForFieldName('name')?.id === node.id) continue;
@@ -1127,13 +1160,19 @@ function addBareRubyCalls(
       method = method.parent;
     }
     if (!method || assignedIn(method).has(node.text)) continue;
-    const site: UseSite = { name: node.text, from: callerOf(node, callers) };
+    const site: UseSite = {
+      name: node.text,
+      from: callerOf(node, callers),
+      ...(own !== '' ? { on: `::${own}` } : {}),
+    };
     if (!sites.has(siteKey(site))) sites.set(siteKey(site), site);
   }
 }
 
 /** Where an identifier is not a value read: a declaration, a parameter, an import, a label, a callee captured as a call. */
 const TS_NOT_VALUE_PARENTS = new Set([
+  // `export default Name;`: recorded as the module's default export, not a use.
+  'export_statement',
   'import_specifier',
   'import_clause',
   'namespace_import',
@@ -1203,6 +1242,46 @@ function addTsValueUses(
     uses.add(bound.name);
     if (!sites.has(siteKey(site))) sites.set(siteKey(site), site);
   }
+  // `export * from './names.js'`: every name of that module, re-exported. Kept
+  // as a `*` re-export so the graph can follow an import of the barrel there.
+  for (const stmt of tree.rootNode.namedChildren) {
+    if (!stmt || stmt.type !== 'export_statement') continue;
+    if (stmt.startPosition.row < chunk.startLine || stmt.startPosition.row > chunk.endLine)
+      continue;
+    const source = stmt.childForFieldName('source');
+    if (source?.type !== 'string' || stmt.namedChildren.some((c) => c?.type === 'export_clause')) {
+      continue;
+    }
+    if (!/^export\s+\*\s+from\b/.test(stmt.text)) continue;
+    const spec = source.text.slice(1, -1);
+    if (ts.isPackage(spec)) continue;
+    const site: UseSite = { name: '*', from: '*', reexport: true, module: spec };
+    if (!sites.has(siteKey(site))) sites.set(siteKey(site), site);
+  }
+}
+
+/**
+ * The name a module exports by default, when the statement is in the chunk:
+ * `export default function parse`, `export default class Parser`, `export
+ * default parse`. Undefined for an anonymous default or none.
+ */
+function defaultExportIn(
+  tree: Tree,
+  chunk: { startLine: number; endLine: number }
+): string | undefined {
+  for (const stmt of tree.rootNode.namedChildren) {
+    if (!stmt || stmt.type !== 'export_statement') continue;
+    if (stmt.startPosition.row < chunk.startLine || stmt.startPosition.row > chunk.endLine)
+      continue;
+    if (!/^export\s+default\b/.test(stmt.text)) continue;
+    const declaration = stmt.childForFieldName('declaration');
+    const named = declaration?.childForFieldName('name')?.text;
+    if (named) return named;
+    const value =
+      stmt.childForFieldName('value') ?? stmt.namedChildren.find((c) => c?.type === 'identifier');
+    if (value?.type === 'identifier') return value.text;
+  }
+  return undefined;
 }
 
 /**
@@ -1224,37 +1303,6 @@ function innerCalls(
     from.add(site.from);
   }
   return calledFrom;
-}
-
-/**
- * Each use, also as made from every method of the chunk that reaches the
- * method making it through the chunk's own calls. A private helper calling
- * the change passes it on to the public methods calling the helper: without
- * this, `change_impact` stopped at the helper, which nothing outside calls.
- */
-function withInnerCallers(sites: UseSite[], calledFrom: Map<string, Set<string>>): UseSite[] {
-  if (calledFrom.size === 0) return sites;
-  const reaching = (method: string): Set<string> => {
-    const found = new Set<string>();
-    const queue = [method];
-    for (let name = queue.pop(); name !== undefined; name = queue.pop()) {
-      for (const caller of calledFrom.get(name) ?? []) {
-        if (caller === method || found.has(caller)) continue;
-        found.add(caller);
-        queue.push(caller);
-      }
-    }
-    return found;
-  };
-  const out = new Map(sites.map((site) => [siteKey(site), site]));
-  for (const site of sites) {
-    if (site.from === '') continue;
-    for (const caller of reaching(site.from)) {
-      const copy: UseSite = { ...site, from: caller, through: true };
-      if (!out.has(siteKey(copy))) out.set(siteKey(copy), copy);
-    }
-  }
-  return [...out.values()];
 }
 
 function siteKey(site: UseSite): string {
@@ -1309,7 +1357,8 @@ function typedSite(
   const typed: ReceiverClass | undefined = statically
     ? ts.staticReceiver(receiver.node)
     : ts.classOf(receiver.node);
-  if (!typed) return {};
+  // `store.getNameUsage()` on an object of unknown class: a method call, not a bare name.
+  if (!typed) return statically ? {} : { onObject: true };
   if ('external' in typed) return { external: true };
   if (typed.on === undefined) return { module: typed.module };
   return {
@@ -1372,6 +1421,7 @@ export function extractSymbolsForChunks(
 
   let defQuery: Query | null = null;
   let useQuery: Query | null = null;
+  let rubyMethods: Map<string, Set<string>> | undefined;
 
   try {
     try {
@@ -1491,8 +1541,13 @@ export function extractSymbolsForChunks(
           const receiver = receiverOf(node);
           if (receiver.kind === 'other') calledOnOther.add(text);
           const exported = exportedAs(node);
+          // `import { parse as parseName }`: a call of `parseName` uses `parse`.
+          const importedName =
+            tsTypes && receiver.kind === 'none' && exported === undefined
+              ? tsTypes.importOf(node)?.name
+              : undefined;
           const site: UseSite = {
-            name: text,
+            name: importedName ?? text,
             from: exported ?? callerOf(node, callers),
             ...(typedSite(node, receiver, rubyTypes, tsTypes) ?? calledOn(node, receiver, lang)),
             ...constant,
@@ -1512,12 +1567,16 @@ export function extractSymbolsForChunks(
       for (const sym of defines.keys()) {
         if (!calledOnOther.has(sym)) uses.delete(sym);
       }
-      if (lang === 'ruby') addBareRubyCalls(tree, chunk, defines, callers, sites);
+      if (lang === 'ruby') {
+        rubyMethods ??= rubyMethodsByClass(tree);
+        addBareRubyCalls(tree, chunk, rubyMethods, callers, sites);
+      }
       if (tsTypes) addTsValueUses(tree, chunk, tsTypes, callers, sites, uses);
       const outside = [...sites.entries()]
         .filter(([key, site]) => !defines.has(site.name) || otherSites.has(key))
         .map(([, site]) => site);
-      const use_sites = withInnerCallers(outside, innerCalls(sites, defines, otherSites));
+      const inner = innerCalls(sites, defines, otherSites);
+      const defaultExport = tsTypes ? defaultExportIn(tree, chunk) : undefined;
 
       const defined_symbols = Array.from(defines.values());
 
@@ -1525,7 +1584,15 @@ export function extractSymbolsForChunks(
         defines_symbols: defined_symbols.map((d) => d.name),
         uses_symbols: Array.from(uses),
         defined_symbols,
-        use_sites,
+        use_sites: outside,
+        ...(defaultExport !== undefined ? { default_export: defaultExport } : {}),
+        ...(inner.size > 0
+          ? {
+              inner_calls: Object.fromEntries(
+                [...inner].map(([callee, callers]) => [callee, [...callers].sort()])
+              ),
+            }
+          : {}),
       });
     }
 

@@ -511,6 +511,8 @@ const EXTERNAL = { external: true } as const;
 interface Binding {
   type: Node | null;
   value: Node | null;
+  /** A name destructured from a dynamic import (`const { x } = await import('./m')`). */
+  imported?: TsImport;
 }
 
 /**
@@ -553,10 +555,27 @@ export class TsReceiverTypes {
       if (decl.type === 'lexical_declaration' || decl.type === 'variable_declaration') {
         for (const d of decl.namedChildren) {
           const n = d?.type === 'variable_declarator' ? d.childForFieldName('name') : null;
+          const value = d?.childForFieldName('value') ?? null;
           if (n?.type === 'identifier') {
             this.declared.set(n.text, 'variable_declarator');
-            const required = requiredModule(d?.childForFieldName('value') ?? null);
+            const required = requiredModule(value) ?? dynamicImport(value);
             if (required) this.imports.set(n.text, { spec: required, name: null, namespace: true });
+          }
+          // `const { load, defaults: d } = await import('./settings')`, as tests load a module.
+          const dynamic = n?.type === 'object_pattern' ? dynamicImport(value) : undefined;
+          if (n && dynamic !== undefined) {
+            for (const part of n.namedChildren) {
+              const name = part?.type === 'pair_pattern' ? part.childForFieldName('key') : part;
+              const local = part?.type === 'pair_pattern' ? part.childForFieldName('value') : part;
+              if (
+                !name ||
+                (local?.type !== 'identifier' &&
+                  local?.type !== 'shorthand_property_identifier_pattern')
+              )
+                continue;
+              this.declared.set(local.text, 'variable_declarator');
+              this.imports.set(local.text, { spec: dynamic, name: name.text, namespace: false });
+            }
           }
         }
       }
@@ -594,9 +613,9 @@ export class TsReceiverTypes {
 
   /** The import a name used in the file is bound to, unless something closer binds it. */
   importOf(node: Node, name = node.text): TsImport | undefined {
-    const imported = this.imports.get(name);
-    if (!imported || this.boundLocally(node, name)) return undefined;
-    return imported;
+    const local = this.localBindings(node, name);
+    if (local) return local.length === 1 ? local[0]!.imported : undefined;
+    return this.imports.get(name);
   }
 
   /**
@@ -607,8 +626,9 @@ export class TsReceiverTypes {
    */
   valueBinding(node: Node): { name: string; module?: string } | null {
     const name = node.text;
-    if (this.boundLocally(node, name)) return null;
-    const imported = this.imports.get(name);
+    const local = this.localBindings(node, name);
+    if (local && (local.length !== 1 || !local[0]!.imported)) return null;
+    const imported = local ? local[0]!.imported : this.imports.get(name);
     if (imported) {
       if (imported.namespace || this.isPackage(imported.spec)) return null;
       return { name: imported.name ?? name, module: imported.spec };
@@ -709,10 +729,11 @@ export class TsReceiverTypes {
     if (found) return found;
     found = new Map();
     const bindings = found;
-    const add = (name: string, type: Node | null, value: Node | null) => {
+    const add = (name: string, type: Node | null, value: Node | null, imported?: TsImport) => {
+      const binding: Binding = { type, value, ...(imported ? { imported } : {}) };
       const known = bindings.get(name);
-      if (known) known.push({ type, value });
-      else bindings.set(name, [{ type, value }]);
+      if (known) known.push(binding);
+      else bindings.set(name, [binding]);
     };
     if (fn) {
       for (const param of fn.childForFieldName('parameters')?.namedChildren ?? []) {
@@ -754,7 +775,7 @@ export class TsReceiverTypes {
           if (!field('parameter')) continue;
           break;
       }
-      add(id.text, null, null);
+      add(id.text, null, null, destructuredImport(id));
     }
     this.bindings.set(scope.id, found);
     return found;
@@ -762,10 +783,16 @@ export class TsReceiverTypes {
 
   /** Whether a function around a node binds the name (a parameter, a variable, a destructured field). */
   private boundLocally(node: Node, name: string): boolean {
+    return this.localBindings(node, name) !== undefined;
+  }
+
+  /** The bindings of the name in the nearest function around a node binding it. */
+  private localBindings(node: Node, name: string): Binding[] | undefined {
     for (let fn = nearest(node, TS_FUNCTION_NODES); fn; fn = nearest(fn, TS_FUNCTION_NODES)) {
-      if (this.bindingsOf(fn, fn).has(name)) return true;
+      const found = this.bindingsOf(fn, fn).get(name);
+      if (found) return found;
     }
-    return false;
+    return undefined;
   }
 
   private typeClass(type: Node, awaited = false): ReceiverClass | undefined {
@@ -924,6 +951,29 @@ function rootOf(node: Node): Node {
 function stringValue(node: Node | null): string | undefined {
   if (!node || node.type !== 'string') return undefined;
   return node.text.slice(1, -1);
+}
+
+/** The import a name destructured from `await import('./m')` is bound to. */
+function destructuredImport(id: Node): TsImport | undefined {
+  const pair = id.parent?.type === 'pair_pattern' ? id.parent : null;
+  const pattern = pair ? pair.parent : id.parent;
+  const declarator = pattern?.parent;
+  if (pattern?.type !== 'object_pattern' || declarator?.type !== 'variable_declarator') {
+    return undefined;
+  }
+  if (declarator.childForFieldName('name')?.id !== pattern.id) return undefined;
+  const spec = dynamicImport(declarator.childForFieldName('value'));
+  if (spec === undefined) return undefined;
+  const name = pair ? pair.childForFieldName('key')?.text : id.text;
+  return name === undefined ? undefined : { spec, name, namespace: false };
+}
+
+/** `await import('./store')`: the module a dynamic import loads. */
+function dynamicImport(node: Node | null): string | undefined {
+  const call = node?.type === 'await_expression' ? node.namedChild(0) : node;
+  if (call?.type !== 'call_expression') return undefined;
+  if (call.childForFieldName('function')?.type !== 'import') return undefined;
+  return stringValue(call.childForFieldName('arguments')?.namedChild(0) ?? null);
 }
 
 /** `require('./store')`: the module a CommonJS require loads. */

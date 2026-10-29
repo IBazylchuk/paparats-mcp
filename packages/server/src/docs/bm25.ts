@@ -71,15 +71,52 @@ const STOP_WORDS = new Set([
 ]);
 
 /**
- * Tokenise text for BM25: lowercase, split on non-alphanumeric, drop stop-words
- * and single characters. Deterministic and dependency-free so the same text
- * always yields the same tokens (indexing and query must agree).
+ * Bumped whenever `tokenize()` changes. Corpus counts made with another version
+ * are rebuilt from the stored chunks (`DocsIdfStore.isCurrent()`): removing a
+ * document tokenises it again, which is exact only with the same tokeniser.
+ * 2 — letters and digits of every script, Latin accents folded, CJK bigrams.
+ */
+export const TOKENIZER_VERSION = 2;
+
+// Scripts written without spaces between words: a run of them is indexed as
+// overlapping two-character pieces (as Lucene's CJK analyzer does), so a query
+// matches part of a run without a dictionary to cut words.
+const CJK_RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
+const LATIN_MARKS = /(?<=\p{Script=Latin})\p{M}+/gu;
+
+/**
+ * Tokenise text for BM25: lowercase, split on anything but letters, digits and
+ * `_` (any script), drop stop-words and single characters. Accents on Latin
+ * letters are dropped ("café" and "cafe" are one term); other scripts keep
+ * theirs. A CJK run becomes its character bigrams (a lone character stays).
+ * Deterministic and dependency-free so the same text always yields the same
+ * tokens (indexing and query must agree).
  */
 export function tokenize(text: string): string[] {
-  return text
+  const out: string[] = [];
+  const words = text
+    .normalize('NFKD')
+    .replace(LATIN_MARKS, '')
+    .normalize('NFKC')
     .toLowerCase()
-    .split(/[^a-z0-9_]+/)
-    .filter((t) => t.length > 1 && !STOP_WORDS.has(t));
+    .split(/[^\p{L}\p{N}\p{M}_]+/u);
+  for (const word of words) {
+    if (!word) continue;
+    let last = 0;
+    for (const m of word.matchAll(CJK_RUN)) {
+      addWord(out, word.slice(last, m.index));
+      const run = Array.from(m[0]);
+      if (run.length === 1) out.push(run[0]!);
+      for (let i = 0; i + 1 < run.length; i++) out.push(run[i]! + run[i + 1]!);
+      last = m.index + m[0].length;
+    }
+    addWord(out, word.slice(last));
+  }
+  return out;
+}
+
+function addWord(out: string[], word: string): void {
+  if (Array.from(word).length > 1 && !STOP_WORDS.has(word)) out.push(word);
 }
 
 /**

@@ -83,7 +83,12 @@ describe('buildSymbolEdges', () => {
       },
       { chunk_id: 'g//p//lint.ts//10-19//b', defines_symbols: [], uses_symbols: ['readText'] },
       { chunk_id: 'g//p//io.ts//0-9//c', defines_symbols: ['readText'], uses_symbols: [] },
-      { chunk_id: 'g//p//app.ts//0-9//d', defines_symbols: [], uses_symbols: ['readText'] },
+      {
+        chunk_id: 'g//p//app.ts//0-9//d',
+        defines_symbols: [],
+        uses_symbols: ['readText'],
+        use_sites: [{ name: 'readText', from: '', module: './io' }],
+      },
     ]);
     const links = edges.map((e) => [
       e.from_chunk_id.split('//')[2],
@@ -92,7 +97,7 @@ describe('buildSymbolEdges', () => {
     ]);
     // Each use has one definition it can reach, so neither link is ambiguous.
     expect(links.sort()).toEqual([
-      ['app.ts', 'io.ts', 'INFERRED'],
+      ['app.ts', 'io.ts', 'EXTRACTED'],
       ['lint.ts', 'lint.ts', 'EXTRACTED'],
     ]);
   });
@@ -195,14 +200,14 @@ describe('buildSymbolEdges', () => {
 
   it('creates edges from usage to definition', () => {
     const { edges } = buildSymbolEdges([
-      { chunk_id: 'g//p//f1.ts//1-5//h1', defines_symbols: ['greet'], uses_symbols: [] },
-      { chunk_id: 'g//p//f2.ts//1-5//h2', defines_symbols: [], uses_symbols: ['greet'] },
+      { chunk_id: 'g//p//f1.py//1-5//h1', defines_symbols: ['greet'], uses_symbols: [] },
+      { chunk_id: 'g//p//f2.py//1-5//h2', defines_symbols: [], uses_symbols: ['greet'] },
     ]);
 
     expect(edges).toHaveLength(1);
     expect(edges[0]).toEqual({
-      from_chunk_id: 'g//p//f2.ts//1-5//h2',
-      to_chunk_id: 'g//p//f1.ts//1-5//h1',
+      from_chunk_id: 'g//p//f2.py//1-5//h2',
+      to_chunk_id: 'g//p//f1.py//1-5//h1',
       relation_type: 'calls',
       symbol_name: 'greet',
       confidence: 'INFERRED',
@@ -389,13 +394,81 @@ describe('buildSymbolEdges', () => {
 
   it('labels edges AMBIGUOUS when a symbol resolves to multiple chunks', () => {
     const { edges } = buildSymbolEdges([
-      { chunk_id: 'g//p//a.ts//1-5//h1', defines_symbols: ['greet'], uses_symbols: [] },
-      { chunk_id: 'g//p//b.ts//1-5//h2', defines_symbols: ['greet'], uses_symbols: [] },
-      { chunk_id: 'g//p//c.ts//1-5//h3', defines_symbols: [], uses_symbols: ['greet'] },
+      { chunk_id: 'g//p//a.py//1-5//h1', defines_symbols: ['greet'], uses_symbols: [] },
+      { chunk_id: 'g//p//b.py//1-5//h2', defines_symbols: ['greet'], uses_symbols: [] },
+      { chunk_id: 'g//p//c.py//1-5//h3', defines_symbols: [], uses_symbols: ['greet'] },
     ]);
 
     expect(edges).toHaveLength(2);
     expect(edges.every((e) => e.confidence === 'AMBIGUOUS')).toBe(true);
+  });
+
+  it('links a TS name the module does not import only within its own file', () => {
+    // `Error` in a module is the global, not a component of that name elsewhere.
+    const { edges } = buildSymbolEdges([
+      { chunk_id: 'g//p//ui/Error.tsx//0-9//a', defines_symbols: ['Error'], uses_symbols: [] },
+      {
+        chunk_id: 'g//p//lib/fail.ts//0-9//b',
+        defines_symbols: [],
+        uses_symbols: ['Error'],
+        use_sites: [{ name: 'Error', from: 'fail' }],
+      },
+    ]);
+    expect(edges).toEqual([]);
+  });
+
+  it('follows an import through barrels, `export *` and a re-exported default', () => {
+    const chunk = (file: string, extra: Partial<ChunkSymbols>): ChunkSymbols => ({
+      chunk_id: `g//p//${file}//0-9//${file}`,
+      defines_symbols: [],
+      uses_symbols: [],
+      ...extra,
+    });
+    const { edges } = buildSymbolEdges([
+      chunk('ui/Link/Link.tsx', { defines_symbols: ['Link'], default_export: 'Link' }),
+      chunk('ui/Link/index.ts', {
+        use_sites: [{ name: 'default', from: 'default', module: './Link', reexport: true }],
+      }),
+      chunk('ui/index.ts', {
+        use_sites: [{ name: '*', from: '*', module: './format', reexport: true }],
+      }),
+      chunk('ui/format.ts', { defines_symbols: ['formatDate'] }),
+      chunk('other/format.ts', { defines_symbols: ['formatDate'] }),
+      chunk('pages/home.tsx', {
+        use_sites: [
+          { name: 'Link', from: 'Home', module: '../ui/Link' },
+          { name: 'formatDate', from: 'Home', module: '../ui' },
+        ],
+      }),
+    ]);
+    const links = edges
+      .filter((e) => e.relation_type === 'calls')
+      .map((e) => `${e.symbol_name} -> ${e.to_chunk_id.split('//')[2]} ${e.confidence}`);
+    expect(links.sort()).toEqual([
+      'Link -> ui/Link/Link.tsx EXTRACTED',
+      'formatDate -> ui/format.ts EXTRACTED',
+    ]);
+  });
+
+  it('links a member of an imported value only within the module it comes from', () => {
+    const { edges } = buildSymbolEdges([
+      { chunk_id: 'g//p//ctx/theme.ts//0-9//a', defines_symbols: ['Provider'], uses_symbols: [] },
+      { chunk_id: 'g//p//ctx/menu.ts//0-9//b', defines_symbols: ['Provider'], uses_symbols: [] },
+      {
+        chunk_id: 'g//p//ctx/palette.ts//0-9//c',
+        defines_symbols: ['PaletteContext'],
+        uses_symbols: [],
+      },
+      {
+        chunk_id: 'g//p//app/list.tsx//0-9//d',
+        defines_symbols: [],
+        uses_symbols: ['Provider'],
+        use_sites: [
+          { name: 'Provider', from: 'List', on: 'PaletteContext', module: '../ctx/palette' },
+        ],
+      },
+    ]);
+    expect(edges).toEqual([]);
   });
 
   it('creates multiple edges for multiple symbols', () => {
