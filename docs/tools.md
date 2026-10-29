@@ -23,7 +23,7 @@ agent:
 | `module_map`              | The modules of a codebase from the call graph: files that call each other much more than the rest, split by package or app, named after the folder (or two) holding much of the module and little else, with main files (the most called files there), which modules each one uses and is used by (with the file a used module is reached through when that file is in another package or app than the module's name), its tests and the shared code. Ends with a Mermaid diagram. |
 | `list_projects`           | Indexed projects with chunk counts and languages.                                                                             |
 | `delete_project`          | Delete a project's chunks and metadata (`paparats remove` does the same over HTTP).                                           |
-| `health_check`            | Indexing status, chunks per group, running jobs.                                                                              |
+| `health_check`            | Server version, chunks per group, and the indexer: last run, each repository's status and last error.                         |
 | `search_docs`             | Search the indexed markdown documentation (needs `INDEX_DOCS=true`).                                                          |
 | `arch_context`            | Read architectural memory: components, decisions and lessons for a question, each with an "updated N ago" stamp; `min_score` cuts weak matches. |
 | `arch_list`               | Every card in a group, unranked, for audits.                                                                                  |

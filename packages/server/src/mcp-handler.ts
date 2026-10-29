@@ -69,6 +69,7 @@ import {
 import { MAX_IMPACT_DEPTH } from './change-impact.js';
 import { callerLabel, changeImpactReport, shownLine } from './change-impact-report.js';
 import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map.js';
+import { fetchIndexerHealth, indexerUrlFromEnv, type IndexerSection } from './indexer-health.js';
 
 /**
  * Below this best similarity `search_code` warns that the index may have nothing
@@ -805,6 +806,28 @@ function formatWriteResult(
   }
 }
 
+/** How long `health_check` waits for the indexer's `/health`. */
+const INDEXER_HEALTH_TIMEOUT_MS = 3000;
+
+/** The indexer part of `health_check`: its status, last run, and each repository's. */
+function indexerSummary(health: IndexerSection): Record<string, unknown> {
+  if (!health.reachable) {
+    return { reachable: false, url: health.url, error: health.error };
+  }
+  return {
+    reachable: true,
+    status: health.globalStatus,
+    lastRunAt: health.lastRunAt,
+    repos: health.repos.map((r) => ({
+      repo: r.repo,
+      status: r.status,
+      ...(r.lastRun ? { lastRun: r.lastRun } : {}),
+      ...(r.chunksIndexed !== undefined ? { chunks: r.chunksIndexed } : {}),
+      ...(r.lastError ? { error: r.lastError } : {}),
+    })),
+  };
+}
+
 export interface McpHandlerConfig {
   searcher: Searcher;
   indexer: Indexer;
@@ -859,6 +882,11 @@ export interface McpHandlerConfig {
    * comes back is transparently recreated, so eviction costs it nothing.
    */
   maxSessions?: number;
+  /**
+   * The indexer's state for `health_check`. Defaults to its `/health` at
+   * `PAPARATS_INDEXER_URL` (else localhost:9877), with a short timeout.
+   */
+  indexerHealth?: () => Promise<IndexerSection>;
 }
 
 type TransportEntry = {
@@ -1134,6 +1162,7 @@ export class McpHandler {
   private syncGroups: (() => Promise<void>) | null;
   private metadataStore: MetadataStore | null;
   private moduleMaps: ModuleMapService | null;
+  private indexerHealth: () => Promise<IndexerSection>;
   private telemetry: Telemetry | null;
   private analytics: AnalyticsStore | null;
   private archStore: ArchStore | null;
@@ -1183,6 +1212,9 @@ export class McpHandler {
       : null;
     this.terminologyStore = config.terminologyStore ?? null;
     this.metrics = config.metrics ?? new NoOpMetrics();
+    this.indexerHealth =
+      config.indexerHealth ??
+      (() => fetchIndexerHealth(indexerUrlFromEnv(), INDEXER_HEALTH_TIMEOUT_MS));
     this.maxSessions = Math.max(1, config.maxSessions ?? DEFAULT_MAX_SESSIONS);
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000);
@@ -1757,14 +1789,22 @@ export class McpHandler {
           annotations: READ_ONLY,
         },
         async () => {
+          // Asked alongside Qdrant: whether the indexer runs, when it last ran,
+          // and which repositories failed, so an agent can tell a stale index.
+          const indexerState = this.indexerHealth().then(indexerSummary);
           try {
             const groups = await this.indexer.listGroups();
+            const indexer = await indexerState;
 
             return {
               content: [
                 {
                   type: 'text' as const,
-                  text: JSON.stringify({ status: 'ok', version: PKG_VERSION, groups }, null, 2),
+                  text: JSON.stringify(
+                    { status: 'ok', version: PKG_VERSION, groups, indexer },
+                    null,
+                    2
+                  ),
                 },
               ],
             };

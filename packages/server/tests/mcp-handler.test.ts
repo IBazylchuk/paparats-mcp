@@ -518,6 +518,21 @@ describe('McpHandler', () => {
       indexer,
       getProjects: () => new Map(),
       getGroupNames: () => [],
+      indexerHealth: async () => ({
+        reachable: true,
+        url: 'http://paparats-indexer:9877',
+        globalStatus: 'idle',
+        lastRunAt: '2026-10-29T08:00:00.000Z',
+        repos: [
+          {
+            repo: 'org/app',
+            status: 'success',
+            lastRun: '2026-10-29T08:00:00.000Z',
+            chunksIndexed: 42,
+          },
+          { repo: 'org/lib', status: 'error', lastError: '1 file(s) failed to index' },
+        ],
+      }),
     });
     handler2.mount(app);
 
@@ -571,6 +586,15 @@ describe('McpHandler', () => {
       expect(parsed.status).toBe('ok');
       expect(parsed.version).toMatch(/^\d+\.\d+\.\d+/);
       expect(parsed.groups).toEqual({ g1: 10, g2: 20 });
+      expect(parsed.indexer).toEqual({
+        reachable: true,
+        status: 'idle',
+        lastRunAt: '2026-10-29T08:00:00.000Z',
+        repos: [
+          { repo: 'org/app', status: 'success', lastRun: '2026-10-29T08:00:00.000Z', chunks: 42 },
+          { repo: 'org/lib', status: 'error', error: '1 file(s) failed to index' },
+        ],
+      });
     } finally {
       server.close();
       handler2.destroy();
@@ -3054,6 +3078,7 @@ describe('tool call telemetry', () => {
       getProjects: () => new Map([['g1', [createProjectConfig()]]]),
       getGroupNames: () => ['g1'],
       telemetry: telemetry as never,
+      indexerHealth: async () => ({ reachable: false, url: 'http://indexer', repos: [] }),
     });
     handler.mount(app);
     const server = app.listen(0);
@@ -3077,7 +3102,7 @@ describe('tool call telemetry', () => {
         }),
       });
       const sessionId = initRes.headers.get('mcp-session-id');
-      await fetch(`http://127.0.0.1:${port}/mcp`, {
+      const callRes = await fetch(`http://127.0.0.1:${port}/mcp`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -3091,6 +3116,8 @@ describe('tool call telemetry', () => {
           params: { name, arguments: args },
         }),
       });
+      // The answer arrives once the tool has run, telemetry included.
+      await callRes.text();
     } finally {
       server.close();
       handler.destroy();
