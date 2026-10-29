@@ -1,5 +1,21 @@
 # @paparats/indexer
 
+## 2.16.7
+
+### Patch Changes
+
+- 1c95690: TS/JS: `import('./panel').then((m) => m.Panel)` and `.then(({ Panel }) => Panel)` link to `./panel`'s `Panel`, as `const { Panel } = await import('./panel')` already did, and a member read from a module held whole (`ns.Panel` after `import * as ns`) is a use of that module's `Panel`. Every TS/JS file is extracted again on the next index pass.
+- b646ada: A call on self reaching an override in a class below is stored as `overrides` instead of `calls` (`find_usages` can filter on it). `change_impact` follows it as before; `module_map` no longer reads it as the base class's folder using the subclass's folder, the other way round from what the code says. Every graph is built again on the next index pass.
+- Updated dependencies [5b5f18e]
+- Updated dependencies [bb81677]
+- Updated dependencies [1c95690]
+- Updated dependencies [a44222e]
+- Updated dependencies [2f43279]
+- Updated dependencies [b646ada]
+- Updated dependencies [7199e2c]
+  - @paparats/server@2.16.7
+  - @paparats/shared@2.16.7
+
 ## 2.16.6
 
 ### Patch Changes
