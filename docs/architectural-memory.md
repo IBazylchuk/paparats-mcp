@@ -35,7 +35,8 @@ over to Qwen3 without being measured again. Treat them as a reasonable default: 
 near-duplicate that slips under 0.85, or two distinct cards above it, is possible.
 
 A decision with `supersedes` skips the check and marks the old one `superseded`: it no
-longer shows in search but stays in history.
+longer shows in search but stays in history. The old one must be a current decision of
+the same project (or group-wide, like the new one).
 
 `arch_context` takes `min_score` (default `0.45`). Lower it for a sparse memory, raise it
 for only strong matches. When nothing clears the threshold, the tool says so, so the agent

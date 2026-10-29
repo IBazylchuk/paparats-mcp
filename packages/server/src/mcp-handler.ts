@@ -3811,11 +3811,13 @@ export class McpHandler {
               ),
             name: z
               .string()
+              .min(1)
               .describe(
                 'Component name, unique per (group, project). Stable, refactor-resistant — e.g. "file indexer", not "Indexer (in indexer.ts)".'
               ),
             summary: z
               .string()
+              .min(1)
               .describe(
                 'Markdown with four sections, each one or two short lines:\n' +
                   '- **Does:** what it does\n' +
@@ -3825,21 +3827,21 @@ export class McpHandler {
               ),
             files: z
               .array(z.string())
-              .default([])
+              .optional()
               .describe(
-                'Repository paths the component spans (e.g. packages/server/src/indexer.ts).'
+                'Repository paths the component spans (e.g. packages/server/src/indexer.ts). Left out on an update, the card keeps its list.'
               ),
             neighbours: z
               .array(z.string())
-              .default([])
+              .optional()
               .describe(
-                'Names of related components (matches `name` of other arch_record_component entries).'
+                'Names of related components (matches `name` of other arch_record_component entries). Left out on an update, the card keeps its list.'
               ),
             anchors: z
               .array(z.string())
-              .default([])
+              .optional()
               .describe(
-                'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code.'
+                'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code. Left out on an update, the card keeps its list.'
               ),
           },
           annotations: ADDITIVE_WRITE,
@@ -3851,9 +3853,9 @@ export class McpHandler {
             project,
             name,
             summary,
-            files,
-            neighbours,
-            anchors,
+            ...(files !== undefined ? { files } : {}),
+            ...(neighbours !== undefined ? { neighbours } : {}),
+            ...(anchors !== undefined ? { anchors } : {}),
           });
           metrics.incArchWriteTotal('component', result.status);
           const verb = result.status === 'updated' ? 'Updated' : 'Recorded';
@@ -3914,6 +3916,7 @@ export class McpHandler {
             scope: z.enum(['global', 'component', 'file']).default('global'),
             supersedes: z
               .string()
+              .min(1)
               .nullable()
               .optional()
               .describe(
@@ -3944,6 +3947,7 @@ export class McpHandler {
             consequences,
             scope: decisionScope,
             supersedes: supersedes ?? null,
+            ...(scope.projects ? { allowProject: scope.allowsProject } : {}),
           });
           metrics.incArchWriteTotal('decision', result.status);
           return {
@@ -4468,7 +4472,11 @@ export class McpHandler {
             'Search the company glossary for a term, abbreviation, or domain concept.',
           inputSchema: {
             query: z.string().min(1).describe('Term, abbreviation, or concept to look up.'),
-            project: z.string().optional().describe('Restrict to a project, or omit for all.'),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe('Restrict to a project, or omit for all.'),
             group: z.string().optional().describe('Specific group, or omit for all groups.'),
             limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
           },
@@ -4524,7 +4532,11 @@ export class McpHandler {
           description: prompts.tools['term_list']?.description ?? 'List glossary terms in a group.',
           inputSchema: {
             group: z.string().optional().describe('Specific group, or omit for all groups.'),
-            project: z.string().optional().describe('Restrict to a project, or omit for all.'),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe('Restrict to a project, or omit for all.'),
             limit: z.number().int().min(1).max(500).optional().describe('Max terms. Default 200.'),
           },
           annotations: READ_ONLY,
@@ -4574,8 +4586,14 @@ export class McpHandler {
             aliases: z
               .array(z.string())
               .optional()
-              .describe('Alternate spellings / abbreviations.'),
-            project: z.string().optional().describe('Project scope, or omit for group-wide.'),
+              .describe(
+                'Alternate spellings / abbreviations. Left out on an update, the term keeps its aliases.'
+              ),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe('Project scope, or omit for group-wide.'),
           },
           annotations: ADDITIVE_WRITE,
         },

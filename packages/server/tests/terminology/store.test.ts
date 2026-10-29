@@ -302,6 +302,38 @@ describe('TerminologyStore.healAllTermsModels', () => {
   });
 });
 
+describe('TerminologyStore.recordTerm keeps what an update leaves out', () => {
+  it('keeps the aliases of an existing term updated without them', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValue({
+      points: [
+        {
+          id: 't1',
+          payload: {
+            id: 't1',
+            term: 'TLA',
+            definition: 'old',
+            aliases: ['three-letter'],
+            createdAt: 5,
+          },
+        },
+      ],
+      next_page_offset: null,
+    });
+    const store = new TerminologyStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    const res = await store.recordTerm('g', { term: 'TLA', definition: 'new' });
+    expect(res).toEqual({ status: 'updated', id: 't1' });
+    const payload = qdrant.upsert.mock.calls[0]?.[1]?.points?.[0]?.payload;
+    expect(payload).toMatchObject({ definition: 'new', aliases: ['three-letter'], createdAt: 5 });
+
+    await store.recordTerm('g', { term: 'TLA', definition: 'new', aliases: [] });
+    expect(qdrant.upsert.mock.calls[1]?.[1]?.points?.[0]?.payload?.aliases).toEqual([]);
+  });
+});
+
 describe('TerminologyStore.reindexTerms', () => {
   it('keeps the collection when embedding fails, so the glossary is not lost', async () => {
     const qdrant = fakeQdrant();
@@ -318,6 +350,18 @@ describe('TerminologyStore.reindexTerms', () => {
     await expect(store.reindexTerms('g')).rejects.toThrow('embed server down');
     expect(qdrant.deleteCollection).not.toHaveBeenCalled();
     expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+
+  it('reports a Qdrant failure instead of "nothing to reindex"', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockRejectedValue(
+      Object.assign(new Error('fetch failed'), { cause: { code: 'ECONNREFUSED' } })
+    );
+    const store = new TerminologyStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+    });
+    await expect(store.reindexTerms('g')).rejects.toThrow('fetch failed');
   });
 });
 
