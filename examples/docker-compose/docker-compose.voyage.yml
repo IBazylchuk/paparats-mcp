@@ -15,7 +15,7 @@ services:
     image: qdrant/qdrant:latest
     container_name: paparats-qdrant
     ports:
-      - ${QDRANT_PORT:-6333}:6333
+      - ${QDRANT_BIND:-127.0.0.1}:${QDRANT_PORT:-6333}:6333
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -58,6 +58,7 @@ services:
       TEXT_EMBEDDING_PROVIDER: ${TEXT_EMBEDDING_PROVIDER:-voyage}
       TEXT_EMBEDDING_MODEL: ${TEXT_EMBEDDING_MODEL:-voyage-4}
       TEXT_EMBEDDING_DIMENSIONS: ${TEXT_EMBEDDING_DIMENSIONS:-1024}
+      PAPARATS_API_KEY: ${PAPARATS_API_KEY:-}
       PAPARATS_INDEXER_URL: http://paparats-indexer:9877
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -99,6 +100,7 @@ services:
     container_name: paparats-indexer
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GIT_TOKENS: ${GIT_TOKENS:-}
       CRON: ${CRON:-0 */6 * * *}
       QDRANT_URL: http://qdrant:6333
       INDEX_DOCS: ${INDEX_DOCS:-false}
@@ -110,6 +112,7 @@ services:
       TEXT_EMBEDDING_PROVIDER: ${TEXT_EMBEDDING_PROVIDER:-voyage}
       TEXT_EMBEDDING_MODEL: ${TEXT_EMBEDDING_MODEL:-voyage-4}
       TEXT_EMBEDDING_DIMENSIONS: ${TEXT_EMBEDDING_DIMENSIONS:-1024}
+      PAPARATS_API_KEY: ${PAPARATS_API_KEY:-}
     ports:
       - ${INDEXER_PORT:-9877}:9877
     volumes:

@@ -1,6 +1,6 @@
 import http from 'node:http';
 import https from 'node:https';
-import { localUrls } from './local-urls.js';
+import { authHeaders, localUrls } from './local-urls.js';
 
 const MAX_RESPONSE_SIZE = 100 * 1024 * 1024; // 100MB
 
@@ -31,6 +31,8 @@ export interface ApiClientOptions {
   defaultTimeout?: number;
   maxRetries?: number;
   debug?: boolean;
+  /** Sent as `Authorization: Bearer <key>`; defaults to `PAPARATS_API_KEY` (`localUrls()`). */
+  apiKey?: string;
 }
 
 interface ApiResponse<T = unknown> {
@@ -70,6 +72,7 @@ export class ApiClient {
   private defaultTimeout: number;
   private maxRetries: number;
   private debug: boolean;
+  private apiKey: string | undefined;
 
   constructor(options?: ApiClientOptions | string) {
     const opts = typeof options === 'string' ? { baseUrl: options } : (options ?? {});
@@ -77,6 +80,7 @@ export class ApiClient {
     this.defaultTimeout = opts.defaultTimeout ?? 120_000;
     this.maxRetries = opts.maxRetries ?? 3;
     this.debug = opts.debug ?? false;
+    this.apiKey = opts.apiKey ?? localUrls().apiKey;
 
     try {
       new URL(this.baseUrl);
@@ -106,6 +110,7 @@ export class ApiClient {
           method: options.method,
           headers: {
             'Content-Type': 'application/json',
+            ...authHeaders(this.apiKey),
             ...(payload && { 'Content-Length': Buffer.byteLength(payload) }),
           },
           timeout,

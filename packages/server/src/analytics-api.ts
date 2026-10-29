@@ -21,6 +21,7 @@ import type { DocsStore } from './docs/store.js';
 import type { TerminologyStore } from './terminology/store.js';
 import type { ArchStore } from './arch/store.js';
 import { buildDemoAnalytics, isDemoRequested } from './analytics-demo.js';
+import { fetchIndexerHealth, indexerUrlFromEnv, type IndexerSection } from './indexer-health.js';
 
 export interface BuildAnalyticsRouterOptions {
   indexer: Indexer;
@@ -130,23 +131,6 @@ interface CrossProjectPairRow {
   fetches: number;
 }
 
-interface RepoStatusEntry {
-  repo: string;
-  status: string;
-  lastRun?: string;
-  lastError?: string;
-  chunksIndexed?: number;
-}
-
-interface IndexerSection {
-  reachable: boolean;
-  url: string;
-  globalStatus?: string;
-  lastRunAt?: string;
-  repos: RepoStatusEntry[];
-  error?: string;
-}
-
 /**
  * What is actually in the index, per group. Independent of the event tables, so
  * these figures are populated from the first page load rather than accumulating
@@ -242,41 +226,6 @@ function parsePeriod(raw: unknown): PeriodLabel {
 // 15s, not 5s: the indexer's event loop can be busy for several seconds while
 // it commits a large symbol-edge batch, so a 5s probe would spuriously report
 // the indexer as unreachable during an otherwise healthy index cycle.
-async function fetchIndexerHealth(url: string, timeoutMs = 15000): Promise<IndexerSection> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${url.replace(/\/+$/, '')}/health`, { signal: controller.signal });
-    if (!res.ok) {
-      return { reachable: false, url, repos: [], error: `HTTP ${res.status}` };
-    }
-    const body = (await res.json()) as {
-      status?: string;
-      lastRunAt?: string;
-      repos?: RepoStatusEntry[];
-    };
-    return {
-      reachable: true,
-      url,
-      globalStatus: body.status,
-      lastRunAt: body.lastRunAt,
-      repos: Array.isArray(body.repos) ? body.repos : [],
-    };
-  } catch (err) {
-    // node fetch() under AbortController throws DOMException with name="AbortError"
-    // and a noisy default message — surface a clear timeout message instead.
-    const e = err as Error;
-    const message = e.name === 'AbortError' ? `Request timed out after ${timeoutMs}ms` : e.message;
-    return {
-      reachable: false,
-      url,
-      repos: [],
-      error: message,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
 
 /**
  * Per-query zero-click rate: a "click" = at least one chunk_fetch tied to a
@@ -747,8 +696,7 @@ async function collectCorpus(
 
 export function buildAnalyticsRouter(options: BuildAnalyticsRouterOptions): Router {
   const router = Router();
-  const indexerUrl =
-    options.indexerHealthUrl ?? process.env['PAPARATS_INDEXER_URL'] ?? 'http://localhost:9877';
+  const indexerUrl = options.indexerHealthUrl ?? indexerUrlFromEnv();
   const now = options.now ?? Date.now;
 
   router.get('/', async (req: Request, res: Response) => {

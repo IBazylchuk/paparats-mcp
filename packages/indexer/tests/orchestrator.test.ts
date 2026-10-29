@@ -228,6 +228,28 @@ describe('IndexOrchestrator', () => {
       ]);
     });
 
+    it('on force over a collection built with another model, drops it and indexes every repo again', async () => {
+      const h = makeHarness();
+      let dropped = false;
+      h.deps.indexer.dropCollectionIfModelChanged = vi.fn(async (group: string) => {
+        if (dropped) return null;
+        dropped = true;
+        h.calls.push(`drop collection ${group}`);
+        return { model: 'old-model' };
+      });
+      const o = new IndexOrchestrator(h.deps, [remote('a'), remote('b')]);
+
+      o.requestCycle({ repos: ['a'], force: true });
+      await o.whenIdle();
+
+      expect(h.calls.filter((c) => !c.startsWith('sync'))).toEqual([
+        'drop collection default',
+        'index default/a',
+        'index default/a',
+        'index default/b',
+      ]);
+    });
+
     it('treats an empty repo list as every repo', async () => {
       const h = makeHarness();
       const o = new IndexOrchestrator(h.deps, [remote('a'), remote('b')]);

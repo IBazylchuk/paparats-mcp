@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { createGit, gitAuthEnv } from '../src/git-auth.js';
+import { createGit, gitAuthEnv, parseGitTokens } from '../src/git-auth.js';
 
 describe('gitAuthEnv', () => {
   it('returns nothing without a token', () => {
@@ -29,6 +29,37 @@ describe('gitAuthEnv', () => {
     const env = gitAuthEnv('tok', { GIT_CONFIG_COUNT: 'x' });
     expect(env['GIT_CONFIG_COUNT']).toBe('1');
     expect(env['GIT_CONFIG_KEY_0']).toBeDefined();
+  });
+});
+
+describe('host tokens (GIT_TOKENS)', () => {
+  it('reads host=token pairs, host lowercased, port kept', () => {
+    expect(parseGitTokens(undefined)).toEqual({});
+    expect(parseGitTokens(' GitLab.example.com=glpat-1 , ghe.example.com:8443=ghp_2')).toEqual({
+      'gitlab.example.com': 'glpat-1',
+      'ghe.example.com:8443': 'ghp_2',
+    });
+  });
+
+  it('refuses a malformed pair without naming the token', () => {
+    expect(() => parseGitTokens('gitlab.example.com=ok,justatoken')).toThrow(/entry #2/);
+    expect(() => parseGitTokens('https://gitlab.example.com=tok')).toThrow(/entry #1/);
+    try {
+      parseGitTokens('bad host=secretvalue');
+    } catch (err) {
+      expect((err as Error).message).not.toContain('secretvalue');
+    }
+  });
+
+  it('scopes each host token to its own https prefix, after the GitHub one', () => {
+    const env = gitAuthEnv('ghp_x', {}, { 'gitlab.example.com': 'glpat-y' });
+    expect(env['GIT_CONFIG_COUNT']).toBe('2');
+    expect(env['GIT_CONFIG_KEY_0']).toBe('http.https://github.com/.extraHeader');
+    expect(env['GIT_CONFIG_KEY_1']).toBe('http.https://gitlab.example.com/.extraHeader');
+    const value = env['GIT_CONFIG_VALUE_1']!;
+    const decoded = Buffer.from(value.slice('Authorization: Basic '.length), 'base64').toString();
+    expect(decoded).toBe('x-access-token:glpat-y');
+    expect(gitAuthEnv(undefined, {}, { 'gitlab.example.com': 't' })['GIT_CONFIG_COUNT']).toBe('1');
   });
 });
 

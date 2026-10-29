@@ -1,5 +1,10 @@
 export { validateIndexingPaths, filterFilesWithinRoot } from './path-validation.js';
-export { normalizeExcludePatterns } from './exclude-patterns.js';
+export {
+  normalizeExcludePatterns,
+  anchorBuildOutputExcludes,
+  BUILD_OUTPUT_DIRS,
+  PACKAGE_MANIFESTS,
+} from './exclude-patterns.js';
 export {
   LANGUAGE_EXCLUDE_DEFAULTS,
   COMMON_EXCLUDE,

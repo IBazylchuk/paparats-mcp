@@ -15,7 +15,8 @@ import {
   deriveRegenerateOptsFromCompose,
   type ProjectsFile,
 } from '../projects-yml.js';
-import { localUrls } from '../local-urls.js';
+import { authHeaders, localUrls } from '../local-urls.js';
+import { getDockerComposeCommand } from './install.js';
 
 export type EditTarget = 'compose' | 'projects';
 
@@ -25,6 +26,9 @@ export interface EditDeps {
   resolveEditor?: (platform: NodeJS.Platform) => { cmd: string; args: string[] };
   regenerateAndRestart?: (paparatsHome?: string) => Promise<{ composeChanged: boolean }>;
   triggerFullReindex?: () => Promise<void>;
+  /** `docker compose config` over the edited file: the problem it reports, or null when valid. */
+  checkCompose?: (file: string) => string | null;
+  restartStack?: (paparatsHome: string) => Promise<void>;
   paparatsHome?: string;
 }
 
@@ -48,6 +52,7 @@ export interface EditResult {
   validated?: boolean;
   composeChanged?: boolean;
   reindexed?: boolean;
+  restarted?: boolean;
 }
 
 export async function runEdit(target: EditTarget, deps: EditDeps = {}): Promise<EditResult> {
@@ -75,8 +80,25 @@ export async function runEdit(target: EditTarget, deps: EditDeps = {}): Promise<
   }
 
   if (target === 'compose') {
-    console.log(chalk.dim('Run `paparats restart` to apply compose changes.'));
-    return { edited: true };
+    // Check before restarting: `up -d` on a broken file would stop nothing and
+    // start nothing, and the stack would keep running the old one unnoticed.
+    const problem = (deps.checkCompose ?? defaultCheckCompose)(file);
+    if (problem !== null) {
+      console.error(chalk.red(`${COMPOSE_YML} is not valid: ${problem}`));
+      console.error(
+        chalk.dim('The stack keeps running as it was. Fix it with `paparats edit compose`.')
+      );
+      return { edited: true, validated: false };
+    }
+    await (deps.restartStack ?? defaultRestartStack)(home);
+    console.log(chalk.green('✓ Compose checked and stack restarted'));
+    console.log(
+      chalk.dim(
+        '`paparats add`, `remove`, `edit projects` and `update` regenerate this file and keep ' +
+          `the previous one as ${COMPOSE_YML}.bak.`
+      )
+    );
+    return { edited: true, validated: true, restarted: true };
   }
 
   // target === 'projects' — validate, then regenerate compose + restart + trigger
@@ -143,9 +165,22 @@ async function defaultRegenerateAndRestart(
   return { composeChanged: true };
 }
 
+function defaultCheckCompose(file: string): string | null {
+  const [cmd, ...pre] = getDockerComposeCommand().split(' ');
+  const r = spawnSync(cmd!, [...pre, '-f', file, 'config', '--quiet'], { encoding: 'utf8' });
+  if (r.error) return r.error.message;
+  if (r.status === 0) return null;
+  return (r.stderr || r.stdout || `exit status ${r.status}`).trim();
+}
+
+async function defaultRestartStack(paparatsHome: string): Promise<void> {
+  const { runRestart } = await import('./lifecycle.js');
+  await runRestart({ paparatsHome });
+}
+
 async function defaultTriggerFullReindex(): Promise<void> {
   const url = localUrls().indexer;
-  const res = await fetch(`${url}/trigger`, { method: 'POST' });
+  const res = await fetch(`${url}/trigger`, { method: 'POST', headers: authHeaders() });
   if (!res.ok) throw new Error(`Indexer ${url} returned ${res.status}`);
 }
 

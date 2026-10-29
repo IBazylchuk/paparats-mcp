@@ -1,10 +1,13 @@
 import fs from 'fs';
 import path from 'path';
 import * as yaml from 'js-yaml';
+import { globSync } from 'glob';
 import {
   validateIndexingPaths,
   normalizeExcludePatterns,
+  anchorBuildOutputExcludes,
   LANGUAGE_EXCLUDE_DEFAULTS,
+  PACKAGE_MANIFESTS,
   DEFAULT_GROUP,
 } from '@paparats/shared';
 import { validateTicketPatterns } from './ticket-extractor.js';
@@ -261,6 +264,32 @@ export function readConfig(projectDir: string): PaparatsConfig {
  * Resolve a raw .paparats.yml into a fully-resolved ProjectConfig
  * by merging language profiles, defaults, and user overrides.
  */
+/**
+ * Folders below the project root that hold a package manifest (`package.json`,
+ * `Gemfile`, `go.mod`, ...), relative: where a monorepo's packages keep their
+ * build output. Dependencies and other excluded folders are not searched. Empty
+ * when the directory does not exist (a config resolved for content sent by a client).
+ */
+export function findPackageDirs(projectDir: string, exclude: string[]): string[] {
+  if (!fs.existsSync(projectDir)) return [];
+  const manifests = globSync(
+    PACKAGE_MANIFESTS.map((m) => `**/${m}`),
+    {
+      cwd: projectDir,
+      ignore: anchorBuildOutputExcludes(exclude, []),
+      nodir: true,
+      follow: false,
+      posix: true,
+    }
+  );
+  const dirs = new Set<string>();
+  for (const file of manifests) {
+    const dir = path.posix.dirname(file);
+    if (dir !== '.') dirs.add(dir);
+  }
+  return [...dirs].sort();
+}
+
 export function resolveProject(projectDir: string, raw: PaparatsConfig): ProjectConfig {
   validateGroupName(raw.group);
   const languages = Array.isArray(raw.language) ? [...new Set(raw.language)] : [raw.language];
@@ -283,7 +312,13 @@ export function resolveProject(projectDir: string, raw: PaparatsConfig): Project
   const paths = userIndexing.paths ?? ['./'];
   validateIndexingPaths(paths, projectDir);
 
-  const baseExclude = userIndexing.exclude ?? Array.from(new Set(mergedExclude));
+  // The language defaults exclude build output folders (`build`, `dist`, `tmp`,
+  // `storage`, ...) at the project and package roots only, so source folders of
+  // those names deeper down stay indexed. An `exclude` the user wrote is used as is.
+  const defaultExclude = Array.from(new Set(mergedExclude));
+  const baseExclude =
+    userIndexing.exclude ??
+    anchorBuildOutputExcludes(defaultExclude, findPackageDirs(projectDir, defaultExclude));
   const exclude = normalizeExcludePatterns(
     userIndexing.exclude_extra ? [...baseExclude, ...userIndexing.exclude_extra] : baseExclude
   );

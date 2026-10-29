@@ -84,6 +84,7 @@ function createMockIndexer(suffix = ''): Indexer {
     updateFileContent: vi.fn().mockResolvedValue(0),
     deleteFileByPath: vi.fn().mockResolvedValue(undefined),
     deleteProjectChunks: vi.fn().mockResolvedValue(undefined),
+    dropCollectionIfModelChanged: vi.fn().mockResolvedValue(null),
     purgeProject: vi.fn().mockResolvedValue(undefined),
     getChunkById: vi.fn().mockResolvedValue(null),
     getAdjacentChunks: vi.fn().mockResolvedValue([]),
@@ -302,6 +303,21 @@ describe('Server API', () => {
       const res = await postIndex({});
       expect(res.status).toBe(200);
       expect(mockSearcher.invalidateGroupCache).toHaveBeenCalledWith('test-group');
+    });
+
+    it('drops the collection instead of the project chunks when force meets a new model', async () => {
+      vi.mocked(mockIndexer.dropCollectionIfModelChanged).mockResolvedValueOnce({
+        provider: 'llama',
+        model: 'old-model',
+        dimensions: 4,
+        createdAt: 0,
+        metaVersion: 1,
+      });
+      const res = await postIndex({ force: true });
+      expect(res.status).toBe(200);
+      expect(mockIndexer.dropCollectionIfModelChanged).toHaveBeenCalledWith('test-group');
+      expect(mockIndexer.deleteProjectChunks).not.toHaveBeenCalled();
+      expect(mockIndexer.indexFilesContent).toHaveBeenCalled();
     });
 
     it('returns 500 without indexing when force cannot clear the old chunks', async () => {
@@ -840,5 +856,136 @@ describe('PAPARATS_UI_BASIC_AUTH', () => {
       mcpHandler.destroy();
       await new Promise<void>((resolve) => srv.close(() => resolve()));
     }
+  });
+});
+
+// ── Optional API key ────────────────────────────────────────────────────────
+
+describe('PAPARATS_API_KEY', () => {
+  const KEY = 'k'.repeat(20);
+  const vars = ['PAPARATS_API_KEY', 'PAPARATS_UI_BASIC_AUTH'] as const;
+  const before = Object.fromEntries(vars.map((v) => [v, process.env[v]]));
+
+  afterEach(() => {
+    for (const v of vars) {
+      if (before[v] === undefined) delete process.env[v];
+      else process.env[v] = before[v];
+    }
+  });
+
+  async function withServer(run: (base: string) => Promise<void>): Promise<void> {
+    const { app, mcpHandler, stopGroupPoll } = createApp({
+      searcher: createMockSearcher(),
+      indexer: createMockIndexer(),
+      embeddingProvider: createMockEmbeddingProvider(),
+      projectsByGroup: new Map(),
+    });
+    const srv = app.listen(0);
+    const port = (srv.address() as { port: number }).port;
+    try {
+      await run(`http://127.0.0.1:${port}`);
+    } finally {
+      mcpHandler.destroy();
+      stopGroupPoll();
+      await new Promise<void>((resolve) => srv.close(() => resolve()));
+    }
+  }
+
+  const bearer = (key: string) => ({ Authorization: `Bearer ${key}` });
+  const search = (base: string, headers: Record<string, string> = {}) =>
+    fetch(`${base}/api/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify({ query: 'x' }),
+    });
+
+  it('leaves every route open when unset', async () => {
+    delete process.env['PAPARATS_API_KEY'];
+    await withServer(async (base) => {
+      expect((await search(base)).status).not.toBe(401);
+      expect((await fetch(`${base}/api/module-map`)).status).not.toBe(401);
+      const health = (await (await fetch(`${base}/health`)).json()) as Record<string, unknown>;
+      expect(health).toHaveProperty('groups');
+    });
+  });
+
+  it('refuses to start with a key it cannot use', () => {
+    process.env['PAPARATS_API_KEY'] = 'changeme';
+    expect(() =>
+      createApp({
+        searcher: createMockSearcher(),
+        indexer: createMockIndexer(),
+        embeddingProvider: createMockEmbeddingProvider(),
+        projectsByGroup: new Map(),
+      })
+    ).toThrow(/PAPARATS_API_KEY: key #1/);
+  });
+
+  it('asks for the key on the API and MCP routes, and accepts any listed key', async () => {
+    process.env['PAPARATS_API_KEY'] = `${'a'.repeat(16)}, ${KEY}`;
+    await withServer(async (base) => {
+      const denied = await search(base);
+      expect(denied.status).toBe(401);
+      expect(denied.headers.get('www-authenticate')).toBe('Bearer realm="paparats"');
+      const wrong = await search(base, bearer('w'.repeat(20)));
+      expect(wrong.status).toBe(401);
+      expect(wrong.headers.get('www-authenticate')).toContain('invalid_token');
+      expect((await search(base, bearer(KEY))).status).not.toBe(401);
+      expect((await search(base, bearer('a'.repeat(16)))).status).not.toBe(401);
+
+      const mcp = await fetch(`${base}/mcp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json, text/event-stream',
+        },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ping' }),
+      });
+      expect(mcp.status).toBe(401);
+      expect((await fetch(`${base}/api/stats`)).status).toBe(401);
+    });
+  });
+
+  it('keeps /health open but shows the projects only to a caller with the key', async () => {
+    process.env['PAPARATS_API_KEY'] = KEY;
+    await withServer(async (base) => {
+      const open = await fetch(`${base}/health`);
+      expect(open.status).toBe(200);
+      expect(await open.json()).toEqual({ status: 'ok' });
+      const full = (await (
+        await fetch(`${base}/health`, { headers: bearer(KEY) })
+      ).json()) as Record<string, unknown>;
+      expect(full).toHaveProperty('groups');
+    });
+  });
+
+  it('lets a browser open the pages with the key as a basic-auth password', async () => {
+    process.env['PAPARATS_API_KEY'] = KEY;
+    delete process.env['PAPARATS_UI_BASIC_AUTH'];
+    await withServer(async (base) => {
+      const page = await fetch(`${base}/ui/`, { headers: { Accept: 'text/html' } });
+      expect(page.status).toBe(401);
+      expect(page.headers.get('www-authenticate')).toBe('Basic realm="paparats"');
+      const basic = 'Basic ' + Buffer.from(`anyone:${KEY}`).toString('base64');
+      expect((await fetch(`${base}/ui/`, { headers: { Authorization: basic } })).status).not.toBe(
+        401
+      );
+      expect((await fetch(`${base}/api/module-map`, { headers: bearer(KEY) })).status).not.toBe(
+        401
+      );
+    });
+  });
+
+  it('leaves the pages to PAPARATS_UI_BASIC_AUTH when that is set', async () => {
+    process.env['PAPARATS_API_KEY'] = KEY;
+    process.env['PAPARATS_UI_BASIC_AUTH'] = 'admin:s3cret';
+    await withServer(async (base) => {
+      const basic = 'Basic ' + Buffer.from('admin:s3cret').toString('base64');
+      expect((await fetch(`${base}/ui/`, { headers: { Authorization: basic } })).status).not.toBe(
+        401
+      );
+      expect((await fetch(`${base}/api/analytics`)).status).toBe(401);
+      expect((await search(base, { Authorization: basic })).status).toBe(401);
+    });
   });
 });

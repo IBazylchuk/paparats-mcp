@@ -330,6 +330,24 @@ describe('upsertMcpServer', () => {
     const r = upsertMcpServer('/tmp/x.json', 'paparats', { url: 'http://x' }, deps);
     expect(r).toBe('unchanged');
   });
+
+  it('updates an entry whose url matches when its key header changed', () => {
+    const initial = JSON.stringify({ mcpServers: { paparats: { url: 'http://x' } } });
+    const writes: string[] = [];
+    const deps = {
+      readFileSync: () => initial,
+      writeFileSync: (_p: string, d: string) => {
+        writes.push(d);
+      },
+      existsSync: () => true,
+      mkdirSync: () => undefined,
+    };
+    const config = { url: 'http://x', headers: { Authorization: 'Bearer k' } };
+    expect(upsertMcpServer('/tmp/x.json', 'paparats', config, deps)).toBe('updated');
+    expect(JSON.parse(writes[0]!).mcpServers.paparats.headers).toEqual({
+      Authorization: 'Bearer k',
+    });
+  });
 });
 
 // ── ensureLocalEmbed: launcher (launchd on macOS, detached spawn elsewhere) ──
@@ -612,6 +630,19 @@ describe('configureClaudeCodeMcp', () => {
     });
     expect(ok).toBe(true);
     expect(execFile.mock.calls).toEqual([['claude', addArgs]]);
+  });
+
+  it('sends the API key as a header when one is given', () => {
+    const execFile = vi.fn();
+    configureClaudeCodeMcp(
+      'paparats-support',
+      url,
+      { commandExists: () => true, execFile },
+      'k'.repeat(16)
+    );
+    expect(execFile.mock.calls).toEqual([
+      ['claude', [...addArgs, '--header', `Authorization: Bearer ${'k'.repeat(16)}`]],
+    ]);
   });
 
   it('replaces an existing entry of the same name', () => {

@@ -69,6 +69,7 @@ import {
 import { MAX_IMPACT_DEPTH } from './change-impact.js';
 import { callerLabel, changeImpactReport, shownLine } from './change-impact-report.js';
 import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map.js';
+import { fetchIndexerHealth, indexerUrlFromEnv, type IndexerSection } from './indexer-health.js';
 
 /**
  * Below this best similarity `search_code` warns that the index may have nothing
@@ -805,6 +806,28 @@ function formatWriteResult(
   }
 }
 
+/** How long `health_check` waits for the indexer's `/health`. */
+const INDEXER_HEALTH_TIMEOUT_MS = 3000;
+
+/** The indexer part of `health_check`: its status, last run, and each repository's. */
+function indexerSummary(health: IndexerSection): Record<string, unknown> {
+  if (!health.reachable) {
+    return { reachable: false, url: health.url, error: health.error };
+  }
+  return {
+    reachable: true,
+    status: health.globalStatus,
+    lastRunAt: health.lastRunAt,
+    repos: health.repos.map((r) => ({
+      repo: r.repo,
+      status: r.status,
+      ...(r.lastRun ? { lastRun: r.lastRun } : {}),
+      ...(r.chunksIndexed !== undefined ? { chunks: r.chunksIndexed } : {}),
+      ...(r.lastError ? { error: r.lastError } : {}),
+    })),
+  };
+}
+
 export interface McpHandlerConfig {
   searcher: Searcher;
   indexer: Indexer;
@@ -859,6 +882,11 @@ export interface McpHandlerConfig {
    * comes back is transparently recreated, so eviction costs it nothing.
    */
   maxSessions?: number;
+  /**
+   * The indexer's state for `health_check`. Defaults to its `/health` at
+   * `PAPARATS_INDEXER_URL` (else localhost:9877), with a short timeout.
+   */
+  indexerHealth?: () => Promise<IndexerSection>;
 }
 
 type TransportEntry = {
@@ -1134,6 +1162,7 @@ export class McpHandler {
   private syncGroups: (() => Promise<void>) | null;
   private metadataStore: MetadataStore | null;
   private moduleMaps: ModuleMapService | null;
+  private indexerHealth: () => Promise<IndexerSection>;
   private telemetry: Telemetry | null;
   private analytics: AnalyticsStore | null;
   private archStore: ArchStore | null;
@@ -1183,6 +1212,9 @@ export class McpHandler {
       : null;
     this.terminologyStore = config.terminologyStore ?? null;
     this.metrics = config.metrics ?? new NoOpMetrics();
+    this.indexerHealth =
+      config.indexerHealth ??
+      (() => fetchIndexerHealth(indexerUrlFromEnv(), INDEXER_HEALTH_TIMEOUT_MS));
     this.maxSessions = Math.max(1, config.maxSessions ?? DEFAULT_MAX_SESSIONS);
 
     this.cleanupInterval = setInterval(() => this.cleanupExpiredSessions(), 5 * 60 * 1000);
@@ -1757,14 +1789,22 @@ export class McpHandler {
           annotations: READ_ONLY,
         },
         async () => {
+          // Asked alongside Qdrant: whether the indexer runs, when it last ran,
+          // and which repositories failed, so an agent can tell a stale index.
+          const indexerState = this.indexerHealth().then(indexerSummary);
           try {
             const groups = await this.indexer.listGroups();
+            const indexer = await indexerState;
 
             return {
               content: [
                 {
                   type: 'text' as const,
-                  text: JSON.stringify({ status: 'ok', version: PKG_VERSION, groups }, null, 2),
+                  text: JSON.stringify(
+                    { status: 'ok', version: PKG_VERSION, groups, indexer },
+                    null,
+                    2
+                  ),
                 },
               ],
             };
@@ -3771,11 +3811,13 @@ export class McpHandler {
               ),
             name: z
               .string()
+              .min(1)
               .describe(
                 'Component name, unique per (group, project). Stable, refactor-resistant — e.g. "file indexer", not "Indexer (in indexer.ts)".'
               ),
             summary: z
               .string()
+              .min(1)
               .describe(
                 'Markdown with four sections, each one or two short lines:\n' +
                   '- **Does:** what it does\n' +
@@ -3785,21 +3827,21 @@ export class McpHandler {
               ),
             files: z
               .array(z.string())
-              .default([])
+              .optional()
               .describe(
-                'Repository paths the component spans (e.g. packages/server/src/indexer.ts).'
+                'Repository paths the component spans (e.g. packages/server/src/indexer.ts). Left out on an update, the card keeps its list.'
               ),
             neighbours: z
               .array(z.string())
-              .default([])
+              .optional()
               .describe(
-                'Names of related components (matches `name` of other arch_record_component entries).'
+                'Names of related components (matches `name` of other arch_record_component entries). Left out on an update, the card keeps its list.'
               ),
             anchors: z
               .array(z.string())
-              .default([])
+              .optional()
               .describe(
-                'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code.'
+                'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code. Left out on an update, the card keeps its list.'
               ),
           },
           annotations: ADDITIVE_WRITE,
@@ -3811,9 +3853,9 @@ export class McpHandler {
             project,
             name,
             summary,
-            files,
-            neighbours,
-            anchors,
+            ...(files !== undefined ? { files } : {}),
+            ...(neighbours !== undefined ? { neighbours } : {}),
+            ...(anchors !== undefined ? { anchors } : {}),
           });
           metrics.incArchWriteTotal('component', result.status);
           const verb = result.status === 'updated' ? 'Updated' : 'Recorded';
@@ -3874,6 +3916,7 @@ export class McpHandler {
             scope: z.enum(['global', 'component', 'file']).default('global'),
             supersedes: z
               .string()
+              .min(1)
               .nullable()
               .optional()
               .describe(
@@ -3904,6 +3947,7 @@ export class McpHandler {
             consequences,
             scope: decisionScope,
             supersedes: supersedes ?? null,
+            ...(scope.projects ? { allowProject: scope.allowsProject } : {}),
           });
           metrics.incArchWriteTotal('decision', result.status);
           return {
@@ -4428,7 +4472,11 @@ export class McpHandler {
             'Search the company glossary for a term, abbreviation, or domain concept.',
           inputSchema: {
             query: z.string().min(1).describe('Term, abbreviation, or concept to look up.'),
-            project: z.string().optional().describe('Restrict to a project, or omit for all.'),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe('Restrict to a project, or omit for all.'),
             group: z.string().optional().describe('Specific group, or omit for all groups.'),
             limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
           },
@@ -4484,7 +4532,11 @@ export class McpHandler {
           description: prompts.tools['term_list']?.description ?? 'List glossary terms in a group.',
           inputSchema: {
             group: z.string().optional().describe('Specific group, or omit for all groups.'),
-            project: z.string().optional().describe('Restrict to a project, or omit for all.'),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe('Restrict to a project, or omit for all.'),
             limit: z.number().int().min(1).max(500).optional().describe('Max terms. Default 200.'),
           },
           annotations: READ_ONLY,
@@ -4534,8 +4586,14 @@ export class McpHandler {
             aliases: z
               .array(z.string())
               .optional()
-              .describe('Alternate spellings / abbreviations.'),
-            project: z.string().optional().describe('Project scope, or omit for group-wide.'),
+              .describe(
+                'Alternate spellings / abbreviations. Left out on an update, the term keeps its aliases.'
+              ),
+            project: z
+              .string()
+              .min(1)
+              .optional()
+              .describe('Project scope, or omit for group-wide.'),
           },
           annotations: ADDITIVE_WRITE,
         },

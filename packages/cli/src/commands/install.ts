@@ -214,7 +214,11 @@ export function upsertMcpServer(
   const bothHaveUrl = 'url' in existing && 'url' in serverConfig;
   const bothHaveCommand = 'command' in existing && 'command' in serverConfig;
 
-  if (bothHaveUrl && existing['url'] === serverConfig['url']) {
+  if (
+    bothHaveUrl &&
+    existing['url'] === serverConfig['url'] &&
+    JSON.stringify(existing['headers']) === JSON.stringify(serverConfig['headers'])
+  ) {
     return 'unchanged';
   }
   if (bothHaveCommand && JSON.stringify(existing) === JSON.stringify(serverConfig)) {
@@ -255,6 +259,11 @@ export interface InstallOptions {
   verbose?: boolean;
   /** Support mode: server URL */
   server?: string;
+  /**
+   * The key the server asks for (`PAPARATS_API_KEY`). Developer mode stores it in
+   * ~/.paparats/.env, where the stack reads it; both modes send it from the MCP clients.
+   */
+  apiKey?: string;
 }
 
 export interface InstallDeps {
@@ -1129,6 +1138,7 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
   //    It holds API keys, so it is written owner-only.
   const updates: Record<string, string> = {};
   if (opts.qdrantApiKey) updates['QDRANT_API_KEY'] = opts.qdrantApiKey;
+  if (opts.apiKey) updates['PAPARATS_API_KEY'] = opts.apiKey;
   if (embeddingDecision.apiKey && embeddingDecision.provider !== 'llama') {
     updates[EMBEDDING_KEY_VAR[embeddingDecision.provider]] = embeddingDecision.apiKey;
   }
@@ -1171,8 +1181,9 @@ async function runUnifiedInstall(opts: InstallOptions, deps: ResolvedDeps): Prom
 
   // 11. MCP-client wiring
   const mcpUrl = `${urls.server}/mcp`;
-  configureCursorMcp(mcpUrl, deps);
-  configureClaudeCodeMcp('paparats', mcpUrl, deps);
+  const apiKey = opts.apiKey ?? urls.apiKey;
+  configureCursorMcp(mcpUrl, deps, 'paparats', apiKey);
+  configureClaudeCodeMcp('paparats', mcpUrl, deps, apiKey);
 
   // 12. Final summary
   console.log(chalk.bold.green('\n✓ Installation complete!\n'));
@@ -1238,8 +1249,9 @@ async function runSupportInstall(
   const mcpUrl = `${serverUrl}/support/mcp`;
 
   // Wire MCP clients to the support endpoint
-  configureCursorMcp(mcpUrl, deps, 'paparats-support');
-  configureClaudeCodeMcp('paparats-support', mcpUrl, deps);
+  const apiKey = opts.apiKey ?? localUrls().apiKey;
+  configureCursorMcp(mcpUrl, deps, 'paparats-support', apiKey);
+  configureClaudeCodeMcp('paparats-support', mcpUrl, deps, apiKey);
 
   console.log(chalk.bold.green('\n\u2713 Support setup complete!\n'));
   console.log('Configured endpoint:');
@@ -1300,10 +1312,12 @@ export function mergeDotenv(existing: string, updates: Record<string, string>): 
 export function configureClaudeCodeMcp(
   serverName: string,
   mcpUrl: string,
-  deps: Pick<ResolvedDeps, 'commandExists' | 'execFile'>
+  deps: Pick<ResolvedDeps, 'commandExists' | 'execFile'>,
+  apiKey?: string
 ): boolean {
   const addArgs = ['mcp', 'add', '--scope', 'user', '--transport', 'http', serverName, mcpUrl];
-  const manual = `claude ${addArgs.join(' ')}`;
+  if (apiKey) addArgs.push('--header', `Authorization: Bearer ${apiKey}`);
+  const manual = `claude ${addArgs.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}`;
   if (!deps.commandExists('claude')) {
     console.log(chalk.dim('Claude Code CLI not found. To connect Claude Code, run:'));
     console.log(chalk.dim(`  ${manual}`));
@@ -1336,7 +1350,8 @@ function defaultExecFile(file: string, args: string[]): void {
 function configureCursorMcp(
   mcpUrl: string,
   deps: Pick<InstallDeps, 'existsSync' | 'readFileSync' | 'writeFileSync' | 'mkdirSync'>,
-  serverName = 'paparats'
+  serverName = 'paparats',
+  apiKey?: string
 ): void {
   const exists = deps.existsSync ?? ((p: string) => fs.existsSync(p));
   const readFile = deps.readFileSync ?? ((p: string) => fs.readFileSync(p, 'utf8'));
@@ -1349,7 +1364,11 @@ function configureCursorMcp(
     const result = upsertMcpServer(
       cursorMcpPath,
       serverName,
-      { type: 'http', url: mcpUrl },
+      {
+        type: 'http',
+        url: mcpUrl,
+        ...(apiKey ? { headers: { Authorization: `Bearer ${apiKey}` } } : {}),
+      },
       { readFileSync: readFile, writeFileSync: writeFile, existsSync: exists, mkdirSync: mkdir }
     );
     if (result === 'unchanged') {
@@ -1417,6 +1436,13 @@ export async function runInstall(
   };
 
   const mode = opts.mode ?? 'developer';
+  // The server refuses to start on a key it cannot use; say so before installing anything.
+  if (opts.apiKey !== undefined && !/^[A-Za-z0-9\-._~+/]{16,}=*$/.test(opts.apiKey)) {
+    throw new Error(
+      '--api-key must be at least 16 characters of A-Z a-z 0-9 - . _ ~ + / ' +
+        '(for example the output of `openssl rand -hex 32`).'
+    );
+  }
   console.log(chalk.bold(`\npaparats install${mode === 'support' ? ' --mode support' : ''}\n`));
 
   if (mode === 'support') {
@@ -1452,6 +1478,10 @@ export const installCommand = new Command('install')
   .option('--qdrant-url <url>', 'External Qdrant URL (skips Qdrant Docker container)')
   .option('--qdrant-api-key <key>', 'Qdrant API key for authenticated access')
   .option('--server <url>', 'Server URL to connect to (support mode)')
+  .option(
+    '--api-key <key>',
+    'Key the server asks for, when it runs with PAPARATS_API_KEY (sent by the MCP clients)'
+  )
   .option('--force', 'Skip overwrite/migration prompts (always overwrite)')
   .option('--non-interactive', 'Fail on any prompt instead of asking')
   .option('-v, --verbose', 'Show detailed output')

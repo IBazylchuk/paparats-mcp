@@ -8,6 +8,11 @@ export interface LocalUrls {
   qdrant: string;
   /** The embed server as the host reaches it (Docker mode publishes `EMBED_PORT`, native listens on 18434). */
   embed: string;
+  /**
+   * The key the server and indexer ask for, when they run with `PAPARATS_API_KEY`
+   * (the first one, if several are listed). Undefined when none is set.
+   */
+  apiKey?: string;
 }
 
 /** `KEY=value` lines of a dotenv file; comments, blanks and malformed lines are skipped. */
@@ -40,10 +45,22 @@ export function localUrls(
     // No .env yet: defaults.
   }
   const port = (key: string, fallback: number) => env[key] || file[key] || String(fallback);
+  const apiKey = (env['PAPARATS_API_KEY'] || file['PAPARATS_API_KEY'] || '')
+    .split(',')
+    .map((k) => k.trim())
+    .find((k) => k.length > 0);
   return {
     server: env['PAPARATS_SERVER_URL'] || `http://localhost:${port('PAPARATS_PORT', 9876)}`,
     indexer: env['PAPARATS_INDEXER_URL'] || `http://localhost:${port('INDEXER_PORT', 9877)}`,
     qdrant: env['QDRANT_URL'] || `http://localhost:${port('QDRANT_PORT', 6333)}`,
     embed: env['EMBED_URL'] || `http://localhost:${port('EMBED_PORT', 18434)}`,
+    ...(apiKey ? { apiKey } : {}),
   };
+}
+
+/** `Authorization: Bearer <key>` when a key is given, else no header. */
+export function authHeaders(
+  apiKey: string | undefined = localUrls().apiKey
+): Record<string, string> {
+  return apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
 }

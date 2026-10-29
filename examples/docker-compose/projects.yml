@@ -8,6 +8,10 @@ repos:
   # A GitHub repository, cloned by the indexer. Private ones need GITHUB_TOKEN in .env.
   - url: IBazylchuk/paparats-mcp
 
+  # Another host, by its https URL (GitLab, GitHub Enterprise, Gitea). A private one
+  # needs GIT_TOKENS=host=token in .env.
+  # - url: https://gitlab.example.com/team/app
+
   # A folder on this machine: an absolute path, also mounted in docker-compose.yml
   # under paparats-indexer → volumes as  - /abs/path/app:/projects/app:ro
   # - path: /abs/path/app

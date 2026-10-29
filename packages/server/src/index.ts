@@ -18,6 +18,7 @@ import {
   type KnowledgeModeConfig,
 } from './knowledge-mode.js';
 import { QueryCache } from './query-cache.js';
+import { parseApiKeysEnv } from './api-key-auth.js';
 import { createMetrics } from './metrics.js';
 import { buildTelemetry } from './telemetry/factory.js';
 import { tctx, systemContext } from './telemetry/context.js';
@@ -182,7 +183,7 @@ try {
     ...(KNOWLEDGE_MODE ? { knowledgeMode: KNOWLEDGE_MODE } : {}),
   });
 } catch (err) {
-  // Misconfiguration (e.g. a malformed PAPARATS_UI_BASIC_AUTH or
+  // Misconfiguration (e.g. a malformed PAPARATS_UI_BASIC_AUTH, PAPARATS_API_KEY or
   // PAPARATS_CORS_ORIGINS) — fail closed with the reason, not a stack trace.
   console.error(`[startup] ${(err as Error).message}`);
   process.exit(1);
@@ -206,6 +207,11 @@ const server = STDIO
       console.log(`paparats-mcp listening on http://0.0.0.0:${PORT}`);
       console.log(`  MCP Coding:               http://localhost:${PORT}/mcp`);
       console.log(`  MCP Support:              http://localhost:${PORT}/support/mcp`);
+      // Never the keys — only how many there are.
+      const apiKeyCount = parseApiKeysEnv(process.env)?.length ?? 0;
+      console.log(
+        `  API key:                  ${apiKeyCount > 0 ? `required (${apiKeyCount} key(s))` : 'off (PAPARATS_API_KEY unset)'}`
+      );
       if (KNOWLEDGE_MODE) {
         // Never the tokens — only how many there are.
         const effective = effectiveKnowledgeScope(KNOWLEDGE_MODE, {

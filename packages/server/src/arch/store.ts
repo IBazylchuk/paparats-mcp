@@ -2,7 +2,9 @@ import type { QdrantClient } from '@qdrant/js-client-rest';
 import { v7 as uuidv7 } from 'uuid';
 import type { CachedEmbeddingProvider } from '../embeddings.js';
 import { isMissingCollection } from '../qdrant-errors.js';
+import { upsertWithRetry } from '../qdrant-batch.js';
 import {
+  ARCH_META_ID,
   dropArchCollection,
   ensureArchCollection,
   fromArchCollectionName,
@@ -34,6 +36,14 @@ interface UpsertComponentInput {
   anchors: string[];
 }
 
+/** A component write: a list left out keeps what the card has (empty for a new card). */
+type ComponentWrite = Omit<UpsertComponentInput, 'files' | 'neighbours' | 'anchors'> &
+  Partial<Pick<UpsertComponentInput, 'files' | 'neighbours' | 'anchors'>>;
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
 interface UpsertDecisionInput {
   /** Optional. Omit for decisions that apply across all projects in the group. */
   project?: string;
@@ -45,6 +55,8 @@ interface UpsertDecisionInput {
   scope: ArchScope;
   status?: ArchStatus;
   supersedes?: string | null;
+  /** A scoped server's project filter: a decision of a project it rejects cannot be superseded. */
+  allowProject?: (project: string) => boolean;
 }
 
 interface UpsertLessonInput {
@@ -137,9 +149,17 @@ export class ArchStore {
    * Returns `updated` when an existing card with the same name was overwritten,
    * `created` otherwise.
    */
-  async upsertComponent(group: string, input: UpsertComponentInput): Promise<ArchWriteResult> {
+  async upsertComponent(group: string, write: ComponentWrite): Promise<ArchWriteResult> {
     await ensureArchCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
-    const existing = await this.findByName(group, 'component', input.name, input.project);
+    const existing = await this.findByName(group, 'component', write.name, write.project);
+    // An update that leaves a list out keeps the card's: a summary fix must not
+    // drop the files and anchors the card is checked against.
+    const input: UpsertComponentInput = {
+      ...write,
+      files: write.files ?? stringList(existing?.payload?.['files']),
+      neighbours: write.neighbours ?? stringList(existing?.payload?.['neighbours']),
+      anchors: write.anchors ?? stringList(existing?.payload?.['anchors']),
+    };
     const id = existing?.id ?? uuidv7();
     const now = Date.now();
     const text = renderComponentForEmbedding(input);
@@ -186,7 +206,7 @@ export class ArchStore {
     if (input.supersedes) {
       // Checked before writing: marking a missing id superseded fails after the
       // new card is in, so a retry of the "failed" call wrote it a second time.
-      await this.assertSupersedable(group, input.supersedes);
+      await this.assertSupersedable(group, input.supersedes, input.project, input.allowProject);
     } else {
       const match = await this.findNearest(group, 'decision', vector, input.project);
       if (match && match.score >= DUPLICATE_THRESHOLD) {
@@ -236,7 +256,16 @@ export class ArchStore {
       ],
     });
     if (supersedes) {
-      await this.markSuperseded(group, supersedes);
+      try {
+        await this.markSuperseded(group, supersedes);
+      } catch (err) {
+        // Take the new card back out: the call fails, and a retry must not
+        // leave two decisions where one replaced the other.
+        await this.qdrant
+          .delete(toArchCollectionName(group), { wait: true, points: [id] })
+          .catch(() => {});
+        throw err;
+      }
     }
     return { status: 'created', id };
   }
@@ -303,8 +332,18 @@ export class ArchStore {
     return { status: 'created', id };
   }
 
-  /** Throws unless `id` is a decision card in `group`. */
-  private async assertSupersedable(group: string, id: string): Promise<void> {
+  /**
+   * Throws unless `id` is a current decision of the same project in `group`
+   * (both group-wide, or both of one project) that `allowProject` lets the
+   * caller see: one project cannot retire another's decision, and a decision
+   * already superseded is not replaced twice.
+   */
+  private async assertSupersedable(
+    group: string,
+    id: string,
+    project: string | undefined,
+    allowProject: ((project: string) => boolean) | undefined
+  ): Promise<void> {
     let points: Array<{ payload?: Record<string, unknown> | null }>;
     try {
       points = await this.qdrant.retrieve(toArchCollectionName(group), {
@@ -318,11 +357,26 @@ export class ArchStore {
       if (!isMissingCollection(err) && status !== 400) throw err;
       points = [];
     }
-    const kind = points[0]?.payload?.['arch_kind'];
-    if (kind !== 'decision') {
+    const payload = points[0]?.payload ?? null;
+    if (payload?.['arch_kind'] !== 'decision' || !isVisible(payload, allowProject)) {
       throw new Error(
         `supersedes: no decision with id "${id}" in group "${group}". Nothing was written. ` +
           'Find the id with arch_list or arch_context, or omit supersedes.'
+      );
+    }
+    const oldProject = typeof payload['project'] === 'string' ? payload['project'] : undefined;
+    if (oldProject !== project) {
+      const where = (p: string | undefined) =>
+        p === undefined ? 'group-wide' : `of project "${p}"`;
+      throw new Error(
+        `supersedes: decision "${id}" is ${where(oldProject)}, the new one ${where(project)}. ` +
+          'Nothing was written. A decision can only replace one of the same project.'
+      );
+    }
+    if (payload['status'] === 'superseded') {
+      throw new Error(
+        `supersedes: decision "${id}" is already superseded. Nothing was written. ` +
+          'Supersede the decision that replaced it instead.'
       );
     }
   }
@@ -375,22 +429,37 @@ export class ArchStore {
       if (isMissingCollection(err)) return { deleted: [], notFound: [...ids] };
       throw err;
     }
-    const points = await this.qdrant.retrieve(collection, {
-      ids,
-      with_payload: ['project'],
-      with_vector: false,
-    });
+    // Qdrant answers a malformed id with a 400 for the whole call and returns
+    // UUIDs in canonical form: look up canonical ids, report them as given.
+    const canonical = new Map<string, string>();
+    for (const id of ids) {
+      const key = canonicalPointId(id);
+      if (key !== null && key !== ARCH_META_ID) canonical.set(id, key);
+    }
+    const keys = [...new Set(canonical.values())];
+    const points =
+      keys.length > 0
+        ? await this.qdrant.retrieve(collection, {
+            ids: keys,
+            with_payload: ['project', '__meta'],
+            with_vector: false,
+          })
+        : [];
     const foundSet = new Set<string>();
     for (const p of points) {
+      // The metadata point is not a card: deleting it re-embeds the memory on restart.
+      if (p.payload?.['__meta'] === true) continue;
       if (!isVisible(p.payload, allowProject)) continue;
       const raw = p.id;
       const asStr = typeof raw === 'string' ? raw : typeof raw === 'number' ? String(raw) : null;
       if (asStr) foundSet.add(asStr);
     }
-    const foundIds = ids.filter((id) => foundSet.has(id));
-    const notFound = ids.filter((id) => !foundSet.has(id));
+    const found = (id: string) => foundSet.has(canonical.get(id) ?? '');
+    const foundIds = ids.filter(found);
+    const notFound = ids.filter((id) => !found(id));
     if (foundIds.length === 0) return { deleted: [], notFound };
-    await this.qdrant.delete(collection, { points: foundIds, wait: true });
+    const toDelete = [...new Set(foundIds.map((id) => canonical.get(id)!))];
+    await this.qdrant.delete(collection, { points: toDelete, wait: true });
     return { deleted: foundIds, notFound };
   }
 
@@ -459,34 +528,33 @@ export class ArchStore {
         ...(Object.keys(filter).length > 0 ? { filter } : {}),
         ...(opts.offset !== undefined ? { offset: opts.offset } : {}),
       });
-      // Cursor correctness on early break.
-      //
-      // With a project filter we overfetch 3x. If `limit` matches accumulate
-      // before the fetched batch is exhausted, `page.next_page_offset` would
-      // skip every unprocessed point in this batch on the next call. Track
-      // the last point we actually saw so we can resume strictly after it.
-      let lastSeenId: string | number | null = null;
+      // Cursor on an early break. With a project filter we overfetch 3x, so
+      // `limit` matches can fill up before the batch ends; Qdrant's
+      // `next_page_offset` would then skip the rest of the batch. Qdrant's
+      // `offset` is inclusive (the page starts AT that id), so the next page
+      // resumes at the first point not looked at yet — not the last one seen,
+      // which would repeat it on every page.
+      let resumeAt: string | number | null = null;
       const filtered: ArchPoint[] = [];
-      for (const p of page.points) {
-        const rawId = p.id;
-        if (typeof rawId === 'string' || typeof rawId === 'number') {
-          lastSeenId = rawId;
-        }
+      const points = page.points;
+      for (let i = 0; i < points.length; i++) {
+        const p = points[i]!;
         if (!p.payload) continue;
         const point = p.payload as unknown as ArchPoint;
         if (!matchesProject(point) || !isVisible(p.payload, opts.allowProject)) continue;
         filtered.push(point);
-        if (filtered.length >= limit) break;
+        if (filtered.length >= limit) {
+          const nextId = points[i + 1]?.id;
+          if (typeof nextId === 'string' || typeof nextId === 'number') resumeAt = nextId;
+          break;
+        }
       }
-      const exhaustedBatch = filtered.length < limit;
-      // Forward Qdrant's cursor verbatim (string | number | object) when we
-      // walked the whole fetched batch. When we broke early, use the last
-      // seen id — Qdrant's scroll treats the offset as "start exclusive of
-      // this id", which is exactly the resume semantics we want.
+      // Forward Qdrant's cursor verbatim (string | number | object) when the
+      // batch was walked to its end.
       const raw = page.next_page_offset;
       let nextOffset: string | number | Record<string, unknown> | null;
-      if (!exhaustedBatch && lastSeenId !== null) {
-        nextOffset = lastSeenId;
+      if (resumeAt !== null) {
+        nextOffset = resumeAt;
       } else if (typeof raw === 'string' || typeof raw === 'number') {
         nextOffset = raw;
       } else if (raw !== null && typeof raw === 'object') {
@@ -511,7 +579,7 @@ export class ArchStore {
      *  per-project: two projects in the same group may legitimately have a
      *  component with the same name (e.g. "indexer"). */
     project?: string
-  ): Promise<{ id: string; createdAt?: number } | null> {
+  ): Promise<{ id: string; createdAt?: number; payload?: Record<string, unknown> } | null> {
     try {
       const must: unknown[] = [
         { key: 'arch_kind', match: { value: kind } },
@@ -532,8 +600,9 @@ export class ArchStore {
       const id =
         typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : null;
       if (!id) return null;
-      const createdAt = (point.payload as { createdAt?: unknown } | undefined)?.createdAt;
-      return typeof createdAt === 'number' ? { id, createdAt } : { id };
+      const payload = (point.payload ?? {}) as Record<string, unknown>;
+      const createdAt = payload['createdAt'];
+      return typeof createdAt === 'number' ? { id, createdAt, payload } : { id, payload };
     } catch (err) {
       // Null reads as "no such component yet" and mints a fresh id, so a
       // transient error would write a second card and reset createdAt.
@@ -799,9 +868,11 @@ export class ArchStore {
         if (!page.next_page_offset) break;
         offset = page.next_page_offset;
       }
-    } catch {
-      // Collection doesn't exist yet — nothing to reindex.
-      return 0;
+    } catch (err) {
+      // A missing collection holds nothing to reindex; any other failure is
+      // reported, not taken for an empty memory.
+      if (isMissingCollection(err)) return 0;
+      throw err;
     }
     if (cards.length === 0) return 0;
 
@@ -811,9 +882,13 @@ export class ArchStore {
       vector: number[];
       payload: Record<string, unknown>;
     }> = [];
+    let unrendered = 0;
     for (const card of cards) {
       const text = renderPayloadForEmbedding(card.payload);
-      if (text === null) continue; // unknown kind — leave it (shouldn't happen)
+      if (text === null) {
+        unrendered++; // unknown kind — left as it is (shouldn't happen)
+        continue;
+      }
       const vector = await this.provider.embed(text);
       points.push({ id: card.id, vector, payload: card.payload });
     }
@@ -832,15 +907,21 @@ export class ArchStore {
       dimensionChanged = false;
     }
     if (dimensionChanged) {
+      // Dropping takes every card with it: one that could not be re-embedded
+      // would be lost, so the collection stays until it can.
+      if (unrendered > 0) {
+        throw new Error(
+          `${collection}: ${unrendered} card(s) of an unknown kind cannot be re-embedded at ` +
+            `${this.provider.dimensions} dimensions; the collection is left as it is.`
+        );
+      }
       await dropArchCollection(this.qdrant, group);
     }
     await ensureArchCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
 
     // Upsert in batches (arch is small, but keep payloads well under limits).
-    const BATCH = 128;
-    for (let i = 0; i < points.length; i += BATCH) {
-      await this.qdrant.upsert(collection, { wait: true, points: points.slice(i, i + BATCH) });
-    }
+    // After a drop the cards live only here, so a failed batch is tried again.
+    await upsertWithRetry(this.qdrant, collection, points);
 
     // Stamp the collection with the model it now holds so the next startup can
     // tell whether another swap has happened.
@@ -1036,4 +1117,23 @@ function labelFromPayload(payload: unknown): string {
   if (typeof p['name'] === 'string') return p['name'] as string;
   if (typeof p['rule'] === 'string') return p['rule'] as string;
   return '';
+}
+
+/**
+ * A point id as Qdrant stores it: a UUID in lowercase hyphenated form (also
+ * accepted without hyphens or in upper case), or an unsigned integer. Null for
+ * anything else, which Qdrant would reject.
+ */
+export function canonicalPointId(id: string): string | null {
+  const trimmed = id.trim();
+  if (/^\d+$/.test(trimmed)) return String(Number(trimmed));
+  const hex = trimmed.replace(/-/g, '').toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(hex)) return null;
+  if (
+    trimmed.includes('-') &&
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed)
+  ) {
+    return null;
+  }
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }

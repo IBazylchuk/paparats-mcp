@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { localUrls, parseDotenv } from '../src/local-urls.js';
+import { authHeaders, localUrls, parseDotenv } from '../src/local-urls.js';
 
 let home: string;
 
@@ -46,6 +46,20 @@ describe('localUrls', () => {
     expect(localUrls({ EMBED_URL: 'http://gpu:8080' }, home).embed).toBe('http://gpu:8080');
     fs.writeFileSync(path.join(home, '.env'), 'EMBED_PORT=28434\n');
     expect(localUrls({}, home).embed).toBe('http://localhost:28434');
+  });
+});
+
+describe('localUrls apiKey', () => {
+  it('reads PAPARATS_API_KEY from the environment over ~/.paparats/.env, the first of a list', () => {
+    expect(localUrls({}, home).apiKey).toBeUndefined();
+    fs.writeFileSync(path.join(home, '.env'), 'PAPARATS_API_KEY=filekey, otherkey\n');
+    expect(localUrls({}, home).apiKey).toBe('filekey');
+    expect(localUrls({ PAPARATS_API_KEY: 'envkey' }, home).apiKey).toBe('envkey');
+  });
+
+  it('sends the key as a bearer header, and no header without one', () => {
+    expect(authHeaders('k1')).toEqual({ Authorization: 'Bearer k1' });
+    expect(authHeaders(undefined)).toEqual({});
   });
 });
 

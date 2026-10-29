@@ -201,6 +201,7 @@ export type { AnalyticsStoreOptions } from './telemetry/analytics-store.js';
 export { tctx, newContext, systemContext } from './telemetry/context.js';
 export type { TelemetryContext } from './telemetry/context.js';
 export { identityMiddleware } from './telemetry/identity-middleware.js';
+export { apiKeyAuth, hasApiKey, parseApiKeysEnv } from './api-key-auth.js';
 export { scheduleRetention, runRetention, getRetentionConfig } from './telemetry/retention.js';
 export type { RetentionConfig } from './telemetry/retention.js';
 export { hashQuery, tokenizeQuery, normalizeQuery } from './telemetry/query-utils.js';

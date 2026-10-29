@@ -49,6 +49,25 @@ describe('generateCompose', () => {
     expect(env['EMBED_URL']).toBe('http://embed:8080');
   });
 
+  it('publishes Qdrant and the embed server on loopback only, the server and indexer on all', () => {
+    const compose = parseCompose(generateCompose({ embedMode: 'docker', paparatsHome: HOME }));
+    expect(compose.services['qdrant']!['ports']).toEqual([
+      '${QDRANT_BIND:-127.0.0.1}:${QDRANT_PORT:-6333}:6333',
+    ]);
+    expect(compose.services['embed']!['ports']).toEqual([
+      '${EMBED_BIND:-127.0.0.1}:${EMBED_PORT:-18434}:8080',
+    ]);
+    expect(compose.services['paparats']!['ports']).toEqual(['${PAPARATS_PORT:-9876}:9876']);
+  });
+
+  it('passes the optional API key to the server and the indexer', () => {
+    const compose = parseCompose(generateCompose({ embedMode: 'native', paparatsHome: HOME }));
+    for (const service of ['paparats', 'paparats-indexer']) {
+      const env = compose.services[service]!['environment'] as Record<string, string>;
+      expect(env['PAPARATS_API_KEY']).toBe('${PAPARATS_API_KEY:-}');
+    }
+  });
+
   it('uses provided EMBED_URL for embedMode=external', () => {
     const out = generateCompose({
       embedMode: 'external',

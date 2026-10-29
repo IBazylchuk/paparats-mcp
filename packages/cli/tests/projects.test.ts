@@ -6,7 +6,7 @@ import * as yaml from 'js-yaml';
 import {
   detectKind,
   resolveLocalPath,
-  parseGithubRepo,
+  parseRemoteRepo,
   runAdd,
   runList,
   runRemove,
@@ -67,39 +67,45 @@ describe('resolveLocalPath', () => {
   });
 });
 
-describe('parseGithubRepo', () => {
+describe('parseRemoteRepo', () => {
   it.each([
     ['org/repo', 'org/repo'],
     ['git@github.com:org/repo.git', 'org/repo'],
     ['https://github.com/org/repo.git', 'org/repo'],
     ['https://github.com/org/repo', 'org/repo'],
     ['https://github.com/org/repo/', 'org/repo'],
-    ['ssh://git@github.com/org/my.repo.git', 'org/my.repo'],
+    ['https://gitlab.example.com/team/sub/repo.git', 'https://gitlab.example.com/team/sub/repo'],
+    ['https://GHE.example.com:8443/org/repo/', 'https://ghe.example.com:8443/org/repo'],
   ])('normalizes %s to %s', (input, expected) => {
-    expect(parseGithubRepo(input)).toBe(expected);
+    expect(parseRemoteRepo(input)).toBe(expected);
   });
 
-  it.each([
-    'https://gitlab.example.com/team/repo.git',
-    'git@git.example.com:team/repo.git',
-    'ssh://git@bitbucket.example.com/team/repo.git',
-  ])('rejects a non-GitHub host: %s', (input) => {
-    expect(() => parseGithubRepo(input)).toThrow(/Only GitHub repositories/);
+  it.each(['git@git.example.com:team/repo.git', 'ssh://git@bitbucket.example.com/team/repo.git'])(
+    'rejects an SSH address of another host: %s',
+    (input) => {
+      expect(() => parseRemoteRepo(input)).toThrow(/SSH addresses are not supported/);
+    }
+  );
+
+  it('rejects credentials in the URL', () => {
+    expect(() => parseRemoteRepo('https://user:tok@gitlab.example.com/team/repo')).toThrow(
+      /credentials/
+    );
   });
 
   it.each(['https://github.com/group/subgroup/repo.git', 'org/repo/extra', './repo', 'org/..'])(
-    'rejects anything but owner/repo: %s',
+    'rejects a GitHub entry that is not owner/repo: %s',
     (input) => {
-      expect(() => parseGithubRepo(input)).toThrow(/owner\/repo/);
+      expect(() => parseRemoteRepo(input)).toThrow(/owner\/repo/);
     }
   );
 });
 
 describe('runAdd', () => {
-  it('rejects a non-GitHub URL without touching projects.yml', async () => {
+  it('rejects an SSH address of another host without touching projects.yml', async () => {
     await expect(
-      runAdd('https://gitlab.example.com/group/sub/repo.git', { paparatsHome: tmpHome })
-    ).rejects.toThrow(/Only GitHub repositories/);
+      runAdd('git@gitlab.example.com:group/sub/repo.git', { paparatsHome: tmpHome })
+    ).rejects.toThrow(/SSH addresses are not supported/);
     expect(fs.existsSync(path.join(tmpHome, 'projects.yml'))).toBe(false);
   });
 

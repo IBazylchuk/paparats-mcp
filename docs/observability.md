@@ -19,8 +19,8 @@ Paparats ships with three observability layers that work together:
 `PAPARATS_METRICS`, the analytics and the OTel variables are not wired into the compose
 file that `paparats install` generates, so add them by hand to the `environment:` block of
 the `paparats` service (and of `paparats-indexer` for indexer metrics) in
-`~/.paparats/docker-compose.yml` — `paparats edit compose` opens it — then run
-`paparats restart`.
+`~/.paparats/docker-compose.yml`: `paparats edit compose` opens it, checks it after you
+save and restarts the stack.
 
 > `paparats add`, `paparats remove`, `paparats edit projects` and `paparats update`
 > regenerate the compose file when its contents change. The previous file is kept as
@@ -63,6 +63,9 @@ scrape_configs:
     scrape_interval: 15s
     static_configs:
       - targets: ['localhost:9876', 'localhost:9877']
+    # only when the stack runs with PAPARATS_API_KEY:
+    # authorization:
+    #   credentials: <the key>
 ```
 
 ### Pre-built Grafana dashboard
@@ -110,7 +113,9 @@ services to run.
   - **Links.** Every view has its own URL, so back, forward, reload and "open in a new tab" work.
   - **Data.** `GET /api/module-map` (modules), `/api/module-map/tree`, `/module`, `/file` and `/search`.
 - Protect it (optional): `PAPARATS_UI_BASIC_AUTH=user:pass` — applies to `/ui`,
-  `/api/analytics` and `/api/module-map/*` only; `/mcp` and `/api/search` stay open so agents keep working.
+  `/api/analytics` and `/api/module-map/*` only. With `PAPARATS_API_KEY` set and no basic
+  auth, these pages take the key as a basic-auth password, and every other route wants
+  the key ([configuration.md](configuration.md#api-key-optional)).
 - Browser access from other sites is refused on every route (`403` for a foreign
   `Origin`), so a web page cannot read search results or call MCP tools. Allow specific
   origins with `PAPARATS_CORS_ORIGINS=https://app.example.com,...`.

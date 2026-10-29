@@ -1,6 +1,7 @@
 # Connecting MCP clients
 
-Every client talks Streamable HTTP to one of the endpoints, with no API key:
+Every client talks Streamable HTTP to one of the endpoints, with no API key unless the
+server asks for one ([below](#a-server-with-an-api-key)):
 
 - `http://localhost:9876/mcp`: coding, for the agent you write code with;
 - `http://localhost:9876/support/mcp`: support, read-only, for support people and bots;
@@ -135,6 +136,34 @@ stack for Qdrant and the embedding server:
 ```
 
 On Linux add `"--add-host", "host.docker.internal:host-gateway"` to `args`.
+
+## A server with an API key
+
+When the server runs with `PAPARATS_API_KEY`
+([configuration.md](configuration.md#api-key-optional)), each client sends it as a header:
+
+```bash
+claude mcp add --scope user --transport http paparats http://paparats.example.com:9876/mcp \
+  --header "Authorization: Bearer <key>"
+```
+
+```json
+{
+  "mcpServers": {
+    "paparats": {
+      "type": "http",
+      "url": "http://paparats.example.com:9876/mcp",
+      "headers": { "Authorization": "Bearer <key>" }
+    }
+  }
+}
+```
+
+The JSON is Cursor's and `.mcp.json`'s form; VS Code takes the same `headers` under
+`servers`. Any client that can set a request header works the same way.
+`paparats install` does this for Cursor and Claude Code when the key is in
+`~/.paparats/.env`, and `paparats install --mode support --api-key <key>` for a server
+elsewhere.
 
 ## Tell the agent when to use it
 

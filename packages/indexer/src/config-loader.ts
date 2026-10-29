@@ -3,6 +3,7 @@ import path from 'path';
 import * as yaml from 'js-yaml';
 import { validateAudienceLabel } from '@paparats/server';
 import type { RepoConfig, IndexerFileConfig, RepoOverrides } from './types.js';
+import { parseRepoSpec } from './repo-url.js';
 
 /** Current name. */
 const CONFIG_FILE = 'projects.yml';
@@ -114,14 +115,8 @@ function parseRepoEntry(
     };
   }
 
-  // Remote git repo path
-  const fullName = entry.url!.trim();
-  const parts = fullName.split('/');
-  if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    throw new Error(`Invalid repo format: "${fullName}". Expected "owner/repo".`);
-  }
-  const [owner, repoName] = parts as [string, string];
-  const url = `https://github.com/${owner}/${repoName}.git`;
+  // Remote git repo: owner/repo on GitHub, or an https URL of any host
+  const { url, owner, name: repoName, fullName } = parseRepoSpec(entry.url!);
   const name = (entry.name?.trim() || repoName).trim();
 
   return {

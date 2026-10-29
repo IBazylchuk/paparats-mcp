@@ -15,6 +15,8 @@ export interface IndexerLike {
   indexProjectWithReport(project: ProjectConfig): Promise<IndexProjectReport>;
   indexDocsProject(project: ProjectConfig): Promise<number>;
   deleteProjectChunks(group: string, project: string): Promise<void>;
+  /** Drops the group's collection when another embedding model built it; null when it did not. */
+  dropCollectionIfModelChanged?(group: string): Promise<unknown>;
   purgeProject(group: string, project: string): Promise<void>;
 }
 
@@ -367,11 +369,27 @@ export class IndexOrchestrator {
       const { project, source } = this.deps.resolveProject(repo, this.deps.repoPath(repo));
       logSource(repo, project, source);
 
+      let modelChanged = false;
       if (opts.force) {
-        console.log(
-          `[indexer] ${repo.fullName}: force=true → dropping existing chunks for ${project.group}/${project.name}`
-        );
-        await this.deps.indexer.deleteProjectChunks(project.group, project.name);
+        // Built with another embedding model: the whole group's collection goes,
+        // since its vectors cannot be mixed with new ones.
+        modelChanged =
+          ((await this.deps.indexer.dropCollectionIfModelChanged?.(project.group)) ?? null) !==
+          null;
+        if (modelChanged) {
+          // The other projects of the group lost their chunks with the collection:
+          // a full cycle after this one indexes them again.
+          console.log(
+            `[indexer] ${repo.fullName}: ${project.group} was built with another embedding model; ` +
+              `collection dropped, every repo is indexed again after this cycle`
+          );
+          this.requestCycle({});
+        } else {
+          console.log(
+            `[indexer] ${repo.fullName}: force=true → dropping existing chunks for ${project.group}/${project.name}`
+          );
+          await this.deps.indexer.deleteProjectChunks(project.group, project.name);
+        }
       }
 
       const report = await this.deps.indexer.indexProjectWithReport(project);

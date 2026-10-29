@@ -29,11 +29,18 @@ repos:
   - url: acme/billing-service
     name: billing # instead of the name taken from the repo
     group: prod
+
+  - url: https://gitlab.example.com/team/sub/handbook # any other host, by https URL
 ```
 
 The indexer reloads the file on save; what happens then is in
-[install.md](install.md#paparats-install). Remote entries are GitHub repositories;
-`paparats add` refuses other hosts. Private ones need `GITHUB_TOKEN` in `~/.paparats/.env`.
+[install.md](install.md#paparats-install). A remote entry is `owner/repo` on GitHub, or
+the `https://` URL of a repository anywhere else: GitHub Enterprise, GitLab with
+subgroups, Gitea. SSH addresses are not supported (the indexer image has no SSH client).
+Private repositories need a token in `~/.paparats/.env`: `GITHUB_TOKEN` for github.com,
+and `GIT_TOKENS` for other hosts, as `host=token` pairs separated by commas
+(`GIT_TOKENS=gitlab.example.com=glpat-...,ghe.example.com=ghp_...`). Never put a token in
+the URL: it is refused.
 
 ## `.paparats.yml`: one repository
 
@@ -74,6 +81,14 @@ docs: # documentation search, needs INDEX_DOCS=true
   kind: prose # prose | code; leave out to detect
   audience: client # default label for this repo's docs; leave out for internal
 ```
+
+Without `exclude`, each language's defaults apply: dependencies (`node_modules`,
+`vendor`, ...) at any depth, and build output folders (`build`, `dist`, `out`,
+`coverage`, `tmp`, `log`, `storage`, `bin`, `target`, ...) only at the project root and at
+each package root, a folder holding a `package.json`, `Gemfile`, `go.mod`, `Cargo.toml`
+or another manifest. A source folder of that name deeper down, such as
+`src/app/build/page.tsx`, is indexed. An `exclude` you write replaces the defaults, and a
+bare name in it matches at any depth.
 
 Exclude patterns follow `.gitignore` rules: a bare name (`dist`, `*.log`) matches at any
 depth, a pattern with `/` (`spec/fixtures`, `/tmp`) is relative to the project root, and
@@ -118,8 +133,10 @@ curl -X POST http://localhost:9877/trigger -H 'Content-Type: application/json' \
 ```
 
 Leave out `repos` (or send `[]`) for every project. `"force": true` drops the existing
-chunks first; use it after changing the schema. It keeps the collection, so it is not enough
-for a new embedding model: see [replacing-embedding-models.md](replacing-embedding-models.md). A trigger that arrives while a
+chunks first; use it after changing the schema. After a change of embedding model it drops
+the group's whole collection instead, since old and new vectors cannot be mixed, and
+indexes every repository again once the cycle ends
+([replacing-embedding-models.md](replacing-embedding-models.md)). A trigger that arrives while a
 cycle runs is queued: the answer is `202` with `"status": "queued"`. From CI, the same
 `curl` in a job on push to `main` makes a push searchable right away.
 
@@ -139,7 +156,7 @@ paparats stop                           Stop it; the data volumes stay.
 paparats restart                        Recreate the containers, picking up changes.
 paparats edit compose|projects          Open the file in $EDITOR. For projects, on save:
                                           check it, regenerate the compose, restart,
-                                          reindex. For compose, run `paparats restart`.
+                                          reindex. For compose: check it, restart.
 
 paparats search <query> [flags]         Search from the terminal.
 paparats status                         Docker, embed server, server, indexer.
@@ -167,14 +184,15 @@ paparats instructions [dir] [flags]     Write the "paparats or grep" note into t
 - `-v, --verbose`: show Docker output
 
 **`paparats add <path-or-repo>`**: a folder (`.`, `../app`, `~/code/app`, an absolute
-path) or a GitHub repository (`owner/repo`, an https or ssh URL).
+path), a GitHub repository (`owner/repo`, an https or ssh URL), or the https URL of a
+repository on another host.
 
 - `--name <name>`: instead of the folder or repo name
 - `--group <group>`: instead of `defaults.group`
 - `--language <lang>`: instead of detecting it
 - `--no-restart`: no container restart after adding a folder (for scripts)
 - `--no-reindex`: do not index it now
-- `--force`: drop its existing chunks before indexing
+- `--force`: drop its existing chunks before indexing (the group's whole collection when another embedding model built it)
 - `--non-interactive`: no prompts
 
 **`paparats search <query>`**: `-n, --limit <n>` (default 5), `-p, --project <name>`,
@@ -183,6 +201,39 @@ path) or a GitHub repository (`owner/repo`, an https or ssh URL).
 **`paparats update`**: `--skip-cli`, `--skip-docker`, `--skip-embed`.
 
 `search`, `status`, `groups` and `doctor` take `--server <url>`.
+
+## API key (optional)
+
+The server and the indexer answer anyone who reaches their ports, which is fine on
+localhost or on a server reached only over a VPN. To ask for a key, set
+`PAPARATS_API_KEY` in `~/.paparats/.env` (or the `.env` next to a plain compose file) and
+restart:
+
+```bash
+echo "PAPARATS_API_KEY=$(openssl rand -hex 32)" >> ~/.paparats/.env
+paparats restart
+```
+
+- **What it guards.** Every route of the server (`/mcp`, `/support/mcp`, `/api/*`,
+  `/metrics`) and of the indexer (`/trigger`, `/metrics`) then wants
+  `Authorization: Bearer <key>`. `/health` stays open for health checks, but shows
+  only the status to a caller without the key. `/knowledge/mcp` keeps its own tokens.
+- **Browser pages.** `/ui` and the code map take the key as a basic-auth password, with
+  any user name, unless `PAPARATS_UI_BASIC_AUTH` is set, which then guards them instead.
+- **Clients.** The CLI reads the key from `~/.paparats/.env` or `PAPARATS_API_KEY` in its
+  environment. `paparats install` passes it to Cursor and Claude Code (`--api-key` in
+  support mode). Other clients are in [clients.md](clients.md#a-server-with-an-api-key).
+- **Several keys.** List them comma-separated to change one without cutting off the
+  clients of another. Each must be at least 16 characters; a key that is not stops the
+  start rather than leaving the server open.
+- **Plain HTTP.** The key goes over the network as is: on another host, put the server
+  behind HTTPS or a VPN.
+- **Qdrant and the embed server.** The key does not cover them, and they have no auth of
+  their own in the generated stack. Their ports are published on `127.0.0.1` only: the
+  server and the indexer reach them over the compose network. `QDRANT_BIND=0.0.0.0` (or
+  `EMBED_BIND`) in `.env` publishes one to the network; Qdrant holds the indexed code,
+  so give it a key first (`QDRANT__SERVICE__API_KEY` on the `qdrant` service, the same
+  value as `QDRANT_API_KEY`).
 
 ## Environment variables
 
@@ -194,10 +245,13 @@ whole address:
 | `PAPARATS_SERVER_URL`  | `http://localhost:9876` | The server                   |
 | `PAPARATS_INDEXER_URL` | `http://localhost:9877` | The indexer                  |
 | `QDRANT_URL`           | `http://localhost:6333` | Qdrant, for the checks in `install`, `update` and `doctor` |
+| `PAPARATS_API_KEY`     | from `~/.paparats/.env` | The key sent to the server and the indexer, when they ask for one |
 
 **`~/.paparats/.env`.** The generated compose reads these from it, so they survive
 regeneration: the ports (`PAPARATS_PORT`, `INDEXER_PORT`, `QDRANT_PORT`, `EMBED_PORT`),
-`CRON`, `INDEX_DOCS`, `GITHUB_TOKEN`, `QDRANT_API_KEY`, `OPENAI_API_KEY`, `VOYAGE_API_KEY`,
+the addresses Qdrant and the embed server are published on (`QDRANT_BIND`, `EMBED_BIND`,
+default `127.0.0.1`),
+`CRON`, `INDEX_DOCS`, `GITHUB_TOKEN`, `GIT_TOKENS`, `PAPARATS_API_KEY`, `QDRANT_API_KEY`, `OPENAI_API_KEY`, `VOYAGE_API_KEY`,
 `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `TEXT_EMBEDDING_MODEL`,
 `TEXT_EMBEDDING_DIMENSIONS`, `EMBED_BATCH_SIZE`, `EMBED_TTL`, `LLAMA_BATCH`,
 `LLAMA_THREADS`, `EMBED_CPUS`, `EMBED_MEMORY`. Run `paparats restart` after a change.
@@ -222,6 +276,8 @@ there. `cron` and `cron_fast` are better set in `projects.yml`, which is never r
 | `PAPARATS_GROUP`          | none                       | Put every repo into this group                                    |
 | `PAPARATS_PROJECT_SUFFIX` | none                       | Suffix for project names, so two deployments can share a Qdrant   |
 | `GITHUB_TOKEN`            | none                       | For private GitHub repositories                                   |
+| `GIT_TOKENS`              | none                       | `host=token,...` for private repositories on other hosts          |
+| `PAPARATS_API_KEY`        | none                       | Optional key for `/trigger` and `/metrics` ([API key](#api-key-optional)) |
 
 **Server** (`paparats`). The full list is in
 [packages/server/README.md](../packages/server/README.md#configuration-env-vars).
@@ -234,6 +290,7 @@ there. `cron` and `cron_fast` are better set in `projects.yml`, which is never r
 | `TEXT_EMBEDDING_PROVIDER` / `_MODEL` / `_DIMENSIONS` | `llama` / `qwen3-embedding-0.6b` / `1024` | For architectural memory, docs and the glossary |
 | `PAPARATS_PROJECTS`         | none                       | Only these projects are served                            |
 | `PAPARATS_DOCS_AUDIENCE`    | none                       | Audience ceiling for docs on the coding and support endpoints |
+| `PAPARATS_API_KEY`          | none                       | Optional key for every route but `/health` ([API key](#api-key-optional)) |
 
 **Embed container** (`embed`, Docker embed mode)
 

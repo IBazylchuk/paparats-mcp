@@ -2,6 +2,7 @@ import type { QdrantClient } from '@qdrant/js-client-rest';
 import { v7 as uuidv7 } from 'uuid';
 import type { CachedEmbeddingProvider } from '../embeddings.js';
 import { isMissingCollection } from '../qdrant-errors.js';
+import { upsertWithRetry } from '../qdrant-batch.js';
 import {
   dropTermsCollection,
   ensureTermsCollection,
@@ -104,8 +105,12 @@ export class TerminologyStore {
     await ensureTermsCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
 
     // Idempotent by exact term name within the project scope.
-    const existing = await this.findByTerm(group, input.term, input.project);
-    const text = renderTermForEmbedding(input);
+    const found = await this.findByTerm(group, input.term, input.project);
+    // Updating a term without `aliases` keeps the ones it has: the exact lookup
+    // by acronym depends on them, and an agent fixing a definition rarely repeats them.
+    const aliases = input.aliases ?? found?.aliases ?? [];
+    const existing = found;
+    const text = renderTermForEmbedding({ ...input, aliases });
     const vector = await this.provider.embed(text);
 
     if (!existing) {
@@ -126,7 +131,7 @@ export class TerminologyStore {
       id,
       term: input.term,
       definition: input.definition,
-      aliases: input.aliases ?? [],
+      aliases,
       ...(input.project !== undefined ? { project: input.project } : {}),
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
@@ -310,7 +315,7 @@ export class TerminologyStore {
     group: string,
     term: string,
     project?: string
-  ): Promise<{ id: string; createdAt?: number } | null> {
+  ): Promise<{ id: string; createdAt?: number; aliases?: string[] } | null> {
     try {
       // A group-wide term must only find group-wide terms: matching a
       // project-scoped one would overwrite it and drop its project.
@@ -332,8 +337,15 @@ export class TerminologyStore {
       const id =
         typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : null;
       if (!id) return null;
-      const createdAt = (point.payload as { createdAt?: unknown } | undefined)?.createdAt;
-      return typeof createdAt === 'number' ? { id, createdAt } : { id };
+      const payload = (point.payload ?? {}) as { createdAt?: unknown; aliases?: unknown };
+      const aliases = Array.isArray(payload.aliases)
+        ? payload.aliases.filter((a): a is string => typeof a === 'string')
+        : undefined;
+      return {
+        id,
+        ...(typeof payload.createdAt === 'number' ? { createdAt: payload.createdAt } : {}),
+        ...(aliases ? { aliases } : {}),
+      };
     } catch (err) {
       // Must not degrade to null on a real failure: recordTerm reads null as
       // "no such term yet" and mints a fresh id, so a transient error would
@@ -405,8 +417,10 @@ export class TerminologyStore {
         if (!page.next_page_offset) break;
         offset = page.next_page_offset;
       }
-    } catch {
-      return 0;
+    } catch (err) {
+      // See ArchStore.reindexArch: only a missing collection means "nothing to reindex".
+      if (isMissingCollection(err)) return 0;
+      throw err;
     }
     if (rows.length === 0) return 0;
 
@@ -439,10 +453,8 @@ export class TerminologyStore {
     }
     await ensureTermsCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
 
-    const BATCH = 128;
-    for (let i = 0; i < points.length; i += BATCH) {
-      await this.qdrant.upsert(collection, { wait: true, points: points.slice(i, i + BATCH) });
-    }
+    // After a drop the terms live only here, so a failed batch is tried again.
+    await upsertWithRetry(this.qdrant, collection, points);
     await writeTermsCollectionMeta(this.qdrant, group, {
       model: this.provider.model,
       dimensions: this.provider.dimensions,

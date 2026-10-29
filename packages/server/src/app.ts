@@ -16,6 +16,7 @@ import type { MetricsRegistry } from './metrics.js';
 import type { Telemetry } from './telemetry/facade.js';
 import type { AnalyticsStore } from './telemetry/analytics-store.js';
 import { identityMiddleware } from './telemetry/identity-middleware.js';
+import { apiKeyAuth, hasApiKey, parseApiKeysEnv } from './api-key-auth.js';
 import { tctx } from './telemetry/context.js';
 import { buildAnalyticsRouter } from './analytics-api.js';
 import {
@@ -81,7 +82,8 @@ export async function refreshGaugeMetrics(
 /**
  * Build a basic-auth middleware from an env var "user:pass". Returns undefined
  * when unset so the caller can mount routes without the guard. Applied only to
- * /ui and /api/analytics — never the rest of the API.
+ * /ui, /api/analytics and /api/module-map (the API key, `PAPARATS_API_KEY`,
+ * guards the rest).
  *
  * A value that is set but malformed throws: the operator asked for a protected
  * dashboard, and silently serving it unprotected is the one wrong outcome.
@@ -271,6 +273,7 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
   // Parsed before anything starts, so a malformed value fails startup cleanly.
   const uiAuth = buildUiBasicAuth(process.env['PAPARATS_UI_BASIC_AUTH']);
+  const apiKeys = parseApiKeysEnv(process.env);
   const corsOrigins = parseCorsOrigins(process.env['PAPARATS_CORS_ORIGINS']);
   const scope = createProjectScopeGuard(searcher, indexer);
   // One module-map cache for the console's map page and the `module_map` tool.
@@ -391,6 +394,14 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   if (corsOrigins.length > 0) {
     app.use(cors({ origin: corsOrigins, exposedHeaders: ['Mcp-Session-Id'] }));
   }
+  // Optional API key on everything else, before any body is read. The knowledge
+  // route has its own tokens; the browser pages keep their basic auth when it is set.
+  if (apiKeys) {
+    const uiPaths = ['/ui/', '/api/analytics/', '/api/module-map/'];
+    app.use(
+      apiKeyAuth(apiKeys, { open: ['/health', KNOWLEDGE_MCP_PATH, ...(uiAuth ? uiPaths : [])] })
+    );
+  }
   // The knowledge route is reachable from outside the trust boundary: its bearer
   // check and 64 kB body limit must run BEFORE the global 50 MB parser, so an
   // unauthenticated caller never gets a body read and an authenticated one never
@@ -471,7 +482,10 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
       try {
         // Throws on a Qdrant failure — indexing on top of the old chunks would
         // silently leave stale ones behind.
-        if (force) {
+        // Force on a collection built with another embedding model drops the whole
+        // collection (its vectors cannot be mixed with new ones); otherwise just
+        // this project's chunks.
+        if (force && !(await indexer.dropCollectionIfModelChanged(group))) {
           await indexer.deleteProjectChunks(group, projectName);
         }
 
@@ -761,7 +775,12 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
 
   // ── GET /health ────────────────────────────────────────────────────────────
 
-  app.get('/health', async (_req, res) => {
+  app.get('/health', async (req, res) => {
+    // Open for health checks; with an API key on, only a caller holding it sees the projects.
+    if (apiKeys && !hasApiKey(req)) {
+      res.json({ status: 'ok' });
+      return;
+    }
     try {
       const groups = await indexer.listGroups();
       const mem = process.memoryUsage();
@@ -841,9 +860,8 @@ export function createApp(options: CreateAppOptions): CreateAppResult {
   }
 
   // ── Analytics UI ──────────────────────────────────────────────────────────
-  // /ui (static dashboard) and /api/analytics (aggregated JSON) are scoped
-  // behind optional basic-auth so the rest of the API and MCP routes stay
-  // open for clients that don't speak HTTP auth.
+  // /ui (static dashboard), /api/analytics and /api/module-map (its JSON) are
+  // behind the optional basic auth when it is set, else behind the API key.
 
   const uiDir = path.resolve(fileURLToPath(import.meta.url), '..', '..', 'ui');
 
