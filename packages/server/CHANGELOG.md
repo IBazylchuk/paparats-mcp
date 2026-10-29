@@ -1,5 +1,31 @@
 # @paparats/server
 
+## 2.16.5
+
+### Patch Changes
+
+- de05082: Fixes in architectural memory and the glossary, from an audit of their write paths:
+
+  - `arch_record_decision` with `supersedes` replaces only a current decision of the same project (or a group-wide one by a group-wide one) that the server's project scope lets the caller see. Before, a decision of one project could retire another project's, also on a server scoped to other projects, and a decision already superseded could be replaced again. When marking the old decision fails, the new card is taken back out, so a retry does not leave two.
+  - Updating a glossary term without `aliases`, or a component without `files`, `neighbours` or `anchors`, keeps what the card had. Before, they were emptied, and the exact lookup by acronym depends on the aliases.
+  - `arch_list` no longer repeats the last card of a page on the next one: Qdrant's scroll offset includes the point it names, so with `limit: 1` and a project filter it returned the same card forever.
+  - Reindexing architectural memory or the glossary (`POST /api/arch/reindex`, and the heal at startup) reports a Qdrant failure instead of answering that there was nothing to reindex. After a change of dimension, a failed write is tried again, and the collection is not dropped while a card cannot be re-embedded.
+  - `arch_delete` reports a malformed id as not found instead of failing the whole call, finds an upper-case UUID, and no longer deletes the collection's metadata point. Empty `project` on the glossary tools, and empty `name`, `summary` or `supersedes` on the arch tools, are refused.
+
+- 203266a: Docs: the duplicate thresholds of architectural memory (0.85 / 0.70) were calibrated on bge-m3 and carried over to Qwen3 without being measured again; `docs/architectural-memory.md` now says so instead of presenting them as tuned for Qwen3.
+- fe573f3: The default excludes no longer drop source folders named like build output. `build`, `dist`, `out`, `coverage`, `tmp`, `log`, `storage`, `bin`, `target` and a few more were excluded at any depth, so a Next.js route `src/app/build/page.tsx` or a Ruby `lib/storage/` never reached the index. They are now excluded only at the project root and at each package root (a folder with a `package.json`, `Gemfile`, `go.mod`, `Cargo.toml` or another manifest), where build tools write them. Dependency folders such as `node_modules` stay excluded at any depth, and an `exclude` written in `.paparats.yml` is used as before. On the paparats repository the indexed files are the same; a project gains only the source files in such folders and loses none.
+- aac86c2: Reindexing with force after a change of embedding model works. Before, `force` dropped only the project's chunks and kept the collection, which still recorded the old model, so every write failed on the mismatch. Now force over a collection built with another model drops the whole collection (old and new vectors cannot be mixed), and the indexer indexes every repository again once the cycle ends. The same applies to `POST /api/index` with `force`. The mismatch error now names this fix.
+- 8cd2cc8: `health_check` also reports the indexer: whether it answers, when it last ran, and each repository's status, chunk count and last error. An agent can tell a stale or failing index from an empty one. The server finds the indexer at `PAPARATS_INDEXER_URL`, which the generated compose sets, and waits at most 3 seconds for it.
+- 94d29df: The glossary tools' descriptions and comments use invented example terms.
+- e0c7053: An optional API key for the server and the indexer. Unset, as before, they answer anyone who reaches their ports, which suits localhost and a server reached over a VPN. With `PAPARATS_API_KEY` set (one key, or several separated by commas, each at least 16 characters), every route asks for `Authorization: Bearer <key>`: the MCP endpoints, `/api/*`, `/metrics` and the indexer's `/trigger`. `/health` stays open for health checks and shows only the status to a caller without the key; `/knowledge/mcp` keeps its own tokens. The `/ui` pages take the key as a basic-auth password, unless `PAPARATS_UI_BASIC_AUTH` guards them. A key the server cannot use stops it from starting.
+
+  The CLI reads the key from `~/.paparats/.env` or its environment and sends it. `paparats install` passes it to Cursor and Claude Code as a header, and `paparats install --mode support --api-key <key>` does the same for a server elsewhere. The generated compose passes `PAPARATS_API_KEY` from `.env` to both services.
+
+  The key does not cover Qdrant, which holds the indexed code, or the embed server, and neither has auth of its own in the generated stack. Their ports are now published on `127.0.0.1` only; the server and the indexer reach them over the compose network, as before. `QDRANT_BIND=0.0.0.0` or `EMBED_BIND=0.0.0.0` in `.env` publishes one to the network again. New `SECURITY.md`: how to report a vulnerability and how a deployment is exposed.
+
+- Updated dependencies [fe573f3]
+  - @paparats/shared@2.16.5
+
 ## 2.16.4
 
 ### Patch Changes

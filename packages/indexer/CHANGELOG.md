@@ -1,5 +1,28 @@
 # @paparats/indexer
 
+## 2.16.5
+
+### Patch Changes
+
+- fe573f3: The default excludes no longer drop source folders named like build output. `build`, `dist`, `out`, `coverage`, `tmp`, `log`, `storage`, `bin`, `target` and a few more were excluded at any depth, so a Next.js route `src/app/build/page.tsx` or a Ruby `lib/storage/` never reached the index. They are now excluded only at the project root and at each package root (a folder with a `package.json`, `Gemfile`, `go.mod`, `Cargo.toml` or another manifest), where build tools write them. Dependency folders such as `node_modules` stay excluded at any depth, and an `exclude` written in `.paparats.yml` is used as before. On the paparats repository the indexed files are the same; a project gains only the source files in such folders and loses none.
+- aac86c2: Reindexing with force after a change of embedding model works. Before, `force` dropped only the project's chunks and kept the collection, which still recorded the old model, so every write failed on the mismatch. Now force over a collection built with another model drops the whole collection (old and new vectors cannot be mixed), and the indexer indexes every repository again once the cycle ends. The same applies to `POST /api/index` with `force`. The mismatch error now names this fix.
+- e0c7053: An optional API key for the server and the indexer. Unset, as before, they answer anyone who reaches their ports, which suits localhost and a server reached over a VPN. With `PAPARATS_API_KEY` set (one key, or several separated by commas, each at least 16 characters), every route asks for `Authorization: Bearer <key>`: the MCP endpoints, `/api/*`, `/metrics` and the indexer's `/trigger`. `/health` stays open for health checks and shows only the status to a caller without the key; `/knowledge/mcp` keeps its own tokens. The `/ui` pages take the key as a basic-auth password, unless `PAPARATS_UI_BASIC_AUTH` guards them. A key the server cannot use stops it from starting.
+
+  The CLI reads the key from `~/.paparats/.env` or its environment and sends it. `paparats install` passes it to Cursor and Claude Code as a header, and `paparats install --mode support --api-key <key>` does the same for a server elsewhere. The generated compose passes `PAPARATS_API_KEY` from `.env` to both services.
+
+  The key does not cover Qdrant, which holds the indexed code, or the embed server, and neither has auth of its own in the generated stack. Their ports are now published on `127.0.0.1` only; the server and the indexer reach them over the compose network, as before. `QDRANT_BIND=0.0.0.0` or `EMBED_BIND=0.0.0.0` in `.env` publishes one to the network again. New `SECURITY.md`: how to report a vulnerability and how a deployment is exposed.
+
+- 615abfc: The indexer clones repositories from any host, not only github.com. A `url:` in `projects.yml` (and an entry of `REPOS`) is still `owner/repo` for GitHub, or now the `https://` URL of a repository elsewhere: GitHub Enterprise, GitLab with subgroups, Gitea. Tokens for private repositories on other hosts go in `GIT_TOKENS` as `host=token` pairs, each sent only to its own host, like `GITHUB_TOKEN` to github.com. SSH addresses and credentials inside the URL are refused with a message saying what to use instead. `paparats add` takes such URLs too, and the generated compose passes `GIT_TOKENS` to the indexer.
+- Updated dependencies [de05082]
+- Updated dependencies [203266a]
+- Updated dependencies [fe573f3]
+- Updated dependencies [aac86c2]
+- Updated dependencies [8cd2cc8]
+- Updated dependencies [94d29df]
+- Updated dependencies [e0c7053]
+  - @paparats/server@2.16.5
+  - @paparats/shared@2.16.5
+
 ## 2.16.4
 
 ### Patch Changes
