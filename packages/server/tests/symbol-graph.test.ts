@@ -339,6 +339,66 @@ describe('buildSymbolEdges', () => {
     expect(linked('Gem')).toEqual([]);
   });
 
+  it('links a call on self to the overrides of the classes below too', () => {
+    const chunks = [
+      {
+        chunk_id: 'g//p//book.rb//0-9//a',
+        defines_symbols: ['Book', 'publish', 'render'],
+        uses_symbols: [],
+        def_owners: { publish: 'Book', render: 'Book' },
+        def_classes: { Book: [] },
+        // `publish` calls `render` in this chunk.
+        inner_calls: { render: ['publish'] },
+      },
+      {
+        chunk_id: 'g//p//book.rb//10-19//b',
+        defines_symbols: ['reflow'],
+        uses_symbols: ['render'],
+        def_owners: { reflow: 'Book' },
+        use_sites: [{ name: 'render', from: 'reflow', on: '::Book' }],
+      },
+      {
+        chunk_id: 'g//p//draft.rb//0-9//c',
+        defines_symbols: ['Draft', 'render'],
+        uses_symbols: [],
+        def_owners: { render: 'Draft' },
+        def_classes: { Draft: [{ name: 'Book' }] },
+      },
+      {
+        chunk_id: 'g//p//note.rb//0-9//d',
+        defines_symbols: ['Note', 'render'],
+        uses_symbols: [],
+        def_owners: { render: 'Note' },
+        def_classes: { Note: [] },
+      },
+      {
+        chunk_id: 'g//p//shelf.rb//0-9//e',
+        defines_symbols: ['stack'],
+        uses_symbols: ['render'],
+        def_owners: { stack: 'Shelf' },
+        use_sites: [{ name: 'render', from: 'stack', on: 'Book' }],
+      },
+    ];
+    const links = (only?: (id: string, name: string) => boolean) =>
+      buildSymbolEdges(chunks, undefined, only)
+        .edges.map(
+          (e) =>
+            `${e.from_chunk_id.split('//')[2]}:${e.from_symbols?.join(',')} -> ${e.to_chunk_id.split('//')[2]} ${e.confidence}`
+        )
+        .sort();
+    expect(links()).toEqual([
+      'book.rb:publish -> draft.rb EXTRACTED',
+      'book.rb:reflow -> book.rb EXTRACTED',
+      'book.rb:reflow -> draft.rb EXTRACTED',
+      // Called on the class from elsewhere: no object of a class below.
+      'shelf.rb:stack -> book.rb EXTRACTED',
+    ]);
+    // An update for the name alone builds the link of the chunk's own call too.
+    expect(links((_id, name) => name === 'render')).toContain(
+      'book.rb:publish -> draft.rb EXTRACTED'
+    );
+  });
+
   it('collects the calling methods per edge; a call outside any method makes the whole chunk the caller', () => {
     const { edges } = buildSymbolEdges([
       { chunk_id: 'def', defines_symbols: ['post', 'log'], uses_symbols: [] },

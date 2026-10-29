@@ -575,4 +575,57 @@ describe('indexProject incremental git enrichment', () => {
     expect(savesIn()).toEqual(['src/other.ts']);
     expect(fullScans()).toBeGreaterThan(scans);
   });
+
+  it('keeps the link of a call on self to an override below when the override changes', async () => {
+    const treeSitter = await createTreeSitterManager();
+    const indexer = new Indexer({
+      qdrantUrl: 'http://localhost:6333',
+      embeddingProvider,
+      dimensions: 4,
+      qdrantClient: mockQdrant.client as never,
+      metadataStore,
+      treeSitter,
+    });
+    const project = createProjectConfig(projectDir);
+    const draft = (n: number) =>
+      `import { Book } from './book.js';\nexport class Draft extends Book {\n  render() {\n    return ${n};\n  }\n}\n`;
+    // `publish` calls `render` in its own chunk; Draft overrides `render`.
+    fs.writeFileSync(
+      path.join(projectDir, 'src', 'book.ts'),
+      'export class Book {\n  publish() {\n    return this.render();\n  }\n  render() {\n    return 0;\n  }\n}\n'
+    );
+    fs.writeFileSync(path.join(projectDir, 'src', 'draft.ts'), draft(1));
+    await indexer.indexProject(project);
+
+    const chunks = (): ChunkSymbols[] =>
+      [...mockQdrant.collections.values()].flatMap((points) =>
+        [...points.values()].flatMap((p) => {
+          const payload = (p as { payload?: Record<string, unknown> }).payload ?? {};
+          if (typeof payload['chunk_id'] !== 'string') return [];
+          return toChunkSymbols(payload['chunk_id'] as string, payload);
+        })
+      );
+    const key = (e: { from_chunk_id: string; to_chunk_id: string; symbol_name: string }) =>
+      [e.from_chunk_id, e.to_chunk_id, e.symbol_name].join(' ');
+    const stored = () =>
+      chunks()
+        .flatMap((c) => metadataStore.getEdgesFrom(c.chunk_id))
+        .map(key)
+        .sort();
+    const toOverride = () =>
+      stored().filter((e) => e.split(' ')[0]!.includes('src/book.ts') && e.endsWith(' render'));
+
+    expect(toOverride()).toHaveLength(1);
+    await indexer.updateFileContent(
+      'test-group',
+      'test-project',
+      'src/draft.ts',
+      draft(2),
+      'typescript',
+      project
+    );
+    await indexer.flushSymbolGraphs();
+    expect(toOverride()).toHaveLength(1);
+    expect(stored()).toEqual(buildSymbolEdges(chunks()).edges.map(key).sort());
+  });
 });

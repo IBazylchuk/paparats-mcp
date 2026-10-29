@@ -97,8 +97,10 @@ export interface ChunkSymbols {
  *      import follows re-exports to the file defining the name, and links to
  *      nothing when its module is not in the project; `.d.ts` declarations
  *      are not linked to; edges carry the steps of `reach_symbols`.
+ *  3 — a call on self, also between a chunk's own methods, links to the
+ *      overrides of the classes below as well, as certain as its class.
  */
-export const GRAPH_FORMAT = 2;
+export const GRAPH_FORMAT = 3;
 
 /** TypeScript and JavaScript files: a class there is the one its file declares or imports. */
 const ES_FILE = /\.(?:[cm]?[jt]sx?)$/;
@@ -443,8 +445,17 @@ function resolveMember(
   callerFile: string | null,
   classes: ClassTable,
   byClass: Map<string, string[]> | undefined,
-  topLevel: string[]
-): { chunks: string[]; match: 'exact' | 'suffix' | 'several' | 'dispatch' } | null | undefined {
+  topLevel: string[],
+  selfCall: boolean
+):
+  | {
+      chunks: string[];
+      match: 'exact' | 'suffix' | 'several' | 'dispatch';
+      /** For a call on self: the definitions of classes below that override it. */
+      overrides?: string[];
+    }
+  | null
+  | undefined {
   const on = site.on!;
   const found = classes.find(on, site.in);
   if (found.paths.length === 0) return site.module !== undefined ? undefined : null;
@@ -483,7 +494,13 @@ function resolveMember(
     const ids = [...up];
     const match =
       starts.length > 1 || files(ids) > 1 ? 'several' : found.suffix ? 'suffix' : 'exact';
-    return { chunks: ids, match };
+    if (!selfCall) return { chunks: ids, match };
+    // On self, the object may be of a class below that overrides the method
+    // (a template method calling the step its subclasses define).
+    const overrides = starts
+      .flatMap((ref) => overridesBelow(ref.path, classes, byClass))
+      .filter((id) => defs.has(id) && !up.has(id));
+    return overrides.length > 0 ? { chunks: ids, match, overrides } : { chunks: ids, match };
   }
   if (on.startsWith('::') && !isEsFile(callerFile)) {
     const top = topLevel.filter((id) => defs.has(id));
@@ -513,6 +530,25 @@ function resolveMember(
         ? 'dispatch'
         : 'several';
   return { chunks: below, match };
+}
+
+/**
+ * The definitions of a name in the classes below `owner` (its subclasses, the
+ * hosts of a mixin): what a call on self in `owner` reaches when the object
+ * is of one of them.
+ */
+function overridesBelow(
+  owner: string,
+  classes: ClassTable,
+  byClass: Map<string, string[]> | undefined
+): string[] {
+  const out: string[] = [];
+  for (const [cls, ids] of byClass ?? []) {
+    if (cls === owner) continue;
+    if (!classes.ancestors({ path: cls }).refs.some((ref) => ref.path === owner)) continue;
+    out.push(...ids);
+  }
+  return out;
 }
 
 /**
@@ -774,7 +810,8 @@ export function buildSymbolEdges(
           callerFile,
           classes,
           definedIn.get(sym),
-          [...defs].filter((id) => !ownedIn.get(sym)?.has(id))
+          [...defs].filter((id) => !ownedIn.get(sym)?.has(id)),
+          site.on.startsWith('::') && chunk.def_owners?.[site.from] === site.on.slice(2)
         );
         if (member === null) continue;
         onClass = member ?? null;
@@ -838,6 +875,34 @@ export function buildSymbolEdges(
         }
 
         addEdge(chunk.chunk_id, defChunkId, sym, site, confidence);
+      }
+      // Found through the classes, not by name: as certain as the class.
+      for (const id of onClass && 'overrides' in onClass ? (onClass.overrides ?? []) : []) {
+        if (id === chunk.chunk_id) continue;
+        addEdge(
+          chunk.chunk_id,
+          id,
+          sym,
+          site,
+          onClass!.match === 'exact' ? 'EXTRACTED' : 'INFERRED'
+        );
+      }
+    }
+  }
+
+  // A call between a chunk's own methods is on self too: it reaches the
+  // overrides of the classes below (`publish` calling the `render` its
+  // subclasses define), each found through its own class's ancestry.
+  for (const chunk of chunkSymbols) {
+    for (const [callee, callers] of Object.entries(chunk.inner_calls ?? {})) {
+      const owner = chunk.def_owners?.[callee];
+      if (owner === undefined) continue;
+      if (only && !only(chunk.chunk_id, callee)) continue;
+      for (const id of overridesBelow(owner, classes, definedIn.get(callee))) {
+        if (id === chunk.chunk_id) continue;
+        for (const from of callers) {
+          addEdge(chunk.chunk_id, id, callee, { name: callee, from }, 'EXTRACTED');
+        }
       }
     }
   }
