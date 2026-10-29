@@ -751,14 +751,32 @@ export function strongLinks(links: ModuleLink[]): ModuleLink[] {
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/** Characters `markdownText()` escapes with a backslash. */
+const MARKDOWN_ESCAPED = /[\\`[\]<>|]/g;
+// eslint-disable-next-line no-control-regex
+const LINE_BREAKS = /[\u0000-\u001f\u007f-\u0085\u2028\u2029]+/g;
+
+/**
+ * A name or path from the indexed code as Markdown text: line breaks and other
+ * control characters become a space, and code spans, links and HTML are escaped,
+ * so a file named to look like a heading or an instruction stays on its line as
+ * plain text. Ordinary paths come out unchanged.
+ */
+export function markdownText(value: string): string {
+  return value.replace(LINE_BREAKS, ' ').replace(MARKDOWN_ESCAPED, (c) => `\\${c}`);
+}
+
 export interface FormatModuleMapOptions {
   /** Heading target, e.g. `` `billing` `` or `` `main-stand` / `billing` ``. */
   title: string;
   /** Modules to show in full; the rest are summarised. */
   limit: number;
-  /** How a file key is printed (clean project name, or none when only one project). */
+  /**
+   * How a file key is printed (clean project name, or none when only one project),
+   * as Markdown: the names in it go through `markdownText()`.
+   */
   showFile: (key: FileKey) => string;
-  /** How a module is named; defaults to its folder. */
+  /** How a module is named, as Markdown like `showFile`; defaults to its folder. */
   showName?: (module: CodeModule) => string;
   /** Append a Mermaid diagram of the shown modules and their strong links. */
   diagram?: boolean;
@@ -767,15 +785,19 @@ export interface FormatModuleMapOptions {
 /**
  * Mermaid flowchart of `modules`: one box per module labelled with its name and
  * size, one arrow per strong link between two of them (caller → called).
- * Labels are quoted, with quotes and angle brackets replaced by Mermaid entities.
+ * `name` may be Markdown from `markdownText()`; its escapes are undone, and labels
+ * are quoted on one line, with quotes, backticks and angle brackets replaced by
+ * Mermaid entities.
  */
 export function moduleMapDiagram(modules: CodeModule[], name: (m: CodeModule) => string): string {
   const shown = new Set(modules.map((m) => m.id));
   const label = (m: CodeModule) =>
-    `${m.id + 1}. ${name(m)} · ${m.files.length}`
+    `${m.id + 1}. ${name(m).replace(/\\([\\`[\]<>|])/g, '$1')} · ${m.files.length}`
+      .replace(LINE_BREAKS, ' ')
       .replace(/"/g, '#quot;')
       .replace(/</g, '#lt;')
-      .replace(/>/g, '#gt;');
+      .replace(/>/g, '#gt;')
+      .replace(/`/g, '#96;');
   const lines = ['```mermaid', 'flowchart LR'];
   for (const m of modules) lines.push(`  m${m.id + 1}["${label(m)}"]`);
   for (const m of modules) {
@@ -810,7 +832,7 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
   text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. Uses and Used by are calls between the folders modules are named after: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into.\n`;
 
   const number = (id: number) => `${id + 1}`;
-  const name = opts.showName ?? ((m: CodeModule) => m.name);
+  const name = opts.showName ?? ((m: CodeModule) => markdownText(m.name));
   const linkList = (links: ModuleLink[]) =>
     strongLinks(links)
       .slice(0, 4)

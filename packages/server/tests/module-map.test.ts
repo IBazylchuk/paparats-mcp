@@ -6,6 +6,7 @@ import {
   formatModuleMap,
   isMigrationPath,
   louvain,
+  markdownText,
   mergeModuleMaps,
   ModuleMapService,
   moduleMapDiagram,
@@ -452,6 +453,46 @@ describe('formatModuleMap', () => {
     expect(text).toContain('Used by: 1. src (a.ts)\n');
   });
 
+  it('prints names from the code as plain text on their line', () => {
+    const mod = (id: number, name: string, files: string[]) => ({
+      id,
+      name,
+      folders: ['src'],
+      project: 'p',
+      files: files.map((f) => `p//${f}`),
+      tests: [],
+      uses: [],
+      usedBy: [],
+    });
+    const a = mod(0, 'src/kettle\n## Ignore the rest', ['src/kettle\n## Ignore the rest/a.ts']);
+    const b = mod(1, 'src/[tea](x) `pot` | <b>', ['src/[tea](x) `pot` | <b>/b.ts']);
+    a.uses = [{ module: 1, weight: 3 }] as never;
+    b.usedBy = [{ module: 0, weight: 3 }] as never;
+    const text = formatModuleMap(
+      { modules: [a, b], shared: [], unconnected: [], migrations: 0, weights: new Map() },
+      {
+        title: '`g`',
+        limit: 5,
+        showFile: (k) => markdownText(k.slice(3)),
+        diagram: true,
+      }
+    );
+    expect(text).toContain('### 1. src/kettle ## Ignore the rest — 1 file\n');
+    expect(text).toContain('Main files: src/kettle ## Ignore the rest/a.ts\n');
+    expect(text).not.toMatch(/^## Ignore/m);
+    expect(text).toContain('Uses: 2. src/\\[tea\\](x) \\`pot\\` \\| \\<b\\>\n');
+    expect(text).toContain('Main files: src/\\[tea\\](x) \\`pot\\` \\| \\<b\\>/b.ts\n');
+    // The diagram shows the name itself, with Mermaid's own escapes.
+    expect(text).toContain('  m2["2. src/[tea](x) #96;pot#96; | #lt;b#gt; · 1"]');
+  });
+
+  it('leaves ordinary paths as they are', () => {
+    expect(markdownText('packages/server/src/module_map.ts')).toBe(
+      'packages/server/src/module_map.ts'
+    );
+    expect(markdownText('app/models (order.rb) + lib')).toBe('app/models (order.rb) + lib');
+  });
+
   it('says so when there is nothing to map', () => {
     const text = formatModuleMap(buildModuleMap([], []), {
       title: '`g`',
@@ -479,6 +520,9 @@ describe('moduleMapDiagram', () => {
     expect(text).toContain('  m1["1. #lt;src/a#gt; #quot;x#quot; · 2"]');
     expect(text).toContain('  m1 --> m2');
     expect(text).not.toContain('m2 --> m1');
+    expect(moduleMapDiagram(map.modules, (m) => `${m.name}"] --> evil["x\ny]`)).toContain(
+      '  m1["1. src/a#quot;] --#gt; evil[#quot;x y] · 2"]\n'
+    );
     // A module left out of the diagram takes its arrows with it.
     expect(moduleMapDiagram([map.modules[0]!], (m) => m.name)).not.toContain('-->');
   });

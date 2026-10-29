@@ -68,7 +68,7 @@ import {
 } from './ranking.js';
 import { MAX_IMPACT_DEPTH } from './change-impact.js';
 import { callerLabel, changeImpactReport, shownLine } from './change-impact-report.js';
-import { formatModuleMap, ModuleMapService, type CodeModule } from './module-map.js';
+import { formatModuleMap, markdownText, ModuleMapService, type CodeModule } from './module-map.js';
 import { fetchIndexerHealth, indexerUrlFromEnv, type IndexerSection } from './indexer-health.js';
 
 /**
@@ -2635,13 +2635,13 @@ export class McpHandler {
               const i = key.indexOf('//');
               const file = key.slice(i + 2);
               return projects.size > 1
-                ? `[${this.indexer.displayProjectName(key.slice(0, i))}] ${file}`
-                : file;
+                ? `[${markdownText(this.indexer.displayProjectName(key.slice(0, i)))}] ${markdownText(file)}`
+                : markdownText(file);
             };
             const showName = (m: CodeModule): string =>
               projects.size > 1
-                ? `[${this.indexer.displayProjectName(m.project)}] ${m.name}`
-                : m.name;
+                ? `[${markdownText(this.indexer.displayProjectName(m.project))}] ${markdownText(m.name)}`
+                : markdownText(m.name);
             const title = `\`${target}\`${project !== undefined ? ` / \`${project}\`` : ''}`;
             const text = formatModuleMap(map, { title, limit, showFile, showName, diagram });
             return { content: [{ type: 'text' as const, text }] };
