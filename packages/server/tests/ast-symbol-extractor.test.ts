@@ -922,11 +922,15 @@ end`;
     def row
       { t: subtotal, n: name }
     end
+    def line(total:)
+      Line.new(subtotal:, total:)
+    end
 
     def subtotal
       name = 1
       name
     end
+    def total = 2
   end
 end`;
     const { tree, language } = parse('ruby', code);
@@ -934,15 +938,21 @@ end`;
       tree,
       language,
       [
-        { startLine: 0, endLine: 5 },
-        { startLine: 6, endLine: 11 },
+        { startLine: 0, endLine: 8 },
+        { startLine: 9, endLine: 15 },
       ],
       'ruby'
     );
     tree.delete();
-    // `subtotal` is a method of the class; `name` is no method of it.
-    expect(results[0]!.use_sites!.filter((u) => u.name !== 'Shop')).toEqual([
-      { name: 'subtotal', from: 'row', on: '::Shop::Cart' },
+    // `subtotal` is a method of the class, also through `subtotal:` (a key
+    // without a value); `name` is no method of it, and `total:` reads the parameter.
+    expect(
+      results[0]!
+        .use_sites!.filter((u) => ['subtotal', 'total', 'name'].includes(u.name))
+        .map((u) => [u.name, u.from, u.on])
+    ).toEqual([
+      ['subtotal', 'row', '::Shop::Cart'],
+      ['subtotal', 'line', '::Shop::Cart'],
     ]);
     expect(results[1]!.use_sites).toEqual([]);
   });
@@ -961,12 +971,16 @@ end`;
     Rebuild.new(ids).call
     raise Failed unless @store.is_a?(Store)
   end
+  def build
+    { plan: Plan.new(1), steps: [Step.new(2)] }
+    Report.new(3)
+  end
 end`;
     const { tree, language } = parse('ruby', code);
     const results = extractSymbolsForChunks(
       tree,
       language,
-      [{ startLine: 0, endLine: 12 }],
+      [{ startLine: 0, endLine: 16 }],
       'ruby'
     );
     tree.delete();
@@ -975,7 +989,8 @@ end`;
       .use_sites!.filter((u) => u.value)
       .map((u) => u.name)
       .sort();
-    expect(values).toEqual(['Fallback', 'Holder', 'ImportWorker', 'SyncWorker']);
+    // `Report.new(3)` is returned (a factory), not held: no value.
+    expect(values).toEqual(['Fallback', 'Holder', 'ImportWorker', 'Plan', 'Step', 'SyncWorker']);
   });
 
   it('records the class for this-calls and Class.method calls, not for bare calls (TypeScript)', async () => {
@@ -1188,10 +1203,8 @@ class Billing::Invoice; end`;
         { on: 'Reports', in: 'Orbit::Runner', constant: true },
       ])
     );
-    // `Orbit::Query.new` is kept, not called on at once: a value.
-    expect(sites('Query')).toEqual([
-      { on: 'Orbit', in: 'Orbit::Runner', constant: true, value: true },
-    ]);
+    // `Orbit::Query.new` is neither passed nor stored: not a value.
+    expect(sites('Query')).toEqual([{ on: 'Orbit', in: 'Orbit::Runner', constant: true }]);
     expect(sites('Config')).toEqual([{ lexical: true, constant: true }]);
     // `Orbit` and `Reports` only qualify a path, `Billing` names the namespace of a definition.
     expect(r.uses_symbols).not.toContain('Reports');

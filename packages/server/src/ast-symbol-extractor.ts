@@ -150,8 +150,11 @@ export interface SymbolExtractionResult {
  *      copied onto every use as `through` sites, so steps can be counted per
  *      method; `export * from` is a `*` re-export of its module, and a TS/JS
  *      chunk records the name its module exports by default.
+ *  8 — a Ruby `Foo.new` is a value only when passed or stored, not when a
+ *      method returns it; a Ruby key without a value (`f(total:)`) calls
+ *      the method of its name like a bare call.
  */
-export const SYMBOL_FORMAT = 7;
+export const SYMBOL_FORMAT = 8;
 
 /** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
@@ -953,7 +956,14 @@ function isRubyValue(node: Node): boolean {
     ) {
       return false;
     }
-    return !(outer?.type === 'call' && outer.childForFieldName('receiver')?.id === parent.id);
+    // Passed or stored only: a new object a method returns (a factory) is not
+    // held by it, and its callers' calls on it link by themselves.
+    if (outer?.type === 'argument_list' || outer?.type === 'array') return true;
+    if (outer?.type === 'pair') return outer.childForFieldName('value')?.id === parent.id;
+    return (
+      (outer?.type === 'assignment' || outer?.type === 'operator_assignment') &&
+      outer.childForFieldName('right')?.id === parent.id
+    );
   }
   if (parent.type === 'argument_list') {
     const call = parent.parent;
@@ -1147,16 +1157,24 @@ function addBareRubyCalls(
     return names;
   };
   const ids = tree.rootNode.descendantsOfType(
-    'identifier',
+    ['identifier', 'hash_key_symbol'],
     { row: chunk.startLine, column: 0 },
     { row: chunk.endLine + 1, column: 0 }
   );
   for (const node of ids) {
     if (!node) continue;
+    const parent = node.parent;
+    if (!parent) continue;
+    // `f(total:)`: a key without a value reads the local or calls the method of its name.
+    if (
+      node.type === 'hash_key_symbol' &&
+      (parent.type !== 'pair' || parent.childForFieldName('value') !== null)
+    ) {
+      continue;
+    }
     const own = enclosingClass(node) ?? '';
     if (!fileMethods.get(own)?.has(node.text)) continue;
-    const parent = node.parent;
-    if (!parent || RUBY_PARAMETER_NODES.has(parent.type)) continue;
+    if (RUBY_PARAMETER_NODES.has(parent.type)) continue;
     if (parent.childForFieldName('name')?.id === node.id) continue;
     if (parent.type === 'call' && parent.childForFieldName('method')?.id === node.id) continue;
     if (parent.type === 'assignment' && parent.childForFieldName('left')?.id === node.id) continue;
