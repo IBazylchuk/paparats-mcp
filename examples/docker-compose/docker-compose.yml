@@ -15,7 +15,7 @@ services:
     image: qdrant/qdrant:latest
     container_name: paparats-qdrant
     ports:
-      - ${QDRANT_PORT:-6333}:6333
+      - ${QDRANT_BIND:-127.0.0.1}:${QDRANT_PORT:-6333}:6333
     volumes:
       - qdrant_data:/qdrant/storage
     healthcheck:
@@ -48,7 +48,7 @@ services:
     image: ibaz/paparats-embed:latest
     container_name: paparats-embed
     ports:
-      - ${EMBED_PORT:-18434}:8080
+      - ${EMBED_BIND:-127.0.0.1}:${EMBED_PORT:-18434}:8080
     environment:
       EMBED_TTL: ${EMBED_TTL:-0}
       LLAMA_BATCH: ${LLAMA_BATCH:-2048}
@@ -90,6 +90,7 @@ services:
       EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-5}
       TEXT_EMBEDDING_MODEL: ${TEXT_EMBEDDING_MODEL:-qwen3-embedding-0.6b}
       TEXT_EMBEDDING_DIMENSIONS: ${TEXT_EMBEDDING_DIMENSIONS:-1024}
+      PAPARATS_API_KEY: ${PAPARATS_API_KEY:-}
       PAPARATS_INDEXER_URL: http://paparats-indexer:9877
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -141,6 +142,7 @@ services:
       EMBED_BATCH_SIZE: ${EMBED_BATCH_SIZE:-5}
       TEXT_EMBEDDING_MODEL: ${TEXT_EMBEDDING_MODEL:-qwen3-embedding-0.6b}
       TEXT_EMBEDDING_DIMENSIONS: ${TEXT_EMBEDDING_DIMENSIONS:-1024}
+      PAPARATS_API_KEY: ${PAPARATS_API_KEY:-}
     ports:
       - ${INDEXER_PORT:-9877}:9877
     volumes:

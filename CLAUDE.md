@@ -100,6 +100,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 | `ticket-extractor.ts`     | Jira/GitHub/custom ticket reference parsing from commit messages                                                                                                                 |
 | `mcp-handler.ts`          | MCP protocol — three endpoints: coding (`/mcp`), support (`/support/mcp`) and knowledge (`/knowledge/mcp`, opt-in) with isolated tool sets and instructions                    |
 | `knowledge-mode.ts`       | Knowledge mode — `parseKnowledgeModeEnv()`, bearer auth (constant-time), 64 kB body limit guards mounted before the global parser, scope intersection                          |
+| `api-key-auth.ts`         | Optional API key — `parseApiKeysEnv()` (`PAPARATS_API_KEY`, comma-separated, ≥ 16 characters; unset = open, a malformed key stops startup), `apiKeyAuth()` (bearer, or a basic-auth password for browser pages; mounted before the body parser; open paths `/health` and `/knowledge/mcp`, and the UI routes when `PAPARATS_UI_BASIC_AUTH` guards them), `hasApiKey()` (`/health` shows only its status without the key). The indexer mounts the same guard on `/trigger` and `/metrics`; the shared token helpers (`tokenMatches()`, constant-time) are used by the knowledge mode too |
 
 **packages/indexer/src/**
 
@@ -129,7 +130,7 @@ Always use UUIDv7 (`import { v7 as uuidv7 } from 'uuid'`) for all entity IDs —
 | Module                        | Responsibility                                                                                                   |
 | ----------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `docker-compose-generator.ts` | Programmatic YAML generation — `generateCompose()` (qdrant and embed optional, server, indexer, local project mounts). `examples/docker-compose/` holds its output for plain `docker compose up` (`scripts/generate-compose-examples.js`; a test keeps them equal) |
-| `local-urls.ts` | `localUrls()` — server / indexer / Qdrant URLs from the ports in `~/.paparats/.env` (what the compose publishes), overridden by `PAPARATS_SERVER_URL` / `PAPARATS_INDEXER_URL` / `QDRANT_URL`; every command's default |
+| `local-urls.ts` | `localUrls()` — server / indexer / Qdrant URLs from the ports in `~/.paparats/.env` (what the compose publishes), overridden by `PAPARATS_SERVER_URL` / `PAPARATS_INDEXER_URL` / `QDRANT_URL`; every command's default. Also `apiKey` (`PAPARATS_API_KEY`, environment over the file) and `authHeaders()`, sent by `ApiClient`, the indexer calls and the MCP client wiring of `install` |
 
 ## Key patterns
 
@@ -184,5 +185,5 @@ Releases are driven by [Changesets](https://github.com/changesets/changesets) in
 - `packages/embed/Dockerfile` — builds llama.cpp `llama-server` + `llama-swap` with pre-baked `bge-code-v1` + `qwen3-embedding-0.6b` GGUF models (`ibaz/paparats-embed`)
 - `examples/docker-compose/` — ready compose files (local models, Voyage) + `projects.yml` + `.env.example` for a plain `docker compose up`
 - `packages/cli/src/docker-compose-generator.ts` — generates docker-compose.yml at install time
-- Qdrant at `:6333`, MCP server at `:9876`, Indexer at `:9877`
+- Qdrant at `:6333`, MCP server at `:9876`, Indexer at `:9877`. The generated compose publishes Qdrant and the Docker embed server on `127.0.0.1` only (`QDRANT_BIND` / `EMBED_BIND`): they have no auth, and `PAPARATS_API_KEY` covers only the server and the indexer
 - Embed server (llama-swap on internal port 8080, mapped to host 18434 — not Ollama's 11434, so both can run): native mode via `host.docker.internal:18434`, Docker mode via `http://embed:8080`, external via `--embed-url`

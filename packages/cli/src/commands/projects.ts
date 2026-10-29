@@ -19,7 +19,7 @@ import {
   resolveProjectName,
   type ProjectEntry,
 } from '../projects-yml.js';
-import { localUrls } from '../local-urls.js';
+import { authHeaders, localUrls } from '../local-urls.js';
 
 const { server: SERVER_BASE, indexer: INDEXER_BASE } = localUrls();
 
@@ -264,7 +264,7 @@ export async function defaultTriggerReindex(
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
     const res = await fetch(`${INDEXER_BASE}/trigger`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(body),
     });
     if (res.ok) return;
@@ -401,7 +401,7 @@ function printTable(rows: ListedProject[]): void {
 }
 
 async function defaultFetchHealth(): Promise<IndexerHealth | null> {
-  const res = await fetch(`${INDEXER_BASE}/health`).catch(() => null);
+  const res = await fetch(`${INDEXER_BASE}/health`, { headers: authHeaders() }).catch(() => null);
   if (!res || !res.ok) return null;
   return (await res.json()) as IndexerHealth;
 }
@@ -494,7 +494,7 @@ export async function runRemove(
 
 async function defaultDeleteServerData(group: string, name: string): Promise<void> {
   const url = `${SERVER_BASE}/api/project/${encodeURIComponent(group)}/${encodeURIComponent(name)}`;
-  const res = await fetch(url, { method: 'DELETE' });
+  const res = await fetch(url, { method: 'DELETE', headers: authHeaders() });
   if (!res.ok) throw new Error(`${url} returned ${res.status}`);
 }
 

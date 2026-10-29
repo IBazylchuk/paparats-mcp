@@ -75,7 +75,10 @@ function qdrantService(port: number): ComposeService {
   return {
     image: 'qdrant/qdrant:latest',
     container_name: 'paparats-qdrant',
-    ports: [`\${QDRANT_PORT:-${port}}:6333`],
+    // Loopback only: the server and indexer reach Qdrant over the compose network,
+    // and it has no auth of its own here, so the indexed code must not be on the
+    // network. QDRANT_BIND=0.0.0.0 in .env publishes it (put a key on it first).
+    ports: [`\${QDRANT_BIND:-127.0.0.1}:\${QDRANT_PORT:-${port}}:6333`],
     volumes: ['qdrant_data:/qdrant/storage'],
     healthcheck: {
       test: ['CMD', 'bash', '-c', 'exec 3<>/dev/tcp/127.0.0.1/6333 || exit 1'],
@@ -100,7 +103,8 @@ function embedService(port: number): ComposeService {
   return {
     image: 'ibaz/paparats-embed:latest',
     container_name: 'paparats-embed',
-    ports: [`\${EMBED_PORT:-${port}}:8080`],
+    // Loopback only, like Qdrant: the services use the compose network.
+    ports: [`\${EMBED_BIND:-127.0.0.1}:\${EMBED_PORT:-${port}}:8080`],
     // EMBED_TTL: idle seconds before a model unloads. 0 = never (default) —
     // llama-swap's unload path can deadlock under load. Models are baked into
     // the image — no data volume needed.
@@ -190,6 +194,8 @@ function paparatsService(
   }
   Object.assign(env, textEmbeddingEnv(embeddingProvider));
   if (qdrantApiKey) env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
+  // Optional: empty leaves the API open (a server reached over a VPN or localhost).
+  env['PAPARATS_API_KEY'] = '${PAPARATS_API_KEY:-}';
   // Resolve indexer over the docker-compose network so the analytics UI's
   // indexer tile reaches its sibling instead of the host loopback (which has
   // no service inside the container).
@@ -266,6 +272,8 @@ function indexerService(
   // The docs pass (INDEX_DOCS) embeds prose too.
   Object.assign(env, textEmbeddingEnv(embeddingProvider));
   if (config.qdrantApiKey) env['QDRANT_API_KEY'] = '${QDRANT_API_KEY}';
+  // The same key as the server's: it guards /trigger.
+  env['PAPARATS_API_KEY'] = '${PAPARATS_API_KEY:-}';
 
   // Mount the whole ~/.paparats as /config (directory bind-mount, not single file)
   // so the indexer survives in-place rewrites of projects.yml — single-file

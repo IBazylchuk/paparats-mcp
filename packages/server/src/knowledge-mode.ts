@@ -1,6 +1,12 @@
-import { createHash, timingSafeEqual } from 'node:crypto';
 import express, { type ErrorRequestHandler, type Request, type RequestHandler } from 'express';
 import { DEFAULT_AUDIENCE, validateAudienceLabel } from './docs/store.js';
+import {
+  MIN_TOKEN_LENGTH,
+  bearerToken,
+  isUsableToken,
+  tokenDigests,
+  tokenMatches,
+} from './api-key-auth.js';
 
 /**
  * The knowledge MCP mode: a docs-only endpoint for a consumer outside the trust
@@ -30,10 +36,7 @@ export const KNOWLEDGE_MAX_QUERY_CHARS = 1000;
  * Shortest token accepted. A bearer token is the only credential on a route
  * reachable from another network, so a placeholder like `changeme` must not pass.
  */
-export const KNOWLEDGE_MIN_TOKEN_LENGTH = 16;
-
-/** RFC 6750 `b64token` — the characters a bearer token may carry. */
-const TOKEN_PATTERN = /^[A-Za-z0-9\-._~+/]+=*$/;
+export const KNOWLEDGE_MIN_TOKEN_LENGTH = MIN_TOKEN_LENGTH;
 
 /** Parsed knowledge-mode settings. */
 export interface KnowledgeModeConfig {
@@ -108,7 +111,7 @@ export function parseKnowledgeModeEnv(
   }
   tokens.forEach((token, i) => {
     // The message names the position, never the value: a token must not reach a log.
-    if (token.length < KNOWLEDGE_MIN_TOKEN_LENGTH || !TOKEN_PATTERN.test(token)) {
+    if (!isUsableToken(token)) {
       throw new Error(
         `PAPARATS_KNOWLEDGE_TOKENS: token #${i + 1} is not usable. Tokens must be at least ` +
           `${KNOWLEDGE_MIN_TOKEN_LENGTH} characters of A-Z a-z 0-9 - . _ ~ + / ` +
@@ -173,25 +176,6 @@ function jsonRpcError(code: number, message: string) {
   return { jsonrpc: '2.0', error: { code, message }, id: null };
 }
 
-function sha256(value: string): Buffer {
-  return createHash('sha256').update(value, 'utf8').digest();
-}
-
-/**
- * Whether `presented` equals one of the accepted tokens, in time independent of
- * where the two differ. Both sides are hashed first so `timingSafeEqual` always
- * compares equal-length buffers — comparing raw strings would leak the length.
- * Every token is checked, with no early exit.
- */
-function tokenMatches(presented: string, digests: Buffer[]): boolean {
-  const given = sha256(presented);
-  let matched = false;
-  for (const digest of digests) {
-    matched = timingSafeEqual(given, digest) || matched;
-  }
-  return matched;
-}
-
 /** Requests that passed {@link knowledgeBearerAuth}. Unforgeable by other middleware. */
 const authenticated = new WeakSet<Request>();
 
@@ -206,18 +190,17 @@ export function isKnowledgeAuthenticated(req: Request): boolean {
 
 /** `Authorization: Bearer <token>`, checked before anything reads the request body. */
 export function knowledgeBearerAuth(tokens: string[]): RequestHandler {
-  const digests = tokens.map(sha256);
+  const digests = tokenDigests(tokens);
   return (req, res, next) => {
-    const header = req.headers.authorization;
-    const match = typeof header === 'string' ? /^Bearer +(\S+) *$/i.exec(header) : null;
-    if (match && tokenMatches(match[1]!, digests)) {
+    const token = bearerToken(req.headers.authorization);
+    if (token !== null && tokenMatches(token, digests)) {
       authenticated.add(req);
       next();
       return;
     }
     res.set(
       'WWW-Authenticate',
-      match
+      token !== null
         ? 'Bearer realm="paparats-knowledge", error="invalid_token"'
         : 'Bearer realm="paparats-knowledge"'
     );

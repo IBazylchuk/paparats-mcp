@@ -184,6 +184,39 @@ path) or a GitHub repository (`owner/repo`, an https or ssh URL).
 
 `search`, `status`, `groups` and `doctor` take `--server <url>`.
 
+## API key (optional)
+
+The server and the indexer answer anyone who reaches their ports, which is fine on
+localhost or on a server reached only over a VPN. To ask for a key, set
+`PAPARATS_API_KEY` in `~/.paparats/.env` (or the `.env` next to a plain compose file) and
+restart:
+
+```bash
+echo "PAPARATS_API_KEY=$(openssl rand -hex 32)" >> ~/.paparats/.env
+paparats restart
+```
+
+- **What it guards.** Every route of the server (`/mcp`, `/support/mcp`, `/api/*`,
+  `/metrics`) and of the indexer (`/trigger`, `/metrics`) then wants
+  `Authorization: Bearer <key>`. `/health` stays open for health checks, but shows
+  only the status to a caller without the key. `/knowledge/mcp` keeps its own tokens.
+- **Browser pages.** `/ui` and the code map take the key as a basic-auth password, with
+  any user name, unless `PAPARATS_UI_BASIC_AUTH` is set, which then guards them instead.
+- **Clients.** The CLI reads the key from `~/.paparats/.env` or `PAPARATS_API_KEY` in its
+  environment. `paparats install` passes it to Cursor and Claude Code (`--api-key` in
+  support mode). Other clients are in [clients.md](clients.md#a-server-with-an-api-key).
+- **Several keys.** List them comma-separated to change one without cutting off the
+  clients of another. Each must be at least 16 characters; a key that is not stops the
+  start rather than leaving the server open.
+- **Plain HTTP.** The key goes over the network as is: on another host, put the server
+  behind HTTPS or a VPN.
+- **Qdrant and the embed server.** The key does not cover them, and they have no auth of
+  their own in the generated stack. Their ports are published on `127.0.0.1` only: the
+  server and the indexer reach them over the compose network. `QDRANT_BIND=0.0.0.0` (or
+  `EMBED_BIND`) in `.env` publishes one to the network; Qdrant holds the indexed code,
+  so give it a key first (`QDRANT__SERVICE__API_KEY` on the `qdrant` service, the same
+  value as `QDRANT_API_KEY`).
+
 ## Environment variables
 
 **CLI.** Every command finds the stack on the ports in `~/.paparats/.env`. These replace a
@@ -194,10 +227,13 @@ whole address:
 | `PAPARATS_SERVER_URL`  | `http://localhost:9876` | The server                   |
 | `PAPARATS_INDEXER_URL` | `http://localhost:9877` | The indexer                  |
 | `QDRANT_URL`           | `http://localhost:6333` | Qdrant, for the checks in `install`, `update` and `doctor` |
+| `PAPARATS_API_KEY`     | from `~/.paparats/.env` | The key sent to the server and the indexer, when they ask for one |
 
 **`~/.paparats/.env`.** The generated compose reads these from it, so they survive
 regeneration: the ports (`PAPARATS_PORT`, `INDEXER_PORT`, `QDRANT_PORT`, `EMBED_PORT`),
-`CRON`, `INDEX_DOCS`, `GITHUB_TOKEN`, `QDRANT_API_KEY`, `OPENAI_API_KEY`, `VOYAGE_API_KEY`,
+the addresses Qdrant and the embed server are published on (`QDRANT_BIND`, `EMBED_BIND`,
+default `127.0.0.1`),
+`CRON`, `INDEX_DOCS`, `GITHUB_TOKEN`, `PAPARATS_API_KEY`, `QDRANT_API_KEY`, `OPENAI_API_KEY`, `VOYAGE_API_KEY`,
 `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `TEXT_EMBEDDING_MODEL`,
 `TEXT_EMBEDDING_DIMENSIONS`, `EMBED_BATCH_SIZE`, `EMBED_TTL`, `LLAMA_BATCH`,
 `LLAMA_THREADS`, `EMBED_CPUS`, `EMBED_MEMORY`. Run `paparats restart` after a change.
@@ -222,6 +258,7 @@ there. `cron` and `cron_fast` are better set in `projects.yml`, which is never r
 | `PAPARATS_GROUP`          | none                       | Put every repo into this group                                    |
 | `PAPARATS_PROJECT_SUFFIX` | none                       | Suffix for project names, so two deployments can share a Qdrant   |
 | `GITHUB_TOKEN`            | none                       | For private GitHub repositories                                   |
+| `PAPARATS_API_KEY`        | none                       | Optional key for `/trigger` and `/metrics` ([API key](#api-key-optional)) |
 
 **Server** (`paparats`). The full list is in
 [packages/server/README.md](../packages/server/README.md#configuration-env-vars).
@@ -234,6 +271,7 @@ there. `cron` and `cron_fast` are better set in `projects.yml`, which is never r
 | `TEXT_EMBEDDING_PROVIDER` / `_MODEL` / `_DIMENSIONS` | `llama` / `qwen3-embedding-0.6b` / `1024` | For architectural memory, docs and the glossary |
 | `PAPARATS_PROJECTS`         | none                       | Only these projects are served                            |
 | `PAPARATS_DOCS_AUDIENCE`    | none                       | Audience ceiling for docs on the coding and support endpoints |
+| `PAPARATS_API_KEY`          | none                       | Optional key for every route but `/health` ([API key](#api-key-optional)) |
 
 **Embed container** (`embed`, Docker embed mode)
 

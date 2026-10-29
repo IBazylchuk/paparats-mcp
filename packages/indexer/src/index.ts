@@ -15,6 +15,9 @@ import {
   buildTelemetry,
   systemContext,
   tctx,
+  apiKeyAuth,
+  hasApiKey,
+  parseApiKeysEnv,
 } from '@paparats/server';
 import type { TreeSitterManager } from '@paparats/server';
 import { parseReposEnv, cloneOrPull, repoPath } from './repo-manager.js';
@@ -185,7 +188,20 @@ const orchestrator = new IndexOrchestrator(
 
 // ── HTTP API ────────────────────────────────────────────────────────────────
 
+// Optional API key (`PAPARATS_API_KEY`), the same as the server's. A malformed
+// one stops the start: running open when a key was asked for is the wrong outcome.
+let apiKeys: string[] | null = null;
+try {
+  apiKeys = parseApiKeysEnv(process.env);
+} catch (err) {
+  console.error(`[indexer] ${(err as Error).message}`);
+  process.exit(1);
+}
+
 const app = express();
+if (apiKeys) {
+  app.use(apiKeyAuth(apiKeys, { open: ['/health'], realm: 'paparats-indexer' }));
+}
 app.use(express.json());
 
 app.post('/trigger', (req, res) => {
@@ -233,8 +249,10 @@ if (metrics.enabled) {
   app.get('/metrics', metrics.getMetricsHandler());
 }
 
-app.get('/health', (_req, res) => {
-  res.json(orchestrator.health());
+app.get('/health', (req, res) => {
+  const health = orchestrator.health();
+  // Open for health checks; with an API key on, only a caller holding it sees the repos.
+  res.json(apiKeys && !hasApiKey(req) ? { status: health.status } : health);
 });
 
 // ── Start ───────────────────────────────────────────────────────────────────
@@ -251,6 +269,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log(`[indexer] State DB: ${STATE_DB_PATH}`);
   console.log(`[indexer] Qdrant: ${QDRANT_URL}${QDRANT_API_KEY ? ' (authenticated)' : ''}`);
   console.log(`[indexer] Embeddings: ${EMBED_URL}`);
+  console.log(`[indexer] API key: ${apiKeys ? `required (${apiKeys.length} key(s))` : 'off'}`);
   if (PAPARATS_GROUP) {
     console.log(`[indexer] Shared group: ${PAPARATS_GROUP} (all repos → one collection)`);
   }

@@ -158,6 +158,8 @@ For people and bots who use a server that runs elsewhere: no Docker, no models.
 ```bash
 paparats install --mode support                                     # local server
 paparats install --mode support --server http://paparats.example.com:9876
+# a server that runs with PAPARATS_API_KEY:
+paparats install --mode support --server http://paparats.example.com:9876 --api-key <key>
 ```
 
 It checks that the server answers, then connects Cursor and Claude Code to its

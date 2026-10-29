@@ -158,7 +158,7 @@ shared. The tool answers in text and ends with a Mermaid diagram.
 The console's **`/ui/map`** page (`http://localhost:9876/ui/map`) shows the same map: walk
 a codebase folder by folder, with arrows for who calls whom, modules as groups of files,
 and a link for every view. Like the `/ui` console it is protected by
-`PAPARATS_UI_BASIC_AUTH` when that is set.
+`PAPARATS_UI_BASIC_AUTH` when that is set, else by the API key when one is.
 
 ## What runs where
 

@@ -201,7 +201,8 @@ support-only — recording belongs to the architectural-review workflow.
 | `PAPARATS_KNOWLEDGE_TOKENS` | —                                      | Comma-separated bearer tokens (≥ 16 characters) for `/knowledge/mcp`. Set together with `PAPARATS_KNOWLEDGE_AUDIENCE`, or neither |
 | `PAPARATS_KNOWLEDGE_AUDIENCE` | —                                    | Audience ceiling of `/knowledge/mcp`; `internal` is refused   |
 | `PAPARATS_KNOWLEDGE_PROJECTS` | —                                    | Optional project allowlist of `/knowledge/mcp` — recommended  |
-| `PAPARATS_UI_BASIC_AUTH`    | —                                      | `user:pass` for `/ui` and `/api/analytics/...`; a malformed value stops startup |
+| `PAPARATS_API_KEY`          | —                                      | Optional: comma-separated keys (≥ 16 characters); every route but `/health` and `/knowledge/mcp` then wants `Authorization: Bearer <key>`. Unset, the server is open (localhost, VPN). A malformed key stops startup |
+| `PAPARATS_UI_BASIC_AUTH`    | —                                      | `user:pass` for `/ui`, `/api/analytics/...` and `/api/module-map/...` (else they take the API key as a basic-auth password); a malformed value stops startup |
 | `PAPARATS_CORS_ORIGINS`     | —                                      | Comma-separated exact origins (e.g. `https://app.example.com`) browsers may call the server from. Unset = no CORS headers, and any request whose `Origin` is neither this server nor listed gets `403`. Requests without `Origin` (MCP clients, curl) are unaffected |
 | `OTEL_*`                    | —                                      | Standard OpenTelemetry env vars (Tempo / Honeycomb / Datadog / Elastic APM)  |
 

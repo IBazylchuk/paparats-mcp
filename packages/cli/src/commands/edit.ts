@@ -15,7 +15,7 @@ import {
   deriveRegenerateOptsFromCompose,
   type ProjectsFile,
 } from '../projects-yml.js';
-import { localUrls } from '../local-urls.js';
+import { authHeaders, localUrls } from '../local-urls.js';
 
 export type EditTarget = 'compose' | 'projects';
 
@@ -145,7 +145,7 @@ async function defaultRegenerateAndRestart(
 
 async function defaultTriggerFullReindex(): Promise<void> {
   const url = localUrls().indexer;
-  const res = await fetch(`${url}/trigger`, { method: 'POST' });
+  const res = await fetch(`${url}/trigger`, { method: 'POST', headers: authHeaders() });
   if (!res.ok) throw new Error(`Indexer ${url} returned ${res.status}`);
 }
 

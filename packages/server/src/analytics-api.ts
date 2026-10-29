@@ -21,6 +21,7 @@ import type { DocsStore } from './docs/store.js';
 import type { TerminologyStore } from './terminology/store.js';
 import type { ArchStore } from './arch/store.js';
 import { buildDemoAnalytics, isDemoRequested } from './analytics-demo.js';
+import { parseApiKeysEnv } from './api-key-auth.js';
 
 export interface BuildAnalyticsRouterOptions {
   indexer: Indexer;
@@ -246,7 +247,12 @@ async function fetchIndexerHealth(url: string, timeoutMs = 15000): Promise<Index
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const res = await fetch(`${url.replace(/\/+$/, '')}/health`, { signal: controller.signal });
+    // The indexer shares the server's PAPARATS_API_KEY; without it, its /health names no repos.
+    const key = parseApiKeysEnv(process.env)?.[0];
+    const res = await fetch(`${url.replace(/\/+$/, '')}/health`, {
+      signal: controller.signal,
+      ...(key ? { headers: { Authorization: `Bearer ${key}` } } : {}),
+    });
     if (!res.ok) {
       return { reachable: false, url, repos: [], error: `HTTP ${res.status}` };
     }
