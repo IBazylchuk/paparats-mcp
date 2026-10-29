@@ -161,7 +161,39 @@ describe('collectDependents', () => {
     expect(res.viaAmbiguousNames).toEqual([{ symbol: 'f', chunkIds: ['a'] }]);
   });
 
-  it('lists hubs and leaves without following their callers', () => {
+  it('follows a hub through the methods it is reached by, after the rest of its hop', () => {
+    const edgesTo = graph([
+      ['hub', 'seed', 'f', 'EXTRACTED', ['write']],
+      ['plain', 'seed', 'f', 'EXTRACTED', ['run']],
+      ['behindHub', 'hub', 'write'],
+      ['behindHub2', 'hub', 'write'],
+      ['behindPlain', 'plain', 'run'],
+    ]);
+    const all = collectDependents({
+      ...base,
+      seeds: ['seed'],
+      edgesTo,
+      isHub: (id) => id === 'hub',
+    });
+    expect(all.dependents.map((d) => d.chunkId).sort()).toEqual([
+      'behindHub',
+      'behindHub2',
+      'behindPlain',
+      'hub',
+      'plain',
+    ]);
+    // Out of places: what lies behind the hub goes first.
+    const tight = collectDependents({
+      ...base,
+      seeds: ['seed'],
+      edgesTo,
+      maxDependents: 3,
+      isHub: (id) => id === 'hub',
+    });
+    expect(tight.dependents.map((d) => d.chunkId).sort()).toEqual(['behindPlain', 'hub', 'plain']);
+  });
+
+  it('lists hubs reached as a whole chunk, and leaves, without following their callers', () => {
     const edgesTo = graph([
       ['hub', 'seed', 'f'],
       ['test', 'seed', 'f'],
