@@ -182,7 +182,7 @@ const HEADER = `# paparats-mcp — project list (read by indexer at /config/proj
 #
 # Per-entry fields (path OR url required; everything else optional):
 #   path: /absolute/host/path         # local bind-mount  (mutex with url)
-#   url:  owner/repo                  # remote git repo   (mutex with path)
+#   url:  owner/repo                  # GitHub repo, or https://host/group/repo  (mutex with path)
 #   name: my-project                  # override derived name
 #   group: my-team                    # Qdrant collection bucket (default: defaults.group → 'default')
 #   language: ruby                    # or [ruby, javascript]; auto-detected on \`paparats add\` from marker files
@@ -297,7 +297,7 @@ export function resolveProjectName(entry: ProjectEntry): string {
   if (entry.name && entry.name.trim()) return entry.name.trim();
   if (entry.path) return path.basename(entry.path);
   if (entry.url) {
-    // url is "owner/repo"
+    // url is "owner/repo" or an https URL: the name is its last part
     const parts = entry.url.split('/');
     const last = parts[parts.length - 1] ?? '';
     return last.replace(/\.git$/, '');

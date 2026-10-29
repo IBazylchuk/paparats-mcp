@@ -29,11 +29,18 @@ repos:
   - url: acme/billing-service
     name: billing # instead of the name taken from the repo
     group: prod
+
+  - url: https://gitlab.example.com/team/sub/handbook # any other host, by https URL
 ```
 
 The indexer reloads the file on save; what happens then is in
-[install.md](install.md#paparats-install). Remote entries are GitHub repositories;
-`paparats add` refuses other hosts. Private ones need `GITHUB_TOKEN` in `~/.paparats/.env`.
+[install.md](install.md#paparats-install). A remote entry is `owner/repo` on GitHub, or
+the `https://` URL of a repository anywhere else: GitHub Enterprise, GitLab with
+subgroups, Gitea. SSH addresses are not supported (the indexer image has no SSH client).
+Private repositories need a token in `~/.paparats/.env`: `GITHUB_TOKEN` for github.com,
+and `GIT_TOKENS` for other hosts, as `host=token` pairs separated by commas
+(`GIT_TOKENS=gitlab.example.com=glpat-...,ghe.example.com=ghp_...`). Never put a token in
+the URL: it is refused.
 
 ## `.paparats.yml`: one repository
 
@@ -169,7 +176,8 @@ paparats instructions [dir] [flags]     Write the "paparats or grep" note into t
 - `-v, --verbose`: show Docker output
 
 **`paparats add <path-or-repo>`**: a folder (`.`, `../app`, `~/code/app`, an absolute
-path) or a GitHub repository (`owner/repo`, an https or ssh URL).
+path), a GitHub repository (`owner/repo`, an https or ssh URL), or the https URL of a
+repository on another host.
 
 - `--name <name>`: instead of the folder or repo name
 - `--group <group>`: instead of `defaults.group`
@@ -235,7 +243,7 @@ whole address:
 regeneration: the ports (`PAPARATS_PORT`, `INDEXER_PORT`, `QDRANT_PORT`, `EMBED_PORT`),
 the addresses Qdrant and the embed server are published on (`QDRANT_BIND`, `EMBED_BIND`,
 default `127.0.0.1`),
-`CRON`, `INDEX_DOCS`, `GITHUB_TOKEN`, `PAPARATS_API_KEY`, `QDRANT_API_KEY`, `OPENAI_API_KEY`, `VOYAGE_API_KEY`,
+`CRON`, `INDEX_DOCS`, `GITHUB_TOKEN`, `GIT_TOKENS`, `PAPARATS_API_KEY`, `QDRANT_API_KEY`, `OPENAI_API_KEY`, `VOYAGE_API_KEY`,
 `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `TEXT_EMBEDDING_MODEL`,
 `TEXT_EMBEDDING_DIMENSIONS`, `EMBED_BATCH_SIZE`, `EMBED_TTL`, `LLAMA_BATCH`,
 `LLAMA_THREADS`, `EMBED_CPUS`, `EMBED_MEMORY`. Run `paparats restart` after a change.
@@ -260,6 +268,7 @@ there. `cron` and `cron_fast` are better set in `projects.yml`, which is never r
 | `PAPARATS_GROUP`          | none                       | Put every repo into this group                                    |
 | `PAPARATS_PROJECT_SUFFIX` | none                       | Suffix for project names, so two deployments can share a Qdrant   |
 | `GITHUB_TOKEN`            | none                       | For private GitHub repositories                                   |
+| `GIT_TOKENS`              | none                       | `host=token,...` for private repositories on other hosts          |
 | `PAPARATS_API_KEY`        | none                       | Optional key for `/trigger` and `/metrics` ([API key](#api-key-optional)) |
 
 **Server** (`paparats`). The full list is in

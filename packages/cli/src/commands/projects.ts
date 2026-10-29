@@ -77,13 +77,23 @@ export function resolveLocalPath(input: string, cwd: string = process.cwd()): st
 }
 
 /**
- * Normalize a remote argument (`owner/repo`, `git@github.com:owner/repo.git`,
- * `https://github.com/owner/repo[.git]`) to the `owner/repo` the indexer
- * expects. The indexer clones every remote entry from github.com, so another
- * host is rejected instead of being silently cloned from the wrong place, and
- * so is a nested path (e.g. a subgroup), which the indexer cannot parse.
+ * Normalize a remote argument to what projects.yml stores: `owner/repo` for
+ * GitHub (`owner/repo`, `git@github.com:owner/repo.git`,
+ * `https://github.com/owner/repo[.git]`), and the `https://` URL for any other
+ * host (GitHub Enterprise, GitLab with subgroups, Gitea). SSH addresses of other
+ * hosts are refused: the indexer image has no SSH client, and a token for a
+ * private repository goes in `GITHUB_TOKEN` or `GIT_TOKENS`, never in the URL.
  */
-export function parseGithubRepo(input: string): string {
+export function parseRemoteRepo(input: string): string {
+  const valid = (part: string | undefined): part is string =>
+    !!part && part !== '.' && part !== '..' && GITHUB_NAME_RE.test(part);
+  const split = (p: string) =>
+    p
+      .replace(/^\/+/, '')
+      .replace(/\/+$/, '')
+      .replace(/\.git$/, '')
+      .split('/');
+
   let host: string | undefined;
   let repoPath = input;
   const scp = input.match(/^git@([^:/]+):(.+)$/);
@@ -97,30 +107,44 @@ export function parseGithubRepo(input: string): string {
     } catch {
       throw new Error(`Invalid repository URL: ${input}`);
     }
+    const github = GITHUB_HOSTS.has(url.hostname.toLowerCase()) && !url.port;
+    if (url.protocol === 'ssh:' && !github) {
+      throw sshRefused(url.hostname);
+    }
+    if (url.username || url.password) {
+      throw new Error(
+        'The URL carries credentials: remove them and put the token in GITHUB_TOKEN or GIT_TOKENS.'
+      );
+    }
+    if (!github) {
+      const parts = split(url.pathname);
+      if (parts.length < 2 || !parts.every(valid)) {
+        throw new Error(`Expected a repository path such as /group/repo in "${input}".`);
+      }
+      return `${url.protocol}//${url.host.toLowerCase()}/${parts.join('/')}`;
+    }
     host = url.hostname;
     repoPath = url.pathname;
   }
   if (host !== undefined && !GITHUB_HOSTS.has(host.toLowerCase())) {
-    throw new Error(
-      `Only GitHub repositories can be added by URL (got host "${host}"): the indexer clones ` +
-        'remote projects from github.com. Clone the repository locally and add its absolute path instead.'
-    );
+    throw sshRefused(host);
   }
-  const parts = repoPath
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '')
-    .replace(/\.git$/, '')
-    .split('/');
+  const parts = split(repoPath);
   const [owner, repo] = parts;
-  const valid = (part: string | undefined): part is string =>
-    !!part && part !== '.' && part !== '..' && GITHUB_NAME_RE.test(part);
   if (parts.length !== 2 || !valid(owner) || !valid(repo)) {
     throw new Error(
       `Expected a GitHub repository as owner/repo, got "${input}". ` +
-        'Nested paths such as subgroups are not supported.'
+        'For another host, or a nested path such as a subgroup, give its https:// URL.'
     );
   }
   return `${owner}/${repo}`;
+}
+
+function sshRefused(host: string): Error {
+  return new Error(
+    `SSH addresses are not supported (host "${host}"): give the repository's https:// URL, ` +
+      'with a token in GIT_TOKENS (host=token) for a private one.'
+  );
 }
 
 export async function runAdd(
@@ -150,7 +174,7 @@ export async function runAdd(
     }
     entry = { path: localPath };
   } else {
-    entry = { url: parseGithubRepo(argument) };
+    entry = { url: parseRemoteRepo(argument) };
   }
 
   if (opts.name) entry.name = opts.name;
@@ -504,7 +528,7 @@ export const addCommand = new Command('add')
   .description('Add a project (local path or GitHub repo) to the index')
   .argument(
     '<path-or-repo>',
-    'Local path (absolute, relative or ~/...), or a GitHub repo (owner/repo, git@github.com:owner/repo.git, https://github.com/owner/repo)'
+    'Local path (absolute, relative or ~/...), a GitHub repo (owner/repo, git@github.com:owner/repo.git, https://github.com/owner/repo), or the https:// URL of a repo elsewhere (GitLab, GitHub Enterprise, ...)'
   )
   .option('--name <name>', 'Project name override')
   .option(

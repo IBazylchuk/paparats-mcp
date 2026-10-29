@@ -100,6 +100,7 @@ services:
     container_name: paparats-indexer
     environment:
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GIT_TOKENS: ${GIT_TOKENS:-}
       CRON: ${CRON:-0 */6 * * *}
       QDRANT_URL: http://qdrant:6333
       INDEX_DOCS: ${INDEX_DOCS:-false}

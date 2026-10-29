@@ -28,7 +28,7 @@ import { StateStore } from './state-store.js';
 import { GitDetector, MtimeDetector } from './change-detector.js';
 import { resolveRepoProject } from './project-resolver.js';
 import { IndexOrchestrator } from './orchestrator.js';
-import { gitAuthEnv } from './git-auth.js';
+import { gitAuthEnv, parseGitTokens } from './git-auth.js';
 import type { RepoConfig } from './types.js';
 
 // ── Config ──────────────────────────────────────────────────────────────────
@@ -36,7 +36,16 @@ import type { RepoConfig } from './types.js';
 const REPOS = process.env['REPOS'] ?? '';
 const GITHUB_TOKEN = process.env['GITHUB_TOKEN'];
 // Every git process (clone, fetch, ls-remote) inherits this: the token goes as a header, not in the URL.
-Object.assign(process.env, gitAuthEnv(GITHUB_TOKEN));
+// GIT_TOKENS adds tokens for other hosts (GitHub Enterprise, GitLab, ...).
+try {
+  Object.assign(
+    process.env,
+    gitAuthEnv(GITHUB_TOKEN, process.env, parseGitTokens(process.env['GIT_TOKENS']))
+  );
+} catch (err) {
+  console.error(`[indexer] ${(err as Error).message}`);
+  process.exit(1);
+}
 /** Slow safety-net cycle: indexes every repo unconditionally. */
 const CRON = process.env['CRON'] ?? '0 */3 * * *';
 /** Fast change-detection cycle: only indexes repos whose fingerprint changed. */

@@ -1,11 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import { createGit } from './git-auth.js';
+import { parseRepoSpec } from './repo-url.js';
 import type { RepoConfig } from './types.js';
 
 /**
- * Parse comma-separated repos env into RepoConfig[].
- * Accepts formats: "org/repo", "org/repo,org/other"
+ * Parse comma-separated repos env into RepoConfig[]: `org/repo` on GitHub, or
+ * https URLs of any host (`org/repo,https://gitlab.example.com/team/app`).
  */
 export function parseReposEnv(repos: string): RepoConfig[] {
   if (!repos.trim()) return [];
@@ -14,15 +15,7 @@ export function parseReposEnv(repos: string): RepoConfig[] {
     .split(',')
     .map((r) => r.trim())
     .filter(Boolean)
-    .map((fullName) => {
-      const parts = fullName.split('/');
-      if (parts.length !== 2 || !parts[0] || !parts[1]) {
-        throw new Error(`Invalid repo format: "${fullName}". Expected "owner/repo".`);
-      }
-      const [owner, name] = parts as [string, string];
-      const url = `https://github.com/${owner}/${name}.git`;
-      return { url, owner, name, fullName };
-    });
+    .map((spec) => parseRepoSpec(spec));
 
   // The project name is the repo name, so `org1/api,org2/api` would put two
   // projects called `api` into one group, each overwriting the other's chunks.

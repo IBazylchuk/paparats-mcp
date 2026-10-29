@@ -249,6 +249,8 @@ function indexerService(
 
   const env: Record<string, string> = {
     GITHUB_TOKEN: '${GITHUB_TOKEN:-}',
+    // host=token pairs for private repositories on other hosts (GitLab, GitHub Enterprise).
+    GIT_TOKENS: '${GIT_TOKENS:-}',
     CRON: `\${CRON:-${config.cron ?? '0 */6 * * *'}}`,
     QDRANT_URL: qdrantUrl,
     // Read from ~/.paparats/.env, so turning docs search on survives the
