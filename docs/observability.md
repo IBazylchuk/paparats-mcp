@@ -19,8 +19,8 @@ Paparats ships with three observability layers that work together:
 `PAPARATS_METRICS`, the analytics and the OTel variables are not wired into the compose
 file that `paparats install` generates, so add them by hand to the `environment:` block of
 the `paparats` service (and of `paparats-indexer` for indexer metrics) in
-`~/.paparats/docker-compose.yml` — `paparats edit compose` opens it — then run
-`paparats restart`.
+`~/.paparats/docker-compose.yml`: `paparats edit compose` opens it, checks it after you
+save and restarts the stack.
 
 > `paparats add`, `paparats remove`, `paparats edit projects` and `paparats update`
 > regenerate the compose file when its contents change. The previous file is kept as

@@ -57,12 +57,38 @@ describe('runEdit', () => {
     ).rejects.toThrow(/Run `paparats install`/);
   });
 
-  it('compose target spawns editor and exits without restart', async () => {
-    fs.writeFileSync(path.join(tmpHome, 'docker-compose.yml'), 'services: {}\n');
+  it('compose target checks the edited file, then restarts the stack', async () => {
+    const file = path.join(tmpHome, 'docker-compose.yml');
+    fs.writeFileSync(file, 'services: {}\n');
     const spawnEditor = vi.fn().mockReturnValue({ status: 0 });
-    const result = await runEdit('compose', { paparatsHome: tmpHome, spawnEditor });
-    expect(result.edited).toBe(true);
+    const checkCompose = vi.fn().mockReturnValue(null);
+    const restartStack = vi.fn().mockResolvedValue(undefined);
+    const result = await runEdit('compose', {
+      paparatsHome: tmpHome,
+      spawnEditor,
+      checkCompose,
+      restartStack,
+    });
+    expect(result).toEqual({ edited: true, validated: true, restarted: true });
     expect(spawnEditor).toHaveBeenCalledTimes(1);
+    expect(checkCompose).toHaveBeenCalledWith(file);
+    expect(restartStack).toHaveBeenCalledWith(tmpHome);
+  });
+
+  it('compose target leaves the stack alone when the edited file is not valid', async () => {
+    fs.writeFileSync(path.join(tmpHome, 'docker-compose.yml'), 'services: [\n');
+    const restartStack = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const result = await runEdit('compose', {
+      paparatsHome: tmpHome,
+      spawnEditor: vi.fn().mockReturnValue({ status: 0 }),
+      checkCompose: () => 'yaml: line 2: did not find expected node content',
+      restartStack,
+    });
+    expect(result).toEqual({ edited: true, validated: false });
+    expect(restartStack).not.toHaveBeenCalled();
+    expect(errors.mock.calls.flat().join('\n')).toContain('did not find expected node content');
+    errors.mockRestore();
   });
 
   it('projects target validates and triggers regenerate+reindex when valid', async () => {

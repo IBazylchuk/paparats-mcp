@@ -148,7 +148,7 @@ paparats stop                           Stop it; the data volumes stay.
 paparats restart                        Recreate the containers, picking up changes.
 paparats edit compose|projects          Open the file in $EDITOR. For projects, on save:
                                           check it, regenerate the compose, restart,
-                                          reindex. For compose, run `paparats restart`.
+                                          reindex. For compose: check it, restart.
 
 paparats search <query> [flags]         Search from the terminal.
 paparats status                         Docker, embed server, server, indexer.
