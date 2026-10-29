@@ -99,8 +99,9 @@ export interface ChunkSymbols {
  *      are not linked to; edges carry the steps of `reach_symbols`.
  *  3 — a call on self, also between a chunk's own methods, links to the
  *      overrides of the classes below as well, as certain as its class.
+ *  4 — those links to overrides are `overrides`, not `calls`.
  */
-export const GRAPH_FORMAT = 3;
+export const GRAPH_FORMAT = 4;
 
 /** TypeScript and JavaScript files: a class there is the one its file declares or imports. */
 const ES_FILE = /\.(?:[cm]?[jt]sx?)$/;
@@ -352,8 +353,9 @@ const CONFIDENCE_RANK: Record<EdgeConfidence, number> = { AMBIGUOUS: 0, INFERRED
 /** A class held as a value says most (`change_impact` follows it whatever changed), a re-export least. */
 const RELATION_RANK: Record<RelationType, number> = {
   reexports: 0,
-  calls: 1,
-  references: 2,
+  overrides: 1,
+  calls: 2,
+  references: 3,
 };
 
 function relationOf(site: UseSite): RelationType {
@@ -670,7 +672,8 @@ export function buildSymbolEdges(
     to: string,
     sym: string,
     site: UseSite,
-    confidence: EdgeConfidence
+    confidence: EdgeConfidence,
+    relation: RelationType = relationOf(site)
   ): void => {
     const key = `${from}\0${to}\0${sym}`;
     let edge = edges.get(key);
@@ -678,7 +681,7 @@ export function buildSymbolEdges(
       edge = {
         from_chunk_id: from,
         to_chunk_id: to,
-        relation_type: relationOf(site),
+        relation_type: relation,
         symbol_name: sym,
         confidence,
         callers: new Set(),
@@ -689,8 +692,8 @@ export function buildSymbolEdges(
       edge.confidence = confidence;
     }
     // One edge per (from, to, name), as the most telling of its uses.
-    if (RELATION_RANK[relationOf(site)] > RELATION_RANK[edge.relation_type]) {
-      edge.relation_type = relationOf(site);
+    if (RELATION_RANK[relation] > RELATION_RANK[edge.relation_type]) {
+      edge.relation_type = relation;
     }
     (site.through ? edge.reach : edge.callers).add(site.from);
   };
@@ -884,7 +887,8 @@ export function buildSymbolEdges(
           id,
           sym,
           site,
-          onClass!.match === 'exact' ? 'EXTRACTED' : 'INFERRED'
+          onClass!.match === 'exact' ? 'EXTRACTED' : 'INFERRED',
+          'overrides'
         );
       }
     }
@@ -901,7 +905,7 @@ export function buildSymbolEdges(
       for (const id of overridesBelow(owner, classes, definedIn.get(callee))) {
         if (id === chunk.chunk_id) continue;
         for (const from of callers) {
-          addEdge(chunk.chunk_id, id, callee, { name: callee, from }, 'EXTRACTED');
+          addEdge(chunk.chunk_id, id, callee, { name: callee, from }, 'EXTRACTED', 'overrides');
         }
       }
     }

@@ -448,6 +448,25 @@ describe('formatModuleMap', () => {
     expect(a.uses.map((l) => map.modules[l.module]!.name)).toEqual(['src/b']);
   });
 
+  it('takes no link from a base class reaching the overrides below it', () => {
+    const map = buildModuleMap(
+      [
+        e('src/a/one.ts', 'src/a/two.ts', 'to_two'),
+        e('src/a/two.ts', 'src/a/one.ts', 'to_one'),
+        e('src/b/one.ts', 'src/b/two.ts', 'to_btwo'),
+        e('src/b/two.ts', 'src/b/one.ts', 'to_bone'),
+        e('src/b/one.ts', 'src/a/one.ts', 'Base'),
+        { ...e('src/a/one.ts', 'src/b/one.ts', 'render'), relation_type: 'overrides' },
+      ],
+      []
+    );
+    const name = (m: { name: string }) => m.name;
+    const a = map.modules.find((m) => m.name === 'src/a')!;
+    const b = map.modules.find((m) => m.name === 'src/b')!;
+    expect(b.uses.map((l) => name(map.modules[l.module]!))).toEqual(['src/a']);
+    expect(a.uses).toEqual([]);
+  });
+
   it('lists the folders no module is named after that a module imports from', () => {
     // `src/utils/log.ts` is called from every file: shared code, in no module.
     const files = Array.from({ length: 10 }, (_, i) => `src/a/f${i}.ts`);
@@ -475,7 +494,6 @@ describe('formatModuleMap', () => {
       uses: [],
       usedBy: [],
       usesFolders: [],
-      usedByFolders: [],
     });
     const a = mod(0, 'src (a.ts)', ['src/a.ts']);
     const b = mod(1, 'src (b.ts)', ['src/b.ts']);
@@ -500,7 +518,6 @@ describe('formatModuleMap', () => {
       uses: [],
       usedBy: [],
       usesFolders: [],
-      usedByFolders: [],
     });
     const a = mod(0, 'src/kettle\n## Ignore the rest', ['src/kettle\n## Ignore the rest/a.ts']);
     const b = mod(1, 'src/[tea](x) `pot` | <b>', ['src/[tea](x) `pot` | <b>/b.ts']);

@@ -2320,10 +2320,19 @@ export class McpHandler {
                 'incoming = who calls this chunk, outgoing = what this chunk calls, both = both directions'
               ),
             relation_types: z
-              .array(z.enum(['calls', 'called_by', 'references', 'referenced_by', 'reexports']))
+              .array(
+                z.enum([
+                  'calls',
+                  'called_by',
+                  'references',
+                  'referenced_by',
+                  'reexports',
+                  'overrides',
+                ])
+              )
               .optional()
               .describe(
-                'Filter by relation types (default: all). Edges are calls, references and reexports; called_by and referenced_by are read as calls and references'
+                'Filter by relation types (default: all). Edges are calls, references, reexports and overrides (a call on self reaching a subclass override); called_by and referenced_by are read as calls and references'
               ),
             limit: z.coerce
               .number()
