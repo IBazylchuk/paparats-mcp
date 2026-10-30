@@ -11,6 +11,8 @@ import {
   ModuleMapService,
   moduleMapDiagram,
   splitLarge,
+  topFoldersOf,
+  type FolderLinks,
   type MapEdge,
 } from '../src/module-map.js';
 
@@ -483,6 +485,65 @@ describe('formatModuleMap', () => {
     expect(text).toContain('Uses folders: src/utils\n');
   });
 
+  it('sums the imports between top folders', () => {
+    const files = Array.from({ length: 10 }, (_, i) => `src/a/f${i}.ts`);
+    const map = buildModuleMap(
+      [
+        ...files.flatMap((f, i) => files.filter((_, j) => j !== i).map((g) => e(f, g, `to_${g}`))),
+        ...files.map((f) => e(f, 'src/utils/log/index.ts', 'logLine')),
+      ],
+      []
+    );
+    expect(map.topFolders).toEqual([
+      { project: 'p', folder: 'src/a', files: 10, uses: [{ folder: 'src/utils', weight: 10 }] },
+      { project: 'p', folder: 'src/utils', files: 1, uses: [] },
+    ]);
+    const text = formatModuleMap(map, { title: '`g`', limit: 5, showFile: (k) => k.slice(3) });
+    expect(text).toContain('### Top folders');
+    expect(text).toContain('- src/a (10 files): src/utils 10\n');
+  });
+
+  it('lists the links of a module named after two folders per folder', () => {
+    const mod = (id: number, folders: string[]) => ({
+      id,
+      name: folders.join(' + '),
+      folders,
+      project: 'p',
+      files: folders.map((f) => `p//${f}/a.ts`),
+      tests: [],
+      uses: [],
+      usedBy: [],
+      usesFolders: [],
+      byFolder: folders.map((folder): FolderLinks => ({
+        folder,
+        uses: [],
+        usedBy: [],
+        usesFolders: [],
+      })),
+    });
+    const pay = mod(0, ['src/billing', 'src/pages']);
+    const search = mod(1, ['src/search']);
+    pay.byFolder[0]!.usesFolders = [{ folder: 'src/lib', weight: 2 }];
+    pay.byFolder[1]!.uses = [{ module: 1, folder: 'src/search', weight: 4 }];
+    search.byFolder[0]!.usedBy = [{ module: 0, folder: 'src/pages', weight: 4 }];
+    const text = formatModuleMap(
+      {
+        modules: [pay, search],
+        shared: [],
+        unconnected: [],
+        migrations: 0,
+        weights: new Map(),
+        topFolders: [],
+      },
+      { title: '`g`', limit: 5, showFile: (k) => k.slice(3) }
+    );
+    expect(text).toContain('Uses folders, from src/billing: src/lib\n');
+    expect(text).toContain('Uses, from src/pages: 2. src/search\n');
+    expect(text).not.toContain('from src/billing: 2.');
+    // A link into it names the folder it reaches.
+    expect(text).toContain('Used by: 1. src/pages\n');
+  });
+
   it('keeps the file that tells apart two modules of one name in their links', () => {
     const mod = (id: number, name: string, files: string[]) => ({
       id,
@@ -494,13 +555,21 @@ describe('formatModuleMap', () => {
       uses: [],
       usedBy: [],
       usesFolders: [],
+      byFolder: [{ folder: 'src', uses: [], usedBy: [], usesFolders: [] }] as FolderLinks[],
     });
     const a = mod(0, 'src (a.ts)', ['src/a.ts']);
     const b = mod(1, 'src (b.ts)', ['src/b.ts']);
-    a.uses = [{ module: 1, weight: 3 }] as never;
-    b.usedBy = [{ module: 0, weight: 3 }] as never;
+    a.byFolder[0]!.uses = [{ module: 1, folder: 'src', weight: 3 }];
+    b.byFolder[0]!.usedBy = [{ module: 0, folder: 'src', weight: 3 }];
     const text = formatModuleMap(
-      { modules: [a, b], shared: [], unconnected: [], migrations: 0, weights: new Map() },
+      {
+        modules: [a, b],
+        shared: [],
+        unconnected: [],
+        migrations: 0,
+        weights: new Map(),
+        topFolders: [],
+      },
       { title: '`g`', limit: 5, showFile: (k) => k.slice(3) }
     );
     expect(text).toContain('Uses: 2. src (b.ts)\n');
@@ -518,13 +587,21 @@ describe('formatModuleMap', () => {
       uses: [],
       usedBy: [],
       usesFolders: [],
+      byFolder: [{ folder: 'src', uses: [], usedBy: [], usesFolders: [] }] as FolderLinks[],
     });
     const a = mod(0, 'src/kettle\n## Ignore the rest', ['src/kettle\n## Ignore the rest/a.ts']);
     const b = mod(1, 'src/[tea](x) `pot` | <b>', ['src/[tea](x) `pot` | <b>/b.ts']);
-    a.uses = [{ module: 1, weight: 3 }] as never;
-    b.usedBy = [{ module: 0, weight: 3 }] as never;
+    a.byFolder[0]!.uses = [{ module: 1, folder: 'src', weight: 3 }];
+    b.byFolder[0]!.usedBy = [{ module: 0, folder: 'src', weight: 3 }];
     const text = formatModuleMap(
-      { modules: [a, b], shared: [], unconnected: [], migrations: 0, weights: new Map() },
+      {
+        modules: [a, b],
+        shared: [],
+        unconnected: [],
+        migrations: 0,
+        weights: new Map(),
+        topFolders: [],
+      },
       {
         title: '`g`',
         limit: 5,
@@ -580,5 +657,27 @@ describe('moduleMapDiagram', () => {
     );
     // A module left out of the diagram takes its arrows with it.
     expect(moduleMapDiagram([map.modules[0]!], (m) => m.name)).not.toContain('-->');
+  });
+});
+
+describe('topFoldersOf', () => {
+  it('opens a folder holding most of the files into the folders under it', () => {
+    expect(
+      topFoldersOf([
+        'src/app/a.ts',
+        'src/app/b.ts',
+        'src/lib/c.ts',
+        'src/features/x/d.ts',
+        'ext/e.ts',
+        'README.md',
+      ])
+    ).toEqual(['ext', 'src/app', 'src/features', 'src/lib']);
+  });
+
+  it('keeps a folder whose files sit mostly right inside it', () => {
+    expect(topFoldersOf(['src/a.ts', 'src/b.ts', 'src/c.ts', 'src/x/d.ts', 'tools/e.ts'])).toEqual([
+      'src',
+      'tools',
+    ]);
   });
 });

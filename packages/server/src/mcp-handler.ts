@@ -151,23 +151,21 @@ function sanitizeLang(lang: string): string {
   return lang.replace(/[^a-zA-Z0-9_.+-]/g, '');
 }
 
-/** `search_code` results shown with their whole chunk; the rest show its first lines. */
-export const SEARCH_FULL_RESULTS = 3;
-/** Lines of the chunk shown for a result past {@link SEARCH_FULL_RESULTS}. */
-export const SEARCH_EXCERPT_LINES = 15;
+/**
+ * Indexed code in a fenced block. The fence is longer than any run of backticks
+ * in the code, so a chunk holding ``` (markdown in a string, a docs comment)
+ * cannot close the block and have the rest read as text of the answer.
+ */
+export function codeBlock(content: string, lang: string): string {
+  const longest = Math.max(0, ...(content.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}${sanitizeLang(lang)}\n${content}\n${fence}`;
+}
+
 /** Names listed after `Defines:` in a `search_code` result. */
 const SEARCH_DEFINES_SHOWN = 12;
 /** Files listed after `Called from:` in a `search_code` result. */
 const SEARCH_CALLERS_SHOWN = 3;
-
-/** A chunk's content for a `search_code` result: whole, or its first lines and how to read the rest. */
-export function searchResultContent(content: string, rank: number): string {
-  if (rank < SEARCH_FULL_RESULTS) return content;
-  const lines = content.split('\n');
-  if (lines.length <= SEARCH_EXCERPT_LINES) return content;
-  const rest = lines.length - SEARCH_EXCERPT_LINES;
-  return `${lines.slice(0, SEARCH_EXCERPT_LINES).join('\n')}\n… ${rest} more line${rest === 1 ? '' : 's'}: get_chunk for the whole chunk`;
-}
 
 /** `Defines:` for a `search_code` result: what the chunk defines, the first ones. */
 function definesLine(defines: string[]): string {
@@ -179,19 +177,26 @@ function definesLine(defines: string[]): string {
 /**
  * `Called from:` for a `search_code` result: the other files whose code calls
  * or holds the chunk, through links the graph is sure of — not a name defined in
- * several places (`AMBIGUOUS`), nor an unresolved call through a one-word
+ * several places (`AMBIGUOUS`), not a file opening its namespace, nor an unresolved call through a one-word
  * lowercase name like `call` or `get`. Code first, then tests; most links first.
+ * Each file shows which of its methods calls which name of the chunk (`perform`
+ * → `write`): a chunk holding a whole class is called through some of its
+ * methods, and its callers reach those, not every check in it.
  */
 export function calledFromLine(edges: SymbolEdge[], file: string): string {
-  const byFile = new Map<string, { names: Set<string>; certain: number; count: number }>();
+  const byFile = new Map<string, { calls: Set<string>; certain: number; count: number }>();
   for (const e of edges) {
-    if (e.relation_type === 'reexports' || e.confidence === 'AMBIGUOUS') continue;
+    if (e.relation_type === 'reexports' || e.relation_type === 'opens') continue;
+    if (e.confidence === 'AMBIGUOUS') continue;
     if (e.confidence === 'INFERRED' && /^[a-z]+[?!]?$/.test(e.symbol_name)) continue;
     const from = parseChunkId(e.from_chunk_id)?.file;
     if (!from || from === file) continue;
     let row = byFile.get(from);
-    if (!row) byFile.set(from, (row = { names: new Set(), certain: 0, count: 0 }));
-    for (const name of e.from_symbols ?? []) row.names.add(name);
+    if (!row) byFile.set(from, (row = { calls: new Set(), certain: 0, count: 0 }));
+    const callee = codeSpan(e.symbol_name);
+    const callers = e.from_symbols ?? [];
+    if (callers.length === 0) row.calls.add(`→ ${callee}`);
+    for (const name of callers) row.calls.add(`${codeSpan(name)} → ${callee}`);
     row.count++;
     if (e.confidence === 'EXTRACTED') row.certain++;
   }
@@ -204,8 +209,9 @@ export function calledFromLine(edges: SymbolEdge[], file: string): string {
       a.localeCompare(b)
   );
   const shown = rows.slice(0, SEARCH_CALLERS_SHOWN).map(([f, row]) => {
-    const names = [...row.names].slice(0, 2).map(codeSpan);
-    return names.length > 0 ? `${markdownText(f)} ${names.join(', ')}` : markdownText(f);
+    const calls = [...row.calls].slice(0, 2);
+    const more = row.calls.size - calls.length;
+    return `${markdownText(f)} ${calls.join(', ')}${more > 0 ? ` (+${more})` : ''}`;
   });
   const more = rows.length - shown.length;
   return `\nCalled from: ${shown.join('; ')}${more > 0 ? ` (+${more} more file${more === 1 ? '' : 's'}: find_usages)` : ''}`;
@@ -1814,7 +1820,7 @@ export class McpHandler {
             // and seldom read. Where it is called from answers the next question.
             const store = this.metadataStore;
             const formatted = top
-              .map((r, rank) => {
+              .map((r) => {
                 const score = (r.score * 100).toFixed(1);
                 const symbolInfo = r.symbol_name
                   ? ` — ${r.kind ?? 'unknown'}: ${r.symbol_name}`
@@ -1829,7 +1835,7 @@ export class McpHandler {
                         r.file
                       )
                     : '';
-                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${definesLine(r.defines_symbols)}${callers}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${searchResultContent(r.content, rank)}\n\`\`\``;
+                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${definesLine(r.defines_symbols)}${callers}${chunkRef}\n${codeBlock(r.content, r.language)}`;
               })
               .join('\n\n---\n\n');
 
@@ -1978,7 +1984,7 @@ export class McpHandler {
                     const c = chunk['content'] as string;
                     const isTarget = sl === startLine && el === endLine;
                     const marker = isTarget ? ' ← target' : '';
-                    text += `**Lines ${shownLine(sl)}-${shownLine(el)}${marker}**\n\`\`\`${sanitizeLang(language)}\n${c}\n\`\`\`\n\n`;
+                    text += `**Lines ${shownLine(sl)}-${shownLine(el)}${marker}**\n${codeBlock(c, language)}\n\n`;
                   }
 
                   return { content: [{ type: 'text' as const, text }] };
@@ -1987,7 +1993,7 @@ export class McpHandler {
             }
 
             // Single chunk (no radius or no adjacent chunks found)
-            text += `\`\`\`${sanitizeLang(language)}\n${content}\n\`\`\``;
+            text += codeBlock(content, language);
 
             return { content: [{ type: 'text' as const, text }] };
           } catch (err) {
@@ -2226,7 +2232,7 @@ export class McpHandler {
                   : '';
                 const chunkRef = r.chunk_id ? `\nchunk: \`${r.chunk_id}\`` : '';
                 const symbolsLine = formatSymbolsLine(r.defines_symbols, r.uses_symbols);
-                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${lastChanged}${symbolsLine}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
+                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${lastChanged}${symbolsLine}${chunkRef}\n${codeBlock(r.content, r.language)}`;
               })
               .join('\n\n---\n\n');
 
@@ -2334,11 +2340,12 @@ export class McpHandler {
                   'referenced_by',
                   'reexports',
                   'overrides',
+                  'opens',
                 ])
               )
               .optional()
               .describe(
-                'Filter by relation types (default: all). Edges are calls, references, reexports and overrides (a call on self reaching a subclass override); called_by and referenced_by are read as calls and references'
+                'Filter by relation types (default: all). Edges are calls, references, reexports, overrides (a call on self reaching a subclass override) and opens (a Ruby file opening a namespace another file defines); called_by and referenced_by are read as calls and references'
               ),
             limit: z.coerce
               .number()
@@ -3393,10 +3400,15 @@ export class McpHandler {
 
             // Edges are built per project pass, so they stay inside one project;
             // a neighbour outside the project scope is still never followed or shown.
+            // A file opening a namespace (`module Billing`) depends on nothing in it.
             const edgesTo = (id: string) =>
-              this.metadataStore!.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id));
+              this.metadataStore!.getEdgesTo(id).filter(
+                (e) => e.relation_type !== 'opens' && scope.allowsChunk(e.from_chunk_id)
+              );
             const edgesFrom = (id: string) =>
-              this.metadataStore!.getEdgesFrom(id).filter((e) => scope.allowsChunk(e.to_chunk_id));
+              this.metadataStore!.getEdgesFrom(id).filter(
+                (e) => e.relation_type !== 'opens' && scope.allowsChunk(e.to_chunk_id)
+              );
 
             // ── Hop 1 ──
             const seedIdArr = Array.from(seedIds);
@@ -3643,7 +3655,7 @@ export class McpHandler {
         content: [
           {
             type: 'text' as const,
-            text: `**${label}**\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``,
+            text: `**${label}**\n\n${codeBlock(JSON.stringify(payload, null, 2), 'json')}`,
           },
         ],
       });

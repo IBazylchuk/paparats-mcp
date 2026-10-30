@@ -86,7 +86,10 @@ re-export (`export { x } from './x.js'`, the usual barrel `index.ts` or `lib.ts`
 object (`Rebuild.new(ids).call`, `new Queue().flush()`) links to that class's method. A
 Ruby class used as a value (passed, kept in a hash, an array or a variable) is a
 `references` edge; `Foo.new` stored in a variable is not, since the variable's calls link
-one by one.
+one by one, nor is one returned or raised (`return Report.new(x)`). `module Billing` in a
+file under a namespace another file defines is an `opens` edge: the files belong together
+(`module_map` counts it), but the file calls nothing there, so `change_impact` does not
+follow it.
 A Ruby constant resolves as Ruby looks it up: `Base` inside `module Billing` is
 `Billing::Base` when that exists, otherwise the top-level `Base`; the `Billing` in
 `Billing::Base` is not a use of its own (the `Lexer` in `Lexer::MAX_DEPTH` is), and a constant defined nowhere in the project (a

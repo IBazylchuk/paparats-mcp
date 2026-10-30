@@ -100,6 +100,14 @@ export interface CollectDependentsOptions {
    * uncertain dependent.
    */
   confirmsLink?: (callerChunkId: string, targetChunkId: string) => boolean;
+  /** The class a method of a chunk belongs to (`Billing::Invoice`), when known. */
+  ownerOf?: (chunkId: string, method: string) => string | undefined;
+  /**
+   * The class an edge's call is made on self from (a bare `total` or
+   * `self.total` in `Billing::Refund`); null when some of its calls are not on
+   * self, undefined when not known.
+   */
+  selfCallFrom?: (edge: SymbolEdge) => string | null | undefined;
 }
 
 /** The names a chunk's callers must use to be affected: some of its methods, or all of it. */
@@ -190,17 +198,59 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     if (seeds.has(target)) return { step: opts.seedSteps?.get(edge.symbol_name) ?? 0, exact: true };
     const steps = methodSteps.get(target);
     const own = steps?.get(edge.symbol_name) ?? steps?.get('');
-    if (own && edge.relation_type !== 'references') return own;
-    // A class held as a value: as near as the chunk's nearest method.
+    if (own) return own;
+    // Reached through no method it records: as near as the chunk's nearest method.
     const all = [...(steps?.values() ?? [])].sort(
       (x, y) => x.step - y.step || Number(y.exact) - Number(x.exact)
     );
     return all[0] ?? { step: found.get(target)?.step ?? 0, exact: false };
   };
+  // Per reached chunk, per affected method: the class the object must be of
+  // (`Sub`, reached through a call on self in `Base` that only an object of
+  // `Sub` sends to the changed override), or null when it may be any object.
+  // A call on self from another class below `Base` (a sibling of `Sub`)
+  // never runs `Sub`'s code.
+  const objectOf = new Map<string, Map<string, string | null>>();
+  const objectFor = (chunk: string, name: string) => objectOf.get(chunk)?.get(name) ?? null;
+  const bindObject = (chunk: string, via: Via, object: string | null) => {
+    if (via === 'all') return;
+    let methods = objectOf.get(chunk);
+    if (!methods) objectOf.set(chunk, (methods = new Map()));
+    for (const name of via) {
+      const had = methods.get(name);
+      methods.set(name, had === undefined ? object : had === object ? had : null);
+    }
+  };
+  /** The class the caller's object must be of when it reaches `target` through `edge`, or null. */
+  const objectThrough = (target: string, edge: SymbolEdge): string | null => {
+    if (edge.relation_type === 'overrides') {
+      return (
+        objectFor(target, edge.symbol_name) ?? opts.ownerOf?.(target, edge.symbol_name) ?? null
+      );
+    }
+    const object = objectFor(target, edge.symbol_name);
+    return object !== null && typeof opts.selfCallFrom?.(edge) === 'string' ? object : null;
+  };
+  /** A call on self from a class other than the one the object must be of, nor the method's own. */
+  const fromSibling = (target: string, edge: SymbolEdge): boolean => {
+    const object = objectFor(target, edge.symbol_name);
+    if (object === null) return false;
+    const from = opts.selfCallFrom?.(edge);
+    return (
+      typeof from === 'string' &&
+      from !== object &&
+      from !== opts.ownerOf?.(target, edge.symbol_name)
+    );
+  };
+  // Methods followed only for an object of one class: followed again when
+  // they turn out to be reached for any object.
+  const followedBound = new Map<string, Set<string>>();
   const better = (dep: Dependent, step: number, exact: boolean) =>
     step < dep.step || (step === dep.step && exact && !dep.exact);
 
   const followsEdge = (edge: SymbolEdge, via: Via, hop: number): boolean => {
+    // A file opening a namespace (`module Billing`) calls nothing of it.
+    if (edge.relation_type === 'opens') return false;
     if (
       hop === 1 &&
       opts.symbol !== undefined &&
@@ -209,8 +259,10 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     ) {
       return false;
     }
-    // Code holding the class as a value may call any of its methods.
-    return via === 'all' || via.has(edge.symbol_name) || edge.relation_type === 'references';
+    // Code holding a class as a value (`references`) depends on the class, not on
+    // one of its methods: what a framework or job queue calls on it is not in
+    // the code, and in a blind check 6 of 40 such dependents were real.
+    return via === 'all' || via.has(edge.symbol_name);
   };
 
   // A chunk's callers, and those of its methods that begin in an earlier chunk.
@@ -234,6 +286,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
         if (!followsEdge(edge, via, hop)) continue;
         const caller = edge.from_chunk_id;
         if (seeds.has(caller)) continue;
+        if (fromSibling(target, edge)) continue;
         // Extracted edges name their target (same file, or `Class.method`), so
         // even a common name is a real link through them.
         const commonName =
@@ -248,6 +301,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
         }
 
         const edgeVia = viaOf(edge);
+        bindObject(caller, edgeVia, objectThrough(target, edge));
         const certain = targetCertain && !commonName;
         const through = stepThrough(target, edge);
         const step = through.step + 1;
@@ -320,8 +374,27 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     for (const [id, via] of reached) {
       const dep = found.get(id);
       if (!dep || opts.isLeaf?.(id) || (dep.hub && via === 'all')) continue;
-      const added = mergeVia(followed, id, via);
-      if (added) (dep.hub ? hubsNext : frontier).set(id, added);
+      const open = via === 'all' ? via : new Set([...via].filter((n) => objectFor(id, n) === null));
+      const added = open === 'all' || open.size > 0 ? mergeVia(followed, id, open) : null;
+      // Bound to one class of object: followed now, and again if that is lifted.
+      let bound = followedBound.get(id);
+      if (!bound) followedBound.set(id, (bound = new Set()));
+      const done = followed.get(id);
+      const boundAdded =
+        via === 'all'
+          ? []
+          : [...via].filter(
+              (n) =>
+                objectFor(id, n) !== null && !bound!.has(n) && !(done === 'all' || done?.has(n))
+            );
+      for (const n of boundAdded) bound.add(n);
+      const next: Via | null =
+        added === 'all'
+          ? 'all'
+          : added || boundAdded.length > 0
+            ? new Set([...(added ?? []), ...boundAdded])
+            : null;
+      if (next) (dep.hub ? hubsNext : frontier).set(id, next);
     }
     for (const [id, via] of hubsNext) frontier.set(id, via);
   }
@@ -331,7 +404,8 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     [...frontier].some(([id, via]) =>
       incoming(id, via).some(
         (e) =>
-          (via === 'all' || via.has(e.symbol_name) || e.relation_type === 'references') &&
+          (via === 'all' || via.has(e.symbol_name)) &&
+          e.relation_type !== 'opens' &&
           !seeds.has(e.from_chunk_id) &&
           !found.has(e.from_chunk_id) &&
           e.confidence !== 'AMBIGUOUS' &&

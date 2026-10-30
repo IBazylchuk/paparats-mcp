@@ -67,7 +67,11 @@ export function readLocalModules(root: string): LocalModules | null {
     aliases.push(...pathAliases(text));
     if (base === 'tsconfig.json' || base === 'jsconfig.json') {
       const scope = aliasScope(root, file);
-      if (scope) scopes.push(scope);
+      if (scope) {
+        scopes.push(scope);
+        // `core/hooks` under `baseUrl: "src"` names `src/core`, not a package.
+        for (const { key } of scope.paths) if (!aliases.includes(key)) aliases.push(key);
+      }
     }
   }
   return sawPackage ? { packages, aliases, scopes } : null;
@@ -180,7 +184,10 @@ function effectivePaths(
       chain.push(resolved.endsWith('.json') ? resolved : `${resolved}.json`);
     }
   }
-  if (paths) return { paths, base: baseUrl ?? pathsDir };
+  if (baseUrl !== undefined && !paths?.['*']) {
+    return { paths: { ...baseUrlPaths(baseUrl), ...paths }, base: baseUrl };
+  }
+  if (paths) return { paths, base: pathsDir };
   if (depth > 0 || !Array.isArray(first?.references)) return null;
   for (const ref of first.references) {
     if (typeof ref?.path !== 'string') continue;
@@ -190,6 +197,31 @@ function effectivePaths(
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * What `baseUrl` resolves, as `paths` relative to it: TypeScript looks a bare
+ * specifier up there before `node_modules`, so each folder and file it holds
+ * (`core`, `config.ts`) is the project's own; any other name is still a package.
+ */
+function baseUrlPaths(baseUrl: string): Record<string, string[]> {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(baseUrl, { withFileTypes: true });
+  } catch {
+    return {};
+  }
+  const paths: Record<string, string[]> = {};
+  for (const e of entries) {
+    if (e.name.startsWith('.') || e.name === 'node_modules') continue;
+    if (e.isDirectory()) {
+      paths[e.name] = [e.name];
+      paths[`${e.name}/*`] = [`${e.name}/*`];
+    } else if (/\.(?:[cm]?[jt]sx?)$/.test(e.name) && !e.name.endsWith('.d.ts')) {
+      paths[e.name.replace(/\.[^.]+$/, '')] = [e.name];
+    }
+  }
+  return paths;
 }
 
 /**
