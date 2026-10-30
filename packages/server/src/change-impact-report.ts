@@ -1,4 +1,4 @@
-import type { UseSite } from './ast-symbol-extractor.js';
+import type { ClassParent, UseSite } from './ast-symbol-extractor.js';
 import type { NameUsage, SymbolEdge } from './types.js';
 import {
   collectDependents,
@@ -169,6 +169,64 @@ export async function changeImpactReport(
     p && p['def_owners'] && typeof p['def_owners'] === 'object'
       ? (p['def_owners'] as Record<string, string>)
       : undefined;
+  // Per file (`group//project//file`), its chunks: a class's parents are stored
+  // in the chunk of its header, and a mixin may be added further down.
+  const fileChunks = new Map<string, string[]>();
+  const filesWanted = new Set<string>();
+  const chunksOfFileNow = (id: string): string[] | undefined => {
+    const ids = fileChunks.get(chunkFileKey(id));
+    if (!ids) filesWanted.add(chunkFileKey(id));
+    return ids;
+  };
+  const known = new Map<string, Set<string>>();
+  /**
+   * A class's ancestors by full path: the parents its header records
+   * (`def_classes`), each found through the edge its file has for that name
+   * (`class X < Base`, `prepend Tracking`), up the chain. Undefined until every
+   * payload on the way is read.
+   */
+  const ancestorsNow = (cls: string, chunkId: string): Set<string> | undefined => {
+    const done = known.get(cls);
+    if (done) return done;
+    const found = new Set<string>();
+    let pending = false;
+    const visit = (c: string, at: string, depth: number) => {
+      if (found.has(c) || depth > 2 * MAX_IMPACT_DEPTH + 6) return;
+      found.add(c);
+      const ids = chunksOfFileNow(at);
+      if (!ids) return void (pending = true);
+      let parents: ClassParent[] | undefined;
+      for (const id of ids) {
+        const p = payloadNow(id);
+        if (p === undefined) pending = true;
+        const list = (p?.['def_classes'] as Record<string, ClassParent[]> | undefined)?.[c];
+        if (Array.isArray(list)) parents = list;
+      }
+      if (!parents || parents.length === 0) return;
+      const [g = '', proj = '', ...file] = chunkFileKey(at).split('//');
+      const edges = src.edgesFromFile(g, proj, file.join('//'));
+      for (const parent of parents) {
+        const name = parent.name.replace(/^::/, '').split('::').pop() ?? '';
+        for (const e of edges) {
+          if (e.symbol_name !== name || e.relation_type === 'opens') continue;
+          const tp = payloadNow(e.to_chunk_id);
+          if (tp === undefined) {
+            pending = true;
+            continue;
+          }
+          const ns = ownersOf(tp)?.[name];
+          const classes = Object.keys((tp?.['def_classes'] as object | undefined) ?? {});
+          const paths = new Set(classes.filter((k) => k === name || k.endsWith(`::${name}`)));
+          if (ns !== undefined) paths.add(ns ? `${ns}::${name}` : name);
+          for (const path of paths) visit(path, e.to_chunk_id, depth + 1);
+        }
+      }
+    };
+    visit(cls, chunkId, 0);
+    if (pending) return undefined;
+    known.set(cls, found);
+    return found;
+  };
   const walk = () =>
     collectDependents({
       seeds,
@@ -185,6 +243,7 @@ export async function changeImpactReport(
       isLeaf: (id) => isTestPath(parseChunkId(id)?.file ?? ''),
       isCommonName: (name) => isCommonName(name, names),
       ownerOf: (id, method) => ownersOf(payloadNow(id))?.[method],
+      ancestorsOf: ancestorsNow,
       selfCallFrom: (edge) => {
         const p = payloadNow(edge.from_chunk_id);
         if (p === undefined) return undefined;
@@ -194,12 +253,16 @@ export async function changeImpactReport(
         const calls = sites.filter((u) => u.name === edge.symbol_name && from.includes(u.from));
         if (from.length === 0 || calls.length === 0) return null;
         // A bare call or `self.x` is stored on the caller's own class, as `::Path`.
+        // A method begun in an earlier chunk has no owner here: the class of the
+        // chunk's other methods stands for it.
+        const chunkClasses = new Set(Object.values(owners ?? {}));
         const classes = new Set(
-          calls.map((u) =>
-            u.on?.startsWith('::') && !u.onObject && owners?.[u.from] === u.on.slice(2)
-              ? u.on.slice(2)
-              : null
-          )
+          calls.map((u) => {
+            if (!u.on?.startsWith('::') || u.onObject) return null;
+            const own = owners?.[u.from];
+            const cls = u.on.slice(2);
+            return own === cls || (own === undefined && chunkClasses.has(cls)) ? cls : null;
+          })
         );
         const [only] = classes;
         return classes.size === 1 && typeof only === 'string' ? only : null;
@@ -225,8 +288,15 @@ export async function changeImpactReport(
     });
   let walked = walk();
   const checked = new Set<string>();
-  for (let round = 0; round < 2 * MAX_IMPACT_DEPTH + 1; round++) {
+  for (let round = 0; round < 4 * MAX_IMPACT_DEPTH + 8; round++) {
     let more = false;
+    for (const key of filesWanted) {
+      if (fileChunks.has(key)) continue;
+      const [g = '', proj = '', ...file] = key.split('//');
+      fileChunks.set(key, await src.fileChunkIds(g, proj, file.join('//')));
+      more = true;
+    }
+    filesWanted.clear();
     for (const id of wanted) {
       if (read.has(id)) continue;
       read.set(id, await chunkOf(id));

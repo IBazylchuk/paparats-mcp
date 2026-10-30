@@ -108,6 +108,11 @@ export interface CollectDependentsOptions {
    * self, undefined when not known.
    */
   selfCallFrom?: (edge: SymbolEdge) => string | null | undefined;
+  /**
+   * The classes and modules a class inherits from or mixes in, at any depth, by
+   * full path, given a chunk of its file; undefined when not known (yet).
+   */
+  ancestorsOf?: (cls: string, chunkId: string) => Set<string> | undefined;
 }
 
 /** The names a chunk's callers must use to be affected: some of its methods, or all of it. */
@@ -162,8 +167,18 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     if (!set) into.set(symbol, (set = new Set()));
     set.add(caller);
   };
+  // Methods of a changed chunk counted already: the changed one and those
+  // reaching it through the chunk's own calls. Another of its methods reaching
+  // the change through other code (`a` calling `b` elsewhere, which calls back
+  // the change) is a dependent like any other.
+  const seedNames: Via =
+    opts.symbol === undefined ? 'all' : new Set([opts.symbol, ...(opts.seedSteps?.keys() ?? [])]);
+  const countedInSeed = (via: Via) =>
+    seedNames === 'all' || (via !== 'all' && [...via].every((name) => seedNames.has(name)));
   // Per chunk, the names already followed (or queued) into its callers.
-  const followed = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
+  const followed = new Map<string, Via>(
+    opts.seeds.map((id) => [id, seedNames === 'all' ? 'all' : new Set(seedNames)])
+  );
   let frontier = new Map<string, Via>(opts.seeds.map((id) => [id, 'all']));
   let truncated = false;
   let testsTruncated = false;
@@ -195,8 +210,10 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     });
   };
   const stepThrough = (target: string, edge: SymbolEdge): { step: number; exact: boolean } => {
-    if (seeds.has(target)) return { step: opts.seedSteps?.get(edge.symbol_name) ?? 0, exact: true };
     const steps = methodSteps.get(target);
+    if (seeds.has(target) && !steps?.has(edge.symbol_name)) {
+      return { step: opts.seedSteps?.get(edge.symbol_name) ?? 0, exact: true };
+    }
     const own = steps?.get(edge.symbol_name) ?? steps?.get('');
     if (own) return own;
     // Reached through no method it records: as near as the chunk's nearest method.
@@ -211,6 +228,8 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
   // A call on self from another class below `Base` (a sibling of `Sub`)
   // never runs `Sub`'s code.
   const objectOf = new Map<string, Map<string, string | null>>();
+  // Per class an object is bound to, the chunk of its changed override.
+  const objectChunk = new Map<string, string>();
   const objectFor = (chunk: string, name: string) => objectOf.get(chunk)?.get(name) ?? null;
   const bindObject = (chunk: string, via: Via, object: string | null) => {
     if (via === 'all') return;
@@ -224,23 +243,44 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
   /** The class the caller's object must be of when it reaches `target` through `edge`, or null. */
   const objectThrough = (target: string, edge: SymbolEdge): string | null => {
     if (edge.relation_type === 'overrides') {
-      return (
-        objectFor(target, edge.symbol_name) ?? opts.ownerOf?.(target, edge.symbol_name) ?? null
-      );
+      const bound = objectFor(target, edge.symbol_name);
+      if (bound !== null) return bound;
+      const sub = opts.ownerOf?.(target, edge.symbol_name) ?? null;
+      if (sub !== null && !objectChunk.has(sub)) objectChunk.set(sub, target);
+      return sub;
     }
     const object = objectFor(target, edge.symbol_name);
     return object !== null && typeof opts.selfCallFrom?.(edge) === 'string' ? object : null;
   };
-  /** A call on self from a class other than the one the object must be of, nor the method's own. */
-  const fromSibling = (target: string, edge: SymbolEdge): boolean => {
-    const object = objectFor(target, edge.symbol_name);
-    if (object === null) return false;
+  /**
+   * A call on self from a class neither above the object's class (inherited or
+   * mixed in) nor below it: its code never runs on such an object. While that
+   * ancestry is not known, a class other than the object's and the method's own.
+   */
+  const fromSibling = (target: string, edge: SymbolEdge, object: string): boolean => {
     const from = opts.selfCallFrom?.(edge);
-    return (
-      typeof from === 'string' &&
-      from !== object &&
-      from !== opts.ownerOf?.(target, edge.symbol_name)
+    if (typeof from !== 'string' || from === object) return false;
+    const chunk = objectChunk.get(object);
+    const above = chunk ? opts.ancestorsOf?.(object, chunk) : undefined;
+    const below = opts.ancestorsOf?.(from, edge.from_chunk_id);
+    if (!above || !below) return from !== opts.ownerOf?.(target, edge.symbol_name);
+    return !above.has(from) && !below.has(object);
+  };
+  /**
+   * The edge without its calling methods that call on self from a sibling
+   * class, each method judged apart (one may call on self, another on an
+   * object); null when none is left.
+   */
+  const withoutSiblings = (target: string, edge: SymbolEdge): SymbolEdge | null => {
+    const object = objectFor(target, edge.symbol_name);
+    if (object === null) return edge;
+    const from = edge.from_symbols ?? [];
+    if (from.length <= 1) return fromSibling(target, edge, object) ? null : edge;
+    const kept = from.filter(
+      (name) => !fromSibling(target, { ...edge, from_symbols: [name] }, object)
     );
+    if (kept.length === 0) return null;
+    return kept.length === from.length ? edge : { ...edge, from_symbols: kept };
   };
   // Methods followed only for an object of one class: followed again when
   // they turn out to be reached for any object.
@@ -282,11 +322,12 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     const reached = new Map<string, Via>();
     for (const [target, via] of frontier) {
       const targetCertain = certainSoFar.get(target) ?? false;
-      for (const edge of incoming(target, via)) {
-        if (!followsEdge(edge, via, hop)) continue;
+      for (const link of incoming(target, via)) {
+        if (!followsEdge(link, via, hop)) continue;
+        const edge = withoutSiblings(target, link);
+        if (!edge) continue;
         const caller = edge.from_chunk_id;
-        if (seeds.has(caller)) continue;
-        if (fromSibling(target, edge)) continue;
+        if (seeds.has(caller) && countedInSeed(viaOf(edge))) continue;
         // Extracted edges name their target (same file, or `Class.method`), so
         // even a common name is a real link through them.
         const commonName =

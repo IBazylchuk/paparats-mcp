@@ -1056,6 +1056,40 @@ export class Queue {
     );
   });
 
+  it('makes a call in a Ruby method defined in a block from that method, defining nothing', async () => {
+    const code = `module Trackable
+  extend ActiveSupport::Concern
+
+  class_methods do
+    def tracked(name)
+      Registry.add(name)
+    end
+  end
+
+  def track
+    Ledger.write(self)
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 12 }],
+      'ruby'
+    );
+    tree.delete();
+
+    const r = results[0]!;
+    expect(r.defines_symbols).not.toContain('tracked');
+    const sites = r.use_sites!.filter((u) => u.name === 'add' || u.name === 'write');
+    expect(sites.map((u) => [u.name, u.from])).toEqual(
+      expect.arrayContaining([
+        ['add', 'tracked'],
+        ['write', 'track'],
+      ])
+    );
+  });
+
   it('does not count a Ruby module that only wraps classes as a definition', async () => {
     const code = `module Billing
   module Reports
