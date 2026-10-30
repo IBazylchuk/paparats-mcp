@@ -475,6 +475,87 @@ describe('collectDependents', () => {
     ]);
   });
 
+  it('drops a call on self only from a class neither above nor below the one whose override changed', () => {
+    // `Base#summary` calls `title` on self; `Sub < Mid < Base` overrides `title`,
+    // `Tracking` is mixed into `Base`, `Leaf < Sub`, `Other < Base` is a sibling.
+    const calls = (from: string, sym: string, method: string): SymbolEdge => ({
+      from_chunk_id: from,
+      to_chunk_id: 'base',
+      relation_type: 'calls',
+      symbol_name: sym,
+      from_symbols: [method],
+    });
+    const rows: SymbolEdge[] = [
+      {
+        from_chunk_id: 'base',
+        to_chunk_id: 'sub',
+        relation_type: 'overrides',
+        symbol_name: 'title',
+        from_symbols: ['summary'],
+      },
+      calls('mid', 'summary', 'heading'),
+      calls('tracking', 'summary', 'track'),
+      calls('leaf', 'summary', 'card'),
+      calls('other', 'summary', 'card'),
+      // `Other#card` calls `summary` on self, `Other#render` on some object.
+      { ...calls('mixed', 'summary', 'card'), from_symbols: ['card', 'render'] },
+    ];
+    const classOf: Record<string, string> = {
+      mid: 'Feeds::Mid',
+      tracking: 'Feeds::Tracking',
+      leaf: 'Feeds::Leaf',
+      other: 'Feeds::Other',
+      mixed: 'Feeds::Other',
+    };
+    const ancestry: Record<string, string[]> = {
+      'Feeds::Sub': ['Feeds::Sub', 'Feeds::Mid', 'Feeds::Base', 'Feeds::Tracking'],
+      'Feeds::Mid': ['Feeds::Mid', 'Feeds::Base', 'Feeds::Tracking'],
+      'Feeds::Tracking': ['Feeds::Tracking'],
+      'Feeds::Leaf': ['Feeds::Leaf', 'Feeds::Sub', 'Feeds::Mid', 'Feeds::Base', 'Feeds::Tracking'],
+      'Feeds::Other': ['Feeds::Other', 'Feeds::Base', 'Feeds::Tracking'],
+    };
+    const res = collectDependents({
+      ...base,
+      seeds: ['sub'],
+      edgesTo: (id) => rows.filter((e) => e.to_chunk_id === id),
+      ownerOf: (id) => ({ sub: 'Feeds::Sub', base: 'Feeds::Base' })[id],
+      selfCallFrom: (edge) =>
+        edge.from_symbols?.includes('render') ? null : (classOf[edge.from_chunk_id] ?? null),
+      ancestorsOf: (cls) => (ancestry[cls] ? new Set(ancestry[cls]) : undefined),
+    });
+    expect(res.dependents.map((d) => d.chunkId).sort()).toEqual([
+      'base',
+      'leaf',
+      'mid',
+      'mixed',
+      'tracking',
+    ]);
+    expect(res.dependents.find((d) => d.chunkId === 'mixed')?.callers).toEqual(['render']);
+  });
+
+  it('follows a method of the changed chunk that reaches the change through other code', () => {
+    // `Sub#key` changed; `Sub#fetch` calls `Base#throttled`, which calls `key` on self.
+    const edgesTo = graph([
+      ['base', 'sub', 'key', undefined, ['throttled']],
+      ['sub', 'base', 'throttled', undefined, ['fetch']],
+      ['sub', 'base', 'throttled', undefined, ['key']],
+      ['runner', 'sub', 'fetch', undefined, ['run']],
+      ['other', 'sub', 'parse', undefined, ['load']],
+    ]);
+    const res = collectDependents({
+      ...base,
+      depth: 3,
+      seeds: ['sub'],
+      symbol: 'key',
+      edgesTo,
+    });
+    expect(res.dependents.map((d) => [d.chunkId, d.step, d.callers])).toEqual([
+      ['base', 1, ['throttled']],
+      ['sub', 2, ['fetch']],
+      ['runner', 3, ['run']],
+    ]);
+  });
+
   it('does not follow a file opening the namespace a dependent defines', () => {
     const rows: SymbolEdge[] = [
       {
