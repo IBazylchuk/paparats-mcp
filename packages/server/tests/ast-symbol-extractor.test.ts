@@ -993,6 +993,37 @@ end`;
     expect(values).toEqual(['Fallback', 'Holder', 'ImportWorker', 'Plan', 'Step', 'SyncWorker']);
   });
 
+  it('holds no Ruby class by setting a constant to it, only by passing that constant on', async () => {
+    const code = `module Kitchen
+  class Menu
+    SERVICE = ::Pantry::Larder
+    RATES = Rates.new
+    value 'SHELF', value: SERVICE::SHELF
+    def run
+      dispatch(SERVICE)
+      store(RATES)
+    end
+  end
+end`;
+    const { tree, language } = parse('ruby', code);
+    const results = extractSymbolsForChunks(
+      tree,
+      language,
+      [{ startLine: 0, endLine: 10 }],
+      'ruby'
+    );
+    tree.delete();
+
+    const values = results[0]!
+      .use_sites!.filter((u) => u.value)
+      .map(({ from: _, ...rest }) => rest);
+    // The constants' own lines hold nothing; passing them on holds their class.
+    expect(values).toEqual([
+      { name: 'Larder', on: '::Pantry', constant: true, value: true },
+      { name: 'Rates', lexical: true, in: 'Kitchen::Menu', constant: true, value: true },
+    ]);
+  });
+
   it('records the class for this-calls and Class.method calls, not for bare calls (TypeScript)', async () => {
     const code = `import { Store } from './store.js';
 export class Queue {

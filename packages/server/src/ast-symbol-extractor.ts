@@ -155,8 +155,13 @@ export interface SymbolExtractionResult {
  *      the method of its name like a bare call.
  *  9 — a TS/JS member read from a module held whole (`ns.Card`, the `m` of
  *      `import('./m').then((m) => m.Card)`) is a use of that module's name.
+ * 10 — a Ruby constant set to a class (`SERVICE = ::A::Ledger`) holds nothing
+ *      as a value; passing that constant on holds the class, and passing a
+ *      value constant read from a class (`Ledger::LIMIT`) holds nothing; a TS/JS
+ *      bare import of a folder or file under `baseUrl` (`core/hooks`) is the
+ *      project's own, not a package's.
  */
-export const SYMBOL_FORMAT = 9;
+export const SYMBOL_FORMAT = 10;
 
 /** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
@@ -964,7 +969,8 @@ function isRubyValue(node: Node): boolean {
     if (outer?.type === 'pair') return outer.childForFieldName('value')?.id === parent.id;
     return (
       (outer?.type === 'assignment' || outer?.type === 'operator_assignment') &&
-      outer.childForFieldName('right')?.id === parent.id
+      outer.childForFieldName('right')?.id === parent.id &&
+      !setsRubyConstant(outer)
     );
   }
   if (parent.type === 'argument_list') {
@@ -974,9 +980,44 @@ function isRubyValue(node: Node): boolean {
   }
   if (parent.type === 'pair') return parent.childForFieldName('value')?.id === expr.id;
   if (parent.type === 'assignment' || parent.type === 'operator_assignment') {
-    return parent.childForFieldName('right')?.id === expr.id;
+    return parent.childForFieldName('right')?.id === expr.id && !setsRubyConstant(parent);
   }
   return parent.type === 'array';
+}
+
+/**
+ * `SERVICE = ::Billing::Ledger` or `RATES = Rates.new`: the constant stands
+ * for the class, and what the file does with it is read through that class
+ * (`SERVICE::LIMIT`, `RATES.for(x)`, `dispatch(SERVICE)`), so the assignment
+ * holds nothing on its own.
+ */
+function setsRubyConstant(assignment: Node): boolean {
+  const left = assignment.childForFieldName('left');
+  const named = left?.type === 'scope_resolution' ? left.childForFieldName('name') : left;
+  return named?.type === 'constant';
+}
+
+/**
+ * A bare constant set to a class or an object of one (`SERVICE = ::A::Ledger`)
+ * used as a value (`dispatch(SERVICE)`): a use of that class, which the code
+ * holding it may call any method of. Undefined for any other constant.
+ */
+function rubyAliasValue(
+  node: Node,
+  types: RubyReceiverTypes
+): Pick<UseSite, 'name' | 'on' | 'in' | 'lexical' | 'constant'> | undefined {
+  if (node.parent?.type === 'scope_resolution' || !isRubyValue(node)) return undefined;
+  const held = types.constantClass(node.text);
+  if (!held) return undefined;
+  const parts = held.on.split('::');
+  const name = parts.pop();
+  if (!name) return undefined;
+  // `::Ledger` is the top-level one: no namespace to look it up in.
+  const on = parts.join('::');
+  const scope = held.in && !held.on.startsWith('::') ? { in: held.in } : {};
+  return on === ''
+    ? { name, lexical: true, constant: true, ...scope }
+    : { name, on, constant: true, ...scope };
 }
 
 const ES_MODULE_LANGS = new Set(['typescript', 'tsx', 'javascript']);
@@ -1628,7 +1669,13 @@ export function extractSymbolsForChunks(
         const constant =
           lang === 'ruby' && node.type === 'constant' ? rubyConstant(node, rubyTypes!) : undefined;
         if (constant === null) continue;
-        if (!isNoise(text)) {
+        const alias = constant ? rubyAliasValue(node, rubyTypes!) : undefined;
+        if (alias) {
+          uses.add(alias.name);
+          const site: UseSite = { ...alias, from: callerOf(node, callers), value: true };
+          const key = siteKey(site);
+          if (!sites.has(key)) sites.set(key, site);
+        } else if (!isNoise(text)) {
           uses.add(text);
           const receiver = receiverOf(node);
           if (receiver.kind === 'other') calledOnOther.add(text);
@@ -1644,7 +1691,10 @@ export function extractSymbolsForChunks(
             ...(typedSite(node, receiver, rubyTypes, tsTypes) ?? calledOn(node, receiver, lang)),
             ...constant,
             ...(exported !== undefined ? { reexport: true as const } : {}),
-            ...(lang === 'ruby' && isRubyValue(node) ? { value: true as const } : {}),
+            // `Ledger::LIMIT` passed on is a value read, not the class held.
+            ...(lang === 'ruby' && isRubyValue(node) && !RUBY_VALUE_CONSTANT_RE.test(text)
+              ? { value: true as const }
+              : {}),
           };
           const key = siteKey(site);
           if (!sites.has(key)) sites.set(key, site);
