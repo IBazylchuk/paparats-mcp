@@ -350,16 +350,18 @@ class ClassTable {
 
 const CONFIDENCE_RANK: Record<EdgeConfidence, number> = { AMBIGUOUS: 0, INFERRED: 1, EXTRACTED: 2 };
 
-/** A class held as a value says most (`change_impact` follows it whatever changed), a re-export least. */
+/** A class held as a value says most (`change_impact` follows it whatever changed), opening a namespace least. */
 const RELATION_RANK: Record<RelationType, number> = {
-  reexports: 0,
-  overrides: 1,
-  calls: 2,
-  references: 3,
+  opens: 0,
+  reexports: 1,
+  overrides: 2,
+  calls: 3,
+  references: 4,
 };
 
 function relationOf(site: UseSite): RelationType {
   if (site.reexport) return 'reexports';
+  if (site.opens) return 'opens';
   return site.value ? 'references' : 'calls';
 }
 

@@ -201,6 +201,8 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     step < dep.step || (step === dep.step && exact && !dep.exact);
 
   const followsEdge = (edge: SymbolEdge, via: Via, hop: number): boolean => {
+    // A file opening a namespace (`module Billing`) calls nothing of it.
+    if (edge.relation_type === 'opens') return false;
     if (
       hop === 1 &&
       opts.symbol !== undefined &&
@@ -332,6 +334,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
       incoming(id, via).some(
         (e) =>
           (via === 'all' || via.has(e.symbol_name) || e.relation_type === 'references') &&
+          e.relation_type !== 'opens' &&
           !seeds.has(e.from_chunk_id) &&
           !found.has(e.from_chunk_id) &&
           e.confidence !== 'AMBIGUOUS' &&

@@ -403,6 +403,30 @@ describe('collectDependents', () => {
     });
     expect(res.dependents.map((d) => d.chunkId)).toEqual(['consumer', 'poll']);
   });
+
+  it('does not follow a file opening the namespace a dependent defines', () => {
+    const rows: SymbolEdge[] = [
+      {
+        from_chunk_id: 'registry',
+        to_chunk_id: 'seed',
+        relation_type: 'references',
+        symbol_name: 'PlainParser',
+      },
+      {
+        from_chunk_id: 'other_parser',
+        to_chunk_id: 'registry',
+        relation_type: 'opens',
+        symbol_name: 'Parsers',
+      },
+    ];
+    const res = collectDependents({
+      ...base,
+      seeds: ['seed'],
+      edgesTo: (id) => rows.filter((e) => e.to_chunk_id === id),
+    });
+    expect(res.dependents.map((d) => d.chunkId)).toEqual(['registry']);
+    expect(res.deeper).toBe(false);
+  });
 });
 
 describe('definitionLine', () => {

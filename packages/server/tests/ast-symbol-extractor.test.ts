@@ -970,8 +970,10 @@ end`;
     Invoice.overdue
     Rebuild.new(ids).call
     raise Failed unless @store.is_a?(Store)
+    raise Broken.new('stale')
   end
   def build
+    return Draft.new(0) if ids.empty?
     { plan: Plan.new(1), steps: [Step.new(2)] }
     Report.new(3)
   end
@@ -980,7 +982,7 @@ end`;
     const results = extractSymbolsForChunks(
       tree,
       language,
-      [{ startLine: 0, endLine: 16 }],
+      [{ startLine: 0, endLine: 18 }],
       'ruby'
     );
     tree.delete();
@@ -989,7 +991,7 @@ end`;
       .use_sites!.filter((u) => u.value)
       .map((u) => u.name)
       .sort();
-    // `Report.new(3)` is returned (a factory), not held: no value.
+    // `Report.new(3)` and `Draft.new(0)` are returned (a factory), `Broken.new` raised: not held.
     expect(values).toEqual(['Fallback', 'Holder', 'ImportWorker', 'Plan', 'Step', 'SyncWorker']);
   });
 
@@ -1240,6 +1242,8 @@ class Billing::Invoice; end`;
     // `Orbit` and `Reports` only qualify a path, `Billing` names the namespace of a definition.
     expect(r.uses_symbols).not.toContain('Reports');
     expect(r.uses_symbols).not.toContain('Billing');
+    // `module Orbit` opens the namespace: a link to where it is defined, no call.
+    expect(sites('Orbit')).toEqual([{ lexical: true, in: 'Orbit', constant: true, opens: true }]);
     expect(r.defined_symbols.find((d) => d.name === 'Invoice')?.owner).toBe('Billing');
   });
 

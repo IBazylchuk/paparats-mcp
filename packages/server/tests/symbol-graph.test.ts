@@ -73,6 +73,36 @@ describe('buildSymbolEdges', () => {
     expect(edge('Receipt')?.reach_symbols).toBeUndefined();
   });
 
+  it('links a Ruby file opening a namespace to where it is defined as `opens`, a call there as `calls`', () => {
+    const { edges } = buildSymbolEdges([
+      {
+        chunk_id: 'g//p//lib/parsers.rb//0-9//a',
+        defines_symbols: ['Parsers', 'parse'],
+        uses_symbols: [],
+      },
+      {
+        chunk_id: 'g//p//lib/parsers/plain.rb//0-9//b',
+        defines_symbols: ['Plain'],
+        uses_symbols: ['Parsers'],
+        use_sites: [
+          { name: 'Parsers', from: '', lexical: true, in: 'Parsers', constant: true, opens: true },
+        ],
+      },
+      {
+        chunk_id: 'g//p//lib/parsers/rich.rb//0-9//c',
+        defines_symbols: ['Rich'],
+        uses_symbols: ['Parsers'],
+        use_sites: [
+          { name: 'Parsers', from: '', lexical: true, in: 'Parsers', constant: true, opens: true },
+          { name: 'Parsers', from: 'fallback', lexical: true, in: 'Parsers::Rich', constant: true },
+        ],
+      },
+    ]);
+    const into = (from: string) => edges.find((e) => e.from_chunk_id.includes(from));
+    expect(into('plain.rb')).toMatchObject({ relation_type: 'opens', confidence: 'EXTRACTED' });
+    expect(into('rich.rb')?.relation_type).toBe('calls');
+  });
+
   it('links a file-private definition only from its own file', () => {
     const { edges } = buildSymbolEdges([
       {

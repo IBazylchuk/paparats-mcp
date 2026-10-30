@@ -166,7 +166,7 @@ function definesLine(defines: string[]): string {
 /**
  * `Called from:` for a `search_code` result: the other files whose code calls
  * or holds the chunk, through links the graph is sure of — not a name defined in
- * several places (`AMBIGUOUS`), nor an unresolved call through a one-word
+ * several places (`AMBIGUOUS`), not a file opening its namespace, nor an unresolved call through a one-word
  * lowercase name like `call` or `get`. Code first, then tests; most links first.
  * Each file shows which of its methods calls which name of the chunk (`perform`
  * → `write`): a chunk holding a whole class is called through some of its
@@ -175,7 +175,8 @@ function definesLine(defines: string[]): string {
 export function calledFromLine(edges: SymbolEdge[], file: string): string {
   const byFile = new Map<string, { calls: Set<string>; certain: number; count: number }>();
   for (const e of edges) {
-    if (e.relation_type === 'reexports' || e.confidence === 'AMBIGUOUS') continue;
+    if (e.relation_type === 'reexports' || e.relation_type === 'opens') continue;
+    if (e.confidence === 'AMBIGUOUS') continue;
     if (e.confidence === 'INFERRED' && /^[a-z]+[?!]?$/.test(e.symbol_name)) continue;
     const from = parseChunkId(e.from_chunk_id)?.file;
     if (!from || from === file) continue;
@@ -2328,11 +2329,12 @@ export class McpHandler {
                   'referenced_by',
                   'reexports',
                   'overrides',
+                  'opens',
                 ])
               )
               .optional()
               .describe(
-                'Filter by relation types (default: all). Edges are calls, references, reexports and overrides (a call on self reaching a subclass override); called_by and referenced_by are read as calls and references'
+                'Filter by relation types (default: all). Edges are calls, references, reexports, overrides (a call on self reaching a subclass override) and opens (a Ruby file opening a namespace another file defines); called_by and referenced_by are read as calls and references'
               ),
             limit: z.coerce
               .number()
@@ -3387,10 +3389,15 @@ export class McpHandler {
 
             // Edges are built per project pass, so they stay inside one project;
             // a neighbour outside the project scope is still never followed or shown.
+            // A file opening a namespace (`module Billing`) depends on nothing in it.
             const edgesTo = (id: string) =>
-              this.metadataStore!.getEdgesTo(id).filter((e) => scope.allowsChunk(e.from_chunk_id));
+              this.metadataStore!.getEdgesTo(id).filter(
+                (e) => e.relation_type !== 'opens' && scope.allowsChunk(e.from_chunk_id)
+              );
             const edgesFrom = (id: string) =>
-              this.metadataStore!.getEdgesFrom(id).filter((e) => scope.allowsChunk(e.to_chunk_id));
+              this.metadataStore!.getEdgesFrom(id).filter(
+                (e) => e.relation_type !== 'opens' && scope.allowsChunk(e.to_chunk_id)
+              );
 
             // ── Hop 1 ──
             const seedIdArr = Array.from(seedIds);

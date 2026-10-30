@@ -78,6 +78,12 @@ export interface UseSite {
   /** A re-export (`export { x } from`), not a call: linked as `reexports`. */
   reexport?: true;
   /**
+   * Ruby: the name of a `class` / `module` statement opening what another file
+   * defines (`module Billing` in each file under the namespace). Linked as
+   * `opens`: a link between the files, no call of anything there.
+   */
+  opens?: true;
+  /**
    * A Ruby class used as a value rather than called on: passed, stored in a
    * hash or variable, `Foo.new` kept for later. Linked as `references`.
    */
@@ -904,6 +910,24 @@ function rubyConstant(
 }
 
 /**
+ * The name of a Ruby `class` or `module` statement (`module Billing` in each
+ * file under the namespace): the file opens what is defined there, it calls
+ * nothing of it.
+ */
+function opensRubyDefinition(node: Node): boolean {
+  const parent = node.parent;
+  const path =
+    parent?.type === 'scope_resolution' && parent.childForFieldName('name')?.id === node.id
+      ? parent
+      : node;
+  const owner = path.parent;
+  return (
+    (owner?.type === 'class' || owner?.type === 'module') &&
+    owner.childForFieldName('name')?.id === path.id
+  );
+}
+
+/**
  * A Ruby `module` that only wraps classes and modules (`module Billing; class
  * Invoice; ...`). Every file under a namespace reopens it, so counting each
  * one as a definition of `Billing` linked every `Billing::X` in the codebase
@@ -941,7 +965,7 @@ const RUBY_NON_VALUE_CALLS = new Set([
  * `change_impact` follows such a link whatever method of the class changed.
  * Not a namespace (`Billing` in `Billing::Invoice`), not a class called on at
  * once (`Invoice.overdue`, `Rebuild.new(ids).call`), not `include`, `raise` or
- * a superclass.
+ * a superclass, not an object returned (`return Report.new(x)`).
  */
 function isRubyValue(node: Node): boolean {
   if (node.type !== 'constant') return false;
@@ -965,7 +989,8 @@ function isRubyValue(node: Node): boolean {
     }
     // Passed or stored only: a new object a method returns (a factory) is not
     // held by it, and its callers' calls on it link by themselves.
-    if (outer?.type === 'argument_list' || outer?.type === 'array') return true;
+    if (outer?.type === 'argument_list') return passesOn(outer);
+    if (outer?.type === 'array') return true;
     if (outer?.type === 'pair') return outer.childForFieldName('value')?.id === parent.id;
     return (
       (outer?.type === 'assignment' || outer?.type === 'operator_assignment') &&
@@ -973,16 +998,23 @@ function isRubyValue(node: Node): boolean {
       !setsRubyConstant(outer)
     );
   }
-  if (parent.type === 'argument_list') {
-    const call = parent.parent;
-    const method = call?.type === 'call' ? call.childForFieldName('method')?.text : undefined;
-    return method !== undefined && !RUBY_NON_VALUE_CALLS.has(method);
-  }
+  if (parent.type === 'argument_list') return passesOn(parent);
   if (parent.type === 'pair') return parent.childForFieldName('value')?.id === expr.id;
   if (parent.type === 'assignment' || parent.type === 'operator_assignment') {
     return parent.childForFieldName('right')?.id === expr.id && !setsRubyConstant(parent);
   }
   return parent.type === 'array';
+}
+
+/**
+ * Arguments a call hands on (`dispatch(Worker)`), not those of `raise` or
+ * `include`, nor what `return` / `next` / `break` give back: a returned object
+ * is the caller's, whose calls on it link by themselves.
+ */
+function passesOn(args: Node): boolean {
+  const call = args.parent;
+  const method = call?.type === 'call' ? call.childForFieldName('method')?.text : undefined;
+  return method !== undefined && !RUBY_NON_VALUE_CALLS.has(method);
 }
 
 /**
@@ -1439,7 +1471,7 @@ function callsOwnDefinition(
 }
 
 function siteKey(site: UseSite): string {
-  return `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.lexical ?? ''}\0${site.constant ?? ''}\0${site.reexport ?? ''}\0${site.value ?? ''}\0${site.onObject ?? ''}\0${site.through ?? ''}\0${site.module ?? ''}\0${site.external ?? ''}`;
+  return `${site.name}\0${site.from}\0${site.on ?? ''}\0${site.in ?? ''}\0${site.lexical ?? ''}\0${site.constant ?? ''}\0${site.reexport ?? ''}\0${site.opens ?? ''}\0${site.value ?? ''}\0${site.onObject ?? ''}\0${site.through ?? ''}\0${site.module ?? ''}\0${site.external ?? ''}`;
 }
 
 /**
@@ -1691,6 +1723,7 @@ export function extractSymbolsForChunks(
             ...(typedSite(node, receiver, rubyTypes, tsTypes) ?? calledOn(node, receiver, lang)),
             ...constant,
             ...(exported !== undefined ? { reexport: true as const } : {}),
+            ...(constant && opensRubyDefinition(node) ? { opens: true as const } : {}),
             // `Ledger::LIMIT` passed on is a value read, not the class held.
             ...(lang === 'ruby' && isRubyValue(node) && !RUBY_VALUE_CONSTANT_RE.test(text)
               ? { value: true as const }

@@ -150,8 +150,10 @@ export interface ChunkResult {
  * on self reaching the override a class below defines (a template method
  * calling the step its subclasses implement): the base depends on the
  * subclass's code, while the subclass's file is the one naming the base.
+ * `opens`: a Ruby `module Billing` in a file under the namespace another file
+ * defines: the file lives in it and calls nothing of it.
  */
-export type RelationType = 'calls' | 'references' | 'reexports' | 'overrides';
+export type RelationType = 'calls' | 'references' | 'reexports' | 'overrides' | 'opens';
 
 /**
  * Confidence label for symbol-graph edges, mirroring the EXTRACTED/INFERRED/
