@@ -166,8 +166,10 @@ export interface SymbolExtractionResult {
  *      value constant read from a class (`Ledger::LIMIT`) holds nothing; a TS/JS
  *      bare import of a folder or file under `baseUrl` (`core/hooks`) is the
  *      project's own, not a package's.
+ * 11 — a call in a Ruby method defined in a block (`class_methods do`) is made
+ *      from that method, not from the module around it.
  */
-export const SYMBOL_FORMAT = 10;
+export const SYMBOL_FORMAT = 11;
 
 /** Map tree-sitter parent node type → ChunkKind */
 const NODE_TYPE_TO_KIND: Record<string, ChunkKind> = {
@@ -1614,11 +1616,15 @@ export function extractSymbolsForChunks(
     // Declarations a use can be made from, across the whole file: a method
     // split over several chunks still owns the uses in its later chunks.
     // Classes and modules map to null — a use in their body comes from no method.
+    // A Ruby method defined in a block (`class_methods do`, `included do`)
+    // defines nothing, but the calls in it are still made from it.
     const callers = new Map<number, string | null>();
     for (const capture of defCaptures) {
       const decl = declarationOf(capture.node);
       if (!decl || callers.has(decl.id)) continue;
-      if (!isTopLevelDeclaration(capture.node, scopeNodes)) continue;
+      const inBlock =
+        lang === 'ruby' && (decl.type === 'method' || decl.type === 'singleton_method');
+      if (!inBlock && !isTopLevelDeclaration(capture.node, scopeNodes)) continue;
       const kind = NODE_TYPE_TO_KIND[decl.type];
       callers.set(decl.id, kind && CONTAINER_KINDS.has(kind) ? null : capture.node.text);
     }
