@@ -151,23 +151,10 @@ function sanitizeLang(lang: string): string {
   return lang.replace(/[^a-zA-Z0-9_.+-]/g, '');
 }
 
-/** `search_code` results shown with their whole chunk; the rest show its first lines. */
-export const SEARCH_FULL_RESULTS = 3;
-/** Lines of the chunk shown for a result past {@link SEARCH_FULL_RESULTS}. */
-export const SEARCH_EXCERPT_LINES = 15;
 /** Names listed after `Defines:` in a `search_code` result. */
 const SEARCH_DEFINES_SHOWN = 12;
 /** Files listed after `Called from:` in a `search_code` result. */
 const SEARCH_CALLERS_SHOWN = 3;
-
-/** A chunk's content for a `search_code` result: whole, or its first lines and how to read the rest. */
-export function searchResultContent(content: string, rank: number): string {
-  if (rank < SEARCH_FULL_RESULTS) return content;
-  const lines = content.split('\n');
-  if (lines.length <= SEARCH_EXCERPT_LINES) return content;
-  const rest = lines.length - SEARCH_EXCERPT_LINES;
-  return `${lines.slice(0, SEARCH_EXCERPT_LINES).join('\n')}\n… ${rest} more line${rest === 1 ? '' : 's'}: get_chunk for the whole chunk`;
-}
 
 /** `Defines:` for a `search_code` result: what the chunk defines, the first ones. */
 function definesLine(defines: string[]): string {
@@ -181,17 +168,23 @@ function definesLine(defines: string[]): string {
  * or holds the chunk, through links the graph is sure of — not a name defined in
  * several places (`AMBIGUOUS`), nor an unresolved call through a one-word
  * lowercase name like `call` or `get`. Code first, then tests; most links first.
+ * Each file shows which of its methods calls which name of the chunk (`perform`
+ * → `write`): a chunk holding a whole class is called through some of its
+ * methods, and its callers reach those, not every check in it.
  */
 export function calledFromLine(edges: SymbolEdge[], file: string): string {
-  const byFile = new Map<string, { names: Set<string>; certain: number; count: number }>();
+  const byFile = new Map<string, { calls: Set<string>; certain: number; count: number }>();
   for (const e of edges) {
     if (e.relation_type === 'reexports' || e.confidence === 'AMBIGUOUS') continue;
     if (e.confidence === 'INFERRED' && /^[a-z]+[?!]?$/.test(e.symbol_name)) continue;
     const from = parseChunkId(e.from_chunk_id)?.file;
     if (!from || from === file) continue;
     let row = byFile.get(from);
-    if (!row) byFile.set(from, (row = { names: new Set(), certain: 0, count: 0 }));
-    for (const name of e.from_symbols ?? []) row.names.add(name);
+    if (!row) byFile.set(from, (row = { calls: new Set(), certain: 0, count: 0 }));
+    const callee = codeSpan(e.symbol_name);
+    const callers = e.from_symbols ?? [];
+    if (callers.length === 0) row.calls.add(`→ ${callee}`);
+    for (const name of callers) row.calls.add(`${codeSpan(name)} → ${callee}`);
     row.count++;
     if (e.confidence === 'EXTRACTED') row.certain++;
   }
@@ -204,8 +197,9 @@ export function calledFromLine(edges: SymbolEdge[], file: string): string {
       a.localeCompare(b)
   );
   const shown = rows.slice(0, SEARCH_CALLERS_SHOWN).map(([f, row]) => {
-    const names = [...row.names].slice(0, 2).map(codeSpan);
-    return names.length > 0 ? `${markdownText(f)} ${names.join(', ')}` : markdownText(f);
+    const calls = [...row.calls].slice(0, 2);
+    const more = row.calls.size - calls.length;
+    return `${markdownText(f)} ${calls.join(', ')}${more > 0 ? ` (+${more})` : ''}`;
   });
   const more = rows.length - shown.length;
   return `\nCalled from: ${shown.join('; ')}${more > 0 ? ` (+${more} more file${more === 1 ? '' : 's'}: find_usages)` : ''}`;
@@ -1814,7 +1808,7 @@ export class McpHandler {
             // and seldom read. Where it is called from answers the next question.
             const store = this.metadataStore;
             const formatted = top
-              .map((r, rank) => {
+              .map((r) => {
                 const score = (r.score * 100).toFixed(1);
                 const symbolInfo = r.symbol_name
                   ? ` — ${r.kind ?? 'unknown'}: ${r.symbol_name}`
@@ -1829,7 +1823,7 @@ export class McpHandler {
                         r.file
                       )
                     : '';
-                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${definesLine(r.defines_symbols)}${callers}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${searchResultContent(r.content, rank)}\n\`\`\``;
+                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${definesLine(r.defines_symbols)}${callers}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
               })
               .join('\n\n---\n\n');
 

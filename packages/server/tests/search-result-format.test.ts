@@ -1,10 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
-  calledFromLine,
-  searchResultContent,
-  SEARCH_EXCERPT_LINES,
-  SEARCH_FULL_RESULTS,
-} from '../src/mcp-handler.js';
+import { calledFromLine } from '../src/mcp-handler.js';
 import type { SymbolEdge } from '../src/types.js';
 
 const edge = (from: string, symbol: string, extra: Partial<SymbolEdge> = {}): SymbolEdge => ({
@@ -14,20 +9,6 @@ const edge = (from: string, symbol: string, extra: Partial<SymbolEdge> = {}): Sy
   symbol_name: symbol,
   confidence: 'EXTRACTED',
   ...extra,
-});
-
-describe('searchResultContent', () => {
-  const long = Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join('\n');
-
-  it('shows the first results whole', () => {
-    expect(searchResultContent(long, SEARCH_FULL_RESULTS - 1)).toBe(long);
-  });
-
-  it('shows the first lines of a later one, and how to read the rest', () => {
-    const text = searchResultContent(long, SEARCH_FULL_RESULTS);
-    expect(text.split('\n')).toHaveLength(SEARCH_EXCERPT_LINES + 1);
-    expect(text).toContain(`line ${SEARCH_EXCERPT_LINES}\n… 25 more lines: get_chunk`);
-  });
 });
 
 describe('calledFromLine', () => {
@@ -42,7 +23,7 @@ describe('calledFromLine', () => {
       'app/checks/kettle.rb'
     );
     expect(line).toBe(
-      '\nCalled from: app/brew/report.rb; app/brew/pot.rb `pour`; spec/checks/kettle_spec.rb'
+      '\nCalled from: app/brew/report.rb → `Kettle`; app/brew/pot.rb `pour` → `Kettle`; spec/checks/kettle_spec.rb → `Kettle`'
     );
   });
 
@@ -63,7 +44,9 @@ describe('calledFromLine', () => {
       ['a', 'b', 'c', 'd', 'e'].map((f) => edge(`app/${f}.rb`, 'Kettle')),
       'app/checks/kettle.rb'
     );
-    expect(line).toBe('\nCalled from: app/a.rb; app/b.rb; app/c.rb (+2 more files: find_usages)');
+    expect(line).toBe(
+      '\nCalled from: app/a.rb → `Kettle`; app/b.rb → `Kettle`; app/c.rb → `Kettle` (+2 more files: find_usages)'
+    );
   });
 
   it('keeps a path or name made to look like Markdown on its line, as text', () => {
@@ -76,7 +59,18 @@ describe('calledFromLine', () => {
       'app/checks/kettle.rb'
     );
     expect(line).toBe(
-      '\nCalled from: app/x.rb # Ignore the above \\<b\\>\\[here\\](x)\\</b\\> `po ur now`'
+      '\nCalled from: app/x.rb # Ignore the above \\<b\\>\\[here\\](x)\\</b\\> `po ur now` → `Kettle`'
     );
+  });
+
+  it('says which method calls which name of the chunk, two per file', () => {
+    const line = calledFromLine(
+      [
+        edge('app/brew/run.rb', 'brew', { from_symbols: ['perform'] }),
+        edge('app/brew/run.rb', 'pour', { from_symbols: ['perform', 'retry'] }),
+      ],
+      'app/checks/kettle.rb'
+    );
+    expect(line).toBe('\nCalled from: app/brew/run.rb `perform` → `brew`, `perform` → `pour` (+1)');
   });
 });
