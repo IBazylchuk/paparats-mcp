@@ -1,5 +1,26 @@
 # @paparats/indexer
 
+## 2.16.8
+
+### Patch Changes
+
+- e827e54: TS/JS: a bare import of a folder or file under the tsconfig's `baseUrl` (`import { useMe } from 'core/hooks'` under `baseUrl: "src"`, as Create React App projects write) is the project's own code, not an installed package. Such imports linked to nothing before, so `find_usages`, `change_impact` and `module_map` missed them.
+- 67ba353: `change_impact` no longer takes the code that sets a Ruby constant to a class (`SERVICE = ::Billing::Ledger`) for a holder of that class: such a link was followed whatever method of the class changed, so a file reading only `SERVICE::LIMIT` was listed as depending on every method. Passing the constant on (`dispatch(SERVICE)`) still holds the class, and calls through it link one by one as before. Symbols are extracted again (`SYMBOL_FORMAT` 10).
+- ed11831: `change_impact` no longer lists every file under a Ruby namespace when the file defining the namespace module depends on the change: `module Billing` at the top of each such file was taken for a use of `Billing`. It is now an edge of its own, `opens`, which `module_map` counts as before and `change_impact`, `impact_analysis` and `search_code`'s `Called from:` skip; `find_usages` shows it under that name. An object returned or raised (`return Report.new(x)`, `raise Failed.new(x)`) no longer counts as the class held as a value.
+- 74f22be: `change_impact` no longer lists the sibling subclasses of a changed override. When a base class method calls a method on self that a subclass overrides, a change to that override reaches the base method only for objects of that subclass; the walk took every call of the base method on self, from any subclass. Calls on objects of unknown class are still followed.
+- 5bfcd91: `change_impact` no longer lists code that holds a Ruby class as a value (passes it, keeps it in a hash or array) as depending on every method of that class. Such code depends on the class: it is listed when the class itself is the change, and for a change to one method only when it calls that method. The methods a framework, a job queue or a serializer declaration calls on the class are not in the code, and most of these dependents were not reached through project code at all.
+- Updated dependencies [e827e54]
+- Updated dependencies [ec08ec5]
+- Updated dependencies [67ba353]
+- Updated dependencies [499e067]
+- Updated dependencies [ed11831]
+- Updated dependencies [17f5290]
+- Updated dependencies [74f22be]
+- Updated dependencies [c1f0319]
+- Updated dependencies [5bfcd91]
+  - @paparats/server@2.16.8
+  - @paparats/shared@2.16.8
+
 ## 2.16.7
 
 ### Patch Changes
