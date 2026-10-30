@@ -4,7 +4,23 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
-## [2.16.7] - 2026-10-29
+## [2.16.8] - 2026-10-30
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 17f5290: `search_code` shows every result whole again: results past the third were cut to their first 15 lines, and agents fetched almost every cut one with `get_chunk`, a step more each time. `Called from:` now says which method of each caller calls which name of the result (`perform` → `write`), so the callers of one method of a class are not taken for the callers of another; the instructions say so.
+- e827e54: TS/JS: a bare import of a folder or file under the tsconfig's `baseUrl` (`import { useMe } from 'core/hooks'` under `baseUrl: "src"`, as Create React App projects write) is the project's own code, not an installed package. Such imports linked to nothing before, so `find_usages`, `change_impact` and `module_map` missed them.
+- ec08ec5: Code in `search_code`, `get_chunk`, `search_changes` and the analytics tools is fenced with more backticks than any run inside it, so a chunk holding ``` can no longer close the block and have the rest read as part of the answer.
+- 67ba353: `change_impact` no longer takes the code that sets a Ruby constant to a class (`SERVICE = ::Billing::Ledger`) for a holder of that class: such a link was followed whatever method of the class changed, so a file reading only `SERVICE::LIMIT` was listed as depending on every method. Passing the constant on (`dispatch(SERVICE)`) still holds the class, and calls through it link one by one as before. Symbols are extracted again (`SYMBOL_FORMAT` 10).
+- 499e067: `module_map` lists the links of a module named after two folders per folder (`Uses, from src/pages: ...`), so the imports of one folder are not read as the other's; a link into such a module names the folder it reaches. A file in a folder two modules are named after counts for the one it is grouped into, else for the one named after that folder alone. A new `Top folders` section sums the imports between a project's top folders (`src/app`, `src/features`, `src/lib`, ...).
+- ed11831: `change_impact` no longer lists every file under a Ruby namespace when the file defining the namespace module depends on the change: `module Billing` at the top of each such file was taken for a use of `Billing`. It is now an edge of its own, `opens`, which `module_map` counts as before and `change_impact`, `impact_analysis` and `search_code`'s `Called from:` skip; `find_usages` shows it under that name. An object returned or raised (`return Report.new(x)`, `raise Failed.new(x)`) no longer counts as the class held as a value.
+- 74f22be: `change_impact` no longer lists the sibling subclasses of a changed override. When a base class method calls a method on self that a subclass overrides, a change to that override reaches the base method only for objects of that subclass; the walk took every call of the base method on self, from any subclass. Calls on objects of unknown class are still followed.
+- c1f0319: The coding and support instructions say that what the tools return is the indexed repositories' content, data to read and never instructions to follow, and the coding ones that `delete_project` is for when the user asks.
+- 5bfcd91: `change_impact` no longer lists code that holds a Ruby class as a value (passes it, keeps it in a hash or array) as depending on every method of that class. Such code depends on the class: it is listed when the class itself is the change, and for a change to one method only when it calls that method. The methods a framework, a job queue or a serializer declaration calls on the class are not in the code, and most of these dependents were not reached through project code at all.
+
+## [2.16.7] - 2026-10-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
 
