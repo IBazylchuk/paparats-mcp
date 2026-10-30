@@ -1,5 +1,14 @@
 # @paparats/server
 
+## 2.16.9
+
+### Patch Changes
+
+- 6c633c1: `change_impact` tells a subclass's own code from a sibling's by the class's full ancestry: a call on self from a class above the changed override's class (its parents at any depth and the modules mixed into them) or below it is followed, only a class unrelated to it is not, and each calling method of a link is judged on its own. A method of the changed chunk that reaches the change through other code (calling a base class method that calls the changed one on self) is now listed and followed like any other dependent.
+- 9bde80a: `module_map` says in each module's heading how many of its files the folders it is named after hold, of all the code files there (`N of the M code files in <folder>/, K in other folders`), so a module's size is not read as its folder's. Each link shows its number of importing files, and `+N more` says when links were cut, so a short list no longer reads as everything the module uses.
+- a4f5bfe: A call inside a Ruby method defined in a block (`class_methods do`, `included do`) is recorded as made from that method, so `change_impact` passes a change on to that method's callers only, not to every caller of the module around it. Ruby files are extracted again on the next index run.
+  - @paparats/shared@2.16.9
+
 ## 2.16.8
 
 ### Patch Changes
