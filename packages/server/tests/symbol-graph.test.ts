@@ -68,7 +68,7 @@ describe('buildSymbolEdges', () => {
       from_symbols: ['ledger_entry'],
       reach_symbols: ['call'],
     });
-    // Held as a value anywhere in the chunk: `change_impact` follows it whatever changed.
+    // Held as a value anywhere in the chunk: the edge says so, whatever else the chunk does.
     expect(edge('Receipt')?.relation_type).toBe('references');
     expect(edge('Receipt')?.reach_symbols).toBeUndefined();
   });

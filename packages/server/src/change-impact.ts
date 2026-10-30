@@ -190,8 +190,8 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     if (seeds.has(target)) return { step: opts.seedSteps?.get(edge.symbol_name) ?? 0, exact: true };
     const steps = methodSteps.get(target);
     const own = steps?.get(edge.symbol_name) ?? steps?.get('');
-    if (own && edge.relation_type !== 'references') return own;
-    // A class held as a value: as near as the chunk's nearest method.
+    if (own) return own;
+    // Reached through no method it records: as near as the chunk's nearest method.
     const all = [...(steps?.values() ?? [])].sort(
       (x, y) => x.step - y.step || Number(y.exact) - Number(x.exact)
     );
@@ -211,8 +211,10 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     ) {
       return false;
     }
-    // Code holding the class as a value may call any of its methods.
-    return via === 'all' || via.has(edge.symbol_name) || edge.relation_type === 'references';
+    // Code holding a class as a value (`references`) depends on the class, not on
+    // one of its methods: what a framework or job queue calls on it is not in
+    // the code, and in a blind check 6 of 40 such dependents were real.
+    return via === 'all' || via.has(edge.symbol_name);
   };
 
   // A chunk's callers, and those of its methods that begin in an earlier chunk.
@@ -333,7 +335,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     [...frontier].some(([id, via]) =>
       incoming(id, via).some(
         (e) =>
-          (via === 'all' || via.has(e.symbol_name) || e.relation_type === 'references') &&
+          (via === 'all' || via.has(e.symbol_name)) &&
           e.relation_type !== 'opens' &&
           !seeds.has(e.from_chunk_id) &&
           !found.has(e.from_chunk_id) &&

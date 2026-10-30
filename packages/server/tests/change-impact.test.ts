@@ -374,7 +374,7 @@ describe('collectDependents', () => {
     ]);
   });
 
-  it('follows code holding a class as a value whatever method of it changed', () => {
+  it('passes a method change on to code holding its class as a value only when the class is the change', () => {
     const rows: SymbolEdge[] = [
       {
         from_chunk_id: 'consumer',
@@ -396,12 +396,13 @@ describe('collectDependents', () => {
         symbol_name: 'Worker',
       },
     ];
-    const res = collectDependents({
-      ...base,
-      seeds: ['seed'],
-      edgesTo: (id) => rows.filter((e) => e.to_chunk_id === id),
-    });
-    expect(res.dependents.map((d) => d.chunkId)).toEqual(['consumer', 'poll']);
+    const edgesTo = (id: string) => rows.filter((e) => e.to_chunk_id === id);
+    // `refund` changed: `poll` holds the class, it calls no `refund`.
+    const res = collectDependents({ ...base, seeds: ['seed'], edgesTo });
+    expect(res.dependents.map((d) => d.chunkId)).toEqual(['consumer']);
+    // The class itself is the change: whoever holds or names it depends on it.
+    const whole = collectDependents({ ...base, seeds: ['consumer'], edgesTo });
+    expect(whole.dependents.map((d) => d.chunkId).sort()).toEqual(['caller', 'poll']);
   });
 
   it('does not follow a file opening the namespace a dependent defines', () => {

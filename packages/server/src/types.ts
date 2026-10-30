@@ -145,7 +145,8 @@ export interface ChunkResult {
 
 /**
  * `calls`: a call. `references`: a class held as a value (passed, stored in a
- * hash, `Foo.new` kept in a variable), so any of its methods may be called.
+ * hash, `Foo.new` kept in an array): the code depends on the class, and on
+ * which of its methods only through calls the graph sees.
  * `reexports`: a TS/JS `export { x } from` in a barrel file. `overrides`: a call
  * on self reaching the override a class below defines (a template method
  * calling the step its subclasses implement): the base depends on the

@@ -350,7 +350,7 @@ class ClassTable {
 
 const CONFIDENCE_RANK: Record<EdgeConfidence, number> = { AMBIGUOUS: 0, INFERRED: 1, EXTRACTED: 2 };
 
-/** A class held as a value says most (`change_impact` follows it whatever changed), opening a namespace least. */
+/** A class held as a value says most, opening a namespace least. */
 const RELATION_RANK: Record<RelationType, number> = {
   opens: 0,
   reexports: 1,

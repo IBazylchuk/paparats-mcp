@@ -961,8 +961,8 @@ const RUBY_NON_VALUE_CALLS = new Set([
  * A Ruby constant used as a value: passed (`dispatch(queue, Worker)`), stored
  * in a hash, array or variable, or `Worker.new` passed or stored in a hash or
  * array (one stored in a variable is typed: its calls link one by one). The code
- * holding it may call any of its methods, which the graph cannot see, so
- * `change_impact` follows such a link whatever method of the class changed.
+ * holding it depends on the class; `change_impact` follows such a link only
+ * when the class itself changes, not for a change to one of its methods.
  * Not a namespace (`Billing` in `Billing::Invoice`), not a class called on at
  * once (`Invoice.overdue`, `Rebuild.new(ids).call`), not `include`, `raise` or
  * a superclass, not an object returned (`return Report.new(x)`).
