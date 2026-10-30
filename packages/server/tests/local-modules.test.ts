@@ -93,6 +93,20 @@ describe('readLocalModules', () => {
     expect(resolveAlias('^/y', 'src/x.ts', local)).toBeNull();
   });
 
+  it('reads a bare import of a folder or file under baseUrl as the project’s own', () => {
+    write('package.json', '{ "name": "admin" }');
+    write('tsconfig.json', '// tools\n{ "compilerOptions": { "baseUrl": "src" /* no paths */ } }');
+    write('src/core/hooks/index.ts', 'export {};');
+    write('src/config.ts', 'export {};');
+    const local = readLocalModules(dir)!;
+
+    expect(resolveAlias('core/hooks', 'src/common/nav.tsx', local)).toBe('../core/hooks');
+    expect(resolveAlias('config', 'src/common/nav.tsx', local)).toBe('../config.ts');
+    expect(resolveAlias('react', 'src/common/nav.tsx', local)).toBeNull();
+    expect(isLocalModule('core/hooks', local)).toBe(true);
+    expect(isLocalModule('react', local)).toBe(false);
+  });
+
   it('rewrites the alias imports of stored uses and class parents', () => {
     const local = {
       packages: ['app'],
