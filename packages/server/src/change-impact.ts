@@ -261,7 +261,7 @@ export function collectDependents(opts: CollectDependentsOptions): DependentsRes
     }
     // Code holding a class as a value (`references`) depends on the class, not on
     // one of its methods: what a framework or job queue calls on it is not in
-    // the code, and in a blind check 6 of 40 such dependents were real.
+    // the code, and in a blind check few such dependents were real.
     return via === 'all' || via.has(edge.symbol_name);
   };
 
