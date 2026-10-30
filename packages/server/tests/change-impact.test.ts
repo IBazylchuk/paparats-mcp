@@ -405,6 +405,76 @@ describe('collectDependents', () => {
     expect(whole.dependents.map((d) => d.chunkId).sort()).toEqual(['caller', 'poll']);
   });
 
+  it("follows a template method's callers on self only from the class whose override changed", () => {
+    // `Base#summary` calls `title` on self; `Sub` overrides `title` (the change).
+    const rows: SymbolEdge[] = [
+      {
+        from_chunk_id: 'base',
+        to_chunk_id: 'sub',
+        relation_type: 'overrides',
+        symbol_name: 'title',
+        from_symbols: ['summary'],
+      },
+      {
+        from_chunk_id: 'sibling',
+        to_chunk_id: 'base',
+        relation_type: 'calls',
+        symbol_name: 'summary',
+        from_symbols: ['card'],
+      },
+      {
+        from_chunk_id: 'sub_card',
+        to_chunk_id: 'base',
+        relation_type: 'calls',
+        symbol_name: 'summary',
+        from_symbols: ['card'],
+      },
+      {
+        from_chunk_id: 'base_list',
+        to_chunk_id: 'base',
+        relation_type: 'calls',
+        symbol_name: 'summary',
+        from_symbols: ['list'],
+      },
+      {
+        from_chunk_id: 'mailer',
+        to_chunk_id: 'base',
+        relation_type: 'calls',
+        symbol_name: 'summary',
+        from_symbols: ['send_digest'],
+      },
+      {
+        from_chunk_id: 'far',
+        to_chunk_id: 'base_list',
+        relation_type: 'calls',
+        symbol_name: 'list',
+        from_symbols: ['index'],
+      },
+    ];
+    const selfFrom: Record<string, string | null> = {
+      sibling: 'Feeds::Other',
+      sub_card: 'Feeds::Sub',
+      base_list: 'Feeds::Base',
+      mailer: null,
+      far: 'Feeds::Other',
+    };
+    const res = collectDependents({
+      ...base,
+      seeds: ['sub'],
+      edgesTo: (id) => rows.filter((e) => e.to_chunk_id === id),
+      ownerOf: (id) => ({ sub: 'Feeds::Sub', base: 'Feeds::Base', base_list: 'Feeds::Base' })[id],
+      selfCallFrom: (edge) => selfFrom[edge.from_chunk_id],
+    });
+    // `Feeds::Other` inherits `summary` too, but its objects never run `Sub#title`;
+    // a call on an object of unknown class (`mailer`) may be on a `Sub`.
+    expect(res.dependents.map((d) => d.chunkId).sort()).toEqual([
+      'base',
+      'base_list',
+      'mailer',
+      'sub_card',
+    ]);
+  });
+
   it('does not follow a file opening the namespace a dependent defines', () => {
     const rows: SymbolEdge[] = [
       {

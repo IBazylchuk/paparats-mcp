@@ -1,3 +1,4 @@
+import type { UseSite } from './ast-symbol-extractor.js';
 import type { NameUsage, SymbolEdge } from './types.js';
 import {
   collectDependents,
@@ -155,6 +156,19 @@ export async function changeImpactReport(
   // methods begins, when the method is too long for one chunk: the method's
   // callers link there.
   const heads = new Map<string, Map<string, string>>();
+  // Payloads the walk asks about synchronously: read between walks, as the
+  // walk is done again until nothing new is asked for.
+  const read = new Map<string, Record<string, unknown> | null>();
+  const wanted = new Set<string>();
+  const payloadNow = (id: string): Record<string, unknown> | null | undefined => {
+    if (read.has(id)) return read.get(id);
+    wanted.add(id);
+    return undefined;
+  };
+  const ownersOf = (p: Record<string, unknown> | null | undefined) =>
+    p && p['def_owners'] && typeof p['def_owners'] === 'object'
+      ? (p['def_owners'] as Record<string, string>)
+      : undefined;
   const walk = () =>
     collectDependents({
       seeds,
@@ -170,6 +184,26 @@ export async function changeImpactReport(
       isHub: (id) => hubs.has(id),
       isLeaf: (id) => isTestPath(parseChunkId(id)?.file ?? ''),
       isCommonName: (name) => isCommonName(name, names),
+      ownerOf: (id, method) => ownersOf(payloadNow(id))?.[method],
+      selfCallFrom: (edge) => {
+        const p = payloadNow(edge.from_chunk_id);
+        if (p === undefined) return undefined;
+        const from = edge.from_symbols ?? [];
+        const sites = Array.isArray(p?.['use_sites']) ? (p['use_sites'] as UseSite[]) : [];
+        const owners = ownersOf(p);
+        const calls = sites.filter((u) => u.name === edge.symbol_name && from.includes(u.from));
+        if (from.length === 0 || calls.length === 0) return null;
+        // A bare call or `self.x` is stored on the caller's own class, as `::Path`.
+        const classes = new Set(
+          calls.map((u) =>
+            u.on?.startsWith('::') && !u.onObject && owners?.[u.from] === u.on.slice(2)
+              ? u.on.slice(2)
+              : null
+          )
+        );
+        const [only] = classes;
+        return classes.size === 1 && typeof only === 'string' ? only : null;
+      },
       confirmsLink: (caller, target) => {
         const callerFile = chunkFileKey(caller);
         if (callerFile === chunkFileKey(target)) return true;
@@ -191,8 +225,14 @@ export async function changeImpactReport(
     });
   let walked = walk();
   const checked = new Set<string>();
-  for (let round = 0; round < MAX_IMPACT_DEPTH; round++) {
+  for (let round = 0; round < 2 * MAX_IMPACT_DEPTH + 1; round++) {
     let more = false;
+    for (const id of wanted) {
+      if (read.has(id)) continue;
+      read.set(id, await chunkOf(id));
+      more = true;
+    }
+    wanted.clear();
     for (const dep of walked.dependents) {
       if (checked.has(dep.chunkId)) continue;
       checked.add(dep.chunkId);
