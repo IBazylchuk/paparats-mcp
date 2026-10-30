@@ -151,6 +151,17 @@ function sanitizeLang(lang: string): string {
   return lang.replace(/[^a-zA-Z0-9_.+-]/g, '');
 }
 
+/**
+ * Indexed code in a fenced block. The fence is longer than any run of backticks
+ * in the code, so a chunk holding ``` (markdown in a string, a docs comment)
+ * cannot close the block and have the rest read as text of the answer.
+ */
+export function codeBlock(content: string, lang: string): string {
+  const longest = Math.max(0, ...(content.match(/`+/g) ?? []).map((run) => run.length));
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return `${fence}${sanitizeLang(lang)}\n${content}\n${fence}`;
+}
+
 /** Names listed after `Defines:` in a `search_code` result. */
 const SEARCH_DEFINES_SHOWN = 12;
 /** Files listed after `Called from:` in a `search_code` result. */
@@ -1824,7 +1835,7 @@ export class McpHandler {
                         r.file
                       )
                     : '';
-                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${definesLine(r.defines_symbols)}${callers}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
+                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${definesLine(r.defines_symbols)}${callers}${chunkRef}\n${codeBlock(r.content, r.language)}`;
               })
               .join('\n\n---\n\n');
 
@@ -1973,7 +1984,7 @@ export class McpHandler {
                     const c = chunk['content'] as string;
                     const isTarget = sl === startLine && el === endLine;
                     const marker = isTarget ? ' ← target' : '';
-                    text += `**Lines ${shownLine(sl)}-${shownLine(el)}${marker}**\n\`\`\`${sanitizeLang(language)}\n${c}\n\`\`\`\n\n`;
+                    text += `**Lines ${shownLine(sl)}-${shownLine(el)}${marker}**\n${codeBlock(c, language)}\n\n`;
                   }
 
                   return { content: [{ type: 'text' as const, text }] };
@@ -1982,7 +1993,7 @@ export class McpHandler {
             }
 
             // Single chunk (no radius or no adjacent chunks found)
-            text += `\`\`\`${sanitizeLang(language)}\n${content}\n\`\`\``;
+            text += codeBlock(content, language);
 
             return { content: [{ type: 'text' as const, text }] };
           } catch (err) {
@@ -2221,7 +2232,7 @@ export class McpHandler {
                   : '';
                 const chunkRef = r.chunk_id ? `\nchunk: \`${r.chunk_id}\`` : '';
                 const symbolsLine = formatSymbolsLine(r.defines_symbols, r.uses_symbols);
-                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${lastChanged}${symbolsLine}${chunkRef}\n\`\`\`${sanitizeLang(r.language)}\n${r.content}\n\`\`\``;
+                return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${lastChanged}${symbolsLine}${chunkRef}\n${codeBlock(r.content, r.language)}`;
               })
               .join('\n\n---\n\n');
 
@@ -3644,7 +3655,7 @@ export class McpHandler {
         content: [
           {
             type: 'text' as const,
-            text: `**${label}**\n\n\`\`\`json\n${JSON.stringify(payload, null, 2)}\n\`\`\``,
+            text: `**${label}**\n\n${codeBlock(JSON.stringify(payload, null, 2), 'json')}`,
           },
         ],
       });
