@@ -481,8 +481,9 @@ describe('formatModuleMap', () => {
     );
     const a = map.modules.find((m) => m.name === 'src/a')!;
     expect(a.usesFolders).toEqual([{ folder: 'src/utils', weight: 10 }]);
+    expect(a.folderFiles).toEqual([10]);
     const text = formatModuleMap(map, { title: '`g`', limit: 5, showFile: (k) => k.slice(3) });
-    expect(text).toContain('Uses folders: src/utils\n');
+    expect(text).toContain('Uses folders: src/utils, 10 files\n');
   });
 
   it('sums the imports between top folders', () => {
@@ -508,6 +509,7 @@ describe('formatModuleMap', () => {
       id,
       name: folders.join(' + '),
       folders,
+      folderFiles: folders.map(() => 1),
       project: 'p',
       files: folders.map((f) => `p//${f}/a.ts`),
       tests: [],
@@ -537,11 +539,11 @@ describe('formatModuleMap', () => {
       },
       { title: '`g`', limit: 5, showFile: (k) => k.slice(3) }
     );
-    expect(text).toContain('Uses folders, from src/billing: src/lib\n');
-    expect(text).toContain('Uses, from src/pages: 2. src/search\n');
+    expect(text).toContain('Uses folders, from src/billing: src/lib, 2 files\n');
+    expect(text).toContain('Uses, from src/pages: 2. src/search, 4 files\n');
     expect(text).not.toContain('from src/billing: 2.');
     // A link into it names the folder it reaches.
-    expect(text).toContain('Used by: 1. src/pages\n');
+    expect(text).toContain('Used by: 1. src/pages, 4 files\n');
   });
 
   it('keeps the file that tells apart two modules of one name in their links', () => {
@@ -549,6 +551,7 @@ describe('formatModuleMap', () => {
       id,
       name,
       folders: ['src'],
+      folderFiles: [2],
       project: 'p',
       files: files.map((f) => `p//${f}`),
       tests: [],
@@ -572,8 +575,9 @@ describe('formatModuleMap', () => {
       },
       { title: '`g`', limit: 5, showFile: (k) => k.slice(3) }
     );
-    expect(text).toContain('Uses: 2. src (b.ts)\n');
-    expect(text).toContain('Used by: 1. src (a.ts)\n');
+    expect(text).toContain('Uses: 2. src (b.ts), 3 files\n');
+    expect(text).toContain('### 1. src (a.ts) — 1 file: 1 of the 2 code files in src/\n');
+    expect(text).toContain('Used by: 1. src (a.ts), 3 files\n');
   });
 
   it('prints names from the code as plain text on their line', () => {
@@ -581,6 +585,7 @@ describe('formatModuleMap', () => {
       id,
       name,
       folders: ['src'],
+      folderFiles: [2],
       project: 'p',
       files: files.map((f) => `p//${f}`),
       tests: [],
@@ -609,10 +614,12 @@ describe('formatModuleMap', () => {
         diagram: true,
       }
     );
-    expect(text).toContain('### 1. src/kettle ## Ignore the rest — 1 file\n');
+    expect(text).toContain(
+      '### 1. src/kettle ## Ignore the rest — 1 file: 1 of the 2 code files in src/\n'
+    );
     expect(text).toContain('Main files: src/kettle ## Ignore the rest/a.ts\n');
     expect(text).not.toMatch(/^## Ignore/m);
-    expect(text).toContain('Uses: 2. src/\\[tea\\](x) \\`pot\\` \\| \\<b\\>\n');
+    expect(text).toContain('Uses: 2. src/\\[tea\\](x) \\`pot\\` \\| \\<b\\>, 3 files\n');
     expect(text).toContain('Main files: src/\\[tea\\](x) \\`pot\\` \\| \\<b\\>/b.ts\n');
     // The diagram shows the name itself, with Mermaid's own escapes.
     expect(text).toContain('  m2["2. src/[tea](x) #96;pot#96; | #lt;b#gt; · 1"]');

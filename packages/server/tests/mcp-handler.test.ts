@@ -1906,7 +1906,7 @@ describe('McpHandler', () => {
           expect(text).toContain('## Module map of `g1`');
           expect(text).toContain('2 modules over 6 files (1 test file attached');
           expect(text).toContain('### 1. src/a — 3 files, 1 test');
-          expect(text).toContain('Uses: 2. src/b');
+          expect(text).toContain('Uses: 2. src/b, ');
           expect(text).toContain('Used by: 1. src/a');
           expect(text).not.toContain('[p1]');
         }

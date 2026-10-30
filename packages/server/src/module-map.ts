@@ -100,6 +100,12 @@ export interface CodeModule {
   name: string;
   /** The folders it is named after; only calls between files inside them count as its links. */
   folders: string[];
+  /**
+   * Per folder of `folders`, the project's code files in it (tests and
+   * migrations aside), whichever module they are in: a module is not its
+   * folder, and its size is no folder's size.
+   */
+  folderFiles: number[];
   project: string;
   /** Non-test files, the most called first. */
   files: string[];
@@ -745,6 +751,7 @@ export function moduleMapOfGraph(graph: FileGraph, files: Iterable<FileKey>): Mo
       id,
       name: folders.join(' + '),
       folders,
+      folderFiles: folders.map((d) => n.projectFolderCounts.get(d) ?? 0),
       project,
       files: sorted,
       tests: [],
@@ -1127,7 +1134,7 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
       : '',
     map.migrations > 0 ? `${plural(map.migrations, 'migration', 'migrations')} left out` : '',
   ].filter(Boolean);
-  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. Uses and Used by are imports between the folders modules are named after, most importing files first, listed per folder for a module named after two: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into; Uses folders lists folders no module is named after that it imports from. Top folders sums the imports between the project's top folders.\n`;
+  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. The heading says how many of the module's files its folders hold, of all the code files there. Uses and Used by are imports between the folders modules are named after, most importing files first, each with its importing files, none left out unless \`+N more\` says so, listed per folder for a module named after two: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into; Uses folders lists folders no module is named after that it imports from. Top folders sums the imports between the project's top folders.\n`;
 
   const number = (id: number) => `${id + 1}`;
   const name = opts.showName ?? ((m: CodeModule) => markdownText(m.name));
@@ -1136,20 +1143,42 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
     const target = map.modules[l.module]!;
     return target.folders.length > 1 ? markdownText(l.folder) : name(target);
   };
+  const more = (shown: number, all: number) => (all > shown ? ` (+${all - shown} more)` : '');
   const linkList = (links: PlaceLink[]) =>
     links
       .slice(0, LINKS_SHOWN)
-      .map((l) => `${number(l.module)}. ${placeName(l)}`)
-      .join('; ');
+      .map((l) => `${number(l.module)}. ${placeName(l)}, ${plural(l.weight, 'file', 'files')}`)
+      .join('; ') + more(LINKS_SHOWN, links.length);
   const folderList = (folders: FolderLink[]) =>
     folders
       .slice(0, FOLDER_LINKS_SHOWN)
-      .map((f) => markdownText(f.folder))
-      .join('; ');
+      .map((f) => `${markdownText(f.folder)}, ${plural(f.weight, 'file', 'files')}`)
+      .join('; ') + more(FOLDER_LINKS_SHOWN, folders.length);
+  // How many of a module's files its folders hold, of all theirs: a module may
+  // hold few of its folder's files and many of other folders.
+  const where = (m: CodeModule) => {
+    if (m.folders.includes('.')) return '';
+    const inside = m.folders.map(
+      (d) =>
+        m.files.filter((k) => {
+          const { project, file } = splitKey(k);
+          return project === m.project && inFolders(file, [d]);
+        }).length
+    );
+    const elsewhere = m.files.length - inside.reduce((a, b) => a + b, 0);
+    // Its folders and nothing else: then its size is theirs.
+    if (elsewhere === 0 && inside.every((n, i) => n === (m.folderFiles[i] ?? n))) return '';
+    const parts = m.folders.map(
+      (d, i) =>
+        `${inside[i]} of the ${plural(m.folderFiles[i] ?? inside[i]!, 'code file', 'code files')} in ${markdownText(d)}/`
+    );
+    return `: ${parts.join(', ')}${elsewhere > 0 ? `, ${elsewhere} in other folders` : ''}`;
+  };
 
   const shown = map.modules.slice(0, opts.limit);
   for (const m of shown) {
-    text += `\n### ${number(m.id)}. ${name(m)} — ${plural(m.files.length, 'file', 'files')}${m.tests.length > 0 ? `, ${plural(m.tests.length, 'test', 'tests')}` : ''}\n\n`;
+    const heldIn = where(m);
+    text += `\n### ${number(m.id)}. ${name(m)} — ${plural(m.files.length, 'file', 'files')}${heldIn}${m.tests.length > 0 ? `${heldIn ? ';' : ','} ${plural(m.tests.length, 'test', 'tests')}` : ''}\n\n`;
     text += `Main files: ${m.files.slice(0, 4).map(opts.showFile).join(', ')}\n`;
     // Named after two folders: each one's links on its own, as they differ.
     const apart = m.byFolder.length > 1;
