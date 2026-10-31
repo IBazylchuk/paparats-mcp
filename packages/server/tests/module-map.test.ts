@@ -580,6 +580,35 @@ describe('formatModuleMap', () => {
     expect(text).toContain('Used by: 1. src (a.ts), 3 files\n');
   });
 
+  it('says in the label when a list of links is cut', () => {
+    const mod = (id: number, name: string) => ({
+      id,
+      name,
+      files: [`p//src/${name}.ts`],
+      tests: [],
+      folders: [`src/${name}`],
+      folderFiles: [1],
+      project: 'p',
+      uses: [],
+      usedBy: [],
+      usesFolders: [],
+      byFolder: [{ folder: `src/${name}`, uses: [], usedBy: [], usesFolders: [] }] as FolderLinks[],
+    });
+    const names = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    const modules = names.map((n, i) => mod(i, n));
+    modules[0]!.byFolder[0]!.uses = names
+      .slice(1)
+      .map((n, i) => ({ module: i + 1, folder: `src/${n}`, weight: 9 - i }));
+    modules[1]!.byFolder[0]!.uses = [{ module: 2, folder: 'src/c', weight: 1 }];
+    const text = formatModuleMap(
+      { modules, shared: [], unconnected: [], migrations: 0, weights: new Map(), topFolders: [] },
+      { title: '`g`', limit: 7, showFile: (k) => k.slice(3) }
+    );
+    expect(text).toContain('Uses (top 4 of 6): 2. b, 9 files; ');
+    expect(text).toContain('Uses: 3. c, 1 file\n');
+    expect(text).not.toContain('more)');
+  });
+
   it('prints names from the code as plain text on their line', () => {
     const mod = (id: number, name: string, files: string[]) => ({
       id,

@@ -89,6 +89,9 @@ import { fetchIndexerHealth, indexerUrlFromEnv, type IndexerSection } from './in
  */
 const LOW_CONFIDENCE_THRESHOLD = 0.3;
 
+/** What `search_code` shows for a chunk it already returned in this session, instead of its code. */
+export const SHOWN_BEFORE = 'Shown earlier in this session; get_chunk if you no longer have it.';
+
 /**
  * `ToolAnnotations` advertised in `tools/list` so a client can group tools by side
  * effect in its permission UI. They describe intent, not enforcement: the spec
@@ -1722,6 +1725,10 @@ export class McpHandler {
     scope: ProjectScopeGuard,
     docsScope: DocsScope
   ): void {
+    // The chunks `search_code` returned in this session (a server per session):
+    // an agent rephrasing its query gets them again, and they are in its context.
+    const shownChunks = new Set<string>();
+
     // ── Tool: search_code ───────────────────────────────────────────────────
     if (tools.has('search_code'))
       server.registerTool(
@@ -1826,6 +1833,10 @@ export class McpHandler {
                   ? ` — ${r.kind ?? 'unknown'}: ${r.symbol_name}`
                   : '';
                 const chunkRef = r.chunk_id ? `\nchunk: \`${r.chunk_id}\`` : '';
+                if (r.chunk_id && shownChunks.has(r.chunk_id)) {
+                  return `**[${r.project}] ${r.file}:${shownLine(r.startLine)}-${shownLine(r.endLine)}** (${score}%${symbolInfo})${chunkRef}\n${SHOWN_BEFORE}`;
+                }
+                if (r.chunk_id) shownChunks.add(r.chunk_id);
                 const callers =
                   store && r.chunk_id
                     ? calledFromLine(

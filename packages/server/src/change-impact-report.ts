@@ -349,8 +349,12 @@ export async function changeImpactReport(
 
   const project = typeof payload['project'] === 'string' ? payload['project'] : 'unknown';
   const file = typeof payload['file'] === 'string' ? payload['file'] : parsed.file;
-  const ownSymbol =
-    typeof payload['symbol_name'] === 'string' ? ` \`${payload['symbol_name']}\`` : '';
+  const definesAsked =
+    symbol !== undefined &&
+    Array.isArray(payload['defines_symbols']) &&
+    (payload['defines_symbols'] as string[]).includes(symbol);
+  const shownSymbol = definesAsked ? symbol : payload['symbol_name'];
+  const ownSymbol = typeof shownSymbol === 'string' ? ` \`${shownSymbol}\`` : '';
   const target = wholeFile
     ? `[${project}] ${file} (whole file, ${seeds.length} chunks)`
     : `[${project}] ${file}:${shownLine(parsed.startLine)}-${shownLine(parsed.endLine)}${ownSymbol}`;

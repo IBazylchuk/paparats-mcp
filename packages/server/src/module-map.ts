@@ -1134,7 +1134,7 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
       : '',
     map.migrations > 0 ? `${plural(map.migrations, 'migration', 'migrations')} left out` : '',
   ].filter(Boolean);
-  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. The heading says how many of the module's files its folders hold, of all the code files there. Uses and Used by are imports between the folders modules are named after, most importing files first, each with its importing files, none left out unless \`+N more\` says so, listed per folder for a module named after two: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into; Uses folders lists folders no module is named after that it imports from. Top folders sums the imports between the project's top folders.\n`;
+  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. The heading says how many of the module's files its folders hold, of all the code files there. Uses and Used by are imports between the folders modules are named after, most importing files first, each with its importing files, all of them unless the label says \`top N of M\`, listed per folder for a module named after two: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into; Uses folders lists folders no module is named after that it imports from. Top folders sums the imports between the project's top folders.\n`;
 
   const number = (id: number) => `${id + 1}`;
   const name = opts.showName ?? ((m: CodeModule) => markdownText(m.name));
@@ -1143,17 +1143,18 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
     const target = map.modules[l.module]!;
     return target.folders.length > 1 ? markdownText(l.folder) : name(target);
   };
-  const more = (shown: number, all: number) => (all > shown ? ` (+${all - shown} more)` : '');
+  // In the label, before the list: at its end a cut list was read as all there is.
+  const cut = (shown: number, all: number) => (all > shown ? ` (top ${shown} of ${all})` : '');
   const linkList = (links: PlaceLink[]) =>
     links
       .slice(0, LINKS_SHOWN)
       .map((l) => `${number(l.module)}. ${placeName(l)}, ${plural(l.weight, 'file', 'files')}`)
-      .join('; ') + more(LINKS_SHOWN, links.length);
+      .join('; ');
   const folderList = (folders: FolderLink[]) =>
     folders
       .slice(0, FOLDER_LINKS_SHOWN)
       .map((f) => `${markdownText(f.folder)}, ${plural(f.weight, 'file', 'files')}`)
-      .join('; ') + more(FOLDER_LINKS_SHOWN, folders.length);
+      .join('; ');
   // How many of a module's files its folders hold, of all theirs: a module may
   // hold few of its folder's files and many of other folders.
   const where = (m: CodeModule) => {
@@ -1188,9 +1189,11 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
       const uses = linkList(f.uses);
       const usedBy = linkList(f.usedBy);
       const usesFolders = folderList(f.usesFolders);
-      if (uses) text += `Uses${from}: ${uses}\n`;
-      if (usesFolders) text += `Uses folders${from}: ${usesFolders}\n`;
-      if (usedBy) text += `Used by${into}: ${usedBy}\n`;
+      if (uses) text += `Uses${from}${cut(LINKS_SHOWN, f.uses.length)}: ${uses}\n`;
+      if (usesFolders) {
+        text += `Uses folders${from}${cut(FOLDER_LINKS_SHOWN, f.usesFolders.length)}: ${usesFolders}\n`;
+      }
+      if (usedBy) text += `Used by${into}${cut(LINKS_SHOWN, f.usedBy.length)}: ${usedBy}\n`;
     }
   }
   const rest = map.modules.slice(opts.limit);

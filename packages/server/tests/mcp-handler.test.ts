@@ -16,6 +16,7 @@ import {
   describeStaleness,
   GLOSSARY_MIN_SCORE,
   TERM_LOOKUP_MIN_SCORE,
+  SHOWN_BEFORE,
 } from '../src/mcp-handler.js';
 import type { MetadataStore } from '../src/metadata-db.js';
 import type { ProjectConfig, ChunkKind, SymbolEdge } from '../src/types.js';
@@ -905,6 +906,96 @@ describe('McpHandler', () => {
       expect(asked.text.indexOf('tests/symbol-graph.test.ts')).toBeLessThan(
         asked.text.indexOf('src/symbol-graph.ts')
       );
+    } finally {
+      server.close();
+      handler2.destroy();
+    }
+  });
+
+  it('search_code lists a chunk it already returned in the session without its code', async () => {
+    const searcher = createMockSearcher();
+    const result = (chunk: string, content: string) =>
+      makeSearchResult({
+        file: `src/${chunk}.ts`,
+        hash: chunk,
+        chunk_id: `g1//p1//src/${chunk}.ts//0-9//${chunk}`,
+        content,
+      });
+    const metrics = {
+      tokensReturned: 10,
+      estimatedFullFileTokens: 100,
+      tokensSaved: 90,
+      savingsPercent: 90,
+    };
+    vi.mocked(searcher.search)
+      .mockResolvedValueOnce({ results: [result('a', 'first body')], total: 1, metrics })
+      .mockResolvedValueOnce({
+        results: [result('a', 'first body'), result('b', 'second body')],
+        total: 2,
+        metrics,
+      })
+      .mockResolvedValueOnce({ results: [result('a', 'first body')], total: 1, metrics });
+
+    const app = express();
+    app.use(express.json());
+    const handler2 = new McpHandler({
+      searcher,
+      indexer: createMockIndexer(),
+      getProjects: () => new Map([['g1', [createProjectConfig()]]]),
+      getGroupNames: () => ['g1'],
+    });
+    handler2.mount(app);
+    const server = app.listen(0);
+    const port = (server.address() as { port: number }).port;
+    const headers = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+    };
+    const open = async () => {
+      const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'test', version: '1.0.0' },
+          },
+        }),
+      });
+      return res.headers.get('mcp-session-id')!;
+    };
+    const search = async (sessionId: string) => {
+      const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
+        method: 'POST',
+        headers: { ...headers, 'mcp-session-id': sessionId },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'search_code', arguments: { query: 'a rephrased question' } },
+        }),
+      });
+      const body = (await parseMcpResponse(res)) as {
+        result?: { content?: { text?: string }[] };
+      };
+      return body.result?.content?.[0]?.text ?? '';
+    };
+
+    try {
+      const session = await open();
+      expect(await search(session)).toContain('first body');
+      const again = await search(session);
+      expect(again).not.toContain('first body');
+      expect(again).toContain('src/a.ts:11-21');
+      expect(again).toContain('chunk: `g1//p1//src/a.ts//0-9//a`');
+      expect(again).toContain(SHOWN_BEFORE);
+      expect(again).toContain('second body');
+      // Another session has not seen it.
+      expect(await search(await open())).toContain('first body');
     } finally {
       server.close();
       handler2.destroy();
@@ -1803,10 +1894,14 @@ describe('McpHandler', () => {
           'Nothing in the indexed code depends on it through `logout`'
         );
 
+        // The heading names what was asked, not the chunk's first name.
+        expect(narrowed.text).toContain('src/auth.ts:11-21 `logout`');
+
         const wrong = await callTool(port, 'change_impact', { chunk_id: SEED, symbol: 'nope' });
         expect(wrong.text).toContain(
           'This chunk does not define `nope`; it defines `authenticate`, `logout`.'
         );
+        expect(wrong.text).toContain('src/auth.ts:11-21 `authenticate`');
       });
     });
 
