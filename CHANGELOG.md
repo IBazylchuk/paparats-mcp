@@ -4,6 +4,20 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.17.0] - 2026-10-31
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- 4a25154: Links between repositories through GraphQL. A project pass reads the operations a project sends, its schemas and, for graphql-ruby, the code answering each field; each operation is read against its schema, so a link comes from the types, not from a matching name. `change_impact` and `find_usages` list the operations in other repositories reaching a chunk and the files using them, also from code several calls before a resolver, and tests sending them; `find_usages` names the server code answering what a chunk sends; `module_map` lists which repository calls whose API. Search and the index are unchanged. REST, queues and shared configuration are not linked yet, and other GraphQL servers link to the schema's line.
+
+### Patch Changes
+
+- 083e166: `module_map` says a list of links is cut in its label (`Uses (top 4 of 12):`) rather than at the end of the list, where it was read as all the module uses. The heading of `change_impact` names the `symbol` asked for, not the chunk's first name.
+- fab7847: The `module_map` diagram draws a module named after two folders as a box per folder, with its arrows between folders. At module level, one folder using a module and that module using the other folder looked like a cycle no folder has.
+- 083e166: Less context for the same answers. `search_code` lists a chunk it already returned in the session by its location and chunk id, without the code again (`get_chunk` shows it). The coding instructions are half as long: what the docs, glossary and memory tools' own descriptions already say is no longer repeated there. They now say to grep exact text (an error message, a field name) first, and to get the chunk id of a known name with `limit` 1.
+
 ## [2.16.9] - 2026-10-30
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
