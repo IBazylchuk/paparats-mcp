@@ -1,5 +1,11 @@
 # @paparats/cli
 
+## 2.17.0
+
+### Patch Changes
+
+- @paparats/shared@2.17.0
+
 ## 2.16.9
 
 ### Patch Changes
