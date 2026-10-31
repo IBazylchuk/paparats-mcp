@@ -1,3 +1,4 @@
+import { apiImpact, type ApiImpact, type CodeSpot, type GroupContracts } from './api-contracts.js';
 import type { ClassParent, UseSite } from './ast-symbol-extractor.js';
 import type { NameUsage, SymbolEdge } from './types.js';
 import {
@@ -29,6 +30,8 @@ export interface ChangeImpactSource {
   names(group: string): NameUsage;
   /** The project's test files when recorded, else null. */
   testFiles(group: string, project: string): string[] | null;
+  /** Links between the group's projects through their API, already limited to what may be shown. */
+  apiContracts?(group: string): GroupContracts;
 }
 
 export interface ChangeImpactArgs {
@@ -349,8 +352,12 @@ export async function changeImpactReport(
 
   const project = typeof payload['project'] === 'string' ? payload['project'] : 'unknown';
   const file = typeof payload['file'] === 'string' ? payload['file'] : parsed.file;
-  const ownSymbol =
-    typeof payload['symbol_name'] === 'string' ? ` \`${payload['symbol_name']}\`` : '';
+  const definesAsked =
+    symbol !== undefined &&
+    Array.isArray(payload['defines_symbols']) &&
+    (payload['defines_symbols'] as string[]).includes(symbol);
+  const shownSymbol = definesAsked ? symbol : payload['symbol_name'];
+  const ownSymbol = typeof shownSymbol === 'string' ? ` \`${shownSymbol}\`` : '';
   const target = wholeFile
     ? `[${project}] ${file} (whole file, ${seeds.length} chunks)`
     : `[${project}] ${file}:${shownLine(parsed.startLine)}-${shownLine(parsed.endLine)}${ownSymbol}`;
@@ -370,10 +377,24 @@ export async function changeImpactReport(
   const caveat =
     '_The graph links code by name. Calls made dynamically — reflection, string dispatch, routes, config — are not in it._\n';
 
+  // The changed code itself, as requests from other code may reach it.
+  const seedSpot: CodeSpot = {
+    project: parsed.project,
+    file: parsed.file,
+    startLine: wholeFile ? 0 : parsed.startLine,
+    endLine: wholeFile ? Number.MAX_SAFE_INTEGER : parsed.endLine,
+    step: 0,
+    ...(symbol !== undefined ? { name: symbol } : {}),
+  };
+  const throughApi = (spots: CodeSpot[]): ApiImpact =>
+    src.apiContracts ? apiImpact(src.apiContracts(parsed.group), spots) : { text: '', tests: '' };
+
   const wrapped = [...seedSteps.values()].filter((d) => d > 0).length;
   if (dependents.length === 0 && wrapped === 0) {
+    const api = throughApi([seedSpot]);
     const clearly = viaCommonNames.length > 0 ? 'clearly ' : '';
-    text += `Nothing in the indexed code ${clearly}depends on it${symbol !== undefined ? ` through \`${symbol}\`` : ''}.\n`;
+    text += `Nothing in the indexed code ${clearly}${api.text !== '' ? 'calls' : 'depends on'} it${symbol !== undefined ? ` through \`${symbol}\`` : ''}.\n`;
+    text += api.text + api.tests;
     text += commonSection + '\n' + caveat;
     return text;
   }
@@ -598,7 +619,30 @@ export async function changeImpactReport(
     for (const r of code.slice(i, j)) text += line(r, false);
     i = j;
   }
-  if (tests.length > 0) {
+  const api = throughApi([
+    seedSpot,
+    ...code.flatMap((r): CodeSpot[] => {
+      const at = parseChunkId(r.dep.chunkId);
+      if (!at) return [];
+      // A dependent passes the change on only through the methods that reach it.
+      const methods = [...r.own, ...r.through.map((t) => t.name)];
+      return [
+        {
+          project: at.project,
+          file: at.file,
+          startLine: at.startLine,
+          endLine: at.endLine,
+          step: r.step,
+          methods,
+        },
+      ];
+    }),
+  ]);
+  text += api.text;
+  if (tests.length === 0 && api.tests !== '') {
+    text += api.tests;
+  } else if (tests.length > 0) {
+    text += api.tests;
     text += `\n### Tests (${testChunks}) — they call it through the code above; run them after the change\n\n`;
     for (const r of tests) text += line(r, true);
     if (tests.some((r) => r.step > 1)) {

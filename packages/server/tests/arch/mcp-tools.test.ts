@@ -438,7 +438,7 @@ describe('memory-layer dichotomy in instructions', () => {
     expect(desc).toMatch(/code|codebase/i);
   });
 
-  it('codingInstructions has a Memory layers block pointing at agent-side memory for workflow rules', async () => {
+  it('codingInstructions has a Memory layers line pointing at agent-side memory for workflow rules', async () => {
     const { prompts } = await import('../../src/prompts/index.js');
     expect(prompts.codingInstructions).toMatch(/Memory layers/);
     expect(prompts.codingInstructions).toMatch(/agent-side memory|auto-memory/);

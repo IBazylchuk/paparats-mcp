@@ -1089,25 +1089,47 @@ export interface FormatModuleMapOptions {
 
 /**
  * Mermaid flowchart of `modules`: one box per module labelled with its name and
- * size, one arrow per strong link between two of them (caller → called).
+ * size, or per folder of a module named after two (without a size: the module's
+ * is not the folder's), and for each strong link between two of them (caller →
+ * called) its arrows between folders: at module level, a uses b's one folder and
+ * b's other folder uses a read as a cycle no folder has.
  * `name` may be Markdown from `markdownText()`; its escapes are undone, and labels
  * are quoted on one line, with quotes, backticks and angle brackets replaced by
  * Mermaid entities.
  */
 export function moduleMapDiagram(modules: CodeModule[], name: (m: CodeModule) => string): string {
-  const shown = new Set(modules.map((m) => m.id));
-  const label = (m: CodeModule) =>
-    `${m.id + 1}. ${name(m).replace(/\\([\\`[\]<>|])/g, '$1')} · ${m.files.length}`
+  const shown = new Map(modules.map((m) => [m.id, m]));
+  const label = (text: string) =>
+    text
+      .replace(/\\([\\`[\]<>|])/g, '$1')
       .replace(LINE_BREAKS, ' ')
       .replace(/"/g, '#quot;')
       .replace(/</g, '#lt;')
       .replace(/>/g, '#gt;')
       .replace(/`/g, '#96;');
+  const box = (id: number, folder: string) => {
+    const folders = shown.get(id)?.folders ?? [];
+    return folders.length > 1 ? `m${id + 1}_${folders.indexOf(folder) + 1}` : `m${id + 1}`;
+  };
   const lines = ['```mermaid', 'flowchart LR'];
-  for (const m of modules) lines.push(`  m${m.id + 1}["${label(m)}"]`);
   for (const m of modules) {
-    for (const l of strongLinks(m.uses)) {
-      if (shown.has(l.module)) lines.push(`  m${m.id + 1} --> m${l.module + 1}`);
+    if (m.folders.length > 1) {
+      for (const folder of m.folders) {
+        const text = label(`${m.id + 1}. ${name({ ...m, name: folder })}`);
+        lines.push(`  ${box(m.id, folder)}["${text}"]`);
+      }
+    } else {
+      lines.push(`  m${m.id + 1}["${label(`${m.id + 1}. ${name(m)} · ${m.files.length}`)}"]`);
+    }
+  }
+  for (const m of modules) {
+    const strong = new Set(strongLinks(m.uses).map((l) => l.module));
+    for (const f of m.byFolder) {
+      for (const l of f.uses) {
+        if (strong.has(l.module) && shown.has(l.module)) {
+          lines.push(`  ${box(m.id, f.folder)} --> ${box(l.module, l.folder)}`);
+        }
+      }
     }
   }
   lines.push('```');
@@ -1134,7 +1156,7 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
       : '',
     map.migrations > 0 ? `${plural(map.migrations, 'migration', 'migrations')} left out` : '',
   ].filter(Boolean);
-  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. The heading says how many of the module's files its folders hold, of all the code files there. Uses and Used by are imports between the folders modules are named after, most importing files first, each with its importing files, none left out unless \`+N more\` says so, listed per folder for a module named after two: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into; Uses folders lists folders no module is named after that it imports from. Top folders sums the imports between the project's top folders.\n`;
+  text += `${plural(map.modules.length, 'module', 'modules')} over ${plural(fileCount, 'file', 'files')}${extras.length > 0 ? ` (${extras.join(', ')})` : ''}. A module is a set of files that call each other much more than they call the rest; it is named after the folder (or two, joined by +) holding much of it and little else, so it may hold files of other folders; its main files are the most called ones there. The heading says how many of the module's files its folders hold, of all the code files there. Uses and Used by are imports between the folders modules are named after, most importing files first, each with its importing files, all of them unless the label says \`top N of M\`, listed per folder for a module named after two: a file counts there for the module whose folder holds it most closely, whichever module it is grouped into; Uses folders lists folders no module is named after that it imports from. Top folders sums the imports between the project's top folders.\n`;
 
   const number = (id: number) => `${id + 1}`;
   const name = opts.showName ?? ((m: CodeModule) => markdownText(m.name));
@@ -1143,17 +1165,18 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
     const target = map.modules[l.module]!;
     return target.folders.length > 1 ? markdownText(l.folder) : name(target);
   };
-  const more = (shown: number, all: number) => (all > shown ? ` (+${all - shown} more)` : '');
+  // In the label, before the list: at its end a cut list was read as all there is.
+  const cut = (shown: number, all: number) => (all > shown ? ` (top ${shown} of ${all})` : '');
   const linkList = (links: PlaceLink[]) =>
     links
       .slice(0, LINKS_SHOWN)
       .map((l) => `${number(l.module)}. ${placeName(l)}, ${plural(l.weight, 'file', 'files')}`)
-      .join('; ') + more(LINKS_SHOWN, links.length);
+      .join('; ');
   const folderList = (folders: FolderLink[]) =>
     folders
       .slice(0, FOLDER_LINKS_SHOWN)
       .map((f) => `${markdownText(f.folder)}, ${plural(f.weight, 'file', 'files')}`)
-      .join('; ') + more(FOLDER_LINKS_SHOWN, folders.length);
+      .join('; ');
   // How many of a module's files its folders hold, of all theirs: a module may
   // hold few of its folder's files and many of other folders.
   const where = (m: CodeModule) => {
@@ -1188,9 +1211,11 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
       const uses = linkList(f.uses);
       const usedBy = linkList(f.usedBy);
       const usesFolders = folderList(f.usesFolders);
-      if (uses) text += `Uses${from}: ${uses}\n`;
-      if (usesFolders) text += `Uses folders${from}: ${usesFolders}\n`;
-      if (usedBy) text += `Used by${into}: ${usedBy}\n`;
+      if (uses) text += `Uses${from}${cut(LINKS_SHOWN, f.uses.length)}: ${uses}\n`;
+      if (usesFolders) {
+        text += `Uses folders${from}${cut(FOLDER_LINKS_SHOWN, f.usesFolders.length)}: ${usesFolders}\n`;
+      }
+      if (usedBy) text += `Used by${into}${cut(LINKS_SHOWN, f.usedBy.length)}: ${usedBy}\n`;
     }
   }
   const rest = map.modules.slice(opts.limit);
@@ -1226,7 +1251,7 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
   }
 
   if (opts.diagram) {
-    text += `\n### Diagram — arrows point from a module to the modules it uses\n\n`;
+    text += `\n### Diagram — arrows point from a module to the modules it uses; a module named after two folders is a box per folder\n\n`;
     text += moduleMapDiagram(shown, name);
   }
 
