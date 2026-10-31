@@ -1089,25 +1089,47 @@ export interface FormatModuleMapOptions {
 
 /**
  * Mermaid flowchart of `modules`: one box per module labelled with its name and
- * size, one arrow per strong link between two of them (caller → called).
+ * size, or per folder of a module named after two (without a size: the module's
+ * is not the folder's), and for each strong link between two of them (caller →
+ * called) its arrows between folders: at module level, a uses b's one folder and
+ * b's other folder uses a read as a cycle no folder has.
  * `name` may be Markdown from `markdownText()`; its escapes are undone, and labels
  * are quoted on one line, with quotes, backticks and angle brackets replaced by
  * Mermaid entities.
  */
 export function moduleMapDiagram(modules: CodeModule[], name: (m: CodeModule) => string): string {
-  const shown = new Set(modules.map((m) => m.id));
-  const label = (m: CodeModule) =>
-    `${m.id + 1}. ${name(m).replace(/\\([\\`[\]<>|])/g, '$1')} · ${m.files.length}`
+  const shown = new Map(modules.map((m) => [m.id, m]));
+  const label = (text: string) =>
+    text
+      .replace(/\\([\\`[\]<>|])/g, '$1')
       .replace(LINE_BREAKS, ' ')
       .replace(/"/g, '#quot;')
       .replace(/</g, '#lt;')
       .replace(/>/g, '#gt;')
       .replace(/`/g, '#96;');
+  const box = (id: number, folder: string) => {
+    const folders = shown.get(id)?.folders ?? [];
+    return folders.length > 1 ? `m${id + 1}_${folders.indexOf(folder) + 1}` : `m${id + 1}`;
+  };
   const lines = ['```mermaid', 'flowchart LR'];
-  for (const m of modules) lines.push(`  m${m.id + 1}["${label(m)}"]`);
   for (const m of modules) {
-    for (const l of strongLinks(m.uses)) {
-      if (shown.has(l.module)) lines.push(`  m${m.id + 1} --> m${l.module + 1}`);
+    if (m.folders.length > 1) {
+      for (const folder of m.folders) {
+        const text = label(`${m.id + 1}. ${name({ ...m, name: folder })}`);
+        lines.push(`  ${box(m.id, folder)}["${text}"]`);
+      }
+    } else {
+      lines.push(`  m${m.id + 1}["${label(`${m.id + 1}. ${name(m)} · ${m.files.length}`)}"]`);
+    }
+  }
+  for (const m of modules) {
+    const strong = new Set(strongLinks(m.uses).map((l) => l.module));
+    for (const f of m.byFolder) {
+      for (const l of f.uses) {
+        if (strong.has(l.module) && shown.has(l.module)) {
+          lines.push(`  ${box(m.id, f.folder)} --> ${box(l.module, l.folder)}`);
+        }
+      }
     }
   }
   lines.push('```');
@@ -1229,7 +1251,7 @@ export function formatModuleMap(map: ModuleMap, opts: FormatModuleMapOptions): s
   }
 
   if (opts.diagram) {
-    text += `\n### Diagram — arrows point from a module to the modules it uses\n\n`;
+    text += `\n### Diagram — arrows point from a module to the modules it uses; a module named after two folders is a box per folder\n\n`;
     text += moduleMapDiagram(shown, name);
   }
 

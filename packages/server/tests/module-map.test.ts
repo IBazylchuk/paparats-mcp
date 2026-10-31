@@ -12,6 +12,7 @@ import {
   moduleMapDiagram,
   splitLarge,
   topFoldersOf,
+  type CodeModule,
   type FolderLinks,
   type MapEdge,
 } from '../src/module-map.js';
@@ -693,6 +694,40 @@ describe('moduleMapDiagram', () => {
     );
     // A module left out of the diagram takes its arrows with it.
     expect(moduleMapDiagram([map.modules[0]!], (m) => m.name)).not.toContain('-->');
+  });
+
+  it('draws a module named after two folders as a box per folder, so no false cycle shows', () => {
+    const mod = (id: number, folders: string[]): CodeModule => ({
+      id,
+      name: folders.join(' + '),
+      folders,
+      folderFiles: folders.map(() => 1),
+      project: 'p',
+      files: folders.map((f) => `p//${f}/a.ts`),
+      tests: [],
+      uses: [],
+      usedBy: [],
+      usesFolders: [],
+      byFolder: folders.map((folder): FolderLinks => ({
+        folder,
+        uses: [],
+        usedBy: [],
+        usesFolders: [],
+      })),
+    });
+    const reports = mod(0, ['src/pages/reports', 'src/lib/reports']);
+    const tables = mod(1, ['src/tables']);
+    reports.uses = [{ module: 1, weight: 4 }];
+    reports.byFolder[0]!.uses = [{ module: 1, folder: 'src/tables', weight: 4 }];
+    tables.uses = [{ module: 0, weight: 3 }];
+    tables.byFolder[0]!.uses = [{ module: 0, folder: 'src/lib/reports', weight: 3 }];
+    const text = moduleMapDiagram([reports, tables], (m) => m.name);
+    expect(text).toContain('  m1_1["1. src/pages/reports"]\n  m1_2["1. src/lib/reports"]\n');
+    expect(text).toContain('  m2["2. src/tables · 1"]');
+    expect(text).toContain('  m1_1 --> m2\n');
+    expect(text).toContain('  m2 --> m1_2\n');
+    expect(text).not.toContain('m1 -->');
+    expect(text).not.toContain('--> m1\n');
   });
 });
 
