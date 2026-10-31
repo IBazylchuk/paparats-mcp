@@ -204,6 +204,28 @@ describe('MetadataStore', () => {
     expect(store.getTestFiles('g', 'p')).toBeNull();
   });
 
+  it('records what a project says about its API until the project is deleted', () => {
+    const facts = {
+      documents: [{ file: 'a.graphql', line: 0, source: 'query A { a }' }],
+      schemas: [],
+      classes: [],
+      uses: {},
+    };
+    store.setApiFacts('g', 'p', facts);
+    expect(store.getApiFacts('g')).toEqual([['p', facts]]);
+    const version = store.apiFactsVersion('g');
+    store.setApiFacts('g', 'p', facts);
+    expect(store.apiFactsVersion('g')).toBe(version);
+    store.setApiFacts('g', 'p', { ...facts, uses: { A: [{ file: 'b.ts', line: 1 }] } });
+    expect(store.apiFactsVersion('g')).not.toBe(version);
+    store.setApiFacts('g', 'p', { documents: [], schemas: [], classes: [], uses: {} });
+    expect(store.getApiFacts('g')).toEqual([]);
+    store.setApiFacts('g', 'p', facts);
+    store.deleteByProject('g', 'p');
+    expect(store.getApiFacts('g')).toEqual([]);
+    expect(store.apiFactsVersion('g')).toBe('');
+  });
+
   it('deleteByProject removes all data for a project prefix', () => {
     store.upsertCommits('mygroup//proj1//a.ts//1-5//h1', [
       {

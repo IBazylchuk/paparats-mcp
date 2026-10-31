@@ -63,6 +63,7 @@ import { isTermsCollection } from './terminology/collection.js';
 import { EMBED_TEXT_FORMAT, chunkEmbedText } from './embed-text.js';
 import { churnPercentiles, readFileCommitCounts } from './file-churn.js';
 import { readTestFiles } from './test-files.js';
+import { readGraphqlFacts } from './graphql-contracts.js';
 
 // ── Collection name helpers ──────────────────────────────────────────────────
 
@@ -1513,6 +1514,12 @@ export class Indexer {
     if (this.metadataStore) {
       const tests = readTestFiles(project.path);
       if (tests) this.metadataStore.setTestFiles(groupName, storedName, tests);
+      try {
+        const facts = await readGraphqlFacts(project.path, this.treeSitter, project.exclude);
+        if (facts) this.metadataStore.setApiFacts(groupName, storedName, facts);
+      } catch (err) {
+        console.warn(`  [indexer] Reading the API failed (non-fatal): ${(err as Error).message}`);
+      }
     }
 
     const queue = new PQueue({ concurrency: project.indexing.concurrency });

@@ -2,6 +2,7 @@ import path from 'path';
 import os from 'os';
 import fs from 'fs';
 import Database from 'better-sqlite3';
+import type { GraphqlFacts } from './graphql-contracts.js';
 import type { ChunkCommit, ChunkTicket, GraphChanges, NameUsage, SymbolEdge } from './types.js';
 
 const PAPARATS_DIR = path.join(os.homedir(), '.paparats');
@@ -311,6 +312,19 @@ export class MetadataStore {
       );
     `);
 
+    // Per project, what it says about its API: the operations it sends, its
+    // schemas, the code answering them (`GraphqlFacts`). Links between projects
+    // are worked out from these when read, so they never go out of date.
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS api_facts (
+        grp TEXT NOT NULL,
+        project TEXT NOT NULL,
+        facts TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        PRIMARY KEY (grp, project)
+      );
+    `);
+
     // Per project, the rules its edges were built with (`GRAPH_FORMAT` in
     // symbol-graph.ts): an older format has the whole graph built again.
     this.db.exec(`
@@ -482,6 +496,7 @@ export class MetadataStore {
       this.deleteProjectGitCacheStmt.run(group, project);
       this.db.prepare('DELETE FROM file_names WHERE grp = ? AND project = ?').run(group, project);
       this.db.prepare('DELETE FROM test_files WHERE grp = ? AND project = ?').run(group, project);
+      this.db.prepare('DELETE FROM api_facts WHERE grp = ? AND project = ?').run(group, project);
       this.db
         .prepare('DELETE FROM graph_formats WHERE grp = ? AND project = ?')
         .run(group, project);
@@ -683,6 +698,40 @@ export class MetadataStore {
       .prepare('SELECT files FROM test_files WHERE grp = ? AND project = ?')
       .get(group, project) as { files: string } | undefined;
     return row ? (JSON.parse(row.files) as string[]) : null;
+  }
+
+  /** Record what a project says about its API (see `api_facts`); a project saying nothing has no row. */
+  setApiFacts(group: string, project: string, facts: GraphqlFacts): void {
+    if (facts.documents.length === 0 && facts.schemas.length === 0 && facts.classes.length === 0) {
+      this.db.prepare('DELETE FROM api_facts WHERE grp = ? AND project = ?').run(group, project);
+      return;
+    }
+    const text = JSON.stringify(facts);
+    const row = this.db
+      .prepare('SELECT facts, version FROM api_facts WHERE grp = ? AND project = ?')
+      .get(group, project) as { facts: string; version: number } | undefined;
+    if (row?.facts === text) return;
+    this.db
+      .prepare(
+        'INSERT OR REPLACE INTO api_facts (grp, project, facts, version) VALUES (?, ?, ?, ?)'
+      )
+      .run(group, project, text, (row?.version ?? 0) + 1);
+  }
+
+  /** Each project of a group recording what it says about its API, by name. */
+  getApiFacts(group: string): Array<[string, GraphqlFacts]> {
+    const rows = this.db
+      .prepare('SELECT project, facts FROM api_facts WHERE grp = ? ORDER BY project')
+      .all(group) as Array<{ project: string; facts: string }>;
+    return rows.map((r) => [r.project, JSON.parse(r.facts) as GraphqlFacts]);
+  }
+
+  /** Changes when any project of a group records something new about its API. */
+  apiFactsVersion(group: string): string {
+    const rows = this.db
+      .prepare('SELECT project, version FROM api_facts WHERE grp = ? ORDER BY project')
+      .all(group) as Array<{ project: string; version: number }>;
+    return rows.map((r) => `${r.project}:${r.version}`).join(',');
   }
 
   /** The format a project's graph was last built in (see `graph_formats`); null when never recorded. */

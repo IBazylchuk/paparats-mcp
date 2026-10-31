@@ -68,6 +68,14 @@ import {
   rankQuery,
 } from './ranking.js';
 import { MAX_IMPACT_DEPTH } from './change-impact.js';
+import {
+  ApiContractsService,
+  apiCalls,
+  apiImpact,
+  repositoryLinks,
+  visibleContracts,
+  type GroupContracts,
+} from './api-contracts.js';
 import { callerLabel, changeImpactReport, shownLine } from './change-impact-report.js';
 import {
   codeSpan,
@@ -1238,6 +1246,7 @@ export class McpHandler {
   private syncGroups: (() => Promise<void>) | null;
   private metadataStore: MetadataStore | null;
   private moduleMaps: ModuleMapService | null;
+  private apiContracts: ApiContractsService | null;
   private indexerHealth: () => Promise<IndexerSection>;
   private telemetry: Telemetry | null;
   private analytics: AnalyticsStore | null;
@@ -1272,6 +1281,7 @@ export class McpHandler {
     this.moduleMaps =
       config.moduleMaps ??
       (config.metadataStore ? new ModuleMapService(config.metadataStore) : null);
+    this.apiContracts = config.metadataStore ? new ApiContractsService(config.metadataStore) : null;
     this.telemetry = config.telemetry ?? null;
     this.analytics = config.analytics ?? null;
     this.archStore = config.archStore ?? null;
@@ -1728,6 +1738,13 @@ export class McpHandler {
     // The chunks `search_code` returned in this session (a server per session):
     // an agent rephrasing its query gets them again, and they are in its context.
     const shownChunks = new Set<string>();
+    // Links between projects through their API, without those outside the server's scope.
+    const visibleApi = (group: string): GroupContracts =>
+      this.apiContracts
+        ? visibleContracts(this.apiContracts.get(group), (project) =>
+            scope.allowsChunk(`${group}//${project}//file//0-0//hash`)
+          )
+        : { links: [], unmatched: [], fieldsWithoutCode: [] };
 
     // ── Tool: search_code ───────────────────────────────────────────────────
     if (tools.has('search_code'))
@@ -2449,7 +2466,36 @@ export class McpHandler {
             edgesTo = edgesTo.slice(0, limit);
             edgesFrom = edgesFrom.slice(0, limit);
 
-            if (edgesTo.length === 0 && edgesFrom.length === 0) {
+            // What the call graph cannot show: requests from other code, and the server code
+            // answering what this chunk sends.
+            let apiText = '';
+            const here = parseChunkId(chunk_id);
+            if (here) {
+              const contracts = visibleApi(here.group);
+              if (direction !== 'outgoing') {
+                const { text: reached, tests } = apiImpact(contracts, [
+                  {
+                    project: here.project,
+                    file: here.file,
+                    startLine: here.startLine,
+                    endLine: here.endLine,
+                    step: 0,
+                  },
+                ]);
+                apiText += reached.replace(/^\n/, '') + tests;
+              }
+              if (direction !== 'incoming') {
+                apiText += apiCalls(contracts, {
+                  project: here.project,
+                  file: here.file,
+                  startLine: here.startLine,
+                  endLine: here.endLine,
+                  content: typeof payload['content'] === 'string' ? payload['content'] : '',
+                });
+              }
+            }
+
+            if (edgesTo.length === 0 && edgesFrom.length === 0 && apiText === '') {
               const symbolInfo =
                 defSymbols.length > 0
                   ? `\n\nDefined symbols: ${defSymbols.join(', ')}`
@@ -2553,6 +2599,7 @@ export class McpHandler {
                 text += '\n';
               }
             }
+            text += apiText;
 
             return { content: [{ type: 'text' as const, text }] };
           } catch (err) {
@@ -2651,6 +2698,7 @@ export class McpHandler {
                 hubs: (group) => store.getGroupDegreeSnapshot(group).calledHubChunkIds,
                 names: (group) => store.getNameUsage(group),
                 testFiles: (group, project) => store.getTestFiles(group, project),
+                apiContracts: (group) => visibleApi(group),
               },
               { chunkId: chunk_id, payload, wholeFile: whole_file, symbol, depth, limit }
             );
@@ -2753,7 +2801,14 @@ export class McpHandler {
                 ? `[${markdownText(this.indexer.displayProjectName(m.project))}] ${markdownText(m.name)}`
                 : markdownText(m.name);
             const title = `\`${target}\`${project !== undefined ? ` / \`${project}\`` : ''}`;
-            const text = formatModuleMap(map, { title, limit, showFile, showName, diagram });
+            const text =
+              formatModuleMap(map, { title, limit, showFile, showName, diagram }) +
+              repositoryLinks(visibleApi(target), {
+                project:
+                  project !== undefined ? this.indexer.storedProjectName(project) : undefined,
+                show: (p) => this.indexer.displayProjectName(p),
+                diagram,
+              });
             return { content: [{ type: 'text' as const, text }] };
           } catch (err) {
             return {

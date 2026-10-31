@@ -33,15 +33,15 @@
     },
     "find_usages": {
       "title": "Find Usages",
-      "description": "Find symbol relationships: what calls this code, and what this code calls. Supports incoming (callers), outgoing (dependencies), or both directions. Use after search_code or get_chunk when the user asks 'where is this used?', 'what calls this?', or 'what does this depend on?'. Pass chunk_id from search results."
+      "description": "Find symbol relationships: what calls this code, and what this code calls. Supports incoming (callers), outgoing (dependencies), or both directions. Use after search_code or get_chunk when the user asks 'where is this used?', 'what calls this?', or 'what does this depend on?'. Pass chunk_id from search results. Across repositories too, through GraphQL: the operations reaching this code, and the server code answering what it sends."
     },
     "change_impact": {
       "title": "Change Impact",
-      "description": "Everything that depends on a chunk you are about to change: callers, their callers (`depth` steps, up to 3; a step is a call between methods, inside a file too), and the tests that reach it, with file:line and chunk ids — no code content. Use before changing a signature, renaming, deleting or changing behaviour, to know what else to update and which tests to run. Pass chunk_id from search_code; `symbol` narrows to one name the chunk defines, `whole_file` treats the chunk's whole file as changed. The graph links code by name, so dynamic calls are not in it."
+      "description": "Everything that depends on a chunk you are about to change: callers, their callers (`depth` steps, up to 3; a step is a call between methods, inside a file too), and the tests that reach it, with file:line and chunk ids — no code content. Use before changing a signature, renaming, deleting or changing behaviour, to know what else to update and which tests to run. Pass chunk_id from search_code; `symbol` narrows to one name the chunk defines, `whole_file` treats the chunk's whole file as changed. Also lists the GraphQL operations in other repositories reaching it, and the files using them. The graph links code by name, so other dynamic calls are not in it."
     },
     "module_map": {
       "title": "Module Map",
-      "description": "Map of a codebase's modules: groups of files that call each other much more than they call the rest, built from the call graph. For each module: its folder, size, main files, and which modules it uses and is used by; plus shared code called from everywhere. Use first in an unfamiliar codebase ('how is this organised?', 'what are the main parts?', 'where would X live?'), then search_code inside the module that fits. Ends with a Mermaid diagram of the modules and their dependencies — pass it on when the user would rather see the structure than read it. No code content."
+      "description": "Map of a codebase's modules: groups of files that call each other much more than they call the rest, built from the call graph. For each module: its folder, size, main files, and which modules it uses and is used by; plus shared code called from everywhere. Use first in an unfamiliar codebase ('how is this organised?', 'what are the main parts?', 'where would X live?'), then search_code inside the module that fits. Ends with a Mermaid diagram of the modules and their dependencies — pass it on when the user would rather see the structure than read it. Lists which repositories call whose API through GraphQL when there are several. No code content."
     },
     "explain_feature": {
       "title": "Explain Feature",

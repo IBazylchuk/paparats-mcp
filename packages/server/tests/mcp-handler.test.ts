@@ -92,6 +92,8 @@ function createMockMetadataStore(): MetadataStore {
     getNameUsage: vi.fn().mockReturnValue({ callerFiles: 0, filesUsing: new Map() }),
     getEdgesFromFile: vi.fn().mockReturnValue([]),
     getTestFiles: vi.fn().mockReturnValue(null),
+    getApiFacts: vi.fn().mockReturnValue([]),
+    apiFactsVersion: vi.fn().mockReturnValue(''),
     edgesVersion: vi.fn().mockReturnValue('0:0'),
     edgeProjects: vi.fn().mockReturnValue([]),
     iterateProjectEdges: vi.fn().mockReturnValue([]),
