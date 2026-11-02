@@ -694,7 +694,7 @@ describe('McpHandler', () => {
     );
     client.setRequestHandler('elicitation/create', async () => ({
       action: 'accept',
-      content: { confirm: true },
+      content: {},
     }));
     await client.connect(
       new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`))
