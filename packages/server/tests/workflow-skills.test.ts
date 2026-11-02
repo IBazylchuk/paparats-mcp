@@ -121,16 +121,19 @@ describe('delete_project confirmation', () => {
     }
   });
 
-  it('a client that cannot ask deletes as before', async () => {
+  it('a client that cannot ask deletes nothing and is told what the user can run', async () => {
     const purgeProject = vi.fn().mockResolvedValue(undefined);
     const handler = createHandler({ purgeProject });
     const { client, close } = await connect(handler, 'coding');
     try {
-      await client.callTool({
+      const result = await client.callTool({
         name: 'delete_project',
         arguments: { group: 'g1', project: 'billing' },
       });
-      expect(purgeProject).toHaveBeenCalledTimes(1);
+      expect(purgeProject).not.toHaveBeenCalled();
+      const text = (result.content as Array<{ text: string }>)[0]!.text;
+      expect(text).toContain('was not deleted');
+      expect(text).toContain('paparats remove');
     } finally {
       await close();
       handler.destroy();

@@ -2312,26 +2312,34 @@ export class McpHandler {
                 isError: true,
               };
             }
-            // The client asks its user, when it can. Anything but a yes keeps the project.
-            if (server.server.getClientCapabilities()?.elicitation) {
-              const answer = await ctx.mcpReq.elicitInput({
-                message: `Delete project "${project}" from group "${group}"? Its code chunks, git metadata, symbol edges and indexed docs are removed.`,
-                requestedSchema: {
-                  type: 'object',
-                  properties: { confirm: { type: 'boolean', title: 'Delete the project' } },
-                  required: ['confirm'],
-                },
-              });
-              if (answer.action !== 'accept' || answer.content?.['confirm'] !== true) {
-                return {
-                  content: [
-                    {
-                      type: 'text' as const,
-                      text: `Project "${project}" was not deleted: the user did not confirm.`,
-                    },
-                  ],
-                };
-              }
+            // Only the user's yes deletes. An argument would not do: the model fills those in.
+            if (!server.server.getClientCapabilities()?.elicitation) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Project "${project}" was not deleted: this client cannot ask the user to confirm. The user can run \`paparats remove ${project}\`.`,
+                  },
+                ],
+              };
+            }
+            const answer = await ctx.mcpReq.elicitInput({
+              message: `Delete project "${project}" from group "${group}"? Its code chunks, git metadata, symbol edges and indexed docs are removed.`,
+              requestedSchema: {
+                type: 'object',
+                properties: { confirm: { type: 'boolean', title: 'Delete the project' } },
+                required: ['confirm'],
+              },
+            });
+            if (answer.action !== 'accept' || answer.content?.['confirm'] !== true) {
+              return {
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: `Project "${project}" was not deleted: the user did not confirm.`,
+                  },
+                ],
+              };
             }
             // Throws on a Qdrant failure, so a failed delete is reported as one
             // rather than as success with the data still in place.
