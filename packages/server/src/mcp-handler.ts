@@ -2325,13 +2325,10 @@ export class McpHandler {
             }
             const answer = await ctx.mcpReq.elicitInput({
               message: `Delete project "${project}" from group "${group}"? Its code chunks, git metadata, symbol edges and indexed docs are removed.`,
-              requestedSchema: {
-                type: 'object',
-                properties: { confirm: { type: 'boolean', title: 'Delete the project' } },
-                required: ['confirm'],
-              },
+              // No fields: Accept is the yes. A required checkbox shows as an error before any answer.
+              requestedSchema: { type: 'object', properties: {} },
             });
-            if (answer.action !== 'accept' || answer.content?.['confirm'] !== true) {
+            if (answer.action !== 'accept') {
               return {
                 content: [
                   {

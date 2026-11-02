@@ -17,7 +17,7 @@
     "better-sqlite3": "^13.0.3",
     "chokidar": "^5.0.0",
     "express": "^5.3.0",
-    "glob": "^13.0.6",
+    "glob": "^14.0.3",
     "js-yaml": "^5.5.0",
     "node-cron": "^4.6.0",
     "simple-git": "^4.0.2",

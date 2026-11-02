@@ -87,26 +87,49 @@ describe('workflow skills', () => {
 
 describe('delete_project confirmation', () => {
   /** A client that can ask its user, with the given answer. */
-  function askingClient(action: 'accept' | 'decline' | 'cancel', confirm?: boolean) {
+  function askingClient(action: 'accept' | 'decline' | 'cancel') {
     const client = new Client(
       { name: 'test', version: '1.0.0' },
       { capabilities: { elicitation: { form: {} } } }
     );
     client.setRequestHandler('elicitation/create', async () =>
-      action === 'accept' ? { action, content: { confirm: confirm === true } } : { action }
+      action === 'accept' ? { action, content: {} } : { action }
     );
     return client;
   }
 
+  it('asks with the buttons alone, no field to fill in', async () => {
+    const asked = vi.fn();
+    const client = new Client(
+      { name: 'test', version: '1.0.0' },
+      { capabilities: { elicitation: { form: {} } } }
+    );
+    client.setRequestHandler('elicitation/create', async (request) => {
+      asked(request.params);
+      return { action: 'decline' };
+    });
+    const handler = createHandler({ purgeProject: vi.fn() });
+    const { close } = await connect(handler, 'coding', client);
+    try {
+      await client.callTool({
+        name: 'delete_project',
+        arguments: { group: 'g1', project: 'billing' },
+      });
+      expect(asked.mock.calls[0]![0].requestedSchema.properties).toEqual({});
+    } finally {
+      await close();
+      handler.destroy();
+    }
+  });
+
   it.each([
-    ['accept', true, 1],
-    ['accept', false, 0],
-    ['decline', undefined, 0],
-    ['cancel', undefined, 0],
-  ] as const)('answer %s, confirm %s: purges %i times', async (action, confirm, purges) => {
+    ['accept', 1],
+    ['decline', 0],
+    ['cancel', 0],
+  ] as const)('answer %s: purges %i times', async (action, purges) => {
     const purgeProject = vi.fn().mockResolvedValue(undefined);
     const handler = createHandler({ purgeProject });
-    const { client, close } = await connect(handler, 'coding', askingClient(action, confirm));
+    const { client, close } = await connect(handler, 'coding', askingClient(action));
     try {
       const result = await client.callTool({
         name: 'delete_project',
