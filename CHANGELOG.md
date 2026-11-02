@@ -4,6 +4,14 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.18.0] - 2026-11-02
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- 4cd6314: MCP TypeScript SDK 2. The server keeps speaking protocol revision 2025-11-25 with sessions, because `search_code` hides what it already returned in a session and the 2026-07-28 revision has no session to remember that in; clients that try the new revision fall back, as they do today. Tools, their schemas and the SSE routes stay as they were. The workflow prompts are also served as skills (`skill://trace-callers/SKILL.md`), for clients that load skills from a server. `delete_project` asks the user through the client and deletes nothing without a yes; a client that cannot ask, or has nobody to answer, gets a refusal, and `paparats remove` still works. The support instructions are shorter, because Claude Code cuts server instructions at 4096 characters and the agent never saw how to read a miss in the docs or the glossary. `record_lesson_from_correction` no longer renders a broken placeholder for its optional project.
+
 ## [2.17.0] - 2026-10-31
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
