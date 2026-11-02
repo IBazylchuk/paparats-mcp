@@ -22,6 +22,13 @@ describe('workflow prompts', () => {
     ]);
   });
 
+  it('instructions fit what clients show, with room for the scoped-projects suffix', () => {
+    // Claude Code cuts server instructions at 4096 characters: the tail is never seen.
+    for (const key of ['codingInstructions', 'supportInstructions'] as const) {
+      expect(prompts[key].length, key).toBeLessThanOrEqual(3900);
+    }
+  });
+
   it('every workflow has title, description, message, and well-formed args', () => {
     for (const [name, wf] of Object.entries(prompts.workflows)) {
       expect(wf.title, name).toBeTypeOf('string');

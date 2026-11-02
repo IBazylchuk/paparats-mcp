@@ -1,8 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import { v7 as uuidv7 } from 'uuid';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import {
+  Client,
+  InMemoryTransport,
+  StreamableHTTPClientTransport,
+} from '@modelcontextprotocol/client';
 import type { Searcher } from '../src/searcher.js';
 import type { Indexer } from '../src/indexer.js';
 import {
@@ -667,47 +670,7 @@ describe('McpHandler', () => {
     const port = (server.address() as { port: number }).port;
 
     try {
-      const initRes = await fetch(`http://127.0.0.1:${port}/mcp`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json, text/event-stream',
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          method: 'initialize',
-          params: {
-            protocolVersion: '2024-11-05',
-            capabilities: {},
-            clientInfo: { name: 'test', version: '1.0.0' },
-          },
-        }),
-      });
-
-      const sessionId = initRes.headers.get('mcp-session-id');
-      expect(sessionId).toBeTruthy();
-
-      const callRes = await fetch(`http://127.0.0.1:${port}/mcp`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json, text/event-stream',
-          'mcp-session-id': sessionId!,
-        },
-        body: JSON.stringify({
-          jsonrpc: '2.0',
-          id: 2,
-          method: 'tools/call',
-          params: { name: 'delete_project', arguments: { group: 'g1', project: 'test-project' } },
-        }),
-      });
-
-      expect(callRes.status).toBe(200);
-      const callBody = (await parseMcpResponse(callRes)) as {
-        result?: { content?: { text?: string }[] };
-      };
-      const text = callBody.result?.content?.[0]?.text;
+      const { text } = await deleteWithYes(port, { group: 'g1', project: 'test-project' });
       expect(text).toContain('Deleted project');
       expect(text).toContain('test-project');
       expect(indexer.purgeProject).toHaveBeenCalledWith('g1', 'test-project');
@@ -719,6 +682,33 @@ describe('McpHandler', () => {
   });
 
   // ── delete_project ──────────────────────────────────────────────────────
+
+  /** Calls delete_project over HTTP as a client whose user answers yes. */
+  async function deleteWithYes(
+    port: number,
+    args: { group: string; project: string }
+  ): Promise<{ text: string; isError: boolean }> {
+    const client = new Client(
+      { name: 'test', version: '1.0.0' },
+      { capabilities: { elicitation: { form: {} } } }
+    );
+    client.setRequestHandler('elicitation/create', async () => ({
+      action: 'accept',
+      content: { confirm: true },
+    }));
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`))
+    );
+    try {
+      const result = await client.callTool({ name: 'delete_project', arguments: args });
+      return {
+        text: (result.content as Array<{ text: string }>)[0]!.text,
+        isError: result.isError === true,
+      };
+    } finally {
+      await client.close();
+    }
+  }
 
   /** Spin up a handler + server, call delete_project, return the tool result. */
   async function runDeleteProject(
@@ -742,8 +732,7 @@ describe('McpHandler', () => {
     const port = (server.address() as { port: number }).port;
 
     try {
-      const { text, isError } = await callTool(port, 'delete_project', args);
-      return { text, isError };
+      return await deleteWithYes(port, args);
     } finally {
       server.close();
       handler2.destroy();

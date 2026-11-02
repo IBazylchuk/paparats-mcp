@@ -22,7 +22,7 @@ agent:
 | `change_impact`           | What depends on a chunk you are about to change: callers, their callers (2 steps by default, `depth` up to 3) and the tests that reach it. Callers linked only through a name defined in several places, or only through a common method name (`add`, `get`, `close`), are listed apart as probably unrelated; one kept because its file also uses something specific from the changed file is marked `[maybe]`. Steps count calls between methods, calls inside a file included, and `depth` limits steps: what lies further is counted, not listed. On symbols stored before calls inside a chunk were recorded the count past such a call is a lower bound ("at least 3 steps away"). `symbol` narrows it to one name, `whole_file` takes the whole file. |
 | `module_map`              | The modules of a codebase from the call graph: files that call each other much more than the rest, split by package or app, named after the folder (or two) holding much of the module and little else, with main files (the most called files there) and how many of its files those folders hold, of all the code files in them (a module is not its folder: it may hold files of other folders, and its folder files of other modules), which modules each one uses and is used by, each link with its number of importing files (imports between the folders the modules are named after, by importing files: a file counts for the module whose folder holds it most closely, whichever module it is grouped into; listed per folder for a module named after two), the folders no module is named after that it imports from, its tests and the shared code, and the imports between the project's top folders (`app`, `features`, `lib` under `src`). Two modules are never shown under one name. Ends with a Mermaid diagram. |
 | `list_projects`           | Indexed projects with chunk counts and languages.                                                                             |
-| `delete_project`          | Delete a project's chunks and metadata (`paparats remove` does the same over HTTP).                                           |
+| `delete_project`          | Delete a project's chunks and metadata, after the user confirms through the client. A client that cannot ask gets a refusal; `paparats remove` does the same over HTTP. |
 | `health_check`            | Server version, chunks per group, and the indexer: last run, each repository's status and last error.                         |
 | `search_docs`             | Search the indexed markdown documentation (needs `INDEX_DOCS=true`).                                                          |
 | `arch_context`            | Read architectural memory: components, decisions and lessons for a question, each with an "updated N ago" stamp; `min_score` cuts weak matches. |
@@ -68,9 +68,16 @@ MCP prompts are ready-made tasks the client can start by name.
 | support       | `triage_incident`, `prepare_release_notes`, `assess_change_impact`, `onboard_to_project`                                 |
 | knowledge     | none                                                                                                                     |
 
+## Skills
+
+The same workflows are served as skills, through the Skills over MCP extension (`io.modelcontextprotocol/skills`), under
+hyphenated names: `skill://trace-callers/SKILL.md`. A skill finds its inputs in the task, a prompt asks for them. The
+extension is in beta and few clients load skills from a server: Claude Code 2.1.316 does not call `skills/list` and sees
+them as ordinary resources. The knowledge endpoint serves none.
+
 ## Resources
 
-On the coding and support endpoints:
+On the coding and support endpoints, next to the skills:
 
 - `context://project-overview`: indexed groups and projects with chunk counts;
 - `arch://schema`: the card format of architectural memory and its duplicate thresholds;
