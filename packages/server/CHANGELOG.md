@@ -1,5 +1,13 @@
 # @paparats/server
 
+## 2.18.1
+
+### Patch Changes
+
+- 39f2e99: The `delete_project` question shows just Accept and Decline. It also had a required checkbox, which Claude Code displayed as an error before any answer.
+- e8239a0: Security: glob 14 and minimatch 11 (GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249). The CLI and the server no longer declare minimatch, which they did not use.
+  - @paparats/shared@2.18.1
+
 ## 2.18.0
 
 ### Minor Changes
