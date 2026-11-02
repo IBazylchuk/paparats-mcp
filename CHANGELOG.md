@@ -4,6 +4,15 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.18.1] - 2026-11-02
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- e8239a0: Security: glob 14 and minimatch 11 (GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249). The CLI and the server no longer declare minimatch, which they did not use.
+- 39f2e99: The `delete_project` question shows just Accept and Decline. It also had a required checkbox, which Claude Code displayed as an error before any answer.
+
 ## [2.18.0] - 2026-11-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
