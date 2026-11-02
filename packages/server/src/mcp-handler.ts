@@ -2,15 +2,14 @@ import { createRequire } from 'node:module';
 import { v7 as uuidv7 } from 'uuid';
 import type { Express, Request, Response } from 'express';
 import { z } from 'zod';
-import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { SSEServerTransport } from '@modelcontextprotocol/server-legacy/sse';
+import { NodeStreamableHTTPServerTransport } from '@modelcontextprotocol/node';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/server';
+import type { ToolAnnotations, Transport } from '@modelcontextprotocol/server';
 
 const require = createRequire(import.meta.url);
 const { version: PKG_VERSION } = require('../package.json') as { version: string };
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { Searcher } from './searcher.js';
 import type { Indexer } from './indexer.js';
 import { parseChunkId } from './indexer.js';
@@ -22,6 +21,7 @@ import {
   buildWorkflowArgsSchema,
   interpolateWorkflowMessage,
 } from './prompts/index.js';
+import { loadWorkflowSkills } from './workflow-skills.js';
 import type { Telemetry } from './telemetry/facade.js';
 import { tctx } from './telemetry/context.js';
 import type { AnalyticsStore } from './telemetry/analytics-store.js';
@@ -974,7 +974,7 @@ export interface McpHandlerConfig {
 }
 
 type TransportEntry = {
-  transport: SSEServerTransport | StreamableHTTPServerTransport;
+  transport: SSEServerTransport | NodeStreamableHTTPServerTransport;
   created: number;
   lastActivity: number;
 };
@@ -1236,6 +1236,12 @@ export const SUPPORT_PROMPTS = [
 ];
 /** None: every workflow drives tools the knowledge mode does not have. */
 export const KNOWLEDGE_PROMPTS: string[] = [];
+
+/** Each mode's workflows as skills too, for clients that load skills from a server. */
+const WORKFLOW_SKILLS = {
+  coding: await loadWorkflowSkills(CODING_PROMPTS),
+  support: await loadWorkflowSkills(SUPPORT_PROMPTS),
+};
 
 export class McpHandler {
   private searcher: Searcher;
@@ -1534,9 +1540,7 @@ export class McpHandler {
 
     const server = new McpServer({ name: 'paparats-mcp', version: PKG_VERSION }, { instructions });
 
-    // Wrap every registered handler in telemetry. Both registration methods are
-    // patched: `registerTool` is what this file uses, `tool` is the deprecated
-    // form the SDK still accepts. Patching only one silently empties tool_calls.
+    // Wrap every registered handler in telemetry.
     if (this.telemetry) {
       const instrument = this.instrumentTool.bind(this);
       const wrapHandler = (args: unknown[]): unknown[] => {
@@ -1554,15 +1558,14 @@ export class McpHandler {
       ) => unknown;
       server.registerTool = ((...args: unknown[]) =>
         originalRegisterTool(...wrapHandler(args))) as typeof server.registerTool;
-
-      const originalTool = server.tool.bind(server) as (...args: unknown[]) => unknown;
-      server.tool = ((...args: unknown[]) =>
-        originalTool(...wrapHandler(args))) as typeof server.tool;
     }
 
     // Resources describe the deployment (groups, projects, chunk counts, arch
     // stats) — none of it is for the knowledge consumer.
-    if (mode !== 'knowledge') this.registerResources(server, scope);
+    if (mode !== 'knowledge') {
+      this.registerResources(server, scope);
+      WORKFLOW_SKILLS[mode].attach(server);
+    }
 
     this.registerTools(server, mode, tools, scope, docsScope);
 
@@ -1577,7 +1580,7 @@ export class McpHandler {
         {
           title: workflow.title,
           description: workflow.description,
-          argsSchema: buildWorkflowArgsSchema(workflow.args),
+          argsSchema: z.object(buildWorkflowArgsSchema(workflow.args)),
         },
         (rawArgs) => {
           const args = rawArgs as Record<string, string | undefined>;
@@ -1601,7 +1604,7 @@ export class McpHandler {
 
   private registerResources(server: McpServer, scope: ProjectScopeGuard): void {
     // ── Resource: project overview ──────────────────────────────────────────
-    server.resource('project-overview', 'context://project-overview', async () => {
+    server.registerResource('project-overview', 'context://project-overview', {}, async () => {
       try {
         const groupMap = this.getProjects();
         const sections: string[] = ['# Indexed Projects', ''];
@@ -1652,7 +1655,7 @@ export class McpHandler {
     });
 
     // ── Resource: arch://schema (static) ────────────────────────────────────
-    server.resource('arch-schema', 'arch://schema', async () => ({
+    server.registerResource('arch-schema', 'arch://schema', {}, async () => ({
       contents: [
         {
           uri: 'arch://schema',
@@ -1669,9 +1672,10 @@ export class McpHandler {
     if (this.archStore) {
       const archStore = this.archStore;
       const metrics = this.metrics;
-      server.resource(
+      server.registerResource(
         'arch-stats',
         new ResourceTemplate('arch://stats/{group}', { list: undefined }),
+        {},
         async (uri, vars) => {
           const groupRaw = (vars as { group?: string | string[] }).group;
           const group = Array.isArray(groupRaw) ? groupRaw[0] : groupRaw;
@@ -1753,12 +1757,12 @@ export class McpHandler {
         {
           title: prompts.tools.search_code.title,
           description: prompts.tools.search_code.description,
-          inputSchema: {
+          inputSchema: z.object({
             query: z.string().describe('Natural language query or code snippet'),
             group: z.string().optional().describe('Specific group or omit for all'),
             project: z.string().default('all').describe('Project name or "all"'),
             limit: z.coerce.number().min(1).max(20).default(5).describe('Max results'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ query, group, project, limit }) => {
@@ -1897,7 +1901,7 @@ export class McpHandler {
         {
           title: prompts.tools.health_check.title,
           description: prompts.tools.health_check.description,
-          inputSchema: {},
+          inputSchema: z.object({}),
           annotations: READ_ONLY,
         },
         async () => {
@@ -1945,7 +1949,7 @@ export class McpHandler {
         {
           title: prompts.tools.get_chunk.title,
           description: prompts.tools.get_chunk.description,
-          inputSchema: {
+          inputSchema: z.object({
             chunk_id: z.string().describe('Chunk ID from search_code results'),
             radius_lines: z.coerce
               .number()
@@ -1953,7 +1957,7 @@ export class McpHandler {
               .max(200)
               .default(0)
               .describe('Lines of surrounding context to include (0-200)'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ chunk_id: rawChunkId, radius_lines }) => {
@@ -2053,7 +2057,7 @@ export class McpHandler {
         {
           title: prompts.tools.get_chunk_meta.title,
           description: prompts.tools.get_chunk_meta.description,
-          inputSchema: {
+          inputSchema: z.object({
             chunk_id: z.string().describe('Chunk ID from search_code results'),
             commit_limit: z.coerce
               .number()
@@ -2061,7 +2065,7 @@ export class McpHandler {
               .max(50)
               .default(10)
               .describe('Max number of recent commits to return'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ chunk_id: rawChunkId, commit_limit }) => {
@@ -2160,7 +2164,7 @@ export class McpHandler {
         {
           title: prompts.tools.search_changes.title,
           description: prompts.tools.search_changes.description,
-          inputSchema: {
+          inputSchema: z.object({
             query: z.string().describe('Semantic search query'),
             since: z
               .string()
@@ -2171,7 +2175,7 @@ export class McpHandler {
             group: z.string().optional().describe('Specific group or omit for all'),
             project: z.string().default('all').describe('Project name or "all"'),
             limit: z.coerce.number().min(1).max(20).default(5).describe('Max results'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ query, since: sinceArg, group, project, limit }) => {
@@ -2288,13 +2292,13 @@ export class McpHandler {
         {
           title: prompts.tools.delete_project.title,
           description: prompts.tools.delete_project.description,
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().describe('Group name (collection) the project belongs to'),
             project: z.string().describe('Project name to delete'),
-          },
+          }),
           annotations: DESTRUCTIVE,
         },
-        async ({ group, project }) => {
+        async ({ group, project }, ctx) => {
           try {
             validateGroupName(group);
             if (!scope.allowsProject(project)) {
@@ -2307,6 +2311,27 @@ export class McpHandler {
                 ],
                 isError: true,
               };
+            }
+            // The client asks its user, when it can. Anything but a yes keeps the project.
+            if (server.server.getClientCapabilities()?.elicitation) {
+              const answer = await ctx.mcpReq.elicitInput({
+                message: `Delete project "${project}" from group "${group}"? Its code chunks, git metadata, symbol edges and indexed docs are removed.`,
+                requestedSchema: {
+                  type: 'object',
+                  properties: { confirm: { type: 'boolean', title: 'Delete the project' } },
+                  required: ['confirm'],
+                },
+              });
+              if (answer.action !== 'accept' || answer.content?.['confirm'] !== true) {
+                return {
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `Project "${project}" was not deleted: the user did not confirm.`,
+                    },
+                  ],
+                };
+              }
             }
             // Throws on a Qdrant failure, so a failed delete is reported as one
             // rather than as success with the data still in place.
@@ -2351,7 +2376,7 @@ export class McpHandler {
         {
           title: prompts.tools.find_usages.title,
           description: prompts.tools.find_usages.description,
-          inputSchema: {
+          inputSchema: z.object({
             chunk_id: z.string().describe('Chunk ID to find usages of'),
             direction: z
               .enum(['incoming', 'outgoing', 'both'])
@@ -2387,7 +2412,7 @@ export class McpHandler {
               .describe(
                 'When true (default) callers/callees whose own degree is above the group p95 are surfaced with a `[hub]` marker so the agent knows the link is noisy. Set false to drop hub neighbours entirely — useful when probing a specific path through the codebase.'
               ),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ chunk_id: rawChunkId, direction, relation_types, limit, include_hubs }) => {
@@ -2623,7 +2648,7 @@ export class McpHandler {
         {
           title: prompts.tools.change_impact.title,
           description: prompts.tools.change_impact.description,
-          inputSchema: {
+          inputSchema: z.object({
             chunk_id: z.string().describe('Chunk you are about to change (from search_code)'),
             whole_file: z
               .boolean()
@@ -2647,7 +2672,7 @@ export class McpHandler {
               .max(100)
               .default(40)
               .describe('Max dependents to list, and apart from them max tests'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ chunk_id: rawChunkId, whole_file, symbol, depth, limit }) => {
@@ -2724,7 +2749,7 @@ export class McpHandler {
         {
           title: prompts.tools.module_map.title,
           description: prompts.tools.module_map.description,
-          inputSchema: {
+          inputSchema: z.object({
             group: z
               .string()
               .optional()
@@ -2745,7 +2770,7 @@ export class McpHandler {
               .describe(
                 'Append a Mermaid diagram of the shown modules (rendered by clients that support Mermaid)'
               ),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ group, project, limit, diagram }) => {
@@ -2831,12 +2856,12 @@ export class McpHandler {
         {
           title: prompts.tools.explain_feature.title,
           description: prompts.tools.explain_feature.description,
-          inputSchema: {
+          inputSchema: z.object({
             question: z.string().describe('Natural language question about a feature'),
             group: z.string().optional().describe('Specific group or omit for all'),
             project: z.string().default('all').describe('Project name or "all"'),
             limit: z.coerce.number().min(1).max(10).default(5).describe('Max seed chunks'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ question, group, project, limit }) => {
@@ -3120,7 +3145,7 @@ export class McpHandler {
         {
           title: prompts.tools.recent_changes.title,
           description: prompts.tools.recent_changes.description,
-          inputSchema: {
+          inputSchema: z.object({
             question: z.string().describe('Semantic search query'),
             since: z
               .string()
@@ -3129,7 +3154,7 @@ export class McpHandler {
             group: z.string().optional().describe('Specific group or omit for all'),
             project: z.string().default('all').describe('Project name or "all"'),
             limit: z.coerce.number().min(1).max(20).default(10).describe('Max seed chunks'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ question, since: sinceArg, group, project, limit }) => {
@@ -3350,7 +3375,7 @@ export class McpHandler {
         {
           title: prompts.tools.impact_analysis.title,
           description: prompts.tools.impact_analysis.description,
-          inputSchema: {
+          inputSchema: z.object({
             question: z.string().describe('Natural language query about code to analyze'),
             group: z.string().optional().describe('Specific group or omit for all'),
             project: z.string().default('all').describe('Project name or "all"'),
@@ -3361,7 +3386,7 @@ export class McpHandler {
               .max(2)
               .default(1)
               .describe('Graph traversal depth (1-2)'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ question, group, project, limit, max_hops }) => {
@@ -3637,12 +3662,12 @@ export class McpHandler {
         {
           title: prompts.tools.list_projects.title,
           description: prompts.tools.list_projects.description,
-          inputSchema: {
+          inputSchema: z.object({
             group: z
               .string()
               .optional()
               .describe('Specific group name, or omit to list all groups'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ group }) => {
@@ -3704,7 +3729,7 @@ export class McpHandler {
 
     // ── Analytics tools (support mode + analytics enabled) ─────────────────
     if (this.analytics) {
-      const periodSchema = {
+      const periodSchema = z.object({
         since_ms: z.coerce
           .number()
           .optional()
@@ -3712,7 +3737,7 @@ export class McpHandler {
         until_ms: z.coerce.number().optional().describe('Period end (unix ms). Defaults to now.'),
         user: z.string().optional().describe('Filter by user id'),
         group: z.string().optional().describe('Filter by group name'),
-      } as const;
+      });
 
       const renderJson = (
         label: string,
@@ -3754,7 +3779,10 @@ export class McpHandler {
             title: ANALYTICS_TOOL_TITLES['top_queries']!,
             description:
               'Most-frequent queries by query_hash with one example, count, avg latency, avg result count.',
-            inputSchema: { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
+            inputSchema: z.object({
+              ...periodSchema.shape,
+              limit: z.coerce.number().min(1).max(100).default(20),
+            }),
             annotations: READ_ONLY,
           },
           async ({ since_ms, until_ms, user, group, limit }) => {
@@ -3778,7 +3806,10 @@ export class McpHandler {
           {
             title: ANALYTICS_TOOL_TITLES['slowest_searches']!,
             description: 'Slowest individual searches in the period.',
-            inputSchema: { ...periodSchema, limit: z.coerce.number().min(1).max(100).default(20) },
+            inputSchema: z.object({
+              ...periodSchema.shape,
+              limit: z.coerce.number().min(1).max(100).default(20),
+            }),
             annotations: READ_ONLY,
           },
           async ({ since_ms, until_ms, user, group, limit }) => {
@@ -3872,7 +3903,7 @@ export class McpHandler {
           description:
             prompts.tools['arch_context']?.description ??
             'Retrieve architectural memory relevant to a question or set of touched files.',
-          inputSchema: {
+          inputSchema: z.object({
             question: z
               .string()
               .describe('Question, or comma-separated list of files being touched'),
@@ -3905,7 +3936,7 @@ export class McpHandler {
               .describe(
                 'Per-kind result limits — components, decisions, and lessons each get their own top-N so a verbose decision bucket cannot starve components out of the output. Default is 5 per kind. Set a kind to 0 to suppress it entirely.'
               ),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ question, group, min_score, project, limits }) => {
@@ -3971,7 +4002,7 @@ export class McpHandler {
           description:
             prompts.tools['arch_record_component']?.description ??
             'Record or update an architectural component.',
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().describe('Target group'),
             project: z
               .string()
@@ -4013,7 +4044,7 @@ export class McpHandler {
               .describe(
                 'Exported class / function / constant names that survive refactors. Used later to verify the card is not pointing at deleted code. Left out on an update, the card keeps its list.'
               ),
-          },
+          }),
           annotations: ADDITIVE_WRITE,
         },
         async ({ group, project, name, summary, files, neighbours, anchors }) => {
@@ -4053,7 +4084,7 @@ export class McpHandler {
           description:
             prompts.tools['arch_record_decision']?.description ??
             'Record an architectural decision.',
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().describe('Target group'),
             project: z
               .string()
@@ -4092,7 +4123,7 @@ export class McpHandler {
               .describe(
                 'Id of a previous decision this one replaces. Bypasses the duplicate gate — pass only when you are deliberately replacing a known prior decision.'
               ),
-          },
+          }),
           annotations: NON_IDEMPOTENT_WRITE,
         },
         async ({
@@ -4138,7 +4169,7 @@ export class McpHandler {
         {
           title: prompts.tools['arch_record_lesson']?.title ?? 'Record a lesson.',
           description: prompts.tools['arch_record_lesson']?.description ?? 'Record a lesson.',
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().describe('Target group'),
             project: z
               .string()
@@ -4169,7 +4200,7 @@ export class McpHandler {
               .nullable()
               .optional()
               .describe('Optional commit hash, PR link, or short quote backing the lesson.'),
-          },
+          }),
           annotations: ADDITIVE_WRITE,
         },
         async ({ group, project, rule, why, when, scope: lessonScope, severity, evidence }) => {
@@ -4200,7 +4231,7 @@ export class McpHandler {
         {
           title: prompts.tools['arch_list']?.title ?? 'List all arch cards in a group.',
           description: prompts.tools['arch_list']?.description ?? 'List all arch cards in a group.',
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().min(1).describe('Group to list cards from.'),
             project: z
               .string()
@@ -4230,7 +4261,7 @@ export class McpHandler {
               .describe(
                 'Optional. Resume cursor from a previous call (`next_offset`). Pass the value verbatim — strings that look like JSON (start with `{` or `[`) are parsed back to the structured form Qdrant emits. Omit for the first page.'
               ),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ group, project, kinds, include_history, limit, offset }) => {
@@ -4306,7 +4337,7 @@ export class McpHandler {
           description:
             prompts.tools['arch_suggest_components']?.description ??
             'Suggest candidate components to record based on symbol-graph centrality.',
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().min(1).describe('Group to analyse.'),
             project: z
               .string()
@@ -4320,7 +4351,7 @@ export class McpHandler {
               .max(50)
               .optional()
               .describe('Optional. Max suggestions to return. Default 10.'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ group, project, limit }) => {
@@ -4453,7 +4484,7 @@ export class McpHandler {
         {
           title: prompts.tools['arch_delete']?.title ?? 'Hard-delete arch cards by id.',
           description: prompts.tools['arch_delete']?.description ?? 'Hard-delete arch cards by id.',
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().min(1).describe('Group the cards live in.'),
             ids: z
               .array(z.string().min(1))
@@ -4461,7 +4492,7 @@ export class McpHandler {
               .describe(
                 'Card ids to delete. Idempotent: ids that no longer exist are reported in `notFound` but do not fail the call.'
               ),
-          },
+          }),
           annotations: DESTRUCTIVE,
         },
         async ({ group, ids }) => {
@@ -4497,7 +4528,7 @@ export class McpHandler {
           description:
             prompts.tools['search_docs']?.description ??
             'Hybrid (semantic + keyword) search over indexed markdown documentation. Returns doc-merged passages with title, heading path, and source link.',
-          inputSchema: {
+          inputSchema: z.object({
             query: z.string().min(1).describe('Natural-language documentation query.'),
             project: z
               .string()
@@ -4540,7 +4571,7 @@ export class McpHandler {
                   'as overviews and score deceptively well against questions they do not answer. ' +
                   'Pass 0 to disable for this kind only.'
               ),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ query, project, group, audience, limit, min_score, min_score_code }) => {
@@ -4640,7 +4671,7 @@ export class McpHandler {
           description:
             prompts.tools['term_search']?.description ??
             'Search the company glossary for a term, abbreviation, or domain concept.',
-          inputSchema: {
+          inputSchema: z.object({
             query: z.string().min(1).describe('Term, abbreviation, or concept to look up.'),
             project: z
               .string()
@@ -4649,7 +4680,7 @@ export class McpHandler {
               .describe('Restrict to a project, or omit for all.'),
             group: z.string().optional().describe('Specific group, or omit for all groups.'),
             limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ query, project, group, limit }) => {
@@ -4700,7 +4731,7 @@ export class McpHandler {
         {
           title: prompts.tools['term_list']?.title ?? 'List glossary terms in a group.',
           description: prompts.tools['term_list']?.description ?? 'List glossary terms in a group.',
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().optional().describe('Specific group, or omit for all groups.'),
             project: z
               .string()
@@ -4708,7 +4739,7 @@ export class McpHandler {
               .optional()
               .describe('Restrict to a project, or omit for all.'),
             limit: z.number().int().min(1).max(500).optional().describe('Max terms. Default 200.'),
-          },
+          }),
           annotations: READ_ONLY,
         },
         async ({ group, project, limit }) => {
@@ -4749,7 +4780,7 @@ export class McpHandler {
           description:
             prompts.tools['term_record']?.description ??
             'Record a glossary term. Goes through a duplicate/similar gate — reconcile with the matched term if one is returned.',
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().min(1).describe('Group the term belongs to.'),
             term: z.string().min(1).describe('The canonical term, e.g. "lantern-sync".'),
             definition: z.string().min(1).describe('Plain-language definition.'),
@@ -4764,7 +4795,7 @@ export class McpHandler {
               .min(1)
               .optional()
               .describe('Project scope, or omit for group-wide.'),
-          },
+          }),
           annotations: ADDITIVE_WRITE,
         },
         async ({ group, term, definition, aliases, project }) => {
@@ -4796,10 +4827,10 @@ export class McpHandler {
         {
           title: prompts.tools['term_delete']?.title ?? 'Delete a glossary term by id.',
           description: prompts.tools['term_delete']?.description ?? 'Delete a glossary term by id.',
-          inputSchema: {
+          inputSchema: z.object({
             group: z.string().min(1).describe('Group the term lives in.'),
             id: z.string().min(1).describe('Term id to delete.'),
-          },
+          }),
           annotations: DESTRUCTIVE,
         },
         async ({ group, id }) => {
@@ -4908,7 +4939,7 @@ export class McpHandler {
       {
         title: text.title ?? 'Search Documentation',
         description: text.description,
-        inputSchema: {
+        inputSchema: z.object({
           query: z
             .string()
             .min(1)
@@ -4933,8 +4964,8 @@ export class McpHandler {
                 'widen past them: a label the endpoint does not serve matches nothing.'
             ),
           limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
-        },
-        outputSchema: { hits: z.array(DOCS_HIT_OUTPUT) },
+        }),
+        outputSchema: z.object({ hits: z.array(DOCS_HIT_OUTPUT) }),
         annotations: READ_ONLY,
       },
       async ({ query, project, group, audience, limit }) => {
@@ -4989,7 +5020,7 @@ export class McpHandler {
       {
         title: text?.title ?? 'Get Document',
         description: text?.description ?? fallback,
-        inputSchema: {
+        inputSchema: z.object({
           project: z
             .string()
             .min(1)
@@ -5011,8 +5042,8 @@ export class McpHandler {
             .min(1)
             .optional()
             .describe('1-based section to start from when paging through a long document.'),
-        },
-        outputSchema: DOCUMENT_OUTPUT,
+        }),
+        outputSchema: z.object(DOCUMENT_OUTPUT),
         annotations: READ_ONLY,
       },
       async ({ project, file, group, from_section }) => {
@@ -5182,7 +5213,7 @@ export class McpHandler {
           let resolvedSessionId: string | null = null;
           const server = this.createMcpServer(mode);
 
-          const transport = new StreamableHTTPServerTransport({
+          const transport = new NodeStreamableHTTPServerTransport({
             sessionIdGenerator: () => uuidv7(),
             onsessioninitialized: (sid) => {
               resolvedSessionId = sid;
@@ -5208,7 +5239,7 @@ export class McpHandler {
           };
 
           await server.connect(transport);
-          await (transport as StreamableHTTPServerTransport).handleRequest(req, res, req.body);
+          await (transport as NodeStreamableHTTPServerTransport).handleRequest(req, res, req.body);
         } finally {
           this.sessionCreationLocks.delete(lockKey);
         }
@@ -5237,7 +5268,7 @@ export class McpHandler {
 
         try {
           const server = this.createMcpServer(mode);
-          const transport = new StreamableHTTPServerTransport({
+          const transport = new NodeStreamableHTTPServerTransport({
             sessionIdGenerator: () => sessionId,
           });
 
@@ -5338,7 +5369,7 @@ export class McpHandler {
     try {
       if (this.isInitializeRequest(req.body)) await this.syncGroupsWithTimeout();
       const server = this.createMcpServer('knowledge');
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const transport = new NodeStreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on('close', () => {
         server.close().catch((err: unknown) => {
           console.warn(`[mcp] Failed to close knowledge server: ${(err as Error).message}`);
