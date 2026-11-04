@@ -4,6 +4,14 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.18.2] - 2026-11-04
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Patch Changes
+
+- 9c9dbd0: Docs search: BM25 keywords count each word's rarity once, through Qdrant's IDF modifier, instead of twice (once baked into the stored vectors at index time, and again in the query). English words are cut to their stem, so `creating` finds `created`, and question words such as `how`, `what` and `why` no longer count as keywords. Existing docs collections are rebuilt on the next start, without re-walking the sources.
+
 ## [2.18.1] - 2026-11-02
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
