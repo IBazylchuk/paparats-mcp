@@ -14,8 +14,11 @@ nothing.
 Documents go into their own collection per group, `paparats_<group>_docs`, embedded with
 Qwen3-Embedding-0.6B (or the cloud provider's text model). Unlike code search, docs search
 is hybrid: vectors plus BM25 keywords, merged with reciprocal rank fusion. Keywords are
-words of any script (accents on Latin letters dropped, so `cafe` finds `café`); Chinese
-and Japanese text, written without spaces, is matched by two-character pieces. Results are
+words of any script (accents on Latin letters dropped, so `cafe` finds `café`); English
+words are cut to their stem (`creating` finds `created`) and question words such as `how`
+or `why` are left out. Chinese and Japanese text, written without spaces, is matched by
+two-character pieces. Qdrant weighs each keyword by how rare it is in the collection, so
+the weights follow the documents as they change. Results are
 excerpts with their heading path and source link; `get_document` returns a whole page
 section by section.
 

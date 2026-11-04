@@ -20,6 +20,7 @@ import {
   DOCS_SPARSE_VECTOR,
   toDocsCollectionName,
 } from '../../src/docs/collection.js';
+import { TOKENIZER_VERSION } from '../../src/docs/bm25.js';
 import type { CachedEmbeddingProvider } from '../../src/embeddings.js';
 import type { QdrantClient } from '@qdrant/js-client-rest';
 
@@ -872,6 +873,74 @@ describe('DocsStore.healAllDocsModels', () => {
     // Re-upserted the chunk + re-stamped the meta.
     expect(qdrant.upsert).toHaveBeenCalled();
   });
+
+  it('rebuilds a group whose sparse vectors predate the current tokenizer', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.getCollections.mockResolvedValue({
+      collections: [{ name: toDocsCollectionName('g') }],
+    });
+    qdrant.retrieve.mockResolvedValue([
+      { payload: { __meta: true, model: 'qwen3-embedding-0.6b', dimensions: 1024 } },
+    ]);
+    qdrant.scroll
+      .mockResolvedValueOnce({
+        points: [{ id: 'c1', payload: { file: 'x.md', content: 'creating campaigns' } }],
+        next_page_offset: null,
+      })
+      .mockResolvedValue({ points: [], next_page_offset: null });
+    qdrant.getCollection.mockResolvedValue({
+      config: {
+        params: {
+          vectors: { [DOCS_DENSE_VECTOR]: { size: 1024 } },
+          sparse_vectors: { [DOCS_SPARSE_VECTOR]: {} },
+        },
+      },
+    });
+    const store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf: mkIdf(),
+    });
+
+    await store.healAllDocsModels();
+
+    // No IDF modifier on the old collection, so it is recreated to get one.
+    expect(qdrant.deleteCollection).toHaveBeenCalledWith(toDocsCollectionName('g'));
+    const upserted = qdrant.upsert.mock.calls.flatMap(
+      (call) => (call[1] as { points: Array<{ payload: Record<string, unknown> }> }).points
+    );
+    expect(upserted.find((p) => p.payload['file'] === 'x.md')).toBeDefined();
+    expect(upserted.find((p) => p.payload['__meta'] === true)!.payload).toMatchObject({
+      tokenizer_version: TOKENIZER_VERSION,
+    });
+  });
+
+  it('leaves a group alone when model and tokenizer are current', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.getCollections.mockResolvedValue({
+      collections: [{ name: toDocsCollectionName('g') }],
+    });
+    qdrant.retrieve.mockResolvedValue([
+      {
+        payload: {
+          __meta: true,
+          model: 'qwen3-embedding-0.6b',
+          dimensions: 1024,
+          tokenizer_version: TOKENIZER_VERSION,
+        },
+      },
+    ]);
+    const store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf: mkIdf(),
+    });
+
+    await store.healAllDocsModels();
+
+    expect(qdrant.scroll).not.toHaveBeenCalled();
+    expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
 });
 
 describe('normalizeAudience', () => {
@@ -1117,6 +1186,30 @@ describe('DocsStore.reindexDocs', () => {
     await expect(store.reindexDocs('g')).rejects.toThrow('embed server down');
     expect(qdrant.deleteCollection).not.toHaveBeenCalled();
     expect(qdrant.upsert).not.toHaveBeenCalled();
+  });
+
+  it('keeps a collection that already has the IDF modifier and the same size', async () => {
+    const qdrant = fakeQdrant();
+    qdrant.scroll.mockResolvedValue({
+      points: [{ id: 1, payload: { file: 'a.md', content: 'deploy steps' } }],
+      next_page_offset: null,
+    });
+    qdrant.getCollection.mockResolvedValue({
+      config: {
+        params: {
+          vectors: { [DOCS_DENSE_VECTOR]: { size: 1024 } },
+          sparse_vectors: { [DOCS_SPARSE_VECTOR]: { modifier: 'idf' } },
+        },
+      },
+    });
+    const store = new DocsStore({
+      qdrant: qdrant as unknown as QdrantClient,
+      provider: fakeProvider(),
+      idf: mkIdf(),
+    });
+
+    expect(await store.reindexDocs('g')).toBe(1);
+    expect(qdrant.deleteCollection).not.toHaveBeenCalled();
   });
 });
 

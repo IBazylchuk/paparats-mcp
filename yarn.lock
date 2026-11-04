@@ -1110,6 +1110,7 @@ __metadata:
     graphql: "npm:^17.0.2"
     js-yaml: "npm:^5.5.0"
     p-queue: "npm:^10.0.0"
+    stemmer: "npm:^2.0.1"
     tree-sitter-wasms: "npm:^0.1.13"
     typescript: "npm:^6.0.3"
     uuid: "npm:^14.0.3"
@@ -4279,6 +4280,15 @@ __metadata:
   version: 0.3.2
   resolution: "stdin-discarder@npm:0.3.2"
   checksum: 10c0/5dbaba9efbcb447a4450d5ae19794641ea9166abe96dc4b5547a109db1bb6e8bdb17bbe1029e02ca8d9d8ee996b7c7cbcce12b12c18c121871cd4f574292381a
+  languageName: node
+  linkType: hard
+
+"stemmer@npm:^2.0.1":
+  version: 2.0.1
+  resolution: "stemmer@npm:2.0.1"
+  bin:
+    stemmer: cli.js
+  checksum: 10c0/e91a6c4c13190bb242290d10ef34db0cbc0c2b9a58ec00c9e6dc23d056389163d3cafcbf54f54945b33702d6fca7ac095892cebf57c35dada61ae75730a3c315
   languageName: node
   linkType: hard
 

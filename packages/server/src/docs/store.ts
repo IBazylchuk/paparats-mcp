@@ -15,6 +15,7 @@ import {
   buildDocumentSparseVector,
   buildQuerySparseVector,
   tokenize,
+  TOKENIZER_VERSION,
   type SparseVector,
 } from './bm25.js';
 import type { DocsIdfStore } from './idf-store.js';
@@ -371,8 +372,7 @@ export class DocsStore {
     // bare 74.5% precision@1 with 28/30 absent topics leaking past the floor,
     // instructed 87.3% with 5/30. Documents stay unprefixed — see prefixPassage.
     const dense = await this.provider.embedQuery(query);
-    const stats = this.idf.getCorpusStats(group);
-    const sparse = buildQuerySparseVector(query, stats);
+    const sparse = buildQuerySparseVector(query);
 
     // Build the prefetch filter from project + audience clauses. Both are `must`
     // (AND). The audience clause is match-any over the requested labels; a chunk
@@ -686,10 +686,12 @@ export class DocsStore {
 
   /**
    * Re-embed every chunk in the group's docs collection with the current
-   * provider. Needed after a text-model swap — the docs collection is
-   * source-driven, but a full re-walk only happens on the indexer's schedule, so
-   * this heals in place at startup. On a dimension change the collection is
-   * dropped and recreated. Corpus IDF is rebuilt from the re-scanned chunks.
+   * provider and rebuild its sparse vectors. Needed after a text-model swap or a
+   * `TOKENIZER_VERSION` change — the docs collection is source-driven, but a full
+   * re-walk only happens on the indexer's schedule, so this heals in place at
+   * startup. On a dimension change, or when the sparse vector lacks Qdrant's
+   * `idf` modifier (collections made before it), the collection is dropped and
+   * recreated. Corpus stats are rebuilt from the re-scanned chunks.
    *
    * Returns the number of chunks re-embedded (0 if empty/missing/current).
    */
@@ -747,16 +749,20 @@ export class DocsStore {
       });
     }
 
-    let dimensionChanged: boolean;
+    let recreate: boolean;
     try {
       const info = await this.qdrant.getCollection(collection);
-      const vectors = info.config?.params?.vectors as Record<string, { size?: number }> | undefined;
+      const params = info.config?.params;
+      const vectors = params?.vectors as Record<string, { size?: number }> | undefined;
       const size = vectors?.[DOCS_DENSE_VECTOR]?.size;
-      dimensionChanged = typeof size === 'number' && size !== this.provider.dimensions;
+      const sparse = params?.sparse_vectors as Record<string, { modifier?: string }> | undefined;
+      recreate =
+        (typeof size === 'number' && size !== this.provider.dimensions) ||
+        sparse?.[DOCS_SPARSE_VECTOR]?.modifier !== 'idf';
     } catch {
-      dimensionChanged = true;
+      recreate = true;
     }
-    if (dimensionChanged) {
+    if (recreate) {
       await dropDocsCollection(this.qdrant, group);
     }
     await ensureDocsCollection(this.qdrant, group, this.provider.dimensions, this.provider.model);
@@ -767,17 +773,22 @@ export class DocsStore {
     await writeDocsCollectionMeta(this.qdrant, group, {
       model: this.provider.model,
       dimensions: this.provider.dimensions,
+      tokenizerVersion: TOKENIZER_VERSION,
     });
     return points.length;
   }
 
-  /** Heal one group if its stored model differs from the running provider. */
+  /**
+   * Heal one group if its stored model differs from the running provider, or its
+   * sparse vectors were built with another `TOKENIZER_VERSION`.
+   */
   async healDocsModel(group: string): Promise<number> {
     const meta = await readDocsCollectionMeta(this.qdrant, group);
     if (
       meta &&
       meta.model === this.provider.model &&
-      meta.dimensions === this.provider.dimensions
+      meta.dimensions === this.provider.dimensions &&
+      meta.tokenizerVersion === TOKENIZER_VERSION
     ) {
       return 0;
     }
@@ -789,17 +800,16 @@ export class DocsStore {
    * but only when they are missing or were made with another tokeniser.
    *
    * The stats live in a local SQLite file written by whoever indexes. A process
-   * that only SEARCHES (the MCP server, in the usual split-container deployment)
-   * therefore starts with an empty store and never fills it — nothing on the read
-   * path writes df. With no stats, `buildQuerySparseVector` cannot weight terms
-   * and returns an empty vector, so search silently degrades to dense-only:
-   * correct, but it throws away the keyword half of a hybrid index.
+   * that did not index (the MCP server, in the usual split-container deployment)
+   * starts with an empty store. Search does not need them — Qdrant supplies the
+   * IDF — but writing a document does: its sparse vector is normalised by the
+   * average chunk length, and without stats every chunk counts as average.
    *
    * Stats made with an older `TOKENIZER_VERSION` are rebuilt too: removing a
    * document tokenises its stored chunks again, so with a changed tokeniser it
-   * would subtract terms that were never added. The chunks' sparse vectors keep
-   * the old tokens until the next docs pass rewrites them; in plain ASCII text
-   * the tokens are the same as before.
+   * would subtract terms that were never added. The chunks' sparse vectors are
+   * rebuilt by `healDocsModel`, which compares the version stamped on the
+   * collection.
    *
    * Rebuilding is a pure function of the stored chunks, so it is safe to run on
    * any process and idempotent. Skipped when stats are current, so a normal
@@ -892,7 +902,7 @@ export class DocsStore {
         const n = await this.healDocsModel(group);
         if (n > 0) {
           console.log(
-            `[docs] re-embedded ${n} chunk(s) in group "${group}" with ${this.provider.model} (text model changed)`
+            `[docs] re-embedded ${n} chunk(s) in group "${group}" with ${this.provider.model} (text model or tokenizer changed)`
           );
         }
       } catch (err) {
