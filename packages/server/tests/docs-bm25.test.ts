@@ -6,25 +6,36 @@ import Database from 'better-sqlite3';
 import {
   tokenize,
   termToIndex,
-  idf,
   buildDocumentSparseVector,
   buildQuerySparseVector,
   type CorpusStats,
 } from '../src/docs/bm25.js';
 import { DocsIdfStore } from '../src/docs/idf-store.js';
+import { stemmer } from 'stemmer';
+
+const termIndex = (word: string) => termToIndex(tokenize(word)[0]!);
 
 describe('tokenize', () => {
   it('lowercases and splits on non-alphanumeric', () => {
     expect(tokenize('Deploy the Lantern-Sync service!')).toEqual([
-      'deploy',
+      'deploi',
       'lantern',
       'sync',
-      'service',
+      'servic',
     ]);
   });
 
   it('drops stop-words and single chars', () => {
     expect(tokenize('a b the cat')).toEqual(['cat']);
+  });
+
+  it('drops question words', () => {
+    expect(tokenize('How do I rotate what key, and why?')).toEqual(['rotat', 'kei']);
+  });
+
+  it('reduces English words to their stem', () => {
+    expect(tokenize('creating created creates')).toEqual(['creat', 'creat', 'creat']);
+    expect(tokenize('applies applying')).toEqual(['appli', 'appli']);
   });
 
   it('keeps underscores (identifiers)', () => {
@@ -44,7 +55,7 @@ describe('tokenize', () => {
   });
 
   it('drops accents on Latin letters only', () => {
-    expect(tokenize('Über café naïve')).toEqual(['uber', 'cafe', 'naive']);
+    expect(tokenize('Über café naïve')).toEqual(['uber', 'cafe', 'naiv']);
     expect(tokenize('ёлка')).toEqual(['ёлка']);
   });
 
@@ -53,12 +64,13 @@ describe('tokenize', () => {
     expect(tokenize('React组件 和')).toEqual(['react', '组件', '和']);
   });
 
-  it('tokenises ASCII text as before', () => {
+  it('tokenises ASCII text as before, up to stemming', () => {
     const before = (text: string) =>
       text
         .toLowerCase()
         .split(/[^a-z0-9_]+/)
-        .filter((t) => t.length > 1);
+        .filter((t) => t.length > 1)
+        .map((t) => (/^[a-z]+$/.test(t) ? stemmer(t) : t));
     const text =
       'Deploy `lantern-sync` v2.3 (see https://example.com/a_b?x=1); ' +
       "CamelCase, snake_case & kebab-case — it's 42% done. #tag @user\n\tEND";
@@ -83,20 +95,6 @@ describe('termToIndex', () => {
   });
 });
 
-describe('idf', () => {
-  it('is higher for rarer terms', () => {
-    const rare = idf(1, 1000);
-    const common = idf(500, 1000);
-    expect(rare).toBeGreaterThan(common);
-  });
-
-  it('cold-start: returns a positive weight on an empty corpus (bootstrap)', () => {
-    // First-ever document must still get non-zero sparse weights, so idf treats
-    // an empty corpus as a size-1 corpus rather than returning 0.
-    expect(idf(0, 0)).toBeGreaterThan(0);
-  });
-});
-
 describe('sparse vector builders', () => {
   const stats: CorpusStats = {
     docCount: 100,
@@ -112,18 +110,31 @@ describe('sparse vector builders', () => {
     for (const w of v.values) expect(w).toBeGreaterThan(0);
   });
 
-  it('weights a rare repeated term above a common one', () => {
+  it('weights a repeated term above a single one', () => {
     const v = buildDocumentSparseVector('rollback rollback deploy', stats);
-    const rollbackIdx = termToIndex('rollback');
-    const deployIdx = termToIndex('deploy');
+    const rollbackIdx = termIndex('rollback');
+    const deployIdx = termIndex('deploy');
     const wRollback = v.values[v.indices.indexOf(rollbackIdx)]!;
     const wDeploy = v.values[v.indices.indexOf(deployIdx)]!;
     expect(wRollback).toBeGreaterThan(wDeploy);
   });
 
-  it('query vector weights by idf only (short-query treatment)', () => {
-    const v = buildQuerySparseVector('rollback deploy', stats);
-    expect(v.indices.length).toBe(2);
+  it('leaves the IDF out of document weights, since Qdrant applies it', () => {
+    const rareEverywhere: CorpusStats = { ...stats, docFreq: () => 1 };
+    const commonEverywhere: CorpusStats = { ...stats, docFreq: () => 99 };
+    expect(buildDocumentSparseVector('rollback deploy', rareEverywhere)).toEqual(
+      buildDocumentSparseVector('rollback deploy', commonEverywhere)
+    );
+  });
+
+  it('gives each distinct query term a weight of 1', () => {
+    const v = buildQuerySparseVector('rollback the deploy rollback');
+    expect(v.indices).toEqual([termIndex('rollback'), termIndex('deploy')]);
+    expect(v.values).toEqual([1, 1]);
+  });
+
+  it('returns an empty query vector when only stop-words remain', () => {
+    expect(buildQuerySparseVector('how do I')).toEqual({ indices: [], values: [] });
   });
 
   it('empty text yields an empty vector', () => {
@@ -257,38 +268,11 @@ describe('DocsIdfStore', () => {
   });
 });
 
-describe('buildQuerySparseVector — empty corpus', () => {
-  const emptyStats: CorpusStats = { docCount: 0, avgDocLength: 0, docFreq: () => 0 };
-
-  it('returns an empty vector instead of equal weights for every term', () => {
-    // With no corpus, idf()'s cold-start clamp reports every term as maximally
-    // rare, so all terms score identically and the sparse half stops ranking —
-    // it just matches any of the words. Overview files (README, CLAUDE.md) are
-    // full of common words like "group" and "service", so they would dominate
-    // fusion while the dense half is ignored.
-    const v = buildQuerySparseVector('setting up a Kafka consumer group', emptyStats);
-    expect(v.indices).toEqual([]);
-    expect(v.values).toEqual([]);
-  });
-
-  it('still weights terms once the corpus is non-empty', () => {
-    const stats: CorpusStats = {
-      docCount: 1000,
-      avgDocLength: 200,
-      docFreq: (t) => (t === 'common' ? 900 : 2),
-    };
-    const v = buildQuerySparseVector('common rare', stats);
-    expect(v.indices).toHaveLength(2);
-    // A rare term must outweigh a common one, which is the whole point of IDF.
-    const byIdx = new Map(v.indices.map((ix, i) => [ix, v.values[i]!]));
-    expect(byIdx.get(termToIndex('rare'))!).toBeGreaterThan(byIdx.get(termToIndex('common'))!);
-  });
-
-  it('keeps the cold-start clamp on the INDEXING side', () => {
-    // The first document written into an empty corpus legitimately needs
-    // non-zero weights, so the document builder must NOT be gated the same way.
+describe('buildDocumentSparseVector — empty corpus', () => {
+  it('still weights the first document written into an empty corpus', () => {
+    const emptyStats: CorpusStats = { docCount: 0, avgDocLength: 0, docFreq: () => 0 };
     const v = buildDocumentSparseVector('alpha beta gamma', emptyStats);
-    expect(v.indices.length).toBeGreaterThan(0);
-    expect(idf(0, 0)).toBeGreaterThan(0);
+    expect(v.indices).toHaveLength(3);
+    for (const w of v.values) expect(w).toBeGreaterThan(0);
   });
 });

@@ -1,14 +1,16 @@
+import { stemmer } from 'stemmer';
+
 /**
  * BM25 sparse-vector construction for the docs hybrid-search layer.
  *
- * We compute BM25 term weights OURSELVES (in TS) and push a raw Qdrant
- * `sparse_vector` — we do NOT rely on Qdrant server-side BM25 inference (which
- * needs the Python/FastEmbed client or a Cloud inference module; our indexer is
- * TS + llama.cpp). Dense (qwen3) and sparse (this) are fused server-side via the
- * Query API `prefetch` + `fusion: rrf`, which IS available in OSS Qdrant.
+ * The split follows Qdrant's own BM25 recipe (FastEmbed `Qdrant/bm25`): a
+ * document vector carries only the saturated, length-normalised term frequency,
+ * a query vector carries 1 per term, and Qdrant multiplies in the IDF at query
+ * time from the live collection (`modifier: idf` on the sparse vector). IDF is
+ * therefore applied exactly once and never goes stale as documents change.
  *
- * The IDF component (corpus document frequencies) lives in a SEPARATE SQLite
- * file — see idf-store.ts — never in metadata.db.
+ * The corpus statistics in idf-store.ts still supply the average chunk length
+ * for length normalisation.
  */
 
 // BM25 parameters — standard defaults. k1 controls term-frequency saturation,
@@ -35,6 +37,47 @@ export interface CorpusStats {
 // A small, language-agnostic English stop-word set. Kept minimal — over-pruning
 // hurts recall on short technical queries ("how to X").
 const STOP_WORDS = new Set([
+  'about',
+  'been',
+  'being',
+  'can',
+  'could',
+  'did',
+  'do',
+  'does',
+  'doing',
+  'had',
+  'have',
+  'having',
+  'her',
+  'here',
+  'him',
+  'his',
+  'how',
+  'if',
+  'into',
+  'me',
+  'my',
+  'our',
+  'she',
+  'should',
+  'so',
+  'than',
+  'their',
+  'them',
+  'then',
+  'there',
+  'they',
+  'us',
+  'what',
+  'when',
+  'where',
+  'which',
+  'while',
+  'who',
+  'why',
+  'would',
+  'your',
   'a',
   'an',
   'and',
@@ -75,8 +118,9 @@ const STOP_WORDS = new Set([
  * are rebuilt from the stored chunks (`DocsIdfStore.isCurrent()`): removing a
  * document tokenises it again, which is exact only with the same tokeniser.
  * 2 — letters and digits of every script, Latin accents folded, CJK bigrams.
+ * 3 — English stop-words include question words; Latin words are Porter-stemmed.
  */
-export const TOKENIZER_VERSION = 2;
+export const TOKENIZER_VERSION = 3;
 
 // Scripts written without spaces between words: a run of them is indexed as
 // overlapping two-character pieces (as Lucene's CJK analyzer does), so a query
@@ -115,8 +159,11 @@ export function tokenize(text: string): string[] {
   return out;
 }
 
+const LATIN_WORD = /^[a-z]+$/;
+
 function addWord(out: string[], word: string): void {
-  if (Array.from(word).length > 1 && !STOP_WORDS.has(word)) out.push(word);
+  if (Array.from(word).length <= 1 || STOP_WORDS.has(word)) return;
+  out.push(LATIN_WORD.test(word) ? stemmer(word) : word);
 }
 
 /**
@@ -139,24 +186,9 @@ export function termToIndex(term: string): number {
 }
 
 /**
- * Robertson-Spärck-Jones IDF with the +0.5 smoothing used by Lucene/BM25.
- *
- * Cold-start: when the corpus is empty (docCount 0) — which happens for the very
- * first document indexed, before any corpus stats exist — every term is treated
- * as maximally rare (df 0 in a size-1 corpus), so the first document still gets
- * non-zero sparse weights instead of an all-zero vector. Subsequent documents
- * see real corpus stats. The self-heal reindex rebuilds IDF from the full corpus
- * anyway, so this bootstrap value is never load-bearing long-term.
- */
-export function idf(docFreq: number, docCount: number): number {
-  const n = docCount <= 0 ? 1 : docCount;
-  return Math.log(1 + (n - docFreq + 0.5) / (docFreq + 0.5));
-}
-
-/**
- * Build a BM25 sparse vector for a DOCUMENT (indexing side). Weights each unique
- * term by its BM25 score against the corpus stats. Terms not yet in the corpus
- * (docFreq 0) are still weighted — idf() handles df=0 gracefully.
+ * Build a BM25 sparse vector for a DOCUMENT (indexing side): each unique term's
+ * saturated, length-normalised frequency. The IDF factor is Qdrant's, at query
+ * time.
  */
 export function buildDocumentSparseVector(text: string, stats: CorpusStats): SparseVector {
   const tokens = tokenize(text);
@@ -169,11 +201,8 @@ export function buildDocumentSparseVector(text: string, stats: CorpusStats): Spa
   const avg = stats.avgDocLength > 0 ? stats.avgDocLength : docLength;
   const byIndex = new Map<number, number>();
   for (const [term, freq] of tf) {
-    const termIdf = idf(stats.docFreq(term), stats.docCount);
-    if (termIdf <= 0) continue;
-    // BM25 term saturation with length normalisation.
     const denom = freq + BM25_K1 * (1 - BM25_B + BM25_B * (docLength / avg));
-    const weight = termIdf * ((freq * (BM25_K1 + 1)) / denom);
+    const weight = (freq * (BM25_K1 + 1)) / denom;
     if (weight <= 0) continue;
     const idx = termToIndex(term);
     // On the rare hash collision, keep the larger weight (more discriminative).
@@ -190,36 +219,10 @@ export function buildDocumentSparseVector(text: string, stats: CorpusStats): Spa
 }
 
 /**
- * Build a sparse vector for a QUERY (search side). A query is short, so we weight
- * each term by its IDF only (no TF saturation) — the standard BM25 query-side
- * treatment. Fusion with dense happens in Qdrant via RRF.
+ * Build a sparse vector for a QUERY (search side): 1 per unique term. Qdrant
+ * weights each term by its IDF over the collection (`modifier: idf`).
  */
-export function buildQuerySparseVector(query: string, stats: CorpusStats): SparseVector {
-  const tokens = tokenize(query);
-  if (tokens.length === 0) return { indices: [], values: [] };
-  // No corpus stats means BM25 cannot rank: idf()'s cold-start clamp treats every
-  // term as maximally rare, so each one gets the SAME weight and the sparse half
-  // degenerates into "match any of these words". That is actively harmful on the
-  // query side — overview-style files (README, CLAUDE.md) are dense with common
-  // words like "group", "service" and "queue", so they dominate the fusion while
-  // the dense half is ignored. Returning an empty vector makes the caller skip
-  // the sparse prefetch entirely and rank on semantics alone, which is the
-  // correct degraded behaviour.
-  //
-  // Indexing keeps the clamp: the first document written into an empty corpus
-  // legitimately needs non-zero weights.
-  if (stats.docCount <= 0) return { indices: [], values: [] };
-  const seen = new Map<number, number>();
-  for (const term of new Set(tokens)) {
-    const termIdf = idf(stats.docFreq(term), stats.docCount);
-    if (termIdf <= 0) continue;
-    seen.set(termToIndex(term), termIdf);
-  }
-  const indices: number[] = [];
-  const values: number[] = [];
-  for (const [idx, w] of seen) {
-    indices.push(idx);
-    values.push(w);
-  }
-  return { indices, values };
+export function buildQuerySparseVector(query: string): SparseVector {
+  const indices = [...new Set(tokenize(query).map(termToIndex))];
+  return { indices, values: indices.map(() => 1) };
 }

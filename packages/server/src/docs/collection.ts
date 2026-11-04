@@ -1,4 +1,5 @@
 import type { QdrantClient } from '@qdrant/js-client-rest';
+import { TOKENIZER_VERSION } from './bm25.js';
 
 /**
  * Docs collection lifecycle — mirrors arch/collection.ts but for the docs layer.
@@ -7,7 +8,8 @@ import type { QdrantClient } from '@qdrant/js-client-rest';
  *  - collection name suffix is `_docs` (not `_arch`)
  *  - the collection carries BOTH a named dense vector (`dense`, qwen3 1024d) AND
  *    a named sparse vector (`text`, BM25) so dense + sparse can be fused
- *    server-side via the Query API (`prefetch` + `fusion: rrf`).
+ *    server-side via the Query API (`prefetch` + `fusion: rrf`). The sparse
+ *    vector has Qdrant's `idf` modifier: Qdrant supplies the IDF factor.
  *
  * The named-vector layout is REQUIRED for hybrid search — a collection created
  * with a single unnamed dense vector cannot hold sparse vectors.
@@ -44,6 +46,8 @@ export function isDocsCollection(collection: string): boolean {
 export interface DocsCollectionMeta {
   model: string;
   dimensions: number;
+  /** `TOKENIZER_VERSION` the sparse vectors were built with; absent on older collections. */
+  tokenizerVersion?: number;
 }
 
 /** Deterministic sentinel id for the docs metadata point — distinct from arch/code. */
@@ -67,7 +71,9 @@ export async function readDocsCollectionMeta(
     const model = typeof p['model'] === 'string' ? p['model'] : null;
     const dimensions = typeof p['dimensions'] === 'number' ? p['dimensions'] : null;
     if (!model || dimensions === null) return null;
-    return { model, dimensions };
+    const tokenizerVersion =
+      typeof p['tokenizer_version'] === 'number' ? p['tokenizer_version'] : undefined;
+    return { model, dimensions, ...(tokenizerVersion !== undefined ? { tokenizerVersion } : {}) };
   } catch {
     return null;
   }
@@ -90,7 +96,14 @@ export async function writeDocsCollectionMeta(
       {
         id: DOCS_META_SENTINEL_ID,
         vector: { [DOCS_DENSE_VECTOR]: new Array(meta.dimensions).fill(0) },
-        payload: { __meta: true, model: meta.model, dimensions: meta.dimensions },
+        payload: {
+          __meta: true,
+          model: meta.model,
+          dimensions: meta.dimensions,
+          ...(meta.tokenizerVersion !== undefined
+            ? { tokenizer_version: meta.tokenizerVersion }
+            : {}),
+        },
       },
     ],
   });
@@ -113,7 +126,7 @@ export async function ensureDocsCollection(
   }
   await qdrant.createCollection(name, {
     vectors: { [DOCS_DENSE_VECTOR]: { size: dimensions, distance: 'Cosine' } },
-    sparse_vectors: { [DOCS_SPARSE_VECTOR]: {} },
+    sparse_vectors: { [DOCS_SPARSE_VECTOR]: { modifier: 'idf' } },
   });
   for (const field of PAYLOAD_INDEXES) {
     await qdrant.createPayloadIndex(name, {
@@ -123,7 +136,11 @@ export async function ensureDocsCollection(
     });
   }
   if (model) {
-    await writeDocsCollectionMeta(qdrant, group, { model, dimensions });
+    await writeDocsCollectionMeta(qdrant, group, {
+      model,
+      dimensions,
+      tokenizerVersion: TOKENIZER_VERSION,
+    });
   }
 }
 
