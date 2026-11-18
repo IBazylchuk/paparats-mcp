@@ -83,3 +83,26 @@ Each group also has a glossary (`paparats_<group>_terms`): abbreviations, produc
 and domain terms, each with a definition and aliases. `term_search` and `term_list` read
 it on the coding and support endpoints; `term_record` and `term_delete` are coding only.
 Like decisions, a near-identical term is refused and the existing one returned.
+
+Set `project_only: true` on `term_search` with the exact name of one registered
+project allowed by the server. If the name occurs in multiple groups, pass `group`
+to select one. Exact name and alias matching and semantic search all exclude
+group-wide terms and terms from other projects before limiting results.
+
+Successful strict calls include the usual Markdown in `content` and this shape in
+`structuredContent`:
+
+```ts
+{
+  project_only: true;
+  project: string;
+  records: Array<{ project: string; term: string; aliases: string[]; definition: string }>;
+}
+```
+
+The top-level `project` is the canonical registered name. Each record's `project`
+comes from its stored metadata. A successful miss returns `records: []`. Tool
+errors and ordinary calls omit this confirmation. Clients that require strict
+scope should accept only successful confirmations where the project and every
+record's project match the request. Older servers may return Markdown alone,
+even when passed the flag.

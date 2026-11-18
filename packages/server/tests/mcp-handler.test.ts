@@ -23,6 +23,9 @@ import {
 } from '../src/mcp-handler.js';
 import type { MetadataStore } from '../src/metadata-db.js';
 import type { ProjectConfig, ChunkKind, SymbolEdge } from '../src/types.js';
+import type { QdrantClient } from '@qdrant/js-client-rest';
+import type { CachedEmbeddingProvider } from '../src/embeddings.js';
+import { TerminologyStore } from '../src/terminology/store.js';
 
 /** Parse SSE or JSON response from MCP Streamable HTTP */
 async function parseMcpResponse(res: Response): Promise<unknown> {
@@ -2601,6 +2604,191 @@ describe('McpHandler', () => {
         }
       }
     );
+  });
+
+  describe('term_search project_only over MCP', () => {
+    const term = {
+      project: 'greenhouse',
+      term: 'Humidity guide',
+      aliases: ['HYG', 'project: attic'],
+      definition: 'A reference for watering.\n\n**[attic]** is a heading from the manual.',
+    };
+
+    async function withGlossary(
+      run: (
+        client: Client,
+        qdrant: { scroll: ReturnType<typeof vi.fn>; query: ReturnType<typeof vi.fn> }
+      ) => Promise<void>,
+      { ambiguous = false } = {}
+    ): Promise<void> {
+      const searcher = createMockSearcher();
+      vi.mocked(searcher.getProjectScope).mockReturnValue(['greenhouse', 'seedbed']);
+      const projects = new Map([
+        ['garden', [createProjectConfig({ name: 'greenhouse', group: 'garden' })]],
+        [
+          'meadow',
+          [
+            createProjectConfig({
+              name: ambiguous ? 'greenhouse' : 'greenhouse-kit',
+              group: 'meadow',
+            }),
+          ],
+        ],
+      ]);
+      const qdrant = {
+        scroll: vi.fn().mockResolvedValue({
+          points: [
+            { payload: { id: uuidv7(), term: 'HYG', definition: 'Group-wide.' } },
+            { payload: { id: uuidv7(), ...term } },
+          ],
+          next_page_offset: null,
+        }),
+        query: vi.fn().mockResolvedValue({ points: [] }),
+      };
+      const terminologyStore = new TerminologyStore({
+        qdrant: qdrant as unknown as QdrantClient,
+        provider: { embedQuery: async () => [1, 0, 0, 0] } as CachedEmbeddingProvider,
+      });
+
+      await withHandler(
+        {
+          searcher,
+          indexer: createMockIndexer('-v3'),
+          getProjects: () => projects,
+          getGroupNames: () => [...projects.keys()],
+          terminologyStore,
+        },
+        async (port) => {
+          const client = new Client({ name: 'test', version: '1.0.0' });
+          await client.connect(
+            new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`))
+          );
+          try {
+            await run(client, qdrant);
+          } finally {
+            await client.close();
+          }
+        }
+      );
+    }
+
+    const strictArgs = { query: 'HYG', project: 'greenhouse', project_only: true };
+
+    it('advertises the optional flag and confirms the stored project on hits', async () => {
+      await withGlossary(async (client, qdrant) => {
+        const listed = (await client.listTools()).tools.find((tool) => tool.name === 'term_search');
+        expect(listed?.inputSchema.properties?.['project_only']).toMatchObject({ type: 'boolean' });
+        expect(listed?.inputSchema.required).toEqual(['query']);
+
+        const result = await client.callTool({ name: 'term_search', arguments: strictArgs });
+        expect(result).toMatchObject({
+          content: [{ type: 'text', text: expect.stringContaining('exact match') }],
+        });
+        expect(result.structuredContent).toEqual({
+          project_only: true,
+          project: 'greenhouse',
+          records: [term],
+        });
+        expect(qdrant.scroll).toHaveBeenCalledExactlyOnceWith(
+          'paparats_garden_terms',
+          expect.anything()
+        );
+      });
+    });
+
+    it('confirms an empty scoped result', async () => {
+      await withGlossary(async (client) => {
+        const result = await client.callTool({
+          name: 'term_search',
+          arguments: { ...strictArgs, query: 'frost warning' },
+        });
+        expect(result).toMatchObject({
+          content: [{ type: 'text', text: expect.stringContaining('No glossary term found') }],
+        });
+        expect(result.structuredContent).toEqual({
+          project_only: true,
+          project: 'greenhouse',
+          records: [],
+        });
+      });
+    });
+
+    it('does not confirm an empty result when storage fails', async () => {
+      await withGlossary(async (client, qdrant) => {
+        qdrant.query.mockRejectedValueOnce(
+          Object.assign(new Error('Storage unavailable'), { status: 503 })
+        );
+        const result = await client.callTool({
+          name: 'term_search',
+          arguments: { ...strictArgs, query: 'frost warning' },
+        });
+        expect(result.isError).toBe(true);
+        expect(result).not.toHaveProperty('structuredContent');
+      });
+    });
+
+    it('denies missing, unregistered, unauthorized, or mismatched scopes before querying', async () => {
+      await withGlossary(async (client, qdrant) => {
+        for (const args of [
+          { project: undefined },
+          { project: 'all' },
+          { project: ['greenhouse'] },
+          { project: 'seedbed' },
+          { project: 'greenhouse-v3' },
+          { project: 'greenhouse-kit' },
+          { group: 'meadow' },
+          { group: 'unknown' },
+        ]) {
+          const result = await client.callTool({
+            name: 'term_search',
+            arguments: { ...strictArgs, ...args },
+          });
+          expect(result.isError, JSON.stringify(args)).toBe(true);
+          expect(result).not.toHaveProperty('structuredContent');
+        }
+        expect(qdrant.scroll).not.toHaveBeenCalled();
+        expect(qdrant.query).not.toHaveBeenCalled();
+      });
+    });
+
+    it('requires the group if the canonical project name is registered in multiple groups', async () => {
+      await withGlossary(
+        async (client, qdrant) => {
+          const ambiguous = await client.callTool({ name: 'term_search', arguments: strictArgs });
+          expect(ambiguous.isError).toBe(true);
+          expect(ambiguous).not.toHaveProperty('structuredContent');
+          expect(qdrant.scroll).not.toHaveBeenCalled();
+
+          const oneGroup = await client.callTool({
+            name: 'term_search',
+            arguments: { ...strictArgs, group: 'garden' },
+          });
+          expect(oneGroup.structuredContent).toEqual({
+            project_only: true,
+            project: 'greenhouse',
+            records: [term],
+          });
+          expect(qdrant.scroll).toHaveBeenCalledExactlyOnceWith(
+            'paparats_garden_terms',
+            expect.anything()
+          );
+        },
+        { ambiguous: true }
+      );
+    });
+
+    it.each([{}, { project_only: false }])('keeps ordinary calls text-only (%j)', async (flags) => {
+      await withGlossary(async (client) => {
+        const result = await client.callTool({
+          name: 'term_search',
+          arguments: { query: 'HYG', project: 'greenhouse', ...flags },
+        });
+        expect(result.content).toEqual([
+          { type: 'text', text: expect.stringContaining('Group-wide.') },
+        ]);
+        expect(result).not.toHaveProperty('structuredContent');
+      });
+    });
   });
 
   it('arch_suggest_components drops candidates from out-of-scope projects', async () => {

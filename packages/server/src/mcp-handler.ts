@@ -50,6 +50,7 @@ import {
   type KnowledgeScope,
 } from './knowledge-mode.js';
 import { TerminologyStore } from './terminology/store.js';
+import type { TermSearchHit } from './terminology/types.js';
 import {
   buildArchContextWithVector,
   DEFAULT_MIN_SCORE,
@@ -855,6 +856,20 @@ function knowledgeUnavailable(tool: string, err: unknown): Error {
 /** Where a glossary entry lives, for tools that act on it by id (`term_delete`). */
 function termRef(t: { id: string; project?: string }): string {
   return `id ${t.id}${t.project !== undefined ? `, project ${t.project}` : ''}`;
+}
+
+function formatTermSearchContent(query: string, hits: TermSearchHit[], canRecord: boolean) {
+  const text =
+    hits.length === 0
+      ? `No glossary term found for "${query}". The glossary is agent-authored and incomplete — search the code and docs before concluding the term is unused${canRecord ? ', and record it with term_record once confirmed' : ''}.`
+      : hits
+          .map((t) => {
+            const aliases = t.aliases.length > 0 ? ` _(aka: ${t.aliases.join(', ')})_` : '';
+            const how = t.score >= 1 ? 'exact match' : `similar, ${t.score.toFixed(3)}`;
+            return `**${t.term}**${aliases} _(${how}; ${termRef(t)})_\n${t.definition}`;
+          })
+          .join('\n\n');
+  return [{ type: 'text' as const, text }];
 }
 
 function formatWriteResult(
@@ -4683,19 +4698,67 @@ export class McpHandler {
               .min(1)
               .optional()
               .describe('Restrict to a project, or omit for all.'),
+            project_only: z
+              .boolean()
+              .optional()
+              .describe(
+                'Require one explicit registered project and exclude group-wide terms. ' +
+                  'Specify group if the project name is shared across groups. ' +
+                  'A successful strict lookup confirms the scope in structuredContent.'
+              ),
             group: z.string().optional().describe('Specific group, or omit for all groups.'),
             limit: z.number().int().min(1).max(30).optional().describe('Max results. Default 8.'),
           }),
           annotations: READ_ONLY,
         },
-        async ({ query, project, group, limit }) => {
+        async ({ query, project, project_only, group, limit }) => {
+          const canRecord = tools.has('term_record');
+          const lookup = {
+            minScore: TERM_LOOKUP_MIN_SCORE,
+            ...(limit !== undefined ? { limit } : {}),
+          };
+          if (project_only) {
+            const exact = this.findGlossaryProject(scope, project, group);
+            if (!exact) {
+              return {
+                isError: true,
+                content: [
+                  {
+                    type: 'text' as const,
+                    text: 'Project-only search requires one registered, permitted project. Specify its group if the project name is shared across groups.',
+                  },
+                ],
+              };
+            }
+            const hits = await termStore.search(exact.group, query, {
+              ...lookup,
+              project: exact.project,
+              projectOnly: true,
+            });
+            const scopedHits = hits.filter(
+              (t): t is TermSearchHit & { project: string } => t.project === exact.project
+            );
+            return {
+              content: formatTermSearchContent(query, scopedHits, canRecord),
+              structuredContent: {
+                project_only: true,
+                project: exact.project,
+                records: scopedHits.map(({ project, term, aliases, definition }) => ({
+                  project,
+                  term,
+                  aliases,
+                  definition,
+                })),
+              },
+            };
+          }
+
           const groupNames = group ? [group] : this.getGroupNames();
           const all = [];
           for (const g of groupNames) {
             const hits = await termStore.search(g, query, {
-              minScore: TERM_LOOKUP_MIN_SCORE,
+              ...lookup,
               ...(project !== undefined ? { project } : {}),
-              ...(limit !== undefined ? { limit } : {}),
             });
             // Group-wide terms stay visible; project terms follow the project scope.
             all.push(
@@ -4703,27 +4766,7 @@ export class McpHandler {
             );
           }
           all.sort((a, b) => b.score - a.score);
-          const top = all.slice(0, limit ?? 8);
-          if (top.length === 0) {
-            return {
-              content: [
-                {
-                  type: 'text' as const,
-                  text: `No glossary term found for "${query}". The glossary is agent-authored and incomplete — search the code and docs before concluding the term is unused${tools.has('term_record') ? ', and record it with term_record once confirmed' : ''}.`,
-                },
-              ],
-            };
-          }
-          // An exact name/alias match scores 1; anything lower is the vector's guess.
-          // Saying which is which stops a near-miss from being read as a definition.
-          const md = top
-            .map((t) => {
-              const aliases = t.aliases.length > 0 ? ` _(aka: ${t.aliases.join(', ')})_` : '';
-              const how = t.score >= 1 ? 'exact match' : `similar, ${t.score.toFixed(3)}`;
-              return `**${t.term}**${aliases} _(${how}; ${termRef(t)})_\n${t.definition}`;
-            })
-            .join('\n\n');
-          return { content: [{ type: 'text' as const, text: md }] };
+          return { content: formatTermSearchContent(query, all.slice(0, limit ?? 8), canRecord) };
         }
       );
     }
@@ -4904,6 +4947,21 @@ export class McpHandler {
     const known = this.getGroupNames();
     if (group === undefined) return known;
     return known.includes(group) ? [group] : [];
+  }
+
+  private findGlossaryProject(
+    scope: ProjectScopeGuard,
+    project: string | undefined,
+    group: string | undefined
+  ): { group: string; project: string } | undefined {
+    if (!project || project === 'all' || !scope.allowsProject(project)) return undefined;
+
+    const projects = this.getProjects();
+    const matches = this.knownGroups(group).flatMap((name) => {
+      const canonical = projects.get(name)?.find((entry) => entry.name === project);
+      return canonical ? [{ group: name, project: canonical.name }] : [];
+    });
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   /**

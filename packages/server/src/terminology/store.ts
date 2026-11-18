@@ -25,8 +25,12 @@ export interface RecordTermInput {
   project?: string;
 }
 
-export interface TermSearchOpts {
+interface TermProjectScope {
   project?: string;
+  projectOnly?: boolean;
+}
+
+export interface TermSearchOpts extends TermProjectScope {
   limit?: number;
   minScore?: number;
 }
@@ -181,21 +185,21 @@ export class TerminologyStore {
   async search(group: string, query: string, opts: TermSearchOpts = {}): Promise<TermSearchHit[]> {
     const limit = opts.limit ?? 8;
 
-    const exact = await this.findExactMatches(group, query, opts.project, limit);
+    const exact = await this.findExactMatches(group, query, opts, limit);
     if (exact.length > 0) return exact;
 
+    const filter = termLookupFilter(opts);
     const vector = await this.provider.embedQuery(query);
-    const must_not: unknown[] = [{ key: '__meta', match: { value: true } }];
-    const fetchLimit = opts.project !== undefined ? limit * 3 : limit;
+    const fetchLimit = !opts.projectOnly && opts.project !== undefined ? limit * 3 : limit;
     try {
       const { points: hits } = await this.qdrant.query(toTermsCollectionName(group), {
         query: vector,
         limit: fetchLimit,
         with_payload: true,
-        filter: { must_not },
+        filter,
       });
       const minScore = typeof opts.minScore === 'number' ? opts.minScore : 0;
-      const matchesProject = makeProjectPredicate(opts.project);
+      const matchesProject = makeProjectPredicate(opts);
       return hits
         .map((h) => ({ term: toTerm(h.payload), score: h.score }))
         .filter((h) => h.term !== null && h.score >= minScore)
@@ -209,9 +213,10 @@ export class TerminologyStore {
   }
 
   /** List all terms in a group (optionally project-scoped). */
-  async list(group: string, opts: { project?: string; limit?: number } = {}): Promise<Term[]> {
+  async list(group: string, opts: TermProjectScope & { limit?: number } = {}): Promise<Term[]> {
     const limit = opts.limit ?? 200;
-    const matchesProject = makeProjectPredicate(opts.project);
+    const filter = termLookupFilter(opts);
+    const matchesProject = makeProjectPredicate(opts);
     const out: Term[] = [];
     let offset: string | number | Record<string, unknown> | undefined | null = undefined;
     try {
@@ -220,7 +225,7 @@ export class TerminologyStore {
           limit: 256,
           with_payload: true,
           with_vector: false,
-          filter: { must_not: [{ key: '__meta', match: { value: true } }] },
+          filter,
           ...(offset !== undefined && offset !== null ? { offset } : {}),
         });
         for (const p of page.points) {
@@ -288,7 +293,7 @@ export class TerminologyStore {
   private async findExactMatches(
     group: string,
     query: string,
-    project: string | undefined,
+    scope: TermProjectScope,
     limit: number
   ): Promise<TermSearchHit[]> {
     const wanted = normalizeLookupKey(query);
@@ -296,7 +301,7 @@ export class TerminologyStore {
 
     // No cap: a term past list()'s default page would never match exactly.
     const all = await this.list(group, {
-      ...(project !== undefined ? { project } : {}),
+      ...scope,
       limit: Number.POSITIVE_INFINITY,
     });
     const byName: Term[] = [];
@@ -558,8 +563,15 @@ function toTerm(payload: unknown): Term | null {
   };
 }
 
-/** project=X → cards with project=X or no project pass; undefined → all pass. */
-function makeProjectPredicate(project: string | undefined): (t: Term) => boolean {
+function termLookupFilter({ project, projectOnly }: TermProjectScope) {
+  const must_not = [{ key: '__meta', match: { value: true } }];
+  if (!projectOnly) return { must_not };
+  if (!project) throw new Error('Project-only glossary search requires a project.');
+  return { must_not, must: [{ key: 'project', match: { value: project } }] };
+}
+
+function makeProjectPredicate({ project, projectOnly }: TermProjectScope): (t: Term) => boolean {
+  if (projectOnly) return (t) => t.project === project;
   if (project === undefined) return () => true;
   return (t) => t.project === undefined || t.project === project;
 }

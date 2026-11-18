@@ -177,6 +177,70 @@ describe('TerminologyStore.search', () => {
     expect(terms).not.toContain('C'); // other project
   });
 
+  describe('strict project lookup', () => {
+    const scoped = { project: 'greenhouse', projectOnly: true, limit: 1 } as const;
+    const filter = { must: [{ key: 'project', match: { value: 'greenhouse' } }] };
+    const collection = 'paparats_garden_terms';
+    const point = (term: string, project?: string | string[], aliases: string[] = []) => ({
+      score: 0.9,
+      payload: {
+        id: term,
+        term,
+        definition: 'A garden term.',
+        aliases,
+        ...(project === undefined ? {} : { project }),
+      },
+    });
+
+    it('filters every exact-match page before preferring a canonical name or applying the limit', async () => {
+      qdrant.scroll
+        .mockResolvedValueOnce({
+          points: [point('Water gauge'), point('Water Gauge', 'greenhouse-kit')],
+          next_page_offset: 42,
+        })
+        .mockResolvedValueOnce({
+          points: [point('Capillary meter', 'greenhouse', ['water gauge'])],
+          next_page_offset: null,
+        });
+
+      const hits = await store.search('garden', 'Water gauge', scoped);
+
+      expect(hits).toMatchObject([{ term: 'Capillary meter', project: 'greenhouse', score: 1 }]);
+      expect(qdrant.scroll).toHaveBeenNthCalledWith(1, collection, {
+        filter: expect.objectContaining(filter),
+        limit: 256,
+        with_payload: true,
+        with_vector: false,
+      });
+      expect(qdrant.scroll).toHaveBeenNthCalledWith(
+        2,
+        collection,
+        expect.objectContaining({ filter: expect.objectContaining(filter), offset: 42 })
+      );
+      expect(qdrant.query).not.toHaveBeenCalled();
+    });
+
+    it('applies the exact filter to the vector limit and checks returned project metadata', async () => {
+      qdrant.query.mockResolvedValueOnce({
+        points: [
+          point('Unscoped'),
+          point('Same-group neighbor', 'orchard'),
+          point('Lookalike', 'greenhouse-kit'),
+          point('Malformed project', ['greenhouse']),
+          point('Capillary meter', 'greenhouse'),
+        ],
+      });
+
+      const hits = await store.search('garden', 'measure moisture at the roots', scoped);
+
+      expect(qdrant.query).toHaveBeenCalledWith(
+        collection,
+        expect.objectContaining({ limit: 1, filter: expect.objectContaining(filter) })
+      );
+      expect(hits).toMatchObject([{ term: 'Capillary meter', project: 'greenhouse', score: 0.9 }]);
+    });
+  });
+
   // A bare acronym is the commonest glossary query and the one the vector handles
   // worst: measured on a live 75-term glossary, one acronym ranked its own entry 21st
   // at 0.469 while an unrelated metric took the top slot at 0.620. Exact name/alias
