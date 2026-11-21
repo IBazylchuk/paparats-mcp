@@ -144,7 +144,10 @@ export async function searchLikeTool(
     .slice(0, limit);
 }
 
-async function resolveSourceRoot(opts: RunOptions): Promise<string> {
+/** The directory a run reads: `--source`, or an export of the dataset commit. */
+export async function resolveSourceRoot(
+  opts: Pick<RunOptions, 'source' | 'dataset' | 'repoRoot' | 'cacheDir' | 'log'>
+): Promise<string> {
   if (opts.source) {
     const head = gitHead(opts.source);
     if (head !== opts.dataset.commit || gitDirty(opts.source)) {
@@ -160,7 +163,8 @@ async function resolveSourceRoot(opts: RunOptions): Promise<string> {
   return exportCommit(opts.repoRoot, opts.dataset.commit, opts.cacheDir);
 }
 
-function projectConfigFor(dir: string, name: string, group: string): ProjectConfig {
+/** The project config the indexer would use for a dataset project (the bench itself excluded). */
+export function projectConfigFor(dir: string, name: string, group: string): ProjectConfig {
   const base = fs.existsSync(path.join(dir, CONFIG_FILE))
     ? loadProject(dir)
     : autoProjectConfig(dir, { group });
@@ -299,7 +303,7 @@ export async function runBench(opts: RunOptions): Promise<Report> {
       };
       results.push(result);
       opts.log(
-        `[${i + 1}/${queries.length}] ${q.id} ${error ? `ERROR ${error}` : `file RR ${result.file['mrr@10'].toFixed(2)}, chunk R@10 ${result.chunk['recall@10'].toFixed(2)}`} (${Math.round(latencyMs)} ms)`
+        `[${i + 1}/${queries.length}] ${q.id} ${error ? `ERROR ${error}` : `file RR ${result.file['mrr@10'].toFixed(2)}, chunk R@10 ${(result.chunk?.['recall@10'] ?? 0).toFixed(2)}`} (${Math.round(latencyMs)} ms)`
       );
     }
   } finally {

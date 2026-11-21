@@ -43,6 +43,8 @@ export {
 } from './indexer.js';
 export type { IndexerConfig } from './indexer.js';
 
+export { collectProjectFiles } from './project-files.js';
+
 export { resolveTags, autoDetectTags } from './metadata.js';
 
 export { Searcher } from './searcher.js';

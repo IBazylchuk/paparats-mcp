@@ -1034,6 +1034,7 @@ __metadata:
   resolution: "@paparats/bench@workspace:packages/bench"
   dependencies:
     "@paparats/server": "npm:*"
+    "@paparats/shared": "npm:*"
     "@types/node": "npm:^26.6.5"
     typescript: "npm:^6.0.3"
     vitest: "npm:^5.0.5"

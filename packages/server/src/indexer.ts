@@ -63,6 +63,7 @@ import { isTermsCollection } from './terminology/collection.js';
 import { EMBED_TEXT_FORMAT, chunkEmbedText } from './embed-text.js';
 import { churnPercentiles, readFileCommitCounts } from './file-churn.js';
 import { readTestFiles } from './test-files.js';
+import { collectProjectFiles } from './project-files.js';
 import { readGraphqlFacts } from './graphql-contracts.js';
 
 // ── Collection name helpers ──────────────────────────────────────────────────
@@ -1492,24 +1493,7 @@ export class Indexer {
     await this.ensureCollection(groupName);
     await this.evictProjectFromOtherGroups(groupName, project.name);
 
-    const fileSet = new Set<string>();
-    for (const pattern of project.patterns) {
-      const found = await glob(pattern, {
-        cwd: project.path,
-        absolute: true,
-        ignore: project.exclude,
-        nodir: true,
-      });
-      found.forEach((f) => fileSet.add(f));
-    }
-    // Globs follow symlinks: a committed `leak.ts -> .git/config` (a remote URL
-    // carrying a token) or a link out of the repository would be read and made
-    // searchable. Dropping them here also lets the orphan sweep remove anything
-    // indexed through such a link before.
-    let files = filterFilesWithinRoot(Array.from(fileSet), project.path);
-    if (project.indexing.respectGitignore) {
-      files = filterFilesByGitignore(files, project.path);
-    }
+    const files = await collectProjectFiles(project);
     console.log(`  ${files.length} files found`);
     if (this.metadataStore) {
       const tests = readTestFiles(project.path);

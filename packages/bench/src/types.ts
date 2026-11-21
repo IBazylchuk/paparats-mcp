@@ -72,8 +72,11 @@ export interface QueryResult {
   hits: Hit[];
   /** A hit counts when its file is an expected file. */
   file: MetricSet;
-  /** A hit counts when it overlaps an expected line span. */
-  chunk: MetricSet;
+  /**
+   * A hit counts when it overlaps an expected line span. Absent for the whole-file
+   * lexical arm: its hits span the whole file, so a chunk score would equal the file score.
+   */
+  chunk?: MetricSet;
   /** Set when the search call failed; the metrics are then all zero. */
   error?: string;
 }
@@ -87,22 +90,29 @@ export interface LatencyStats {
 export interface Aggregate {
   count: number;
   file: MetricSet;
-  chunk: MetricSet;
+  /** Absent when the queries carry no chunk-level score (the whole-file lexical arm). */
+  chunk?: MetricSet;
   latency: LatencyStats;
   /** Queries whose search call failed (included in `count`, scored zero). */
   errors: number;
 }
 
 export interface ReportConfig {
-  /** `search_code` replicates the MCP tool; `search` is the plain HTTP /api/search path. */
-  mode: 'search_code' | 'search';
+  /**
+   * `search_code` replicates the MCP tool; `search` is the plain HTTP /api/search path;
+   * `bm25-files` is the in-memory lexical arm (Okapi BM25, one document per file).
+   */
+  mode: 'search_code' | 'search' | 'bm25-files';
   group: string;
   limit: number;
+  /** Embedding model of a dense run; `none` for the lexical arm. */
   embedModel: string;
   /** Free-form label for the run (e.g. `baseline`, `hybrid-bm25`). */
   label?: string;
-  /** Chunks in the collection when the queries ran. */
+  /** Chunks in the collection when the queries ran (dense arm). */
   points?: number;
+  /** Lexical arm: the BM25 parameters and the number of indexed files, per project. */
+  lexical?: { k1: number; b: number; files: Record<string, number> };
 }
 
 export interface Report {
