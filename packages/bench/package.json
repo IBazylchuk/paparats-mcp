@@ -11,7 +11,8 @@
     "bench": "tsc && node dist/cli.js"
   },
   "dependencies": {
-    "@paparats/server": "*"
+    "@paparats/server": "*",
+    "@paparats/shared": "*"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",

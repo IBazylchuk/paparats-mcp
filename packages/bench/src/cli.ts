@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { checkLabels, loadDataset } from './dataset.js';
 import { parseReport, renderComparison, renderSummary } from './report.js';
+import { runLexicalBench } from './lexical.js';
 import { runBench, type SearchMode } from './runner.js';
 import { exportCommit, gitTopLevel } from './source.js';
 import type { Report } from './types.js';
@@ -34,6 +35,9 @@ Commands:
   validate   Check every label against the dataset's commit (files, line ranges, symbols)
 
 run options:
+  --arm <a>             dense (default; Qdrant + embedding server) | bm25 (lexical baseline: Okapi BM25 over
+                        whole files, in memory, no Qdrant or embedding server; file-level metrics only;
+                        takes --dataset, --source, --limit, --type, --label, --out)
   --dataset <file>      Dataset JSON (default: packages/bench/datasets/paparats.json)
   --group <name>        Qdrant group to search (default: bench-<dataset name>)
   --index               Index the dataset commit into the group first (group must start with "bench-")
@@ -83,12 +87,13 @@ async function cmdRun(argv: string[]): Promise<void> {
   const { values } = parseArgs({
     args: argv,
     options: {
+      arm: { type: 'string', default: 'dense' },
       dataset: { type: 'string' },
       group: { type: 'string' },
       index: { type: 'boolean', default: false },
       reset: { type: 'boolean', default: false },
       source: { type: 'string' },
-      mode: { type: 'string', default: 'search_code' },
+      mode: { type: 'string' },
       limit: { type: 'string', default: '10' },
       type: { type: 'string', multiple: true },
       label: { type: 'string' },
@@ -103,7 +108,9 @@ async function cmdRun(argv: string[]): Promise<void> {
 
   const datasetPath = values.dataset ? userPath(values.dataset) : DEFAULT_DATASET;
   const dataset = loadDataset(datasetPath);
-  const mode = values.mode as SearchMode;
+  const arm = values.arm;
+  if (arm !== 'dense' && arm !== 'bm25') fail('--arm must be dense or bm25');
+  const mode = (values.mode ?? 'search_code') as SearchMode;
   if (mode !== 'search_code' && mode !== 'search') fail(`--mode must be search_code or search`);
   const limit = parseInt(values.limit, 10);
   if (!Number.isInteger(limit) || limit < 10 || limit > 50) {
@@ -114,26 +121,50 @@ async function cmdRun(argv: string[]): Promise<void> {
     10
   );
 
-  const report = await runBench({
+  const denseOnly = (
+    [
+      ['--index', values.index],
+      ['--reset', values.reset],
+      ['--group', values.group],
+      ['--mode', values.mode],
+      ['--qdrant-url', values['qdrant-url']],
+      ['--embed-url', values['embed-url']],
+      ['--embed-model', values['embed-model']],
+      ['--embed-dims', values['embed-dims']],
+    ] as const
+  )
+    .filter(([, v]) => v !== undefined && v !== false)
+    .map(([flag]) => flag);
+  if (arm === 'bm25' && denseOnly.length > 0) {
+    fail(`${denseOnly.join(', ')}: only for --arm dense (the bm25 arm uses no index or server)`);
+  }
+
+  const common = {
     dataset,
-    group: values.group ?? `bench-${dataset.name}`,
-    mode,
     limit,
-    qdrantUrl: values['qdrant-url'] ?? process.env['QDRANT_URL'] ?? 'http://localhost:6333',
-    qdrantApiKey: process.env['QDRANT_API_KEY'] || undefined,
-    embedUrl: values['embed-url'] ?? process.env['EMBED_URL'] ?? 'http://127.0.0.1:18434',
-    embedModel: values['embed-model'] ?? process.env['EMBEDDING_MODEL'] ?? 'bge-code-v1',
-    embedDims,
-    index: values.index,
-    reset: values.reset,
     ...(values.source ? { source: userPath(values.source) } : {}),
     repoRoot: gitTopLevel(PACKAGE_DIR),
     cacheDir: CACHE_DIR,
     ...(values.type ? { types: values.type } : {}),
     ...(values.label ? { label: values.label } : {}),
-    verbose: values.verbose,
-    log: (m) => console.error(m),
-  });
+    log: (m: string) => console.error(m),
+  };
+  const report =
+    arm === 'bm25'
+      ? await runLexicalBench(common)
+      : await runBench({
+          ...common,
+          group: values.group ?? `bench-${dataset.name}`,
+          mode,
+          qdrantUrl: values['qdrant-url'] ?? process.env['QDRANT_URL'] ?? 'http://localhost:6333',
+          qdrantApiKey: process.env['QDRANT_API_KEY'] || undefined,
+          embedUrl: values['embed-url'] ?? process.env['EMBED_URL'] ?? 'http://127.0.0.1:18434',
+          embedModel: values['embed-model'] ?? process.env['EMBEDDING_MODEL'] ?? 'bge-code-v1',
+          embedDims,
+          index: values.index,
+          reset: values.reset,
+          verbose: values.verbose,
+        });
 
   const out = values.out
     ? userPath(values.out)
