@@ -4,6 +4,18 @@
 
 > **Releases from 0.3.0 onward** are aggregated automatically from per-package Changesets entries by `scripts/aggregate-changelog.js`. Per-package detail lives in `packages/<name>/CHANGELOG.md`. Entries for **0.2.24 and earlier** are the historical monorepo-level archive (preserved below the aggregated block).
 
+## [2.19.0] - 2026-11-21
+
+**Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
+
+### Minor Changes
+
+- eebaf9c: Add strict project-scoped glossary search with structured MCP results that confirm the project for hits and empty results.
+
+### Patch Changes
+
+- 3fc6a78: Use one project description in every manifest and listing, so catalogs and clients show the same line.
+
 ## [2.18.2] - 2026-11-04
 
 **Packages:** @paparats/shared, @paparats/cli, @paparats/server, @paparats/indexer
