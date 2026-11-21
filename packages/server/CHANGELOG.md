@@ -1,5 +1,15 @@
 # @paparats/server
 
+## 2.19.0
+
+### Minor Changes
+
+- eebaf9c: Add strict project-scoped glossary search with structured MCP results that confirm the project for hits and empty results.
+
+### Patch Changes
+
+- @paparats/shared@2.19.0
+
 ## 2.18.2
 
 ### Patch Changes

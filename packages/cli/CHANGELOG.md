@@ -1,5 +1,12 @@
 # @paparats/cli
 
+## 2.19.0
+
+### Patch Changes
+
+- 3fc6a78: Use one project description in every manifest and listing, so catalogs and clients show the same line.
+  - @paparats/shared@2.19.0
+
 ## 2.18.2
 
 ### Patch Changes

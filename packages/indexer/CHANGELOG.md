@@ -1,5 +1,13 @@
 # @paparats/indexer
 
+## 2.19.0
+
+### Patch Changes
+
+- Updated dependencies [eebaf9c]
+  - @paparats/server@2.19.0
+  - @paparats/shared@2.19.0
+
 ## 2.18.2
 
 ### Patch Changes
