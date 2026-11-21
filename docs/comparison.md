@@ -28,7 +28,7 @@ over many repositories at once, on one server that a whole team and its agents s
   offering. License: PolyForm Noncommercial, so commercial use needs a separate license.
 - **[codebase-memory-mcp](https://github.com/DeusData/codebase-memory-mcp)**: one native
   binary with a local knowledge graph of code, docs and infrastructure, a type-aware call
-  graph, bundled code embeddings, links across repositories in one store and 162
+  graph, bundled code embeddings, links across repositories in one store and 164
   grammars. Paparats is a Docker stack around a shared server: one index for many people
   and agents, a read-only support endpoint, a docs-only endpoint, git history and tickets
   per chunk, and usage analytics.
@@ -59,6 +59,6 @@ over many repositories at once, on one server that a whole team and its agents s
 | Keeps the index fresh            | ⚠️ change check every 10 min + full pass     | ✅ git hooks or watcher                     | ✅ file watcher                    | ✅ watch mode                              | ✅ watcher                                 | ✅ sync every 5 min                       | n/a (reads live code)                    |
 | One shared server for a team     | ✅ coding, support and docs-only endpoints   | ⚠️ Graphify Cloud                           | ❌                                 | ⚠️ one HTTP server per machine             | ⚠️ shared graph file                       | ❌                                        | —                                        |
 | Code editing tools               | ❌                                           | —                                           | ❌                                 | ⚠️ rename                                  | ❌                                         | ❌                                        | ✅                                       |
-| Languages                        | 11 (tree-sitter)                             | ~40, plus docs, SQL, PDFs                   | 20+                                | 18                                         | 162 grammars                               | 14                                        | 40+ (language servers)                   |
+| Languages                        | 11 (tree-sitter)                             | ~40, plus docs, SQL, PDFs                   | 20+                                | 18                                         | 164 grammars                               | 14                                        | 40+ (language servers)                   |
 | Setup                            | Docker + npm CLI, ~2.3 GB of local models    | `uv tool install graphifyy`                 | install script or npm              | `npx gitnexus analyze`                     | install script                             | `npx` + API keys                          | `uv tool install`                        |
 | License                          | MIT                                          | Apache-2.0                                  | MIT                                | PolyForm Noncommercial                     | MIT                                        | MIT                                       | GPL-3.0-or-later                         |
