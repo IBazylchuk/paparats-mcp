@@ -3,7 +3,7 @@
   "version": "2.18.2",
   "mcpName": "io.github.IBazylchuk/paparats-mcp",
   "type": "module",
-  "description": "Self-hosted semantic code search MCP server for Claude Code, Cursor and Codex: tree-sitter AST chunking, symbol graph, git history, local Qdrant + llama.cpp embeddings.",
+  "description": "Self-hosted semantic code search MCP for Claude Code & Cursor. Multi-repo, AST-aware, stays local. Also works with Codex. Tree-sitter chunking, symbol graph, git history, local Qdrant and llama.cpp embeddings.",
   "license": "MIT",
   "author": "Ilya Bazylchuk",
   "homepage": "https://github.com/IBazylchuk/paparats-mcp#readme",
