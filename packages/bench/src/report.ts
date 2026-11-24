@@ -6,10 +6,14 @@ import type { Aggregate, Dataset, MetricSet, QueryResult, Report, ReportConfig }
 /** Macro-average a set of query results. Failed queries count, scored zero, latency excluded. */
 export function aggregate(results: QueryResult[]): Aggregate {
   const ok = results.filter((r) => r.error === undefined);
+  const chunks = results.flatMap((r) => (r.chunk ? [r.chunk] : []));
   return {
     count: results.length,
     file: meanMetrics(results.map((r) => r.file)),
-    chunk: meanMetrics(results.map((r) => r.chunk)),
+    // Only when every query has a chunk score; a mixed set would average different things.
+    ...(chunks.length > 0 && chunks.length === results.length
+      ? { chunk: meanMetrics(chunks) }
+      : {}),
     latency: latencyStats(ok.map((r) => r.latencyMs)),
     errors: results.length - ok.length,
   };
@@ -91,6 +95,16 @@ function escapeCell(s: string): string {
 
 function runLine(report: Report): string {
   const c = report.config;
+  if (c.lexical) {
+    const files = Object.values(c.lexical.files).reduce((a, b) => a + b, 0);
+    return [
+      `mode \`${c.mode}\``,
+      `Okapi BM25 k1=${c.lexical.k1} b=${c.lexical.b}`,
+      `limit ${c.limit}`,
+      `${files} files`,
+      ...(c.label ? [`label \`${c.label}\``] : []),
+    ].join(', ');
+  }
   const parts = [
     `mode \`${c.mode}\``,
     `model \`${c.embedModel}\``,
@@ -117,25 +131,35 @@ export function renderSummary(report: Report): string {
       ['Level', ...METRIC_KEYS.map((k) => METRIC_LABELS[k])],
       [
         ['file', ...METRIC_KEYS.map((k) => f3(o.file[k]))],
-        ['chunk', ...METRIC_KEYS.map((k) => f3(o.chunk[k]))],
+        ...(o.chunk ? [['chunk', ...METRIC_KEYS.map((k) => f3(o.chunk![k]))]] : []),
       ]
     ),
     '',
+    ...(o.chunk ? [] : ['Chunk-level metrics do not apply: this arm ranks whole files.', '']),
     `Latency per query: p50 ${ms(o.latency.p50)}, p95 ${ms(o.latency.p95)}, mean ${ms(o.latency.mean)}.` +
       (o.errors > 0 ? ` **${o.errors} queries failed** (scored zero).` : ''),
     '',
     '## By query type',
     '',
     ...table(
-      ['Type', 'n', 'file R@1', 'file R@5', 'file MRR@10', 'chunk R@10', 'chunk nDCG@10', 'p50'],
+      [
+        'Type',
+        'n',
+        'file R@1',
+        'file R@5',
+        'file MRR@10',
+        ...(o.chunk ? ['chunk R@10', 'chunk nDCG@10'] : ['file R@10']),
+        'p50',
+      ],
       Object.entries(report.byType).map(([type, a]) => [
         type,
         String(a.count),
         f3(a.file['recall@1']),
         f3(a.file['recall@5']),
         f3(a.file['mrr@10']),
-        f3(a.chunk['recall@10']),
-        f3(a.chunk['ndcg@10']),
+        ...(a.chunk
+          ? [f3(a.chunk['recall@10']), f3(a.chunk['ndcg@10'])]
+          : [f3(a.file['recall@10'])]),
         ms(a.latency.p50),
       ])
     ),
@@ -176,13 +200,17 @@ export interface QueryDelta {
   query: string;
   /** Change in file-level MRR@10 (head − base). */
   fileMrr: number;
-  /** Change in chunk-level Recall@10 (head − base). */
+  /** Change in file-level Recall@10 (head − base). */
+  fileRecall: number;
+  /** Change in chunk-level Recall@10 (head − base); 0 when either report has no chunk level. */
   chunkRecall: number;
 }
 
 export interface Comparison {
   warnings: string[];
-  /** Queries present in both reports whose file MRR@10 or chunk Recall@10 changed. */
+  /** Whether both reports carry chunk-level metrics, so chunk deltas are meaningful. */
+  chunkLevel: boolean;
+  /** Queries present in both reports whose file MRR@10 or file/chunk Recall@10 changed. */
   changed: QueryDelta[];
   onlyInBase: string[];
   onlyInHead: string[];
@@ -202,6 +230,12 @@ export function compareReports(base: Report, head: Report): Comparison {
   if (base.config.limit !== head.config.limit) {
     warnings.push(`Different result limits (${base.config.limit} vs ${head.config.limit}).`);
   }
+  const chunkLevel = base.overall.chunk !== undefined && head.overall.chunk !== undefined;
+  if (!chunkLevel && (base.overall.chunk !== undefined || head.overall.chunk !== undefined)) {
+    warnings.push(
+      `Only the ${base.overall.chunk ? 'base' : 'head'} report has chunk-level metrics (the other ranks whole files): compared at file level only.`
+    );
+  }
   const baseById = new Map(base.queries.map((q) => [q.id, q]));
   const headById = new Map(head.queries.map((q) => [q.id, q]));
   const changed: QueryDelta[] = [];
@@ -209,9 +243,13 @@ export function compareReports(base: Report, head: Report): Comparison {
     const b = baseById.get(h.id);
     if (!b) continue;
     const fileMrr = h.file['mrr@10'] - b.file['mrr@10'];
-    const chunkRecall = h.chunk['recall@10'] - b.chunk['recall@10'];
-    if (Math.abs(fileMrr) > 1e-9 || Math.abs(chunkRecall) > 1e-9) {
-      changed.push({ id: h.id, type: h.type, query: h.query, fileMrr, chunkRecall });
+    const fileRecall = h.file['recall@10'] - b.file['recall@10'];
+    const chunkRecall =
+      chunkLevel && h.chunk && b.chunk ? h.chunk['recall@10'] - b.chunk['recall@10'] : 0;
+    // Without a chunk level, file Recall@10 is the second axis (it is what a mover list can show).
+    const second = chunkLevel ? chunkRecall : fileRecall;
+    if (Math.abs(fileMrr) > 1e-9 || Math.abs(second) > 1e-9) {
+      changed.push({ id: h.id, type: h.type, query: h.query, fileMrr, fileRecall, chunkRecall });
     }
   }
   const onlyInBase = base.queries.filter((q) => !headById.has(q.id)).map((q) => q.id);
@@ -221,7 +259,7 @@ export function compareReports(base: Report, head: Report): Comparison {
       `Query sets differ (${onlyInBase.length} only in base, ${onlyInHead.length} only in head): aggregates are not like for like.`
     );
   }
-  return { warnings, changed, onlyInBase, onlyInHead };
+  return { warnings, chunkLevel, changed, onlyInBase, onlyInHead };
 }
 
 function metricRows(base: MetricSet, head: MetricSet, level: string): string[][] {
@@ -254,7 +292,9 @@ export function renderComparison(base: Report, head: Report): string {
       ['Metric', 'base', 'head', 'Δ'],
       [
         ...metricRows(base.overall.file, head.overall.file, 'file'),
-        ...metricRows(base.overall.chunk, head.overall.chunk, 'chunk'),
+        ...(base.overall.chunk && head.overall.chunk
+          ? metricRows(base.overall.chunk, head.overall.chunk, 'chunk')
+          : []),
         [
           'latency p50',
           ms(base.overall.latency.p50),
@@ -274,46 +314,64 @@ export function renderComparison(base: Report, head: Report): string {
 
   const types = [...new Set([...Object.keys(base.byType), ...Object.keys(head.byType)])].sort();
   const zero = { count: 0, file: emptyMetrics(), chunk: emptyMetrics() };
+  const typeRows = (cells: (b: typeof zero | Aggregate, h: typeof zero | Aggregate) => string[]) =>
+    types.map((t) => [
+      t,
+      String((head.byType[t] ?? zero).count),
+      ...cells(base.byType[t] ?? zero, head.byType[t] ?? zero),
+    ]);
   lines.push(
     '## By query type',
     '',
-    ...table(
-      ['Type', 'n', 'file MRR@10', 'Δ', 'chunk R@10', 'Δ', 'chunk nDCG@10', 'Δ'],
-      types.map((t) => {
-        const b = base.byType[t] ?? zero;
-        const h = head.byType[t] ?? zero;
-        return [
-          t,
-          String(h.count),
-          f3(h.file['mrr@10']),
-          signed(h.file['mrr@10'] - b.file['mrr@10']),
-          f3(h.chunk['recall@10']),
-          signed(h.chunk['recall@10'] - b.chunk['recall@10']),
-          f3(h.chunk['ndcg@10']),
-          signed(h.chunk['ndcg@10'] - b.chunk['ndcg@10']),
-        ];
-      })
-    ),
+    ...(cmp.chunkLevel
+      ? table(
+          ['Type', 'n', 'file MRR@10', 'Δ', 'chunk R@10', 'Δ', 'chunk nDCG@10', 'Δ'],
+          typeRows((b, h) => {
+            const bc = b.chunk ?? emptyMetrics();
+            const hc = h.chunk ?? emptyMetrics();
+            return [
+              f3(h.file['mrr@10']),
+              signed(h.file['mrr@10'] - b.file['mrr@10']),
+              f3(hc['recall@10']),
+              signed(hc['recall@10'] - bc['recall@10']),
+              f3(hc['ndcg@10']),
+              signed(hc['ndcg@10'] - bc['ndcg@10']),
+            ];
+          })
+        )
+      : table(
+          ['Type', 'n', 'file R@1', 'Δ', 'file MRR@10', 'Δ', 'file R@10', 'Δ'],
+          typeRows((b, h) => [
+            f3(h.file['recall@1']),
+            signed(h.file['recall@1'] - b.file['recall@1']),
+            f3(h.file['mrr@10']),
+            signed(h.file['mrr@10'] - b.file['mrr@10']),
+            f3(h.file['recall@10']),
+            signed(h.file['recall@10'] - b.file['recall@10']),
+          ])
+        )),
     ''
   );
 
+  // The second axis of a mover: chunk Recall@10, or file Recall@10 when there is no chunk level.
+  const second = (d: QueryDelta): number => (cmp.chunkLevel ? d.chunkRecall : d.fileRecall);
   const byScore = (a: QueryDelta, b: QueryDelta): number =>
-    a.fileMrr + a.chunkRecall - (b.fileMrr + b.chunkRecall);
-  const regressed = cmp.changed.filter((d) => d.fileMrr + d.chunkRecall < 0).sort(byScore);
+    a.fileMrr + second(a) - (b.fileMrr + second(b));
+  const regressed = cmp.changed.filter((d) => d.fileMrr + second(d) < 0).sort(byScore);
   const improved = cmp.changed
-    .filter((d) => d.fileMrr + d.chunkRecall > 0)
+    .filter((d) => d.fileMrr + second(d) > 0)
     .sort((a, b) => byScore(b, a));
-  const mixed = cmp.changed.filter((d) => d.fileMrr + d.chunkRecall === 0);
+  const mixed = cmp.changed.filter((d) => d.fileMrr + second(d) === 0);
 
   const moverTable = (rows: QueryDelta[]): string[] =>
     table(
-      ['Query', 'Type', 'Text', 'Δ file MRR@10', 'Δ chunk R@10'],
+      ['Query', 'Type', 'Text', 'Δ file MRR@10', cmp.chunkLevel ? 'Δ chunk R@10' : 'Δ file R@10'],
       rows.map((d) => [
         d.id,
         d.type,
         escapeCell(d.query.length > 60 ? `${d.query.slice(0, 57)}...` : d.query),
         signed(d.fileMrr),
-        signed(d.chunkRecall),
+        signed(second(d)),
       ]),
       3
     );

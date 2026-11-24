@@ -90,6 +90,46 @@ Each run writes `packages/bench/reports/<dataset>-<timestamp>.json` and a markdo
 next to it (both git-ignored), and prints the summary. `--mode search` scores the plain
 `/api/search` path (the limit as given, no dedupe) instead of `search_code`.
 
+## Lexical baseline (BM25)
+
+Dense search should be compared with a fair keyword baseline on the same questions, not
+with an empty bar. `--arm bm25` ranks **whole files** with Okapi BM25, in memory:
+
+```bash
+yarn bench run --arm bm25 --label bm25-files
+yarn bench run --arm bm25 --dataset path/to/other.json --source path/to/checkout
+```
+
+It needs no Qdrant and no embedding server, and takes `--dataset`, `--source`, `--limit`,
+`--type`, `--label` and `--out` (flags that only make sense for the dense arm are refused).
+The report has the same file metrics (Recall@1/5/10, MRR@10, nDCG@10, per query type) and
+`yarn bench compare dense.json bm25.json` lines the two up. What is fixed — none of it is a
+knob, and none of it was tuned on results:
+
+- **Scoring**: BM25 with k1 = 1.2 and b = 0.75, IDF `ln(1 + (N − n + 0.5) / (n + 0.5))`.
+  A query contributes each distinct token once; ties go to the path that sorts first.
+- **Documents**: one per file, the file's content alone (no path or metadata added). The file
+  set is the one the indexer reads — the server's own `collectProjectFiles()` (language
+  patterns, excludes, gitignore, symlink guard) plus the content checks `indexFile` applies
+  (binary, empty and machine-generated files are skipped). Each dataset project is its own
+  corpus, as the dense search filters by project. The bench itself is excluded, as for dense.
+- **Tokens**: lowercased runs of letters and digits. An identifier (a run of letters, digits
+  and `_`) contributes itself and, when it has several parts, its snake_case and camelCase
+  parts: `toCollectionName` and `to_collection_name` both give `tocollectionname`, `to`,
+  `collection`, `name`. Queries and files use the same tokenizer. No stemming, no stop words.
+- **Relevance** is the dataset's labels, as for the dense arm. Test files stay in the
+  corpus (they are indexed too) and take ranks like any file, but they only count when a
+  label names them; the shipped dataset names none.
+
+Only file-level metrics are reported. A hit is a whole file, so a chunk-level score would
+just repeat the file score; the report omits the chunk rows and `compare` falls back to file
+level when one side has no chunk metrics. A second variant — BM25 over the dense arm's chunks,
+a file scored by its best chunk — is not implemented: chunking is a private step of the
+indexer that writes to Qdrant, so reusing it would mean exposing it.
+
+The arm's latency is the scoring time alone (the index is built before the first query), so
+it says nothing about dense latency.
+
 ## Comparing runs
 
 ```bash
