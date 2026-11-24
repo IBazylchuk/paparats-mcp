@@ -58,6 +58,10 @@ if [[ "$PENDING" != "0" ]]; then
   exit 1
 fi
 
+# 4b. node_modules exactly as the lockfile says: a checkout pulled but not reinstalled has
+# the previous release's tools (an older `changeset`, no `changeset` command at all).
+run "yarn install --immutable"
+
 # 5. Read version from a workspace package (single source of truth post-bump).
 VERSION=$(node -p "require('./packages/cli/package.json').version")
 TAG="v${VERSION}"
