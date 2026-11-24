@@ -1,5 +1,14 @@
 # @paparats/cli
 
+## 2.19.0
+
+### Patch Changes
+
+- 3fc6a78: Use one project description in every manifest and listing, so catalogs and clients show the same line.
+- 32c67da: Update dependencies: chokidar 6 and ora 10, newer better-sqlite3, simple-git, graphql, OpenTelemetry, glob and minimatch, and every transitive package within its range. Closes two advisories in `@hono/node-server` (a crash on a reset WebSocket upgrade, a backslash read as a path separator).
+- Updated dependencies [32c67da]
+  - @paparats/shared@2.19.0
+
 ## 2.18.2
 
 ### Patch Changes

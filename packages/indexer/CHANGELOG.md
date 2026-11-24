@@ -1,5 +1,15 @@
 # @paparats/indexer
 
+## 2.19.0
+
+### Patch Changes
+
+- 32c67da: Update dependencies: chokidar 6 and ora 10, newer better-sqlite3, simple-git, graphql, OpenTelemetry, glob and minimatch, and every transitive package within its range. Closes two advisories in `@hono/node-server` (a crash on a reset WebSocket upgrade, a backslash read as a path separator).
+- Updated dependencies [eebaf9c]
+- Updated dependencies [32c67da]
+  - @paparats/server@2.19.0
+  - @paparats/shared@2.19.0
+
 ## 2.18.2
 
 ### Patch Changes

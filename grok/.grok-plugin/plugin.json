@@ -2,7 +2,7 @@
   "name": "paparats",
   "displayName": "Paparats",
   "description": "Self-hosted semantic code search MCP for Claude Code & Cursor. Multi-repo, AST-aware, stays local.",
-  "version": "2.18.2",
+  "version": "2.19.0",
   "author": {
     "name": "Ilya Bazylchuk"
   },
